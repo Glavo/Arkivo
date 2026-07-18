@@ -38,8 +38,8 @@ val metadataScalabilityFixture =
 val prepareMetadataScalabilityFixture by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Creates the 50,000-entry ZIP fixture used by the low-heap index probe."
-    dependsOn(tasks.named("testClasses"))
-    classpath = sourceSets["test"].runtimeClasspath
+    dependsOn(tasks.named("tier3TestClasses"))
+    classpath = sourceSets["tier3Test"].runtimeClasspath
     mainClass.set("org.glavo.arkivo.archive.zip.internal.ZipMetadataScalabilityProbe")
     args("create", metadataScalabilityFixture.get().asFile.absolutePath)
     outputs.file(metadataScalabilityFixture)
@@ -49,7 +49,7 @@ val lowHeapMetadataScalabilityProbe by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Indexes 50,000 ZIP entries with a 48 MiB maximum heap."
     dependsOn(prepareMetadataScalabilityFixture)
-    classpath = sourceSets["test"].runtimeClasspath
+    classpath = sourceSets["tier3Test"].runtimeClasspath
     mainClass.set("org.glavo.arkivo.archive.zip.internal.ZipMetadataScalabilityProbe")
     args("verify", metadataScalabilityFixture.get().asFile.absolutePath)
     maxHeapSize = "48m"
@@ -62,8 +62,8 @@ val decodedChannelScalabilityFixture =
 val prepareDecodedChannelScalabilityFixture by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Creates the 80 MiB decoded ZIP entry used by the low-heap channel probe."
-    dependsOn(tasks.named("testClasses"))
-    classpath = sourceSets["test"].runtimeClasspath
+    dependsOn(tasks.named("tier3TestClasses"))
+    classpath = sourceSets["tier3Test"].runtimeClasspath
     mainClass.set("org.glavo.arkivo.archive.zip.internal.ZipDecodedChannelScalabilityProbe")
     args("create", decodedChannelScalabilityFixture.get().asFile.absolutePath)
     outputs.file(decodedChannelScalabilityFixture)
@@ -73,13 +73,13 @@ val lowHeapDecodedChannelScalabilityProbe by tasks.registering(JavaExec::class) 
     group = "verification"
     description = "Opens and seeks through an 80 MiB decoded ZIP entry with a 32 MiB maximum heap."
     dependsOn(prepareDecodedChannelScalabilityFixture)
-    classpath = sourceSets["test"].runtimeClasspath
+    classpath = sourceSets["tier3Test"].runtimeClasspath
     mainClass.set("org.glavo.arkivo.archive.zip.internal.ZipDecodedChannelScalabilityProbe")
     args("verify", decodedChannelScalabilityFixture.get().asFile.absolutePath)
     maxHeapSize = "32m"
     inputs.file(decodedChannelScalabilityFixture)
 }
 
-tasks.named<Test>("test") {
+tasks.named<Test>("tier3Test") {
     dependsOn(lowHeapMetadataScalabilityProbe, lowHeapDecodedChannelScalabilityProbe)
 }

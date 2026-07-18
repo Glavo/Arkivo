@@ -129,7 +129,9 @@ public final class ZipEntryNameDecoder {
         }
     }
 
-    /// Decodes a validated Info-ZIP Unicode extra field value, or returns `null` when no valid field is present.
+    /// Decodes a complete Info-ZIP Unicode extra field value, or returns `null` when no valid field is present.
+    ///
+    /// A truncated unknown trailing field is ignored, while a truncated recognized field remains malformed.
     public static @Nullable String decodeUnicodeExtraField(
             byte[] rawValue,
             byte[] extraData,
@@ -137,7 +139,10 @@ public final class ZipEntryNameDecoder {
     ) throws IOException {
         int offset = 0;
         while (offset < extraData.length) {
-            ZipExtraFields.Field field = ZipExtraFields.read(extraData, offset);
+            @Nullable ZipExtraFields.Field field = ZipExtraFields.readForReading(extraData, offset);
+            if (field == null) {
+                return null;
+            }
             if (field.id() == expectedFieldId) {
                 String value = decodeUnicodeExtraFieldData(rawValue, extraData, field.dataOffset(), field.dataSize());
                 if (value != null) {

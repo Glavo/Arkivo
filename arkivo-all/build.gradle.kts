@@ -159,28 +159,11 @@ val prepareLibarchiveTestCorpus = tasks.register<Sync>("prepareLibarchiveTestCor
     into(libarchiveTestDataDirectory)
 }
 
-val realWorldTestSourceSet = sourceSets.create("realWorldTest") {
-    compileClasspath += sourceSets.main.get().output
-    runtimeClasspath += output + compileClasspath
-}
-
-configurations.named(realWorldTestSourceSet.implementationConfigurationName) {
-    extendsFrom(configurations.testImplementation.get())
-}
-configurations.named(realWorldTestSourceSet.compileOnlyConfigurationName) {
-    extendsFrom(configurations.testCompileOnly.get())
-}
-configurations.named(realWorldTestSourceSet.runtimeOnlyConfigurationName) {
-    extendsFrom(configurations.testRuntimeOnly.get())
-}
-
-tasks.register<Test>("realWorldTest") {
+tasks.named<Test>("tier2Test") {
     group = "verification"
     description = "Runs archive readers against the pinned official libarchive corpus."
     dependsOn(prepareLibarchiveTestCorpus)
     shouldRunAfter(tasks.test)
-    testClassesDirs = realWorldTestSourceSet.output.classesDirs
-    classpath = realWorldTestSourceSet.runtimeClasspath
     systemProperty(
         "arkivo.libarchive.testDataDirectory",
         libarchiveTestDataDirectory.get().asFile.absolutePath

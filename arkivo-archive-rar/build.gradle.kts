@@ -88,8 +88,8 @@ tasks.named("check") {
 val lowHeapStorageProbe by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Runs the RAR stored-entry cache probe with a heap smaller than the entry body."
-    dependsOn(tasks.named("testClasses"))
-    classpath = sourceSets["test"].runtimeClasspath
+    dependsOn(tasks.named("tier3TestClasses"))
+    classpath = sourceSets["tier3Test"].runtimeClasspath
     mainClass.set("org.glavo.arkivo.archive.rar.RarLowHeapStorageProbe")
     maxHeapSize = "32m"
 }
@@ -100,7 +100,7 @@ val codecJar = project(":arkivo-codec").tasks.named<Jar>("jar")
 val ppmdJar = project(":arkivo-codec-ppmd").tasks.named<Jar>("jar")
 
 tasks.named<Test>("test") {
-    dependsOn(lowHeapStorageProbe, tasks.jar, archiveJar, internalBaseJar, codecJar, ppmdJar)
+    dependsOn(tasks.jar, archiveJar, internalBaseJar, codecJar, ppmdJar)
     inputs.file(tasks.jar.flatMap { it.archiveFile })
     inputs.file(archiveJar.flatMap { it.archiveFile })
     inputs.file(internalBaseJar.flatMap { it.archiveFile })
@@ -128,4 +128,9 @@ tasks.named<Test>("test") {
             ppmdJar.get().archiveFile.get().asFile.absolutePath
         )
     }
+}
+
+tasks.named<Test>("tier3Test") {
+    dependsOn(lowHeapStorageProbe)
+    failOnNoDiscoveredTests = false
 }

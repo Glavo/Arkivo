@@ -1651,6 +1651,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         values.put("versionNeededToExtract", attributes.versionNeededToExtract());
         values.put("internalAttributes", attributes.internalAttributes());
         values.put("externalAttributes", attributes.externalAttributes());
+        values.put("userId", attributes.userId());
+        values.put("groupId", attributes.groupId());
         values.put("compressionMethodId", attributes.compressionMethodId());
         values.put("compressionMethod", attributes.compressionMethod());
         values.put("encryption", attributes.encryption());
@@ -1700,6 +1702,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             case "versionNeededToExtract" -> requireZipView(values, name, zipView, attributes.versionNeededToExtract());
             case "internalAttributes" -> requireZipView(values, name, zipView, attributes.internalAttributes());
             case "externalAttributes" -> requireZipView(values, name, zipView, attributes.externalAttributes());
+            case "userId" -> requireZipView(values, name, zipView, attributes.userId());
+            case "groupId" -> requireZipView(values, name, zipView, attributes.groupId());
             case "compressionMethodId" -> requireZipView(values, name, zipView, attributes.compressionMethodId());
             case "compressionMethod" -> requireZipView(values, name, zipView, attributes.compressionMethod());
             case "encryption" -> requireZipView(values, name, zipView, attributes.encryption());
@@ -4812,6 +4816,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         @Override
         public long externalAttributes() {
             return externalAttributes;
+        }
+
+        /// Returns `UNKNOWN_UNIX_ID` because writable entry snapshots do not synthesize Unix owner identifiers.
+        @Override
+        public long userId() {
+            return UNKNOWN_UNIX_ID;
+        }
+
+        /// Returns `UNKNOWN_UNIX_ID` because writable entry snapshots do not synthesize Unix group identifiers.
+        @Override
+        public long groupId() {
+            return UNKNOWN_UNIX_ID;
         }
 
         /// Returns the numeric ZIP compression method identifier after resolving WinZip AES metadata.

@@ -65,8 +65,8 @@ tasks.named("check") {
 val lowHeapUpdateProbe by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Runs the 7z large-entry update probe with a heap smaller than the entry body."
-    dependsOn(tasks.named("testClasses"))
-    classpath = sourceSets["test"].runtimeClasspath
+    dependsOn(tasks.named("tier3TestClasses"))
+    classpath = sourceSets["tier3Test"].runtimeClasspath
     mainClass.set("org.glavo.arkivo.archive.sevenzip.SevenZipLowHeapUpdateProbe")
     maxHeapSize = "32m"
 }
@@ -77,8 +77,8 @@ val decodedChannelScalabilityFixture =
 val prepareDecodedChannelScalabilityFixture by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Creates the 80 MiB decoded 7z entry used by the low-heap channel probe."
-    dependsOn(tasks.named("testClasses"))
-    classpath = sourceSets["test"].runtimeClasspath
+    dependsOn(tasks.named("tier3TestClasses"))
+    classpath = sourceSets["tier3Test"].runtimeClasspath
     mainClass.set("org.glavo.arkivo.archive.sevenzip.internal.SevenZipDecodedChannelScalabilityProbe")
     args("create", decodedChannelScalabilityFixture.get().asFile.absolutePath)
     outputs.file(decodedChannelScalabilityFixture)
@@ -88,13 +88,14 @@ val lowHeapDecodedChannelScalabilityProbe by tasks.registering(JavaExec::class) 
     group = "verification"
     description = "Opens and seeks through an 80 MiB decoded 7z entry with a 32 MiB maximum heap."
     dependsOn(prepareDecodedChannelScalabilityFixture)
-    classpath = sourceSets["test"].runtimeClasspath
+    classpath = sourceSets["tier3Test"].runtimeClasspath
     mainClass.set("org.glavo.arkivo.archive.sevenzip.internal.SevenZipDecodedChannelScalabilityProbe")
     args("verify", decodedChannelScalabilityFixture.get().asFile.absolutePath)
     maxHeapSize = "32m"
     inputs.file(decodedChannelScalabilityFixture)
 }
 
-tasks.named<Test>("test") {
+tasks.named<Test>("tier3Test") {
     dependsOn(lowHeapUpdateProbe, lowHeapDecodedChannelScalabilityProbe)
+    failOnNoDiscoveredTests = false
 }

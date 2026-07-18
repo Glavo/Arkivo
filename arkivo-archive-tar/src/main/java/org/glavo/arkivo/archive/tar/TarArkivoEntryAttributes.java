@@ -7,6 +7,8 @@ import org.glavo.arkivo.archive.ArchiveEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.file.attribute.FileTime;
+
 
 /// Exposes metadata parsed from one TAR archive entry header.
 @NotNullByDefault
@@ -42,4 +44,19 @@ public interface TarArkivoEntryAttributes extends ArchiveEntryAttributes {
 
     /// Returns the link target stored by the TAR header, or `null` when absent.
     @Nullable String linkName();
+
+    /// Returns the last access time explicitly recorded by the archive, or `null` when absent.
+    ///
+    /// [#lastAccessTime()] returns the last modification time as a non-null fallback when this value is absent.
+    @Nullable FileTime recordedLastAccessTime();
+
+    /// Returns the inode status change time explicitly recorded by the archive, or `null` when absent.
+    ///
+    /// This is the TAR `ctime` value and is distinct from a file creation time.
+    @Nullable FileTime recordedStatusChangeTime();
+
+    /// Returns the file creation time explicitly recorded by the archive, or `null` when absent.
+    ///
+    /// [#creationTime()] returns the last modification time as a non-null fallback when this value is absent.
+    @Nullable FileTime recordedCreationTime();
 }

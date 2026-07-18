@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemProvider;
 import java.io.ByteArrayOutputStream;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
@@ -312,21 +313,38 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that 7z archive properties are skipped while parsing the top-level header.
+    /// Verifies that unknown archive properties with variable-length identifiers are skipped in memory.
     @Test
     public void archiveProperties() throws IOException {
         byte[] content = "archive properties content".getBytes(StandardCharsets.UTF_8);
-        Path archivePath = createTemporaryArchivePath("archive-properties-");
-        Files.write(archivePath, archiveWithArchiveProperties(content));
+        byte[] archive = archiveWithArchiveProperties(content);
 
-        try {
-            try (SevenZipArkivoFileSystem fileSystem = openFileSystem(archivePath)) {
-                Path file = fileSystem.getPath("/hello.txt");
+        try (SevenZipArkivoFileSystem fileSystem = openFileSystem(new ReadOnlyByteArrayChannel(archive))) {
+            Path file = fileSystem.getPath("/hello.txt");
 
-                assertArrayEquals(content, Files.readAllBytes(file));
-            }
-        } finally {
-            deleteTemporaryArchive(archivePath);
+            assertArrayEquals(content, Files.readAllBytes(file));
+        }
+    }
+
+    /// Verifies that an unknown archive property cannot skip beyond the checked next-header buffer.
+    @Test
+    public void rejectsArchivePropertyBeyondHeader() throws IOException {
+        ByteArrayOutputStream header = new ByteArrayOutputStream();
+        header.write(0x01);
+        header.write(0x02);
+        writeLongNumber(header, 0x3f12_3456_789a_0001L);
+        writeNumber(header, 8);
+        header.write(0x00);
+        byte[] nextHeader = header.toByteArray();
+        byte[] archive = archive(nextHeader, crc32(nextHeader));
+
+        try (ReadOnlyByteArrayChannel channel = new ReadOnlyByteArrayChannel(archive)) {
+            IOException exception = assertThrows(IOException.class, () -> {
+                try (SevenZipArkivoFileSystem ignored = openFileSystem(channel)) {
+                    // Opening the malformed archive must fail before a file system is returned.
+                }
+            });
+            assertEquals("7z property exceeds header size", exception.getMessage());
         }
     }
 
@@ -6980,15 +6998,21 @@ public final class SevenZipArkivoFileSystemTest {
         output.write(0);
     }
 
-    /// Writes a 7z archive properties block with one ignored property.
+    /// Writes a 7z archive properties block with two ignored variable-length property identifiers.
     private static void writeArchiveProperties(ByteArrayOutputStream output) {
         output.write(0x02);
-        output.write(0x19);
-        writeNumber(output, 4);
-        output.write(0x61);
-        output.write(0x72);
-        output.write(0x63);
-        output.write(0);
+        writeLongNumber(output, 0x3f12_3456_789a_0001L);
+        writeNumber(output, 3);
+        output.write(0x00);
+        output.write(0x01);
+        output.write(0x02);
+        writeLongNumber(output, 0x3f12_3456_789a_0002L);
+        writeNumber(output, 5);
+        output.write(0x10);
+        output.write(0x11);
+        output.write(0x12);
+        output.write(0x13);
+        output.write(0x14);
         output.write(0x00);
     }
 

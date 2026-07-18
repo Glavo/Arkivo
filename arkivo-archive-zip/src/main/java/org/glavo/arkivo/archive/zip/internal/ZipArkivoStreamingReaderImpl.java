@@ -50,6 +50,8 @@ import static org.glavo.arkivo.archive.zip.internal.ZipConstants.STORED_METHOD;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.STRONG_ENCRYPTION_FLAG;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.UINT32_MAX;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.XZ_METHOD;
+import static org.glavo.arkivo.archive.zip.internal.ZipConstants.ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE;
+import static org.glavo.arkivo.archive.zip.internal.ZipConstants.ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.isZstandardMethod;
 import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.readInt;
@@ -65,6 +67,24 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// The fixed local file header size, including its signature.
     private static final int LOCAL_FILE_HEADER_SIZE = 30;
+
+    /// The fixed central-directory file-header size, including its signature.
+    private static final int CENTRAL_DIRECTORY_HEADER_SIZE = 46;
+
+    /// The fixed classic end-of-central-directory size, including its signature and comment length.
+    private static final int END_OF_CENTRAL_DIRECTORY_SIZE = 22;
+
+    /// The fixed ZIP64 end-of-central-directory locator size, including its signature.
+    private static final int ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE = 20;
+
+    /// The minimum payload size declared by a ZIP64 end-of-central-directory record.
+    private static final long ZIP64_END_OF_CENTRAL_DIRECTORY_MINIMUM_PAYLOAD_SIZE = 44L;
+
+    /// The archive extra-data record signature.
+    private static final int ARCHIVE_EXTRA_DATA_SIGNATURE = 0x08064b50;
+
+    /// The central-directory digital-signature record signature.
+    private static final int DIGITAL_SIGNATURE = 0x05054b50;
 
     /// The ZIP LZMA version and property-header size in bytes.
     private static final int LZMA_STREAM_HEADER_SIZE = 2 * Short.BYTES + LZMA_PROPERTY_SIZE;
@@ -222,6 +242,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         int signature = readIntOrEnd(input);
         if (archiveStart) {
             archiveStart = false;
+            signature = scanInitialSignature(signature);
             if (signature == DATA_DESCRIPTOR_SIGNATURE) {
                 signature = readIntOrEnd(input);
             }
@@ -238,9 +259,13 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             signature = readIntOrEnd(input);
         }
-        if (signature < 0
-                || signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
+        if (signature < 0) {
+            currentEntry = null;
+            return false;
+        }
+        if (signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
                 || signature == END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+            drainCentralDirectory(signature);
             currentEntry = null;
             return false;
         }
@@ -253,7 +278,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         int flags = readUnsignedShort(input);
         int method = readUnsignedShort(input);
         int lastModifiedDosTime = readUnsignedShort(input);
-        readUnsignedShort(input);
+        int lastModifiedDosDate = readUnsignedShort(input);
         boolean hasDataDescriptor = (flags & DATA_DESCRIPTOR_FLAG) != 0;
         long headerCrc32 = Integer.toUnsignedLong(readInt(input));
         long headerCompressedSize = Integer.toUnsignedLong(readInt(input));
@@ -266,7 +291,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         readLimits.acceptMetadata((long) nameLength + extraLength, null);
         byte[] rawName = readBytes(nameLength);
         byte[] extraData = readBytes(extraLength);
-        ZipExtraFields.validate(extraData);
+        ZipExtraFields.validateForReading(extraData);
         if (!hasDataDescriptor && (headerCompressedSize == UINT32_MAX || headerUncompressedSize == UINT32_MAX)) {
             Zip64LocalSizes zip64Sizes = readZip64LocalSizes(
                     extraData,
@@ -279,6 +304,11 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         boolean zip64DataDescriptor = headerCompressedSize == UINT32_MAX
                 || headerUncompressedSize == UINT32_MAX
                 || hasZip64ExtraField(extraData);
+        ZipExtraFieldMetadata.EntryMetadata entryMetadata = ZipExtraFieldMetadata.resolve(
+                extraData,
+                new byte[0],
+                ZipExtraFieldMetadata.dosTime(lastModifiedDosDate, lastModifiedDosTime)
+        );
 
         String path = decodePath(rawName, flags, extraData, versionNeededToExtract);
         LocalEntry entry = new LocalEntry(
@@ -292,12 +322,141 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 compressedSize,
                 uncompressedSize,
                 extraData,
+                entryMetadata,
                 zip64DataDescriptor,
                 path.endsWith("/")
         );
         readLimits.acceptEntry(path, uncompressedSize);
         currentEntry = entry;
         return true;
+    }
+
+    /// Consumes central-directory and end records without reading bytes after the archive comment.
+    private void drainCentralDirectory(int initialSignature) throws IOException {
+        int signature = initialSignature;
+        while (true) {
+            if (signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
+                readLimits.acceptMetadata(CENTRAL_DIRECTORY_HEADER_SIZE, null);
+                input.skipNBytes(24L);
+                int nameLength = readUnsignedShort(input);
+                int extraLength = readUnsignedShort(input);
+                int commentLength = readUnsignedShort(input);
+                input.skipNBytes(12L);
+                long variableSize = Math.addExact(Math.addExact((long) nameLength, extraLength), commentLength);
+                readLimits.acceptMetadata(variableSize, null);
+                input.skipNBytes(variableSize);
+                signature = readDirectorySignature();
+                continue;
+            }
+            if (signature == ARCHIVE_EXTRA_DATA_SIGNATURE) {
+                readLimits.acceptMetadata(2L * Integer.BYTES, null);
+                long dataSize = Integer.toUnsignedLong(readInt(input));
+                readLimits.acceptMetadata(dataSize, null);
+                input.skipNBytes(dataSize);
+                signature = readDirectorySignature();
+                continue;
+            }
+            if (signature == DIGITAL_SIGNATURE) {
+                readLimits.acceptMetadata(Integer.BYTES + Short.BYTES, null);
+                int dataSize = readUnsignedShort(input);
+                readLimits.acceptMetadata(dataSize, null);
+                input.skipNBytes(dataSize);
+                signature = readDirectorySignature();
+                continue;
+            }
+            if (signature == ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+                readLimits.acceptMetadata(Integer.BYTES + Long.BYTES, null);
+                long recordSize = readZip64RecordSize();
+                if (recordSize < ZIP64_END_OF_CENTRAL_DIRECTORY_MINIMUM_PAYLOAD_SIZE) {
+                    throw new IOException("Invalid ZIP64 end of central directory size: " + recordSize);
+                }
+                readLimits.acceptMetadata(recordSize, null);
+                input.skipNBytes(recordSize);
+                signature = readDirectorySignature();
+                continue;
+            }
+            if (signature == ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE) {
+                readLimits.acceptMetadata(ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE, null);
+                input.skipNBytes(ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE - Integer.BYTES);
+                signature = readDirectorySignature();
+                continue;
+            }
+            if (signature == END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+                readLimits.acceptMetadata(END_OF_CENTRAL_DIRECTORY_SIZE, null);
+                input.skipNBytes(16L);
+                int commentLength = readUnsignedShort(input);
+                readLimits.acceptMetadata(commentLength, null);
+                input.skipNBytes(commentLength);
+                return;
+            }
+            throw new IOException(
+                    "Unexpected ZIP central-directory record signature: " + Integer.toHexString(signature)
+            );
+        }
+    }
+
+    /// Reads the next required central-directory record signature.
+    private int readDirectorySignature() throws IOException {
+        int signature = readIntOrEnd(input);
+        if (signature < 0) {
+            throw new EOFException("Unexpected end of ZIP central directory");
+        }
+        return signature;
+    }
+
+    /// Reads a ZIP64 record size that must fit in a non-negative Java `long`.
+    private long readZip64RecordSize() throws IOException {
+        long low = Integer.toUnsignedLong(readInt(input));
+        int high = readInt(input);
+        if (high < 0) {
+            throw new IOException("ZIP64 end of central directory is too large");
+        }
+        return low | (long) high << Integer.SIZE;
+    }
+
+    /// Scans an optional streaming archive preamble until the first ZIP record signature.
+    ///
+    /// A forward-only source cannot distinguish an accidental local-header signature inside an executable stub from
+    /// the first real header without central-directory offsets, so the first local-header signature is authoritative.
+    private int scanInitialSignature(int signature) throws IOException {
+        if (signature < 0) {
+            return signature;
+        }
+        long pendingMetadataSize = 0L;
+        while (true) {
+            while (signature != LOCAL_FILE_HEADER_SIGNATURE
+                    && signature != DATA_DESCRIPTOR_SIGNATURE
+                    && signature != CENTRAL_DIRECTORY_HEADER_SIGNATURE
+                    && signature != END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+                int next = input.read();
+                if (next < 0) {
+                    readLimits.acceptMetadata(pendingMetadataSize + Integer.BYTES, null);
+                    throw new IOException("ZIP stream does not contain a record signature");
+                }
+                signature = signature >>> Byte.SIZE | next << (Integer.SIZE - Byte.SIZE);
+                pendingMetadataSize++;
+                if (pendingMetadataSize == PUSHBACK_BUFFER_SIZE) {
+                    readLimits.acceptMetadata(pendingMetadataSize, null);
+                    pendingMetadataSize = 0L;
+                }
+            }
+            if (signature != DATA_DESCRIPTOR_SIGNATURE) {
+                readLimits.acceptMetadata(pendingMetadataSize, null);
+                return signature;
+            }
+
+            // A leading spanning marker is meaningful only when a local header follows it immediately. An incidental
+            // descriptor signature inside an executable stub remains ordinary preamble data.
+            readLimits.acceptMetadata(pendingMetadataSize + Integer.BYTES, null);
+            pendingMetadataSize = 0L;
+            signature = readIntOrEnd(input);
+            if (signature < 0) {
+                return signature;
+            }
+            if (signature == LOCAL_FILE_HEADER_SIGNATURE) {
+                return signature;
+            }
+        }
     }
 
     /// Opens a readable channel for the current streaming ZIP entry.
@@ -448,6 +607,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             long uncompressedSize,
             String failureMessage
     ) throws IOException {
+        zip64 = usesZip64DataDescriptor(zip64, compressedSize, uncompressedSize);
         byte[] descriptor = new byte[dataDescriptorSize(false)];
         int offset = 0;
         while (offset < descriptor.length) {
@@ -493,6 +653,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             long compressedSize,
             long uncompressedSize
     ) throws IOException {
+        zip64 = usesZip64DataDescriptor(zip64, compressedSize, uncompressedSize);
         byte[] descriptor = new byte[dataDescriptorSize(false)];
         int offset = 0;
         while (offset < descriptor.length) {
@@ -534,6 +695,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             long uncompressedSize,
             boolean unreadOnMismatch
     ) throws IOException {
+        zip64 = usesZip64DataDescriptor(zip64, compressedSize, uncompressedSize);
         if (zip64) {
             byte[] tail = new byte[dataDescriptorSize(true) - dataDescriptorSize(false)];
             int tailSize = readPotentialZip64DescriptorTail(input, tail);
@@ -615,6 +777,15 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// Returns the number of bytes used by data descriptor fields after an optional signature.
     private static int dataDescriptorSize(boolean zip64) {
         return Integer.BYTES + (zip64 ? 2 * Long.BYTES : 2 * Integer.BYTES);
+    }
+
+    /// Returns whether declared metadata or observed entry sizes require 64-bit data descriptor sizes.
+    private static boolean usesZip64DataDescriptor(
+            boolean declaredZip64,
+            long compressedSize,
+            long uncompressedSize
+    ) {
+        return declaredZip64 || compressedSize > UINT32_MAX || uncompressedSize > UINT32_MAX;
     }
 
     /// Returns whether descriptor fields match the bytes already read from the entry.
@@ -722,7 +893,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                             ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE
                     );
             requireValidEntryPath(path);
-            return path;
+            return path.replace('\\', '/');
         } catch (java.nio.charset.CharacterCodingException exception) {
             throw new IOException("Failed to decode ZIP entry name", exception);
         }
@@ -1562,7 +1733,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             long expectedUncompressedSize
     ) throws IOException {
         if (expectedCompressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE
-                && compressedSize != expectedCompressedSize) {
+                && compressedSize > expectedCompressedSize) {
             throw new IOException("ZIP entry data does not match local header");
         }
         if (expectedCrc32 != ZipArkivoEntryAttributes.UNKNOWN_CRC32 && crc32 != expectedCrc32) {
@@ -1628,23 +1799,10 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         }
     }
 
-    /// Returns whether an unsupported entry can be skipped without decoding its content.
+    /// Returns whether an unopened entry can be skipped using its trusted local compressed size.
     private static boolean shouldSkipRawEntryData(LocalEntry entry) {
-        if ((entry.flags & DATA_DESCRIPTOR_FLAG) != 0) {
-            return false;
-        }
-        if (entry.encrypted()
-                && ((entry.flags & STRONG_ENCRYPTION_FLAG) != 0
-                || ZipAesExtraField.isAes(entry.method, entry.extraData))) {
-            return true;
-        }
-        return entry.method != STORED_METHOD
-                && entry.method != DEFLATED_METHOD
-                && entry.method != DEFLATE64_METHOD
-                && entry.method != BZIP2_METHOD
-                && entry.method != LZMA_METHOD
-                && entry.method != XZ_METHOD
-                && !isZstandardMethod(entry.method);
+        return (entry.flags & DATA_DESCRIPTOR_FLAG) == 0
+                && entry.compressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE;
     }
 
     /// Skips an entry body by raw compressed size.
@@ -2246,16 +2404,22 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         }
     }
 
-    /// Reads stored ZIP entry data until a signed data descriptor is found.
+    /// Reads stored ZIP entry data until a signed or unsigned data descriptor is found.
     @NotNullByDefault
     private final class StoredDataDescriptorInputStream extends InputStream {
         /// The source stream.
         private final PushbackInputStream input;
 
-        /// The CRC-32 of stored bytes returned so far.
+        /// The CRC-32 of stored bytes committed as entry data so far.
         private final CRC32 crc32 = new CRC32();
 
-        /// The number of stored bytes returned so far.
+        /// Raw bytes withheld while looking for an unsigned data descriptor before the next ZIP record.
+        private final ArrayDeque<Integer> pending = new ArrayDeque<>();
+
+        /// Entry bytes committed while validating a signed data descriptor and not yet returned to the caller.
+        private final ArrayDeque<Integer> pendingOutput = new ArrayDeque<>();
+
+        /// The number of stored bytes committed as entry data so far.
         private long size;
 
         /// Whether this entry's data descriptor stores ZIP64 sizes.
@@ -2282,53 +2446,43 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
         /// Reads one stored entry byte without checking the wrapper open state for close-time draining.
         private int readUnchecked() throws IOException {
+            Integer output = pendingOutput.pollFirst();
+            if (output != null) {
+                return output;
+            }
             if (finishedEntry) {
                 return -1;
             }
 
-            int first = input.read();
-            if (first < 0) {
-                throw new EOFException("Unexpected end of stored ZIP entry before data descriptor");
-            }
-            if (first != Byte.toUnsignedInt(DATA_DESCRIPTOR_SIGNATURE_BYTES[0])) {
-                return storedByte(first);
-            }
-
-            byte[] candidate = new byte[DATA_DESCRIPTOR_SIGNATURE_BYTES.length - 1];
-            int count = 0;
-            while (count < candidate.length) {
+            int descriptorSize = dataDescriptorSize(
+                    usesZip64DataDescriptor(zip64DataDescriptor, size, size)
+            );
+            while (true) {
                 int value = input.read();
                 if (value < 0) {
-                    unread(candidate, count);
-                    return storedByte(first);
+                    throw new EOFException("Unexpected end of stored ZIP entry before data descriptor");
                 }
-                candidate[count++] = (byte) value;
-                if (value != Byte.toUnsignedInt(DATA_DESCRIPTOR_SIGNATURE_BYTES[count])) {
-                    unread(candidate, count);
-                    return storedByte(first);
-                }
-            }
+                pending.addLast(value);
 
-            boolean descriptorMatches;
-            try {
-                descriptorMatches = readStoredDataDescriptorAfterSignature(
-                        input,
-                        zip64DataDescriptor,
-                        crc32.getValue(),
-                        size,
-                        size,
-                        "ZIP data descriptor does not match entry data"
-                );
-            } catch (IOException | RuntimeException | Error exception) {
-                finishedEntry = true;
-                throw exception;
+                if (endsWithDataDescriptorSignature()) {
+                    boolean descriptorMatches = finishSignedDescriptor();
+                    Integer committed = pendingOutput.pollFirst();
+                    if (committed != null) {
+                        return committed;
+                    }
+                    if (descriptorMatches) {
+                        return -1;
+                    }
+                }
+                if (pending.size() == descriptorSize + Integer.BYTES
+                        && endsWithZipRecordSignature()
+                        && finishUnsignedDescriptor(descriptorSize)) {
+                    return -1;
+                }
+                if (pending.size() > descriptorSize + Integer.BYTES - 1) {
+                    return storedByte(pending.removeFirst());
+                }
             }
-            if (!descriptorMatches) {
-                unread(candidate, count);
-                return storedByte(first);
-            }
-            finishedEntry = true;
-            return -1;
         }
 
         /// Reads stored entry bytes.
@@ -2371,15 +2525,105 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
             byte[] discard = new byte[8192];
             while (readUnchecked(discard, 0, discard.length) >= 0) {
-                // Drain stored data until the signed descriptor has been consumed.
+                // Drain stored data until its signed or unsigned descriptor has been consumed.
             }
         }
 
-        /// Pushes bytes back in reverse read order.
-        private void unread(byte[] bytes, int length) throws IOException {
-            for (int index = length - 1; index >= 0; index--) {
-                input.unread(bytes[index]);
+        /// Returns whether the withheld bytes end in the optional data descriptor signature.
+        private boolean endsWithDataDescriptorSignature() {
+            if (pending.size() < DATA_DESCRIPTOR_SIGNATURE_BYTES.length) {
+                return false;
             }
+            int skip = pending.size() - DATA_DESCRIPTOR_SIGNATURE_BYTES.length;
+            int index = 0;
+            for (int value : pending) {
+                if (index >= skip
+                        && value != Byte.toUnsignedInt(DATA_DESCRIPTOR_SIGNATURE_BYTES[index - skip])) {
+                    return false;
+                }
+                index++;
+            }
+            return true;
+        }
+
+        /// Returns whether the withheld bytes end in a signature that can follow an unsigned descriptor.
+        private boolean endsWithZipRecordSignature() {
+            if (pending.size() < Integer.BYTES) {
+                return false;
+            }
+            int skip = pending.size() - Integer.BYTES;
+            int index = 0;
+            int signature = 0;
+            for (int value : pending) {
+                if (index >= skip) {
+                    signature |= value << (Byte.SIZE * (index - skip));
+                }
+                index++;
+            }
+            return signature == LOCAL_FILE_HEADER_SIGNATURE
+                    || signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
+                    || signature == END_OF_CENTRAL_DIRECTORY_SIGNATURE;
+        }
+
+        /// Validates and consumes a signed descriptor candidate at the end of the withheld bytes.
+        private boolean finishSignedDescriptor() throws IOException {
+            int dataSize = pending.size() - DATA_DESCRIPTOR_SIGNATURE_BYTES.length;
+            for (int index = 0; index < dataSize; index++) {
+                int value = pending.removeFirst();
+                crc32.update(value);
+                size++;
+                pendingOutput.addLast(value);
+            }
+            pending.clear();
+
+            boolean descriptorMatches;
+            try {
+                descriptorMatches = readStoredDataDescriptorAfterSignature(
+                        input,
+                        zip64DataDescriptor,
+                        crc32.getValue(),
+                        size,
+                        size,
+                        "ZIP data descriptor does not match entry data"
+                );
+            } catch (IOException | RuntimeException | Error exception) {
+                finishedEntry = true;
+                throw exception;
+            }
+            if (descriptorMatches) {
+                finishedEntry = true;
+                return true;
+            }
+            for (byte value : DATA_DESCRIPTOR_SIGNATURE_BYTES) {
+                pending.addLast(Byte.toUnsignedInt(value));
+            }
+            return false;
+        }
+
+        /// Validates an unsigned descriptor immediately before a withheld ZIP record signature.
+        private boolean finishUnsignedDescriptor(int descriptorSize) throws IOException {
+            byte[] descriptor = new byte[descriptorSize];
+            byte[] signature = new byte[Integer.BYTES];
+            int index = 0;
+            for (int value : pending) {
+                if (index < descriptor.length) {
+                    descriptor[index] = (byte) value;
+                } else {
+                    signature[index - descriptor.length] = (byte) value;
+                }
+                index++;
+            }
+            if (!matchesDataDescriptor(descriptor, crc32.getValue(), size, size)) {
+                if (matchesDataDescriptorSizes(descriptor, size, size)) {
+                    throw new IOException("ZIP data descriptor does not match entry data");
+                }
+                return false;
+            }
+
+            pending.clear();
+            unread(input, signature, signature.length);
+            finishedEntry = true;
+            return true;
         }
 
         /// Records and returns one stored entry byte.
@@ -3099,6 +3343,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// The raw local file header extra data bytes.
         private final byte[] extraData;
 
+        /// The metadata resolved from DOS fields and recognized local extra fields.
+        private final ZipExtraFieldMetadata.EntryMetadata entryMetadata;
+
         /// Whether this entry's data descriptor stores ZIP64 sizes.
         private final boolean zip64DataDescriptor;
 
@@ -3117,6 +3364,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 long compressedSize,
                 long uncompressedSize,
                 byte[] extraData,
+                ZipExtraFieldMetadata.EntryMetadata entryMetadata,
                 boolean zip64DataDescriptor,
                 boolean directory
         ) {
@@ -3130,6 +3378,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             this.compressedSize = compressedSize;
             this.uncompressedSize = uncompressedSize;
             this.extraData = Objects.requireNonNull(extraData, "extraData");
+            this.entryMetadata = Objects.requireNonNull(entryMetadata, "entryMetadata");
             this.zip64DataDescriptor = zip64DataDescriptor;
             this.directory = directory;
         }
@@ -3146,6 +3395,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     compressedSize,
                     uncompressedSize,
                     extraData,
+                    entryMetadata,
                     directory
             );
         }

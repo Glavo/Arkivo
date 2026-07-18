@@ -23,6 +23,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -65,7 +66,7 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
     public abstract DirectoryProperty getCacheRoot();
 
     /// Returns the marker file authorizing cache deletion.
-    @OutputFile
+    @Internal
     public abstract RegularFileProperty getCacheMarker();
 
     /// Returns the final content-addressed file.
@@ -88,6 +89,8 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
             throw new GradleException("Test data destination does not match its declared SHA-256: " + target);
         }
         ensureCacheMarker(root);
+        Path parent = target.getParent();
+        rejectSymbolicLinks(root, parent);
         if (verify(target, true)) {
             return;
         }
@@ -102,8 +105,8 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
             throw new GradleException("Test data downloads require HTTPS: " + uri);
         }
 
-        Path parent = target.getParent();
         Files.createDirectories(parent);
+        rejectSymbolicLinks(root, parent);
         Path temporary = Files.createTempFile(parent, "." + target.getFileName() + ".", ".part");
         try {
             getLogger().lifecycle("Downloading test data from {}", uri);
@@ -131,7 +134,7 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
             }
             try (InputStream input = response.body();
                  OutputStream output = Files.newOutputStream(temporary)) {
-                input.transferTo(output);
+                copyExpectedResponse(input, output, getExpectedSize().get(), uri);
             }
             if (!verify(temporary, true)) {
                 throw new GradleException(
@@ -161,16 +164,30 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
             throw new GradleException("Expected SHA-256 must contain exactly 64 hexadecimal characters: " + sha256);
         }
         long size = getExpectedSize().get();
-        if (size < 0L) {
-            throw new GradleException("Expected test data size must be non-negative: " + size);
+        if (size < 0L || size == Long.MAX_VALUE) {
+            throw new GradleException("Expected test data size must be between 0 and Long.MAX_VALUE - 1: " + size);
         }
     }
 
     /// Returns whether every persistent output is present and valid.
     private boolean isUpToDate() {
         try {
+            validateInputs();
+            Path root = getCacheRoot().get().getAsFile().toPath().toAbsolutePath().normalize();
+            Path target = getDestination().get().getAsFile().toPath().toAbsolutePath().normalize();
+            Path marker = getCacheMarker().get().getAsFile().toPath().toAbsolutePath().normalize();
+            Path downloadRoot = root.resolve("downloads").resolve("sha256");
+            if (!root.equals(marker.getParent()) || !target.startsWith(downloadRoot)) {
+                return false;
+            }
+            Path relativeTarget = downloadRoot.relativize(target);
+            if (relativeTarget.getNameCount() != 2
+                    || !relativeTarget.getName(0).toString().equalsIgnoreCase(getExpectedSha256().get())) {
+                return false;
+            }
+            rejectSymbolicLinks(root, target.getParent());
             return hasValidCacheMarker()
-                    && verify(getDestination().get().getAsFile().toPath(), false);
+                    && verify(target, false);
         } catch (IOException exception) {
             return false;
         }
@@ -209,7 +226,66 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
         } else {
             Files.createDirectories(root);
         }
-        Files.writeString(marker, CACHE_MARKER_CONTENT, StandardOpenOption.CREATE_NEW);
+        try {
+            Files.writeString(marker, CACHE_MARKER_CONTENT, StandardOpenOption.CREATE_NEW);
+        } catch (FileAlreadyExistsException exception) {
+            if (!awaitValidCacheMarker()) {
+                throw new GradleException("Concurrently initialized test data cache marker is invalid: " + marker);
+            }
+        }
+    }
+
+    /// Waits briefly for another task to finish publishing a concurrently created marker.
+    private boolean awaitValidCacheMarker() throws IOException {
+        for (int attempt = 0; attempt < 50; attempt++) {
+            if (hasValidCacheMarker()) {
+                return true;
+            }
+            try {
+                Thread.sleep(10L);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new GradleException("Interrupted while waiting for the test data cache marker", exception);
+            }
+        }
+        return false;
+    }
+
+    /// Copies a response while refusing to consume more than one byte beyond the declared size.
+    private static void copyExpectedResponse(
+            InputStream input,
+            OutputStream output,
+            long expectedSize,
+            URI uri
+    ) throws IOException {
+        byte[] buffer = new byte[8192];
+        long remaining = Math.addExact(expectedSize, 1L);
+        while (remaining > 0L) {
+            int count = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+            if (count < 0) {
+                return;
+            }
+            output.write(buffer, 0, count);
+            remaining -= count;
+        }
+        throw new GradleException("Test data download exceeds its declared size: " + uri);
+    }
+
+    /// Rejects symbolic links in an existing cache-relative path before it is used for writes.
+    private static void rejectSymbolicLinks(Path root, Path path) {
+        if (!path.startsWith(root)) {
+            throw new GradleException("Test data cache path is outside the cache root: " + path);
+        }
+        Path current = root;
+        if (Files.isSymbolicLink(current)) {
+            throw new GradleException("Refusing to use a symbolic-link test data cache path: " + current);
+        }
+        for (Path element : root.relativize(path)) {
+            current = current.resolve(element);
+            if (Files.isSymbolicLink(current)) {
+                throw new GradleException("Refusing to use a symbolic-link test data cache path: " + current);
+            }
+        }
     }
 
     /// Returns whether a markerless root contains only empty content-addressed directories prepared by Gradle.
@@ -242,7 +318,7 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
 
     /// Returns whether a file matches the declared byte size and SHA-256.
     private boolean verify(Path path, boolean logFailure) throws IOException {
-        if (!Files.isRegularFile(path)) {
+        if (Files.isSymbolicLink(path) || !Files.isRegularFile(path)) {
             return false;
         }
 

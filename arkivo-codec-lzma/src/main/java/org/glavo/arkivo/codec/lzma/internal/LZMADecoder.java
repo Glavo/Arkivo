@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -130,6 +131,7 @@ public final class LZMADecoder implements CompressionDecoder {
 
         int propertyByte = Byte.toUnsignedInt(header[0]);
         long dictionarySize = readLittleEndian(1, Integer.BYTES);
+        CompressionDecoderSupport.requireWindowSize(maximumWindowSize, dictionarySize);
         if (dictionarySize > LZMAProperties.MAXIMUM_DICTIONARY_SIZE) {
             throw new IOException("Unsupported LZMA dictionary size: " + dictionarySize);
         }

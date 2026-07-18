@@ -20,9 +20,6 @@ import java.util.Set;
 /// Implements ZIP entry attributes exposed while streaming local file headers.
 @NotNullByDefault
 final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
-    /// The zero file time used when local header timestamps are not exposed yet.
-    private static final FileTime ZERO_TIME = FileTime.fromMillis(0);
-
     /// The decoded ZIP entry path text.
     private final String path;
 
@@ -50,6 +47,9 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
     /// The raw local file header extra data bytes.
     private final byte[] localExtraData;
 
+    /// The metadata resolved from DOS fields and recognized local extra fields.
+    private final ZipExtraFieldMetadata.EntryMetadata entryMetadata;
+
     /// Whether this entry represents a directory.
     private final boolean directory;
 
@@ -64,6 +64,7 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
             long compressedSize,
             long uncompressedSize,
             byte[] localExtraData,
+            ZipExtraFieldMetadata.EntryMetadata entryMetadata,
             boolean directory
     ) {
         this.path = Objects.requireNonNull(path, "path");
@@ -75,6 +76,7 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
         this.compressedSize = compressedSize;
         this.uncompressedSize = uncompressedSize;
         this.localExtraData = Objects.requireNonNull(localExtraData, "localExtraData").clone();
+        this.entryMetadata = Objects.requireNonNull(entryMetadata, "entryMetadata");
         this.directory = directory;
     }
 
@@ -138,6 +140,18 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
         return 0;
     }
 
+    /// Returns the numeric Unix owner user identifier, or `UNKNOWN_UNIX_ID` when absent.
+    @Override
+    public long userId() {
+        return entryMetadata.userId();
+    }
+
+    /// Returns the numeric Unix owner group identifier, or `UNKNOWN_UNIX_ID` when absent.
+    @Override
+    public long groupId() {
+        return entryMetadata.groupId();
+    }
+
     /// Returns the numeric ZIP compression method identifier after resolving WinZip AES metadata.
     @Override
     public int compressionMethodId() {
@@ -177,19 +191,19 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
     /// Returns the last modified time.
     @Override
     public FileTime lastModifiedTime() {
-        return ZERO_TIME;
+        return entryMetadata.lastModifiedTime();
     }
 
     /// Returns the last access time.
     @Override
     public FileTime lastAccessTime() {
-        return ZERO_TIME;
+        return entryMetadata.lastAccessTime();
     }
 
     /// Returns the creation time.
     @Override
     public FileTime creationTime() {
-        return ZERO_TIME;
+        return entryMetadata.creationTime();
     }
 
     /// Returns whether this entry is a regular file.
@@ -228,16 +242,16 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
         return null;
     }
 
-    /// Returns the synthesized owner.
+    /// Returns the owner represented by numeric Unix metadata, or the synthesized owner when absent.
     @Override
     public UserPrincipal owner() {
-        return ZipPosixSupport.DEFAULT_OWNER;
+        return ZipPosixSupport.owner(userId());
     }
 
-    /// Returns the synthesized group.
+    /// Returns the group represented by numeric Unix metadata, or the synthesized group when absent.
     @Override
     public GroupPrincipal group() {
-        return ZipPosixSupport.DEFAULT_GROUP;
+        return ZipPosixSupport.group(groupId());
     }
 
     /// Returns synthesized POSIX permissions.

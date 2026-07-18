@@ -1180,7 +1180,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 packedInputs,
                 metadata.packedStreams().stream().mapToLong(SevenZipPackedStream::size).toArray(),
                 metadata.method(),
-                checkedDecodedLimit(metadata),
+                checkedFolderDecodedSize(metadata),
                 config.passwordProvider(),
                 PasswordPurpose.ARCHIVE_CONTENT,
                 pathText,
@@ -2963,13 +2963,19 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Returns the decoded byte limit needed to reach the end of an entry inside a folder output.
-    private static long checkedDecodedLimit(SevenZipEntryMetadata metadata) throws IOException {
+    /// Returns the complete folder output size after checking that it contains the requested entry range.
+    private static long checkedFolderDecodedSize(SevenZipEntryMetadata metadata) throws IOException {
+        long entryEnd;
         try {
-            return Math.addExact(metadata.decodedOffset(), metadata.size());
+            entryEnd = Math.addExact(metadata.decodedOffset(), metadata.size());
         } catch (ArithmeticException exception) {
             throw new IOException("7z decoded entry limit is too large", exception);
         }
+        long folderSize = metadata.method().finalUnpackSize();
+        if (folderSize < entryEnd) {
+            throw new IOException("7z folder output is smaller than its entry range");
+        }
+        return folderSize;
     }
 
     /// Returns parsed entries keyed by normalized absolute path text.

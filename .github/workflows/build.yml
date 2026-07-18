@@ -45,7 +45,7 @@ jobs:
         with:
           cache-provider: basic
 
-      - name: Run tests
+      - name: Run Tier 1 checks
         run: ./gradlew -g .gradle-user-home check -x verifyMavenPublications --no-daemon --stacktrace
 
       - name: Verify Javadocs and Maven publications

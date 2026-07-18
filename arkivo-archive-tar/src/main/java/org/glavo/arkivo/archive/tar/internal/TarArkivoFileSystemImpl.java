@@ -1247,6 +1247,15 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (all || requestedAttributes.contains("linkName")) {
             values.put("linkName", entryAttributes.linkName());
         }
+        if (all || requestedAttributes.contains("recordedLastAccessTime")) {
+            values.put("recordedLastAccessTime", entryAttributes.recordedLastAccessTime());
+        }
+        if (all || requestedAttributes.contains("recordedStatusChangeTime")) {
+            values.put("recordedStatusChangeTime", entryAttributes.recordedStatusChangeTime());
+        }
+        if (all || requestedAttributes.contains("recordedCreationTime")) {
+            values.put("recordedCreationTime", entryAttributes.recordedCreationTime());
+        }
         if (all || requestedAttributes.contains("isHardLink")) {
             values.put("isHardLink", entryAttributes.isHardLink());
         }
@@ -1633,8 +1642,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 null,
                 size,
                 base.lastModifiedTime(),
-                base.lastAccessTime(),
-                base.creationTime()
+                base.recordedLastAccessTime(),
+                base.recordedStatusChangeTime(),
+                base.recordedCreationTime()
         );
         Node replacement = new Node(path, attributes, false, content, false);
         if (existing == null) {
@@ -1705,8 +1715,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 linkName,
                 size,
                 UNIX_EPOCH,
-                UNIX_EPOCH,
-                UNIX_EPOCH
+                null,
+                null,
+                null
         );
     }
 
@@ -1729,8 +1740,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 linkName,
                 size,
                 attributes.lastModifiedTime(),
-                attributes.lastAccessTime(),
-                attributes.creationTime()
+                attributes.recordedLastAccessTime(),
+                attributes.recordedStatusChangeTime(),
+                attributes.recordedCreationTime()
         );
     }
 
@@ -1881,6 +1893,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             }
             case "userName" -> setUserName(path, nullableString(value, "userName"));
             case "groupName" -> setGroupName(path, nullableString(value, "groupName"));
+            case "recordedLastAccessTime" ->
+                    setRecordedLastAccessTime(path, nullableFileTime(value, "recordedLastAccessTime"));
+            case "recordedStatusChangeTime" ->
+                    setRecordedStatusChangeTime(path, nullableFileTime(value, "recordedStatusChangeTime"));
+            case "recordedCreationTime" ->
+                    setRecordedCreationTime(path, nullableFileTime(value, "recordedCreationTime"));
             default -> throw new UnsupportedOperationException("Unsupported writable TAR attribute: " + name);
         }
     }
@@ -1893,6 +1911,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         throw new IllegalArgumentException("TAR " + name + " value must be String or null");
     }
 
+    /// Converts a nullable file-time attribute value.
+    private static @Nullable FileTime nullableFileTime(@Nullable Object value, String name) {
+        if (value == null || value instanceof FileTime) {
+            return (FileTime) value;
+        }
+        throw new IllegalArgumentException("TAR " + name + " value must be FileTime or null");
+    }
 
     /// Sets entry timestamps in update mode.
     private void setTimes(
@@ -1912,9 +1937,64 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 attributes.linkName(),
                 attributes.size(),
                 lastModifiedTime != null ? lastModifiedTime : attributes.lastModifiedTime(),
-                lastAccessTime != null ? lastAccessTime : attributes.lastAccessTime(),
-                creationTime != null ? creationTime : attributes.creationTime()
+                lastAccessTime != null ? lastAccessTime : attributes.recordedLastAccessTime(),
+                attributes.recordedStatusChangeTime(),
+                creationTime != null ? creationTime : attributes.recordedCreationTime()
         ));
+    }
+
+    /// Sets or clears the explicitly recorded last access time in update mode.
+    private void setRecordedLastAccessTime(Path path, @Nullable FileTime lastAccessTime) throws IOException {
+        mutateAttributes(path, attributes -> copyWithRecordedTimes(
+                attributes,
+                lastAccessTime,
+                attributes.recordedStatusChangeTime(),
+                attributes.recordedCreationTime()
+        ));
+    }
+
+    /// Sets or clears the explicitly recorded inode status change time in update mode.
+    private void setRecordedStatusChangeTime(Path path, @Nullable FileTime statusChangeTime) throws IOException {
+        mutateAttributes(path, attributes -> copyWithRecordedTimes(
+                attributes,
+                attributes.recordedLastAccessTime(),
+                statusChangeTime,
+                attributes.recordedCreationTime()
+        ));
+    }
+
+    /// Sets or clears the explicitly recorded creation time in update mode.
+    private void setRecordedCreationTime(Path path, @Nullable FileTime creationTime) throws IOException {
+        mutateAttributes(path, attributes -> copyWithRecordedTimes(
+                attributes,
+                attributes.recordedLastAccessTime(),
+                attributes.recordedStatusChangeTime(),
+                creationTime
+        ));
+    }
+
+    /// Returns copied metadata with replacement explicitly recorded times.
+    private static TarEntryAttributes copyWithRecordedTimes(
+            TarArkivoEntryAttributes attributes,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime statusChangeTime,
+            @Nullable FileTime creationTime
+    ) {
+        return new TarEntryAttributes(
+                attributes.path(),
+                attributes.typeFlag(),
+                attributes.mode(),
+                attributes.userId(),
+                attributes.groupId(),
+                attributes.userName(),
+                attributes.groupName(),
+                attributes.linkName(),
+                attributes.size(),
+                attributes.lastModifiedTime(),
+                lastAccessTime,
+                statusChangeTime,
+                creationTime
+        );
     }
 
     /// Sets the entry owner name in update mode.
@@ -1947,7 +2027,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.mode(), userId, attributes.groupId(),
                 attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
-                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+                attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
+                attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
         ));
     }
 
@@ -1959,7 +2040,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.mode(), attributes.userId(), groupId,
                 attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
-                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+                attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
+                attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
         ));
     }
 
@@ -1976,7 +2058,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), mode, attributes.userId(), attributes.groupId(),
                 attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
-                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+                attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
+                attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
         );
     }
 
@@ -1985,7 +2068,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.mode(), attributes.userId(), attributes.groupId(),
                 userName, attributes.groupName(), attributes.linkName(), attributes.size(),
-                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+                attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
+                attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
         ));
     }
 
@@ -1994,7 +2078,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.mode(), attributes.userId(), attributes.groupId(),
                 attributes.userName(), groupName, attributes.linkName(), attributes.size(),
-                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+                attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
+                attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
         ));
     }
 
@@ -2326,8 +2411,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 attributes.linkName(),
                 size,
                 attributes.lastModifiedTime(),
-                attributes.lastAccessTime(),
-                attributes.creationTime()
+                attributes.recordedLastAccessTime(),
+                attributes.recordedStatusChangeTime(),
+                attributes.recordedCreationTime()
         );
     }
 
@@ -2434,7 +2520,21 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Returns synthetic directory attributes.
     private static TarEntryAttributes syntheticDirectoryAttributes(String path) {
         FileTime time = FileTime.fromMillis(0L);
-        return new TarEntryAttributes(path, TarEntryAttributes.DIRECTORY_TYPE, 040755, 0L, 0L, null, null, null, 0L, time, time, time);
+        return new TarEntryAttributes(
+                path,
+                TarEntryAttributes.DIRECTORY_TYPE,
+                040755,
+                0L,
+                0L,
+                null,
+                null,
+                null,
+                0L,
+                time,
+                null,
+                null,
+                null
+        );
     }
 
     /// Stores parsed named attribute selection.
@@ -2642,6 +2742,24 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         @Override
         public void setGroupName(@Nullable String groupName) throws IOException {
             TarArkivoFileSystemImpl.this.setGroupName(path.resolve(), groupName);
+        }
+
+        /// Sets or clears this path's explicitly recorded last access time in update mode.
+        @Override
+        public void setRecordedLastAccessTime(@Nullable FileTime lastAccessTime) throws IOException {
+            TarArkivoFileSystemImpl.this.setRecordedLastAccessTime(path.resolve(), lastAccessTime);
+        }
+
+        /// Sets or clears this path's explicitly recorded inode status change time in update mode.
+        @Override
+        public void setRecordedStatusChangeTime(@Nullable FileTime statusChangeTime) throws IOException {
+            TarArkivoFileSystemImpl.this.setRecordedStatusChangeTime(path.resolve(), statusChangeTime);
+        }
+
+        /// Sets or clears this path's explicitly recorded creation time in update mode.
+        @Override
+        public void setRecordedCreationTime(@Nullable FileTime creationTime) throws IOException {
+            TarArkivoFileSystemImpl.this.setRecordedCreationTime(path.resolve(), creationTime);
         }
     }
 

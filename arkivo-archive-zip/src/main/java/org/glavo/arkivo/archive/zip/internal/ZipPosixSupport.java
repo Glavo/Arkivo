@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.internal.FixedUserPrincipalLookupService;
 import org.glavo.arkivo.archive.internal.NamedGroupPrincipal;
 import org.glavo.arkivo.archive.internal.NamedUserPrincipal;
 import org.glavo.arkivo.archive.internal.PosixModes;
+import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -63,6 +64,20 @@ final class ZipPosixSupport {
     /// Returns the lookup service for synthesized ZIP owner and group principals.
     static UserPrincipalLookupService userPrincipalLookupService() {
         return USER_PRINCIPAL_LOOKUP_SERVICE;
+    }
+
+    /// Returns the owner principal represented by a numeric Unix user identifier.
+    static UserPrincipal owner(long userId) {
+        return userId != ZipArkivoEntryAttributes.UNKNOWN_UNIX_ID
+                ? new NamedUserPrincipal(Long.toString(userId))
+                : DEFAULT_OWNER;
+    }
+
+    /// Returns the group principal represented by a numeric Unix group identifier.
+    static GroupPrincipal group(long groupId) {
+        return groupId != ZipArkivoEntryAttributes.UNKNOWN_UNIX_ID
+                ? new NamedGroupPrincipal(Long.toString(groupId))
+                : DEFAULT_GROUP;
     }
 
     /// Requires the given owner principal to match the synthesized ZIP owner.

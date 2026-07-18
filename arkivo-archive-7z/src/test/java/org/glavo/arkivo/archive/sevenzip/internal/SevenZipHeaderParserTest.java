@@ -25,6 +25,28 @@ public final class SevenZipHeaderParserTest {
         );
     }
 
+    /// Verifies that empty archive headers may contain redundant top-level end markers.
+    @Test
+    public void emptyArchiveAllowsTrailingEndMarkerPadding() throws IOException {
+        assertEquals(
+                List.of(),
+                SevenZipHeaderParser.parseEntries(new byte[]{0x01, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00})
+        );
+    }
+
+    /// Verifies that top-level end-marker padding does not make arbitrary trailing metadata acceptable.
+    @Test
+    public void emptyArchiveRejectsNonEndTrailingData() {
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> SevenZipHeaderParser.parseEntries(
+                        new byte[]{0x01, 0x04, 0x08, 0x00, 0x00, 0x00, 0x01}
+                )
+        );
+
+        assertEquals("Trailing bytes in 7z header: [1]", exception.getMessage());
+    }
+
     /// Verifies that packed streams require unpack metadata before substream metadata.
     @Test
     public void subStreamsInfoBeforeUnpackInfoIsRejected() {

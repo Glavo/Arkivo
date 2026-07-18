@@ -933,6 +933,18 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             return type == EntryType.DIRECTORY ? 0x10L : 0L;
         }
 
+        /// Returns `UNKNOWN_UNIX_ID` because pending writer metadata has no parsed Unix user identifier.
+        @Override
+        public long userId() {
+            return UNKNOWN_UNIX_ID;
+        }
+
+        /// Returns `UNKNOWN_UNIX_ID` because pending writer metadata has no parsed Unix group identifier.
+        @Override
+        public long groupId() {
+            return UNKNOWN_UNIX_ID;
+        }
+
         /// Returns the numeric ZIP compression method identifier.
         @Override
         public int compressionMethodId() {

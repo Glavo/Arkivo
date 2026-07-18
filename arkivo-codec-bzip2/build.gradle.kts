@@ -67,27 +67,10 @@ val prepareBZip2TestCorpus = tasks.register<Sync>("prepareBZip2TestCorpus") {
     into(bzip2TestDataDirectory)
 }
 
-val realWorldTestSourceSet = sourceSets.create("realWorldTest") {
-    compileClasspath += sourceSets.main.get().output
-    runtimeClasspath += output + compileClasspath
-}
-
-configurations.named(realWorldTestSourceSet.implementationConfigurationName) {
-    extendsFrom(configurations.testImplementation.get())
-}
-configurations.named(realWorldTestSourceSet.compileOnlyConfigurationName) {
-    extendsFrom(configurations.testCompileOnly.get())
-}
-configurations.named(realWorldTestSourceSet.runtimeOnlyConfigurationName) {
-    extendsFrom(configurations.testRuntimeOnly.get())
-}
-
-tasks.register<Test>("realWorldTest") {
+tasks.named<Test>("tier2Test") {
     group = "verification"
     description = "Runs BZip2 tests against the pinned official reference samples."
     dependsOn(prepareBZip2TestCorpus)
     shouldRunAfter(tasks.test)
-    testClassesDirs = realWorldTestSourceSet.output.classesDirs
-    classpath = realWorldTestSourceSet.runtimeClasspath
     systemProperty("arkivo.bzip2.testDataDirectory", bzip2TestDataDirectory.get().asFile.absolutePath)
 }

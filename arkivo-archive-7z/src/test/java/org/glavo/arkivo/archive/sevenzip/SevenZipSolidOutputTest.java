@@ -8,12 +8,14 @@ import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZFile;
+import org.apache.commons.compress.utils.SeekableInMemoryByteChannel;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -134,6 +136,32 @@ public final class SevenZipSolidOutputTest {
         }
 
         assertCommonsContents(archive, expected);
+    }
+
+    /// Verifies raw LZMA matches may cross a solid substream boundary without truncating the folder decoder.
+    @Test
+    public void lzmaSolidFolderReadsEntriesAcrossMatchBoundariesInMemory() throws IOException {
+        byte[] first = new byte[4_097];
+        byte[] second = new byte[4_099];
+        Arrays.fill(first, (byte) 'A');
+        Arrays.fill(second, (byte) 'A');
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
+                archive,
+                createOptions(2, SevenZipCompression.lzma(64 * 1024), null, false)
+        )) {
+            writeStreamingEntry(writer, "first.bin", first, null, null);
+            writeStreamingEntry(writer, "second.bin", second, null, null);
+        }
+
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                new SeekableInMemoryByteChannel(archive.toByteArray())
+        )) {
+            assertArrayEquals(first, Files.readAllBytes(fileSystem.getPath("/first.bin")));
+            assertArrayEquals(second, Files.readAllBytes(fileSystem.getPath("/second.bin")));
+            assertEquals(true, attributes(fileSystem, "first.bin").solid());
+            assertEquals(true, attributes(fileSystem, "second.bin").solid());
+        }
     }
 
     /// Verifies streaming entry coder changes create exact solid-folder boundaries.

@@ -1,0 +1,64 @@
+name: Tier 2 tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+  pull_request:
+    paths:
+      - ".github/workflows/tier2-tests.yml"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "buildSrc/**"
+      - "gradle/wrapper/**"
+      - "gradle/test-data/**"
+      - "arkivo-all/**"
+      - "arkivo-archive/**"
+      - "arkivo-archive-all/**"
+      - "arkivo-archive-7z/**"
+      - "arkivo-archive-ar/**"
+      - "arkivo-archive-rar/**"
+      - "arkivo-archive-tar/**"
+      - "arkivo-archive-zip/**"
+      - "arkivo-base/**"
+      - "arkivo-codec/**"
+      - "arkivo-codec-all/**"
+      - "arkivo-codec-bcj/**"
+      - "arkivo-codec-bzip2/**"
+      - "arkivo-codec-deflate/**"
+      - "arkivo-codec-delta/**"
+      - "arkivo-codec-lzma/**"
+      - "arkivo-codec-ppmd/**"
+      - "arkivo-codec-xz/**"
+      - "arkivo-codec-zstd/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tier2-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Compatibility and upstream corpora
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Run Tier 2 tests
+        run: ./gradlew -g .gradle-user-home tier2Test --no-daemon --stacktrace

@@ -72,11 +72,14 @@ final class ZipAesExtraField {
         }
     }
 
-    /// Reads the first valid WinZip AES extra field after validating extra field record boundaries.
+    /// Reads the first complete WinZip AES field while ignoring only a truncated unknown trailing field.
     static @Nullable ZipAesExtraField readValidated(byte[] extraData) throws IOException {
         int offset = 0;
         while (offset < extraData.length) {
-            ZipExtraFields.Field field = ZipExtraFields.read(extraData, offset);
+            @Nullable ZipExtraFields.Field field = ZipExtraFields.readForReading(extraData, offset);
+            if (field == null) {
+                return null;
+            }
             if (field.id() == ZipConstants.WINZIP_AES_EXTRA_FIELD_ID) {
                 ZipAesExtraField aes = readData(extraData, field.dataOffset(), field.dataSize());
                 if (aes != null) {

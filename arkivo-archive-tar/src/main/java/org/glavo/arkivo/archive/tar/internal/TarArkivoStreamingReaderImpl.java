@@ -17,6 +17,7 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.EOFException;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigInteger;
@@ -51,6 +52,15 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// The TAR record size.
     private static final int RECORD_SIZE = 512;
 
+    /// The conventional TAR block size used for final archive padding.
+    private static final int BLOCK_SIZE = 10_240;
+
+    /// The byte offset of the old GNU last-access time field.
+    private static final int OLD_GNU_ACCESS_TIME_OFFSET = 345;
+
+    /// The byte offset of the old GNU inode status-change time field.
+    private static final int OLD_GNU_STATUS_CHANGE_TIME_OFFSET = 357;
+
     /// The byte offset of old GNU sparse descriptors in the main header.
     private static final int OLD_GNU_SPARSE_OFFSET = 386;
 
@@ -72,12 +82,30 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// The byte offset of an old GNU sparse extension header continuation flag.
     private static final int OLD_GNU_EXTENSION_FLAG_OFFSET = 504;
 
+    /// The byte offset of the xstar path-prefix field.
+    private static final int XSTAR_PREFIX_OFFSET = 345;
+
+    /// The byte width of the xstar path-prefix field.
+    private static final int XSTAR_PREFIX_LENGTH = 131;
+
+    /// The byte offset of the xstar last-access time field.
+    private static final int XSTAR_ACCESS_TIME_OFFSET = 476;
+
+    /// The byte offset of the xstar inode status-change time field.
+    private static final int XSTAR_STATUS_CHANGE_TIME_OFFSET = 488;
+
+    /// The byte width of each xstar time field.
+    private static final int XSTAR_TIME_LENGTH = 12;
+
+    /// The byte offset of the explicit xstar magic value.
+    private static final int XSTAR_MAGIC_OFFSET = 508;
+
     /// The UTF-8 detector used for ambiguous TAR metadata when no detector is configured.
     private static final ArchiveMetadataCharsetDetector DEFAULT_METADATA_CHARSET_DETECTOR =
             ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
 
     /// The backing archive input stream.
-    private final InputStream source;
+    private final CountingInputStream source;
 
     /// The common archive read-limit tracker.
     private final ArkivoReadLimitTracker readLimits;
@@ -126,7 +154,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
     /// Creates a streaming TAR reader.
     public TarArkivoStreamingReaderImpl(InputStream source, ArchiveOptions options) {
-        this.source = Objects.requireNonNull(source, "source");
+        this.source = new CountingInputStream(Objects.requireNonNull(source, "source"));
         ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
         this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
         this.metadataCharsetDetector = checkedOptions.getOrDefault(
@@ -159,6 +187,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             }
             readLimits.acceptMetadata(header.length, null);
             if (isZeroBlock(header)) {
+                consumeEndMarkerAndPadding();
                 finished = true;
                 currentAttributes = null;
                 clearPendingEntryMetadata();
@@ -235,6 +264,26 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         }
     }
 
+    /// Consumes the second EOF record and any remaining bytes in the conventional final TAR block.
+    private void consumeEndMarkerAndPadding() throws IOException {
+        byte[] secondEndRecord = source.readNBytes(RECORD_SIZE);
+        if (secondEndRecord.length != RECORD_SIZE || !isZeroBlock(secondEndRecord)) {
+            return;
+        }
+        long blockOffset = source.bytesConsumed() % BLOCK_SIZE;
+        long remaining = blockOffset == 0L ? 0L : BLOCK_SIZE - blockOffset;
+        while (remaining > 0L) {
+            long skipped = source.skip(remaining);
+            if (skipped == 0L) {
+                if (source.read() < 0) {
+                    return;
+                }
+                skipped = 1L;
+            }
+            remaining -= skipped;
+        }
+    }
+
     /// Reads the current archive entry attributes as the requested attribute type.
     @Override
     protected <A extends BasicFileAttributes> A readCurrentAttributes(Class<A> type) throws IOException {
@@ -288,13 +337,18 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
     /// Parses one TAR header block.
     private TarEntryAttributes parseHeader(byte[] header) throws IOException {
-        validateChecksum(header);
         byte typeFlag = header[156];
         int unsignedTypeFlag = Byte.toUnsignedInt(typeFlag);
         TarMetadataCharsetDetector.HeaderDialect dialect = headerDialect(header);
         byte[] rawName = readFieldBytes(header, 0, 100);
-        byte[] rawPrefix = dialect == TarMetadataCharsetDetector.HeaderDialect.USTAR
-                ? readFieldBytes(header, 345, 155)
+        validateChecksum(header, typeFlag, rawName);
+        int prefixLength = switch (dialect) {
+            case USTAR -> 155;
+            case XSTAR -> XSTAR_PREFIX_LENGTH;
+            default -> 0;
+        };
+        byte[] rawPrefix = prefixLength > 0
+                ? readFieldBytes(header, XSTAR_PREFIX_OFFSET, prefixLength)
                 : new byte[0];
         byte[] rawPath = joinPath(rawPrefix, rawName);
         if (rawPath.length == 0) {
@@ -314,16 +368,29 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 parseNumeric(header, 136, 12, "modification time"),
                 "modification time"
         );
-        FileTime lastAccessTime = lastModifiedTime;
-        FileTime creationTime = lastModifiedTime;
-        if (typeFlag == TarEntryAttributes.OLD_GNU_SPARSE_TYPE) {
-            lastAccessTime = fileTimeFromEpochSecond(
-                    parseNumeric(header, 345, 12, "old GNU access time"),
+        @Nullable FileTime recordedLastAccessTime = null;
+        @Nullable FileTime recordedStatusChangeTime = null;
+        if (dialect == TarMetadataCharsetDetector.HeaderDialect.GNU) {
+            recordedLastAccessTime = parseOptionalFixedTime(
+                    header,
+                    OLD_GNU_ACCESS_TIME_OFFSET,
                     "old GNU access time"
             );
-            creationTime = fileTimeFromEpochSecond(
-                    parseNumeric(header, 357, 12, "old GNU change time"),
-                    "old GNU change time"
+            recordedStatusChangeTime = parseOptionalFixedTime(
+                    header,
+                    OLD_GNU_STATUS_CHANGE_TIME_OFFSET,
+                    "old GNU status change time"
+            );
+        } else if (dialect == TarMetadataCharsetDetector.HeaderDialect.XSTAR) {
+            recordedLastAccessTime = parseOptionalFixedTime(
+                    header,
+                    XSTAR_ACCESS_TIME_OFFSET,
+                    "xstar access time"
+            );
+            recordedStatusChangeTime = parseOptionalFixedTime(
+                    header,
+                    XSTAR_STATUS_CHANGE_TIME_OFFSET,
+                    "xstar status change time"
             );
         }
         return new TarEntryAttributes(
@@ -355,9 +422,20 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 ),
                 size,
                 lastModifiedTime,
-                lastAccessTime,
-                creationTime
+                recordedLastAccessTime,
+                recordedStatusChangeTime,
+                null
         );
+    }
+
+    /// Parses an optional fixed-width time whose non-positive sentinel means the field is absent.
+    private static @Nullable FileTime parseOptionalFixedTime(
+            byte[] header,
+            int offset,
+            String description
+    ) throws IOException {
+        long epochSecond = parseNumeric(header, offset, XSTAR_TIME_LENGTH, description);
+        return epochSecond > 0L ? fileTimeFromEpochSecond(epochSecond, description) : null;
     }
 
     /// Reads the fixed sparse descriptors and any chained extension headers for an old GNU sparse entry.
@@ -420,8 +498,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         }
     }
 
-    /// Validates the TAR header checksum.
-    private static void validateChecksum(byte[] header) throws IOException {
+    /// Validates the TAR header checksum, tolerating the historical trailing-slash PAX metadata variant.
+    private static void validateChecksum(byte[] header, byte typeFlag, byte[] rawName) throws IOException {
         long expected = parseOctal(header, 148, 8, "header checksum");
         long unsignedActual = 0;
         long signedActual = 0;
@@ -434,9 +512,34 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 signedActual += header[index];
             }
         }
-        if (expected != unsignedActual && expected != signedActual) {
+        if (expected != unsignedActual
+                && expected != signedActual
+                && !matchesTrailingSlashPaxChecksum(
+                        expected,
+                        unsignedActual,
+                        signedActual,
+                        typeFlag,
+                        rawName
+                )) {
             throw new IOException("Invalid TAR header checksum");
         }
+    }
+
+    /// Returns whether the checksum exactly matches the historical PAX name mutation from final `n` to `/`.
+    private static boolean matchesTrailingSlashPaxChecksum(
+            long expected,
+            long unsignedActual,
+            long signedActual,
+            byte typeFlag,
+            byte[] rawName
+    ) {
+        long restoredNameDelta = 'n' - '/';
+        return (typeFlag == TarEntryAttributes.PAX_EXTENDED_HEADER_TYPE
+                || typeFlag == TarEntryAttributes.PAX_GLOBAL_EXTENDED_HEADER_TYPE)
+                && rawName.length > 0
+                && rawName[rawName.length - 1] == '/'
+                && (expected == unsignedActual + restoredNameDelta
+                    || expected == signedActual + restoredNameDelta);
     }
 
     /// Copies the non-null prefix of a fixed-width TAR string field.
@@ -460,8 +563,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         return path;
     }
 
-    /// Identifies the dialect of one TAR header from its magic field.
-    private static TarMetadataCharsetDetector.HeaderDialect headerDialect(byte[] header) {
+    /// Identifies the dialect of one TAR header from its magic and extended fields.
+    private TarMetadataCharsetDetector.HeaderDialect headerDialect(byte[] header) throws IOException {
         if (header[257] != 'u'
                 || header[258] != 's'
                 || header[259] != 't'
@@ -470,12 +573,49 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             return TarMetadataCharsetDetector.HeaderDialect.V7;
         }
         if (header[262] == 0) {
-            return TarMetadataCharsetDetector.HeaderDialect.USTAR;
+            return isXstarHeader(header)
+                    ? TarMetadataCharsetDetector.HeaderDialect.XSTAR
+                    : TarMetadataCharsetDetector.HeaderDialect.USTAR;
         }
         if (header[262] == ' ') {
             return TarMetadataCharsetDetector.HeaderDialect.GNU;
         }
         return TarMetadataCharsetDetector.HeaderDialect.UNKNOWN;
+    }
+
+    /// Returns whether a POSIX-magic header uses the xstar, xustar, or exustar layout.
+    private boolean isXstarHeader(byte[] header) throws IOException {
+        if (header[XSTAR_MAGIC_OFFSET] == 't'
+                && header[XSTAR_MAGIC_OFFSET + 1] == 'a'
+                && header[XSTAR_MAGIC_OFFSET + 2] == 'r'
+                && header[XSTAR_MAGIC_OFFSET + 3] == 0) {
+            return true;
+        }
+
+        @Nullable PaxValue archTypeValue = globalPaxHeaders.get("SCHILY.archtype");
+        if (archTypeValue != null) {
+            String archType = decodePaxValue("SCHILY.archtype", archTypeValue);
+            return "xustar".equals(archType) || "exustar".equals(archType);
+        }
+
+        return header[XSTAR_PREFIX_OFFSET + XSTAR_PREFIX_LENGTH - 1] == 0
+                && isValidXstarTime(header, XSTAR_ACCESS_TIME_OFFSET)
+                && isValidXstarTime(header, XSTAR_STATUS_CHANGE_TIME_OFFSET);
+    }
+
+    /// Returns whether one fixed-width field can be an xstar octal or base-256 time.
+    private static boolean isValidXstarTime(byte[] header, int offset) {
+        if ((header[offset] & 0x80) != 0) {
+            return true;
+        }
+        for (int index = 0; index < XSTAR_TIME_LENGTH - 1; index++) {
+            byte value = header[offset + index];
+            if (value < '0' || value > '7') {
+                return false;
+            }
+        }
+        byte terminator = header[offset + XSTAR_TIME_LENGTH - 1];
+        return terminator == ' ' || terminator == 0;
     }
 
     /// Decodes an optional TAR metadata value, or returns `null` when its raw value is empty.
@@ -865,8 +1005,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             @Nullable String groupName = attributes.groupName();
             long size = attributes.bodySize();
             FileTime lastModifiedTime = attributes.lastModifiedTime();
-            FileTime lastAccessTime = attributes.lastAccessTime();
-            FileTime creationTime = attributes.creationTime();
+            @Nullable FileTime recordedLastAccessTime = attributes.recordedLastAccessTime();
+            @Nullable FileTime recordedStatusChangeTime = attributes.recordedStatusChangeTime();
+            @Nullable FileTime recordedCreationTime = attributes.recordedCreationTime();
 
             @Nullable String paxPath = paxValue("path");
             if (paxPath != null) {
@@ -898,17 +1039,23 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (paxGroupName != null) {
                 groupName = paxGroupName.isEmpty() ? null : paxGroupName;
             }
-            @Nullable String paxModifiedTime = paxValue("mtime");
+            @Nullable String paxModifiedTime = isPaxValueDeleted("mtime") ? null : paxValue("mtime");
             if (paxModifiedTime != null) {
                 lastModifiedTime = parsePaxFileTime(paxModifiedTime, "mtime");
             }
-            @Nullable String paxAccessTime = paxValue("atime");
+            @Nullable String paxAccessTime = isPaxValueDeleted("atime") ? null : paxValue("atime");
             if (paxAccessTime != null) {
-                lastAccessTime = parsePaxFileTime(paxAccessTime, "atime");
+                recordedLastAccessTime = parsePaxFileTime(paxAccessTime, "atime");
             }
-            @Nullable String paxCreationTime = paxValue("ctime");
+            @Nullable String paxStatusChangeTime = isPaxValueDeleted("ctime") ? null : paxValue("ctime");
+            if (paxStatusChangeTime != null) {
+                recordedStatusChangeTime = parsePaxFileTime(paxStatusChangeTime, "ctime");
+            }
+            @Nullable String paxCreationTime = isPaxValueDeleted("LIBARCHIVE.creationtime")
+                    ? null
+                    : paxValue("LIBARCHIVE.creationtime");
             if (paxCreationTime != null) {
-                creationTime = parsePaxFileTime(paxCreationTime, "ctime");
+                recordedCreationTime = parsePaxFileTime(paxCreationTime, "LIBARCHIVE.creationtime");
             }
             @Nullable SparseSpec sparseSpec = parseSparseSpec(path);
             if (sparseSpec != null && oldGnuSparseSpec != null) {
@@ -940,8 +1087,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                             linkName,
                             sparseSpec != null ? sparseSpec.logicalSize() : size,
                             lastModifiedTime,
-                            lastAccessTime,
-                            creationTime
+                            recordedLastAccessTime,
+                            recordedStatusChangeTime,
+                            recordedCreationTime
                     ),
                     size,
                     sparseSpec
@@ -1334,6 +1482,51 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (typeFlag < 0 || typeFlag > 0xff) {
                 throw new IllegalArgumentException("typeFlag must be an unsigned byte");
             }
+        }
+    }
+
+    /// Counts decompressed TAR bytes consumed from the backing input stream.
+    @NotNullByDefault
+    private static final class CountingInputStream extends FilterInputStream {
+        /// The number of bytes delivered or skipped.
+        private long bytesConsumed;
+
+        /// Creates a counting wrapper around the backing TAR stream.
+        private CountingInputStream(InputStream source) {
+            super(source);
+        }
+
+        /// Reads one byte and updates the consumed-byte count.
+        @Override
+        public int read() throws IOException {
+            int value = super.read();
+            if (value >= 0) {
+                bytesConsumed++;
+            }
+            return value;
+        }
+
+        /// Reads bytes and updates the consumed-byte count.
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            int count = super.read(buffer, offset, length);
+            if (count > 0) {
+                bytesConsumed += count;
+            }
+            return count;
+        }
+
+        /// Skips bytes and updates the consumed-byte count.
+        @Override
+        public long skip(long count) throws IOException {
+            long skipped = super.skip(count);
+            bytesConsumed += skipped;
+            return skipped;
+        }
+
+        /// Returns the number of bytes delivered or skipped.
+        private long bytesConsumed() {
+            return bytesConsumed;
         }
     }
 

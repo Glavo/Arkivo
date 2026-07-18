@@ -57,8 +57,10 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests TAR streaming reader behavior.
 @NotNullByDefault
@@ -205,6 +207,7 @@ public final class TarArkivoStreamingReaderTest {
         byte[] content = "metadata".getBytes(StandardCharsets.UTF_8);
         FileTime lastModifiedTime = FileTime.from(Instant.ofEpochSecond(1_700_000_000L, 123_456_789L));
         FileTime lastAccessTime = FileTime.from(Instant.ofEpochSecond(1_700_000_001L, 500_000_000L));
+        FileTime statusChangeTime = FileTime.from(Instant.ofEpochSecond(1_700_000_002L, 625_000_000L));
         FileTime creationTime = FileTime.from(Instant.ofEpochSecond(1_700_000_002L, 750_000_000L));
         String userName = "writer-user-name-that-requires-pax-metadata";
         String groupName = "writer-group-name-that-requires-pax-metadata";
@@ -233,6 +236,7 @@ public final class TarArkivoStreamingReaderTest {
             tarView.setGroupId(groupId);
             tarView.setUserName(userName);
             tarView.setGroupName(groupName);
+            tarView.setRecordedStatusChangeTime(statusChangeTime);
 
             try (OutputStream body = writerEntry216.openOutputStream()) {
                 body.write(content);
@@ -263,6 +267,9 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals(lastModifiedTime.toInstant(), attributes.lastModifiedTime().toInstant());
             assertEquals(lastAccessTime.toInstant(), attributes.lastAccessTime().toInstant());
             assertEquals(creationTime.toInstant(), attributes.creationTime().toInstant());
+            assertEquals(lastAccessTime.toInstant(), attributes.recordedLastAccessTime().toInstant());
+            assertEquals(statusChangeTime.toInstant(), attributes.recordedStatusChangeTime().toInstant());
+            assertEquals(creationTime.toInstant(), attributes.recordedCreationTime().toInstant());
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
@@ -729,6 +736,55 @@ public final class TarArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies that TAR-specific update setters clear recorded times without persisting basic fallbacks.
+    @Test
+    public void clearsRecordedTimesDuringUpdateRewrite() throws IOException {
+        FileTime modifiedTime = FileTime.from(Instant.ofEpochSecond(1_700_100_000L, 125_000_000L));
+        FileTime accessTime = FileTime.from(Instant.ofEpochSecond(1_700_100_001L, 250_000_000L));
+        FileTime statusChangeTime = FileTime.from(Instant.ofEpochSecond(1_700_100_002L, 500_000_000L));
+        FileTime creationTime = FileTime.from(Instant.ofEpochSecond(1_700_100_003L, 750_000_000L));
+        Path archivePath = createTemporaryArchivePath("tar-clear-times-");
+        try {
+            try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
+                var entry = writer.beginFile("file.txt");
+                TarArkivoEntryAttributeView view =
+                        Objects.requireNonNull(entry.attributeView(TarArkivoEntryAttributeView.class));
+                view.setTimes(modifiedTime, accessTime, creationTime);
+                view.setRecordedStatusChangeTime(statusChangeTime);
+                entry.close();
+            }
+
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(archivePath)) {
+                Path file = fileSystem.getPath("/file.txt");
+                TarArkivoEntryAttributes before = Files.readAttributes(file, TarArkivoEntryAttributes.class);
+                assertEquals(accessTime, before.recordedLastAccessTime());
+                assertEquals(statusChangeTime, before.recordedStatusChangeTime());
+                assertEquals(creationTime, before.recordedCreationTime());
+
+                TarArkivoEntryAttributeView view =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, TarArkivoEntryAttributeView.class));
+                view.setRecordedLastAccessTime(null);
+                view.setRecordedStatusChangeTime(null);
+                view.setRecordedCreationTime(null);
+            }
+
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
+                TarArkivoEntryAttributes attributes = Files.readAttributes(
+                        fileSystem.getPath("/file.txt"),
+                        TarArkivoEntryAttributes.class
+                );
+                assertEquals(modifiedTime, attributes.lastModifiedTime());
+                assertNull(attributes.recordedLastAccessTime());
+                assertNull(attributes.recordedStatusChangeTime());
+                assertNull(attributes.recordedCreationTime());
+                assertEquals(modifiedTime, attributes.lastAccessTime());
+                assertEquals(modifiedTime, attributes.creationTime());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that an explicit commit target can publish an updated derivative without changing the source.
     @Test
     public void updateCommitTargetCanPublishDerivedArchive() throws IOException {
@@ -1054,6 +1110,28 @@ public final class TarArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies that a padded final TAR block is consumed without reading the caller-owned trailer.
+    @Test
+    public void stopsCallerOwnedSourceAtTrailerAfterPaddedFinalBlock() throws IOException {
+        byte[] content = "archive body".getBytes(StandardCharsets.UTF_8);
+        byte[] trailer = "Hello, world!\n".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeEntry(output, "file.txt", content);
+        output.write(new byte[1024]);
+        output.write(new byte[10_240 - output.size()]);
+        output.write(trailer);
+        ByteArrayInputStream source = new ByteArrayInputStream(output.toByteArray());
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(source)) {
+            assertTrue(reader.next());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(content, body.readAllBytes());
+            }
+            assertFalse(reader.next());
+            assertArrayEquals(trailer, source.readAllBytes());
+        }
+    }
+
     /// Verifies that per-entry PAX metadata overrides fixed-width USTAR header fields.
     @Test
     public void readsPaxExtendedMetadata() throws IOException {
@@ -1063,6 +1141,7 @@ public final class TarArkivoStreamingReaderTest {
         writePaxHeader(output, Map.of(
                 "atime", "1893456001.5",
                 "ctime", "1893456002.75",
+                "LIBARCHIVE.creationtime", "1893456003.875",
                 "mtime", "1893456000.25",
                 "path", path,
                 "size", Long.toString(content.length),
@@ -1081,11 +1160,263 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals("pax-user", file.userName());
             assertEquals(Instant.ofEpochSecond(1_893_456_000L, 250_000_000L), file.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_893_456_001L, 500_000_000L), file.lastAccessTime().toInstant());
-            assertEquals(Instant.ofEpochSecond(1_893_456_002L, 750_000_000L), file.creationTime().toInstant());
+            assertEquals(
+                    Instant.ofEpochSecond(1_893_456_001L, 500_000_000L),
+                    file.recordedLastAccessTime().toInstant()
+            );
+            assertEquals(
+                    Instant.ofEpochSecond(1_893_456_002L, 750_000_000L),
+                    file.recordedStatusChangeTime().toInstant()
+            );
+            assertEquals(Instant.ofEpochSecond(1_893_456_003L, 875_000_000L), file.creationTime().toInstant());
+            assertEquals(
+                    Instant.ofEpochSecond(1_893_456_003L, 875_000_000L),
+                    file.recordedCreationTime().toInstant()
+            );
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
             org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that basic access and creation times fall back without claiming optional TAR metadata.
+    @Test
+    public void usesBasicTimeFallbacksWhenOptionalTarTimesAreAbsent() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeEntry(output, "plain.txt", new byte[0]);
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertNull(attributes.recordedLastAccessTime());
+            assertNull(attributes.recordedStatusChangeTime());
+            assertNull(attributes.recordedCreationTime());
+            assertEquals(attributes.lastModifiedTime(), attributes.lastAccessTime());
+            assertEquals(attributes.lastModifiedTime(), attributes.creationTime());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that old GNU fixed access and status-change times apply to ordinary entries.
+    @Test
+    public void readsOldGnuTimesForOrdinaryEntry() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeOldGnuTimeHeader(output, "old-gnu.txt", 10L, 11L, 12L);
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals(FileTime.from(Instant.ofEpochSecond(10L)), attributes.lastModifiedTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(11L)), attributes.recordedLastAccessTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(12L)), attributes.recordedStatusChangeTime());
+            assertNull(attributes.recordedCreationTime());
+            assertEquals(attributes.lastModifiedTime(), attributes.creationTime());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies xstar prefix and fixed time parsing when the explicit xstar magic is present.
+    @Test
+    public void readsXstarFixedMetadata() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeXstarTimeHeader(output, "entry.txt", "prefix", 20L, 21L, 22L, true);
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("prefix/entry.txt", attributes.path());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(20L)), attributes.lastModifiedTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(21L)), attributes.recordedLastAccessTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(22L)), attributes.recordedStatusChangeTime());
+            assertNull(attributes.recordedCreationTime());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that a global SCHILY archive type selects the xustar layout without explicit xstar magic.
+    @Test
+    public void readsXustarMetadataSelectedByGlobalPaxHeader() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of("SCHILY.archtype", "xustar"));
+        writeXstarTimeHeader(output, "entry.txt", "xustar-prefix", 30L, 31L, 32L, false);
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("xustar-prefix/entry.txt", attributes.path());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(31L)), attributes.recordedLastAccessTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(32L)), attributes.recordedStatusChangeTime());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that valid xustar prefix and time fields identify the layout without an explicit marker.
+    @Test
+    public void readsXustarMetadataDetectedFromLayout() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeXstarTimeHeader(output, "entry.txt", "detected-prefix", 40L, 41L, 42L, false);
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("detected-prefix/entry.txt", attributes.path());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(41L)), attributes.recordedLastAccessTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(42L)), attributes.recordedStatusChangeTime());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that empty per-entry PAX times delete inherited values and expose fixed-header values.
+    @Test
+    public void deletesInheritedPaxTimesWithEmptyPerEntryValues() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of(
+                "atime", "100",
+                "ctime", "101",
+                "LIBARCHIVE.creationtime", "102"
+        ));
+        writePaxHeader(output, Map.of(
+                "atime", "",
+                "ctime", "",
+                "LIBARCHIVE.creationtime", ""
+        ));
+        writeOldGnuTimeHeader(output, "fixed-times.txt", 10L, 11L, 12L);
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals(FileTime.from(Instant.ofEpochSecond(11L)), attributes.recordedLastAccessTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(12L)), attributes.recordedStatusChangeTime());
+            assertNull(attributes.recordedCreationTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(10L)), attributes.creationTime());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that a PAX metadata entry remains readable when a producer appends a slash after checksumming its name.
+    @Test
+    public void readsPaxHeaderWhoseNameEndsWithSlash() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream paxBody = new ByteArrayOutputStream();
+        paxBody.write(paxRecord("path", "package/package.json"));
+        paxBody.write(paxRecord("size", Integer.toString(content.length)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        String paxHeaderName = "PaxHeader/package/package.json";
+        writeMetadataEntry(output, paxHeaderName, 'x', paxBody.toByteArray());
+        writeHeader(output, "package/package.json", 0644, 1000, 1000, content.length, '0', "", "user", "group");
+        writeBody(output, content);
+        output.write(new byte[1024]);
+        byte[] archive = output.toByteArray();
+        archive[paxHeaderName.length() - 1] = '/';
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("package/package.json", file.path());
+            assertEquals(content.length, file.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that the historical PAX name mutation does not conceal corruption in other header fields.
+    @Test
+    public void rejectsAdditionalCorruptionInTrailingSlashPaxHeader() throws IOException {
+        byte[] paxBody = paxRecord("path", "file.txt");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        String paxHeaderName = "PaxHeader/package/package.json";
+        writeMetadataEntry(output, paxHeaderName, 'x', paxBody);
+        writeEntry(output, "file.txt", new byte[0]);
+        output.write(new byte[1024]);
+        byte[] archive = output.toByteArray();
+        archive[paxHeaderName.length() - 1] = '/';
+
+        for (int fieldOffset : new int[]{100, 108, 124}) {
+            byte[] corrupted = archive.clone();
+            corrupted[fieldOffset] ^= 1;
+            try (TarArkivoStreamingReader reader =
+                         TarArkivoStreamingReader.open(new ByteArrayInputStream(corrupted))) {
+                IOException exception = assertThrows(IOException.class, reader::next);
+                assertEquals(
+                        "Invalid TAR header checksum",
+                        exception.getMessage(),
+                        "corrupted header field offset: " + fieldOffset
+                );
+            }
+        }
+    }
+
+    /// Verifies that the trailing-slash PAX checksum tolerance does not bypass archive path validation.
+    @Test
+    public void rejectsUnsafePathFromTrailingSlashPaxHeader() throws IOException {
+        ByteArrayOutputStream paxBody = new ByteArrayOutputStream();
+        paxBody.write(paxRecord("path", "../outside.txt"));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        String paxHeaderName = "PaxHeader/package/package.json";
+        writeMetadataEntry(output, paxHeaderName, 'x', paxBody.toByteArray());
+        writeEntry(output, "safe.txt", new byte[0]);
+        output.write(new byte[1024]);
+        byte[] archive = output.toByteArray();
+        archive[paxHeaderName.length() - 1] = '/';
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+            assertTrue(exception.getMessage().contains("TAR entry path must not contain .."), exception.getMessage());
+        }
+    }
+
+    /// Verifies that the real entry following a tolerated PAX header still requires a valid checksum.
+    @Test
+    public void rejectsInvalidChecksumAfterTrailingSlashPaxHeader() throws IOException {
+        byte[] paxBody = paxRecord("path", "file.txt");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        String paxHeaderName = "PaxHeader/package/package.json";
+        writeMetadataEntry(output, paxHeaderName, 'x', paxBody);
+        writeEntry(output, "file.txt", new byte[0]);
+        output.write(new byte[1024]);
+        byte[] archive = output.toByteArray();
+        archive[paxHeaderName.length() - 1] = '/';
+        int entryHeaderOffset = 512 + (paxBody.length + 511) / 512 * 512;
+        archive[entryHeaderOffset] = 'x';
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+            assertEquals("Invalid TAR header checksum", exception.getMessage());
+        }
+    }
+
+    /// Verifies that a PAX checksum mismatch without the historical trailing-slash name remains fatal.
+    @Test
+    public void rejectsInvalidChecksumForOrdinaryPaxHeaderName() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeMetadataEntry(output, "PaxHeaders/entry", 'x', paxRecord("path", "file.txt"));
+        writeEntry(output, "file.txt", new byte[0]);
+        output.write(new byte[1024]);
+        byte[] archive = output.toByteArray();
+        archive[0] = 'X';
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+            assertEquals("Invalid TAR header checksum", exception.getMessage());
         }
     }
 
@@ -1273,6 +1604,7 @@ public final class TarArkivoStreamingReaderTest {
         writeGlobalPaxHeader(output, Map.of(
                 "atime", "1893456010.25",
                 "ctime", "1893456020.5",
+                "LIBARCHIVE.creationtime", "1893456021.625",
                 "gid", "222",
                 "gname", "global-group",
                 "mtime", "1893456000.125",
@@ -1298,7 +1630,11 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals("global-group", first.groupName());
             assertEquals(Instant.ofEpochSecond(1_893_456_000L, 125_000_000L), first.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_893_456_010L, 250_000_000L), first.lastAccessTime().toInstant());
-            assertEquals(Instant.ofEpochSecond(1_893_456_020L, 500_000_000L), first.creationTime().toInstant());
+            assertEquals(
+                    Instant.ofEpochSecond(1_893_456_020L, 500_000_000L),
+                    first.recordedStatusChangeTime().toInstant()
+            );
+            assertEquals(Instant.ofEpochSecond(1_893_456_021L, 625_000_000L), first.creationTime().toInstant());
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(firstContent, input.readAllBytes());
             }
@@ -1312,7 +1648,11 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals("global-group", second.groupName());
             assertEquals(Instant.ofEpochSecond(1_893_456_030L, 750_000_000L), second.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_893_456_010L, 250_000_000L), second.lastAccessTime().toInstant());
-            assertEquals(Instant.ofEpochSecond(1_893_456_020L, 500_000_000L), second.creationTime().toInstant());
+            assertEquals(
+                    Instant.ofEpochSecond(1_893_456_020L, 500_000_000L),
+                    second.recordedStatusChangeTime().toInstant()
+            );
+            assertEquals(Instant.ofEpochSecond(1_893_456_021L, 625_000_000L), second.creationTime().toInstant());
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(secondContent, input.readAllBytes());
             }
@@ -1444,6 +1784,7 @@ public final class TarArkivoStreamingReaderTest {
         writePaxHeader(output, Map.of(
                 "atime", "-0.25",
                 "ctime", "-2",
+                "LIBARCHIVE.creationtime", "-3.25",
                 "mtime", "-1.5"
         ));
         writeEntry(output, "negative-time.txt", content);
@@ -1456,7 +1797,8 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals("negative-time.txt", file.path());
             assertEquals(Instant.ofEpochSecond(-2L, 500_000_000L), file.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(-1L, 750_000_000L), file.lastAccessTime().toInstant());
-            assertEquals(Instant.ofEpochSecond(-2L), file.creationTime().toInstant());
+            assertEquals(Instant.ofEpochSecond(-2L), file.recordedStatusChangeTime().toInstant());
+            assertEquals(Instant.ofEpochSecond(-4L, 750_000_000L), file.creationTime().toInstant());
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
@@ -1831,6 +2173,80 @@ public final class TarArkivoStreamingReaderTest {
         writeRawString(header, 263, 2, "00");
         writeString(header, 265, 32, userName);
         writeString(header, 297, 32, groupName);
+
+        int checksum = 0;
+        for (byte value : header) {
+            checksum += Byte.toUnsignedInt(value);
+        }
+        writeChecksum(header, checksum);
+        output.write(header);
+    }
+
+    /// Writes an ordinary old GNU header with fixed access and status-change times.
+    private static void writeOldGnuTimeHeader(
+            ByteArrayOutputStream output,
+            String path,
+            long modificationTime,
+            long accessTime,
+            long statusChangeTime
+    ) throws IOException {
+        byte[] header = new byte[512];
+        writeString(header, 0, 100, path);
+        writeOctal(header, 100, 8, 0644);
+        writeOctal(header, 108, 8, 1000);
+        writeOctal(header, 116, 8, 1000);
+        writeOctal(header, 124, 12, 0L);
+        writeOctal(header, 136, 12, modificationTime);
+        for (int index = 148; index < 156; index++) {
+            header[index] = ' ';
+        }
+        header[156] = '0';
+        writeRawString(header, 257, 6, "ustar ");
+        header[263] = ' ';
+        writeString(header, 265, 32, "user");
+        writeString(header, 297, 32, "group");
+        writeOctal(header, 345, 12, accessTime);
+        writeOctal(header, 357, 12, statusChangeTime);
+
+        int checksum = 0;
+        for (byte value : header) {
+            checksum += Byte.toUnsignedInt(value);
+        }
+        writeChecksum(header, checksum);
+        output.write(header);
+    }
+
+    /// Writes an xstar-layout header with an optional explicit magic value.
+    private static void writeXstarTimeHeader(
+            ByteArrayOutputStream output,
+            String name,
+            String prefix,
+            long modificationTime,
+            long accessTime,
+            long statusChangeTime,
+            boolean explicitMagic
+    ) throws IOException {
+        byte[] header = new byte[512];
+        writeString(header, 0, 100, name);
+        writeOctal(header, 100, 8, 0644);
+        writeOctal(header, 108, 8, 1000);
+        writeOctal(header, 116, 8, 1000);
+        writeOctal(header, 124, 12, 0L);
+        writeOctal(header, 136, 12, modificationTime);
+        for (int index = 148; index < 156; index++) {
+            header[index] = ' ';
+        }
+        header[156] = '0';
+        writeString(header, 257, 6, "ustar");
+        writeRawString(header, 263, 2, "00");
+        writeString(header, 265, 32, "user");
+        writeString(header, 297, 32, "group");
+        writeString(header, 345, 131, prefix);
+        writeOctal(header, 476, 12, accessTime);
+        writeOctal(header, 488, 12, statusChangeTime);
+        if (explicitMagic) {
+            writeRawString(header, 508, 4, "tar\0");
+        }
 
         int checksum = 0;
         for (byte value : header) {

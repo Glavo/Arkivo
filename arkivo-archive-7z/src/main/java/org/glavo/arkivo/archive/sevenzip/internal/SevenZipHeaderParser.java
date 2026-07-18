@@ -172,7 +172,7 @@ public final class SevenZipHeaderParser {
         HeaderInput input = new HeaderInput(header);
         int type = input.readId();
         if (type == K_END) {
-            input.requireFullyConsumed();
+            input.requireEndPadding();
             return List.of();
         }
         if (type == K_ENCODED_HEADER) {
@@ -188,7 +188,7 @@ public final class SevenZipHeaderParser {
         while (true) {
             int property = input.readId();
             if (property == K_END) {
-                input.requireFullyConsumed();
+                input.requireEndPadding();
                 return List.copyOf(entries);
             }
             switch (property) {
@@ -682,7 +682,7 @@ public final class SevenZipHeaderParser {
     /// Skips an `ArchiveProperties` block.
     private static void skipArchiveProperties(HeaderInput input) throws IOException {
         while (true) {
-            int property = input.readId();
+            long property = input.readNumber();
             if (property == K_END) {
                 return;
             }
@@ -1838,6 +1838,18 @@ public final class SevenZipHeaderParser {
                         Arrays.copyOfRange(bytes, position, bytes.length)
                 ));
             }
+        }
+
+        /// Consumes padding made only of additional top-level `kEnd` markers.
+        private void requireEndPadding() throws IOException {
+            for (int index = position; index < bytes.length; index++) {
+                if (bytes[index] != K_END) {
+                    throw new IOException("Trailing bytes in 7z header: " + Arrays.toString(
+                            Arrays.copyOfRange(bytes, position, bytes.length)
+                    ));
+                }
+            }
+            position = bytes.length;
         }
 
         /// Requires the current position to match the expected position.

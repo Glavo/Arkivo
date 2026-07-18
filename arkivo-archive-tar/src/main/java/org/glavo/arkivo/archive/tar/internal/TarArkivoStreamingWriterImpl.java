@@ -202,8 +202,18 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         }
 
         paxRecords.put("mtime", paxTimestamp(attributes.lastModifiedTime()));
-        paxRecords.put("atime", paxTimestamp(attributes.lastAccessTime()));
-        paxRecords.put("ctime", paxTimestamp(attributes.creationTime()));
+        @Nullable FileTime recordedLastAccessTime = attributes.recordedLastAccessTime();
+        if (recordedLastAccessTime != null) {
+            paxRecords.put("atime", paxTimestamp(recordedLastAccessTime));
+        }
+        @Nullable FileTime recordedStatusChangeTime = attributes.recordedStatusChangeTime();
+        if (recordedStatusChangeTime != null) {
+            paxRecords.put("ctime", paxTimestamp(recordedStatusChangeTime));
+        }
+        @Nullable FileTime recordedCreationTime = attributes.recordedCreationTime();
+        if (recordedCreationTime != null) {
+            paxRecords.put("LIBARCHIVE.creationtime", paxTimestamp(recordedCreationTime));
+        }
 
         long headerUserId = attributes.userId();
         if (headerUserId > maxOctalValue(8)) {
@@ -442,11 +452,17 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         if (attributes.lastModifiedTimeConfigured()) {
             paxRecords.put("mtime", paxTimestamp(attributes.lastModifiedTime()));
         }
-        if (attributes.lastAccessTimeConfigured()) {
-            paxRecords.put("atime", paxTimestamp(attributes.lastAccessTime()));
+        @Nullable FileTime recordedLastAccessTime = attributes.recordedLastAccessTime();
+        if (recordedLastAccessTime != null) {
+            paxRecords.put("atime", paxTimestamp(recordedLastAccessTime));
         }
-        if (attributes.creationTimeConfigured()) {
-            paxRecords.put("ctime", paxTimestamp(attributes.creationTime()));
+        @Nullable FileTime recordedStatusChangeTime = attributes.recordedStatusChangeTime();
+        if (recordedStatusChangeTime != null) {
+            paxRecords.put("ctime", paxTimestamp(recordedStatusChangeTime));
+        }
+        @Nullable FileTime recordedCreationTime = attributes.recordedCreationTime();
+        if (recordedCreationTime != null) {
+            paxRecords.put("LIBARCHIVE.creationtime", paxTimestamp(recordedCreationTime));
         }
 
         long headerUserId = userId;
@@ -860,20 +876,17 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// The requested last modification time.
         private FileTime lastModifiedTime = UNIX_EPOCH;
 
-        /// The requested last access time.
-        private FileTime lastAccessTime = UNIX_EPOCH;
+        /// The requested last access time explicitly recorded by the archive, or `null` when absent.
+        private @Nullable FileTime recordedLastAccessTime;
 
-        /// The requested creation time.
-        private FileTime creationTime = UNIX_EPOCH;
+        /// The requested inode status change time explicitly recorded by the archive, or `null` when absent.
+        private @Nullable FileTime recordedStatusChangeTime;
+
+        /// The requested creation time explicitly recorded by the archive, or `null` when absent.
+        private @Nullable FileTime recordedCreationTime;
 
         /// Whether the last modification time was explicitly configured.
         private boolean lastModifiedTimeConfigured;
-
-        /// Whether the last access time was explicitly configured.
-        private boolean lastAccessTimeConfigured;
-
-        /// Whether the creation time was explicitly configured.
-        private boolean creationTimeConfigured;
 
         /// The requested POSIX mode bits, or `UNKNOWN_MODE` when defaults should be used.
         private int mode = UNKNOWN_MODE;
@@ -926,12 +939,10 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 lastModifiedTimeConfigured = true;
             }
             if (lastAccessTime != null) {
-                this.lastAccessTime = lastAccessTime;
-                lastAccessTimeConfigured = true;
+                recordedLastAccessTime = lastAccessTime;
             }
             if (createTime != null) {
-                this.creationTime = createTime;
-                creationTimeConfigured = true;
+                recordedCreationTime = createTime;
             }
         }
 
@@ -986,34 +997,60 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             this.groupName = groupName;
         }
 
+        /// Sets or clears the explicitly recorded last access time.
+        @Override
+        public void setRecordedLastAccessTime(@Nullable FileTime lastAccessTime) {
+            entry.ensurePending();
+            recordedLastAccessTime = lastAccessTime;
+        }
+
+        /// Sets or clears the explicitly recorded inode status change time.
+        @Override
+        public void setRecordedStatusChangeTime(@Nullable FileTime statusChangeTime) {
+            entry.ensurePending();
+            recordedStatusChangeTime = statusChangeTime;
+        }
+
+        /// Sets or clears the explicitly recorded creation time.
+        @Override
+        public void setRecordedCreationTime(@Nullable FileTime creationTime) {
+            entry.ensurePending();
+            recordedCreationTime = creationTime;
+        }
+
         /// Returns the last modification time.
         private FileTime lastModifiedTime() {
             return lastModifiedTime;
         }
 
-        /// Returns the last access time.
+        /// Returns the last access time, falling back to the last modification time when absent.
         private FileTime lastAccessTime() {
-            return lastAccessTime;
+            return recordedLastAccessTime != null ? recordedLastAccessTime : lastModifiedTime;
         }
 
-        /// Returns the creation time.
+        /// Returns the creation time, falling back to the last modification time when absent.
         private FileTime creationTime() {
-            return creationTime;
+            return recordedCreationTime != null ? recordedCreationTime : lastModifiedTime;
+        }
+
+        /// Returns the explicitly recorded last access time.
+        private @Nullable FileTime recordedLastAccessTime() {
+            return recordedLastAccessTime;
+        }
+
+        /// Returns the explicitly recorded inode status change time.
+        private @Nullable FileTime recordedStatusChangeTime() {
+            return recordedStatusChangeTime;
+        }
+
+        /// Returns the explicitly recorded creation time.
+        private @Nullable FileTime recordedCreationTime() {
+            return recordedCreationTime;
         }
 
         /// Returns whether the last modification time was explicitly configured.
         private boolean lastModifiedTimeConfigured() {
             return lastModifiedTimeConfigured;
-        }
-
-        /// Returns whether the last access time was explicitly configured.
-        private boolean lastAccessTimeConfigured() {
-            return lastAccessTimeConfigured;
-        }
-
-        /// Returns whether the creation time was explicitly configured.
-        private boolean creationTimeConfigured() {
-            return creationTimeConfigured;
         }
 
         /// Returns the requested user name.
@@ -1218,6 +1255,24 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         @Override
         public FileTime creationTime() {
             return attributes.creationTime();
+        }
+
+        /// Returns the last access time explicitly recorded by the pending entry.
+        @Override
+        public @Nullable FileTime recordedLastAccessTime() {
+            return attributes.recordedLastAccessTime();
+        }
+
+        /// Returns the inode status change time explicitly recorded by the pending entry.
+        @Override
+        public @Nullable FileTime recordedStatusChangeTime() {
+            return attributes.recordedStatusChangeTime();
+        }
+
+        /// Returns the creation time explicitly recorded by the pending entry.
+        @Override
+        public @Nullable FileTime recordedCreationTime() {
+            return attributes.recordedCreationTime();
         }
 
         /// Returns whether this pending entry is a regular file.

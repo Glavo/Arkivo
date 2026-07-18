@@ -1,0 +1,354 @@
+path	size	disposition	reason
+7z-empty-mhc-off.7z	78	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+7z-hello-mhc-off-copy.7z	132	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+7z-hello-mhc-off-lzma2.7z	138	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+8.posix.tar.gz	8344644	TESTED_EXPANSION_TIER3	full multi-gibibyte or ZIP64-container expansion is reserved for Tier 3
+8.star.tar.gz	8344540	TESTED_EXPANSION_TIER3	full multi-gibibyte or ZIP64-container expansion is reserved for Tier 3
+android/ActivitySceneTransitionBasic/app/build/outputs/apk/debug/app-debug.apk	1546505	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/AlwaysOnKotlin/compose/build/outputs/apk/debug/compose-debug.apk	6082169	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/AlwaysOnKotlin/views/build/outputs/apk/debug/views-debug.apk	2439424	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/BasicTransition/Application/build/outputs/apk/debug/Application-debug.apk	1648995	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/instant-run-apk/debug/Application-debug.apk	45880	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/resources/instant-run/debug/resources-debug.apk	354355	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/dep/dependencies.apk	918973	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_0.apk	6356	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_1.apk	9435	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_2.apk	6367	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_3.apk	10222	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_4.apk	9422	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_5.apk	6368	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_6.apk	85660	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_7.apk	13294	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_8.apk	6354	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/intermediates/split-apk/debug/slices/slice_9.apk	30541	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Camera2Basic/Application/build/outputs/apk/debug/Application-debug.apk	1489457	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/FragmentTransitionsRecyclerViewtoViewPager/app/build/outputs/apk/debug/app-debug.apk	3747603	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/InstantApps-CookieAPI/app/build/outputs/apk/framework/debug/app-framework-debug.apk	2222863	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/InstantApps-GoogleAnalyticsExample/app/build/outputs/apk/debug/app-debug.apk	2008249	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/InstantApps-InstallAPIsample/app/build/outputs/apk/debug/app-debug.apk	2827932	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Interpolator/Application/build/outputs/apk/debug/Application-debug.apk	1632634	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/Motion/app/build/outputs/apk/debug/app-debug.apk	6932352	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+android/RevealEffectBasic/Application/build/outputs/apk/debug/Application-debug.apk	1629154	TESTED_ZIP_CONTAINER_TIER2	opened and fully consumed through the seekable ZIP API; APK signing blocks are not ZIP records
+apache-maven-2.2.1.zip.001	65536	TESTED_ZIP_TIER2	exercised as an explicitly truncated standalone ZIP volume
+archive_with_bytes_after_data.zip	670	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+archive_with_trailer.dump	92174	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archive_with_trailer.tar	10254	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+archive_with_trailer.zip	680	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+archives/files.txt	123	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+archives/FreeBSD_.tar	11264	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+archives/FreeBSD_bin.cpio	1024	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/FreeBSD_crc.cpio	2048	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/FreeBSD_hpbin.cpio	1024	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/FreeBSD_newc.cpio	2048	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/FreeBSD_pax.tar	21504	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+archives/FreeBSD_ustar.tar	11264	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+archives/FreeBSD.ar	876	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+archives/FreeBSD.zip	1652	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+archives/SunOS_-c.cpio	2048	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/SunOS_.cpio	1024	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/SunOS_cAEf.tar	21504	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+archives/SunOS_cEf.tar	21504	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+archives/SunOS_cf.tar	11264	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+archives/SunOS_crc.cpio	2048	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/SunOS_odc.cpio	1536	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/SunOS.ar	876	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+archives/SunOS.zip	1472	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+bla-multi.7z.001	512	TESTED_7Z_COMPANION_TIER2	consumed through the explicit multi-volume 7z source
+bla-multi.7z.002	7	TESTED_7Z_COMPANION_TIER2	consumed through the explicit multi-volume 7z source
+bla-nonames.7z	556	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+bla-stored-dd-contradicts-actualsize.zip	1023	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+bla-stored-dd-nosig.zip	1018	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+bla-stored-dd-sizes-differ.zip	1022	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+bla-stored-dd.zip	1022	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+bla-stored.zip	1006	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+bla.7z	512	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+bla.ar	820	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+bla.arj	252	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+bla.cpio	5120	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+bla.deflate.7z	497	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+bla.deflate64.7z	503	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+bla.dump	92160	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+bla.dump.lz4	1443	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.encrypted.7z	566	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+bla.jar	1391	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+bla.noendheaderoffset.7z	512	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+bla.pack	1649	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+bla.tar.block_lz4	604	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.tar.br	401	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.tar.bz2	543	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+bla.tar.deflate	462	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+bla.tar.deflatez	468	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+bla.tar.lz4	623	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.tar.lzma	481	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+bla.tar.sz	995	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.tar.xz	528	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+bla.tar.Z	776	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.tgz	480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+bla.txt.bz2	66	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+bla.unix.arj	257	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+bla.xml.bz2	389	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+bla.z.dump	11918	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+bla.zip	666	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+brotli.testdata.compressed	12	UNSUPPORTED_CODEC_FORMAT	Brotli compressed input is retained for an unsupported codec family
+brotli.testdata.uncompressed	20	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+bzip2-zip.zip	209	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-114.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-117.tar	6656	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-131.bz2	340	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+COMPRESS-178-fail.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-189.zip	52563	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-197.tar	5120	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-208.zip	670	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-210_unix_time_zip_test.zip	3336	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-211_uid_gid_zip_test.zip	2560	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-214_unix_symlinks.zip	4480	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-219.zip	2360	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-227.zip	254	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-228.zip	61212	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-245.tar.gz	239255	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-256.7z	4069842	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-264.zip	171	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-279-fail.tar	19000	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-320/BZip2-solid.7z	66992	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/BZip2.7z	98148	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/Copy-solid.7z	325679	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/Copy.7z	325669	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/Deflate-solid.7z	73730	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/Deflate.7z	97803	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/LZMA-solid.7z	64813	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/LZMA.7z	95391	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/LZMA2-solid.7z	64845	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/LZMA2.7z	95705	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/PPMd-solid.7z	61452	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/PPMd.7z	86170	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-320/recreate.sh	401	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+COMPRESS-324.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-335.tar	3072	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-348.7z	213	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-351.zip	36996	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-355.tar	8192	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-356.tar	8192	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-358.iwa	36288	UNSUPPORTED_CODEC_FORMAT	Snappy IWA compressed input is retained for an unsupported codec family
+COMPRESS-358.uncompressed	219521	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+COMPRESS-379.jar	222	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+COMPRESS-380/COMPRESS-380-dd.zip	1391	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-380/COMPRESS-380-input	3072	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+COMPRESS-380/COMPRESS-380-readbeyondmemory.zip	15290	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-380/COMPRESS-380.zip	2257	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-382	19	TESTED_CODEC_TIER2	LZMA-alone dictionary allocation is rejected by the configured Tier 2 window limit
+COMPRESS-386	4	UNSUPPORTED_CODEC_FORMAT	Unix compress input belongs to an unsupported codec family
+COMPRESS-417.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-459.cpio	512	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+COMPRESS-477/split_zip_created_by_winrar/file_to_compare_1	49334	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+COMPRESS-477/split_zip_created_by_winrar/split_zip_created_by_winrar.z01	262144	TESTED_ZIP_COMPANION_TIER2	consumed as a split ZIP volume by its terminal .zip fixture
+COMPRESS-477/split_zip_created_by_winrar/split_zip_created_by_winrar.z02	262144	TESTED_ZIP_COMPANION_TIER2	consumed as a split ZIP volume by its terminal .zip fixture
+COMPRESS-477/split_zip_created_by_winrar/split_zip_created_by_winrar.zip	50536	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-477/split_zip_created_by_winrar/zip_to_compare_created_by_winrar.zip	574820	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-477/split_zip_created_by_zip/file_to_compare_1	1438	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+COMPRESS-477/split_zip_created_by_zip/file_to_compare_2	2509	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.z01	262144	TESTED_ZIP_COMPANION_TIER2	consumed as a split ZIP volume by its terminal .zip fixture
+COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.z02	262144	TESTED_ZIP_COMPANION_TIER2	consumed as a split ZIP volume by its terminal .zip fixture
+COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip_zip64.zip	69177	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip.z01	262144	TESTED_ZIP_COMPANION_TIER2	consumed as a split ZIP volume by its terminal .zip fixture
+COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip.z02	262144	TESTED_ZIP_COMPANION_TIER2	consumed as a split ZIP volume by its terminal .zip fixture
+COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip.zip	57763	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-477/split_zip_created_by_zip/zip_to_compare_created_by_zip_zip64.zip	584681	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-477/split_zip_created_by_zip/zip_to_compare_created_by_zip.zip	582047	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-479.zip	557	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-490/ArithmeticException.lz4	29	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+COMPRESS-490/ArrayIndexOutOfBoundsException1.lz4	17	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+COMPRESS-490/ArrayIndexOutOfBoundsException2.lz4	405	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+COMPRESS-492.7z	39	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-529-fail.tar	1536	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-530-fail.tar	525	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-542-1.7z	102	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-542-2.7z	165	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-542-endheadercorrupted.7z	233	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-542-endheadercorrupted2.7z	233	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-544_truncated_in_content-fail.tar	2067	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-544_truncated_in_padding-fail.tar	2076	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-546.zip	77	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-548.zip	79	TESTED_ZIP_TIER2	streaming iteration preserves complete metadata and ignores only the truncated extra-field tail
+COMPRESS-553-fail.tar	7168	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-554-fail.tar	10842	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-569-fail.tar	513	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-592.7z	1053510	TESTED_7Z_TIER2_TIER3	Tier 2 verifies limits and Tier 3 fully expands the archive
+COMPRESS-612/test-times-bsd-folder.tar	4608	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-epax-folder.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-exustar-folder.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-gnu-incremental.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-gnu.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-gnutar.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-oldbsdtar.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-oldgnu-incremental.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-oldgnu.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-pax-folder.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-posix-linux.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-posix.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-star-folder.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-ustar.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-v7.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-xstar-folder.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-xstar-incremental.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-xstar.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-xustar-folder.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-xustar-incremental.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-612/test-times-xustar.tar	10240	TESTED_TAR_TIER2	exact recorded times and Basic fallback semantics match upstream FileTimesIT
+COMPRESS-621.zip	217	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-647/test.zip	107	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+COMPRESS-657/orjson-3.7.8.tar	1904128	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-657/README.md	426	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+COMPRESS-666/compress-666.tar.gz	604	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+COMPRESS-681.7z	226	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+COMPRESS-692/compress-692.zip	3986	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+directory.tar	1536	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+dirWith1TxtFile.tar	4608	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+emptyDir.tar	2560	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+imploding-4Kdict-2trees.zip	673	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+imploding-8Kdict-3trees.zip	4251	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+invalid-zip.zip	141	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+lbzip2_32767.bz2	4140	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+longfile_bsd.ar	210	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+longfile_gnu.ar	274	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+longpath/cygwin_gnu.tar	20480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/cygwin_oldgnu.tar	20480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/cygwin_pax.tar	30720	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/cygwin_posix.tar	30720	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/cygwin_ustar.tar	20480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/files.txt	2357	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+longpath/hudson-E.tar	30208	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/hudson.tar	10752	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/minotaur_pax.tar	30208	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/minotaur_posix.tar	30208	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/minotaur_ustar.tar	10752	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/minotaur-0.jar	4344	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+longpath/minotaur-c.zip	5054	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+longpath/minotaur-M.jar	4062	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+longpath/minotaur-z.zip	5102	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+longpath/minotaur.ar	898	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+longpath/minotaur.cpio	2833	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+longpath/minotaur.jar	4377	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+longpath/minotaur.zip	5042	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+longpath/vmgump_gnu.tar	20480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/vmgump_oldgnu.tar	20480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/vmgump_pax.tar	30720	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/vmgump_posix.tar	30720	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/vmgump_ustar.tar	20480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longpath/winXP_antgnu.tar	20480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+longsymlink/files.txt	285	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+longsymlink/gnu.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+lorem-ipsum.txt.gz	38080	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+lorem-ipsum.txt.sz	58586	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+lzma-with-eos.7z	174	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+META-INF/services/org.apache.commons.compress.archivers.ArchiveStreamProvider	64	UPSTREAM_SPI_METADATA	service descriptor belongs to Commons Compress test infrastructure
+META-INF/services/org.apache.commons.compress.compressors.CompressorStreamProvider	69	UPSTREAM_SPI_METADATA	service descriptor belongs to Commons Compress test infrastructure
+mixed.txt.sz	112	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+mixed.zip	71817	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+moby-imploded.zip	606033	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+moby.zip	4897	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+multiple.bz2	74	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+multiple.gz	46	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+multiple.xz	120	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+oldgnu_extended_sparse.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+oldgnu_sparse.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+ordertest.zip	59287	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+org/apache/commons/compress/ar/number_parsing/bad_group-fail.ar	274	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/ar/number_parsing/bad_length-fail.ar	274	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/ar/number_parsing/bad_long_namelen_bsd-fail.ar	210	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/ar/number_parsing/bad_long_namelen_gnu1-fail.ar	274	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/ar/number_parsing/bad_long_namelen_gnu2-fail.ar	200	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/ar/number_parsing/bad_long_namelen_gnu3-fail.ar	274	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/ar/number_parsing/bad_modified-fail.ar	274	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/ar/number_parsing/bad_table_length_gnu-fail.ar	274	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/ar/number_parsing/bad_user-fail.ar	274	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/arj/zero_sized_headers-fail.arj	3142	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+org/apache/commons/compress/COMPRESS-626/compress-626-pack200.jar	781	EXPECTED_NON_ARCHIVE_TIER2	Pack200 stream with a .jar suffix is explicitly rejected as a non-ZIP container
+org/apache/commons/compress/COMPRESS-644/ARW05UP.ICO	888	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+org/apache/commons/compress/COMPRESS-649/some-900kb-text.txt	921600	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+org/apache/commons/compress/COMPRESS-651/my10m.tar.bz2	6271204	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+org/apache/commons/compress/COMPRESS-654/ruff-aarch64-apple-darwin.tar	13200896	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+org/apache/commons/compress/COMPRESS-661/testARofText.ar	116	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
+org/apache/commons/compress/COMPRESS-679/file.7z	228	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+org/apache/commons/compress/COMPRESS-687/test-issue.7z	1008	TESTED_7Z_TIER2	valid 7z input reused by the upstream Pack200 wrong-format regression
+org/apache/commons/compress/COMPRESS-699/icure_medical_device_dart_sdk-1.2.10.tar	936448	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+org/apache/commons/compress/COMPRESS-700/flutter_awesome_buttons-0.1.0.tar	284160	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+org/apache/commons/compress/cpio/bad_long_value.cpio	1536	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+org/apache/commons/compress/dump/directory_null_bytes-fail.dump	78903	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+org/apache/commons/compress/dump/invalid_compression_type-fail.dump	11904	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+org/apache/commons/compress/dump/looping_inodes-fail.dump	85237	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+org/apache/commons/compress/dump/reclen_zero-fail.dump	85829	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+org/apache/commons/compress/fuzz/crash-f2efd9eaeb86cda597d07b5e3c3d81363633c2da	8942	TESTED_MALFORMED_ZIP_TIER2	extensionless COMPRESS-598 fuzz input is explicitly rejected by both ZIP access modes
+org/apache/commons/compress/gzip/members-size-0.gz	117	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+org/apache/commons/compress/gzip/members.gz	76	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+org/apache/commons/compress/ico/commons-daemon/procrunr.ico	318	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+org/apache/commons/compress/ico/commons-daemon/procruns.ico	318	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+org/apache/commons/compress/ico/commons-daemon/procrunw.ico	1078	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+org/apache/commons/compress/ico/commons-imaging/Oregon Scientific DS6639 - DSC_0307 - small.ico	211562	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+org/apache/commons/compress/ico/commons-imaging/OutOfMemory_epine.ico	11644	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+org/apache/commons/compress/ico/readme.md	837	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+org/apache/commons/compress/pack/bandint_oom.pack	88	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+org/apache/commons/compress/pack/cpfloat_oom.pack	178	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+org/apache/commons/compress/pack/cputf8_oom.pack	427	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+org/apache/commons/compress/pack/favoured_oom.pack	84	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+org/apache/commons/compress/pack/filebits_oom.pack	309	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+org/apache/commons/compress/pack/flags_oom.pack	1624	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+org/apache/commons/compress/pack/references_oom.pack	66	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+org/apache/commons/compress/pack/segment_header_oom.pack	41	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+org/apache/commons/compress/pack/signatures_oom.pack	121	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+org/apache/commons/compress/zip/test-method-xz.zip	4044	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+OSX_ArchiveWithNestedArchive.zip	752	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+pack200/annotations.jar	3683	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/annotations.pack.gz	712	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/annotations2unpacked.jar	2919	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/annotationsRI.jar	3539	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/annotationsRI.pack.gz	1003	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/annotationsUnpacked.jar	2267	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/HelloWorld.pack	530	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+pack200/hw.jar	842	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/InterfaceOnly.pack	137	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+pack200/jars/ant.jar	958858	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/jndi-e1.pack.gz	75058	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/jndi.jar	236738	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/jndiUnpacked.jar	232433	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/jndiWithUnknownAttributes.jar	238035	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/JustResources.pack	51	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+pack200/JustResources.pack.gz	82	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/LargeClass.pack.gz	752	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/largeClassUnpacked.jar	10793	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/p200WithUnknownAttributes.jar	74529	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/p200WithUnknownAttributes2.jar	73139	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/pack200-e1.pack.gz	14751	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/pack200.pack.gz	10438	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/simple-E0.pack.gz	598	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/sql-e1.pack.gz	50618	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/sql.pack.gz	44351	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
+pack200/sqlUnpacked.jar	335442	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+pack200/sqlUnpackedNoDebug.jar	243185	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+password-encrypted.zip	53103	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+pax_gnu_sparse.tar	20480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+posix00_sparse.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+posix01_sparse.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+posix10_sparse.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+preepoch-posix.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+preepoch-star.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+redline.cpio	268	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+SHRUNK.ZIP	352	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+simple-aix-native-tar.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
+test with spaces.txt	398	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+test-winzip.zip	903	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+test.txt	369	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+test1.xml	76	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+test2.xml	81	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+test3.xml	363	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+test4.xml	134	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+testAIFF.aif	3894	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+testCompress209.doc	23552	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+testNumbersNew.numbers	179147	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
+times.7z	3934	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
+utf16-text.txt	512	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
+utf8-7zip-test.zip	365	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+utf8-winzip-test.zip	569	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
+zip64support.tar.bz2	3931934	TESTED_EXPANSION_TIER3	full multi-gibibyte or ZIP64-container expansion is reserved for Tier 3
+zipbomb.xlsx	18348	TESTED_ZIP_EXPANSION_TIER2	bounded expansion metadata is verified and both entry bodies are fully consumed without retention
+zstd-tests.tar	10240	TESTED_CODEC_SUPPORT_TIER2	supplies independently fixed Zstandard payloads to codec tests

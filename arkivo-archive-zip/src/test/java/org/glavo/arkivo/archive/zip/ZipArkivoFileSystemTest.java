@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.zip;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -272,34 +273,6 @@ public final class ZipArkivoFileSystemTest {
         } finally {
             deleteTemporaryArchive(archivePath);
         }
-    }
-
-    /// Verifies that the streaming ZIP writer emits ZIP64 end records when the entry count overflows ZIP32 fields.
-    @Test
-    public void streamingWriterZip64EndRecordForManyEntries() throws IOException {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-
-        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(output)) {
-            for (int index = 0; index <= 0xffff; index++) {
-                var writerEntry260 = writer.beginDirectory("dir-" + index);
-                writerEntry260.close();
-            }
-        }
-
-        byte[] archive = output.toByteArray();
-        ByteBuffer buffer = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
-        int endOffset = archive.length - 22;
-        int locatorOffset = endOffset - 20;
-        int zip64EndOffset = Math.toIntExact(buffer.getLong(locatorOffset + 8));
-
-        assertEquals(0x07064b50, buffer.getInt(locatorOffset));
-        assertEquals(0x06064b50, buffer.getInt(zip64EndOffset));
-        assertEquals(44L, buffer.getLong(zip64EndOffset + 4));
-        assertEquals(0x1_0000L, buffer.getLong(zip64EndOffset + 24));
-        assertEquals(0x1_0000L, buffer.getLong(zip64EndOffset + 32));
-        assertEquals(0x06054b50, buffer.getInt(endOffset));
-        assertEquals(0xffff, Short.toUnsignedInt(buffer.getShort(endOffset + 8)));
-        assertEquals(0xffff, Short.toUnsignedInt(buffer.getShort(endOffset + 10)));
     }
 
     /// Verifies that central directory entries store oversized local header offsets in ZIP64 extra data.
@@ -4687,6 +4660,74 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that streaming ZIP paths expose WinZip backslashes as canonical archive separators.
+    @Test
+    public void streamingReaderNormalizesBackslashSeparators() throws IOException {
+        byte[] archive = streamingStoredArchiveWithRawName(
+                "dir\\file.txt".getBytes(StandardCharsets.UTF_8),
+                0
+        );
+
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+            assertEquals("dir/file.txt", attributes.path());
+            assertEquals(true, attributes.isRegularFile());
+        }
+    }
+
+    /// Verifies that streaming ZIP readers scan PK00 and executable-style preambles before the first local header.
+    @Test
+    public void streamingReaderScansArchivePreamble() throws IOException {
+        byte[] content = "preamble content".getBytes(StandardCharsets.UTF_8);
+        byte[] entry = streamingStoredArchiveWithContent(
+                "entry.txt".getBytes(StandardCharsets.UTF_8),
+                content,
+                crc32(content),
+                content.length,
+                content.length
+        );
+
+        for (byte[] preamble : List.of(
+                new byte[]{'P', 'K', '0', '0'},
+                "MZ executable preamble".getBytes(StandardCharsets.UTF_8),
+                new byte[]{'P', 'K', '0', '0', 'n', 'o', 't', '-', 'a', '-', 'm', 'a', 'r', 'k', 'e', 'r'},
+                new byte[]{'M', 'Z', 'P', 'K', 7, 8, 'n', 'o', 't', '-', 'a', '-', 'h', 'e', 'a', 'd', 'e', 'r'}
+        )) {
+            byte[] archive = Arrays.copyOf(preamble, preamble.length + entry.length);
+            System.arraycopy(entry, 0, archive, preamble.length, entry.length);
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive)
+            )) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("entry.txt", reader.readAttributes(ZipArkivoEntryAttributes.class).path());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+            }
+        }
+    }
+
+    /// Verifies that streaming preamble scanning remains bounded by the common metadata limit.
+    @Test
+    public void streamingReaderPreambleHonorsMetadataLimit() throws IOException {
+        byte[] archive = "preamble without a ZIP record".getBytes(StandardCharsets.UTF_8);
+        ZipArchiveOptions.Read options = ZipArchiveOptions.READ_DEFAULTS.withCommon(
+                ZipArchiveOptions.READ_DEFAULTS.common().withLimits(
+                        ArchiveReadLimits.builder().maximumMetadataSize(3L).build()
+                )
+        );
+
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                options
+        )) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+            assertEquals(true, exception.getMessage().contains("Archive metadata size"));
+        }
+    }
+
     /// Verifies that stored streaming ZIP entry data must match known local header metadata.
     @Test
     public void streamingReaderStoredKnownSizeMismatchIsRejected() throws IOException {
@@ -5180,9 +5221,9 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that closing a mismatched deflated entry drains to the declared compressed-size boundary.
+    /// Verifies that a deflated entry may contain padding inside its declared compressed-size boundary.
     @Test
-    public void streamingReaderCloseAfterDeflatedCompressedSizeMismatchDrainsDeclaredBody() throws IOException {
+    public void streamingReaderAcceptsDeflatedPaddingAndDrainsDeclaredBody() throws IOException {
         byte[] firstContent = "padded deflate body".getBytes(StandardCharsets.UTF_8);
         byte[] secondContent = "after mismatch".getBytes(StandardCharsets.UTF_8);
         byte[] archive = streamingDeflatedArchiveWithPaddedBodyAndStoredEntry(
@@ -5197,11 +5238,9 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("deflated-padding.txt", firstAttributes.path());
-            var firstInput = reader.openInputStream();
-
-            IOException exception = assertThrows(IOException.class, firstInput::close);
-            assertEquals(true, exception.getMessage().contains("ZIP entry data does not match local header"));
-            firstInput.close();
+            try (var firstInput = reader.openInputStream()) {
+                assertArrayEquals(firstContent, firstInput.readAllBytes());
+            }
 
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -5461,6 +5500,42 @@ public final class ZipArkivoFileSystemTest {
                 assertArrayEquals(secondContent, input.readAllBytes());
             }
             org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies observed multi-gigabyte sizes select ZIP64 descriptor fields without a local ZIP64 marker.
+    @Test
+    public void matchesZip64DataDescriptorRequiredOnlyByObservedSize()
+            throws IOException, ReflectiveOperationException {
+        long crc32 = 0x5c31_6f50L;
+        long compressedSize = 4_859_752L;
+        long uncompressedSize = 5_000_000_000L;
+        ByteBuffer descriptor = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+        descriptor.putInt(0x08074b50);
+        descriptor.putInt((int) crc32);
+        descriptor.putLong(compressedSize);
+        descriptor.putLong(uncompressedSize);
+
+        Class<?> readerImplementation = Class.forName(
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
+        );
+        Method readDescriptor = readerImplementation.getDeclaredMethod(
+                "readAndMatchesDataDescriptor",
+                PushbackInputStream.class,
+                boolean.class,
+                long.class,
+                long.class,
+                long.class
+        );
+        readDescriptor.setAccessible(true);
+        try (PushbackInputStream input = new PushbackInputStream(
+                new ByteArrayInputStream(descriptor.array()),
+                descriptor.capacity()
+        )) {
+            assertEquals(
+                    true,
+                    readDescriptor.invoke(null, input, false, crc32, compressedSize, uncompressedSize)
+            );
         }
     }
 
@@ -6551,9 +6626,9 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that the local data-descriptor bit may differ from the central directory.
+    /// Verifies a local data-descriptor flag requires a descriptor even when the central flag is clear.
     @Test
-    public void acceptsMismatchedLocalDataDescriptorFlag() throws IOException {
+    public void rejectsMissingDataDescriptorDeclaredOnlyByLocalHeader() throws IOException {
         byte[] name = "descriptor-flags.txt".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameAndLocalCentralMetadata(
                 name,
@@ -6565,12 +6640,14 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-                ZipArkivoEntryAttributes attributes = Files.readAttributes(
-                        fileSystem.getPath("/descriptor-flags.txt"),
-                        ZipArkivoEntryAttributes.class
+                IOException exception = assertThrows(
+                        IOException.class,
+                        () -> Files.readAttributes(
+                                fileSystem.getPath("/descriptor-flags.txt"),
+                                ZipArkivoEntryAttributes.class
+                        )
                 );
-                assertEquals(0, attributes.generalPurposeFlags());
-                assertEquals(0L, attributes.size());
+                assertEquals(true, exception.getMessage().contains("ZIP data descriptor does not match"));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -7280,6 +7357,43 @@ public final class ZipArkivoFileSystemTest {
                         () -> Files.readAttributes(fileSystem.getPath("/evil.txt"), ZipArkivoEntryAttributes.class)
                 );
                 assertEquals(true, exception.getMessage().contains("ZIP entry path must not contain .."));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that WinZip-style backslashes form directories and normalized NIO paths.
+    @Test
+    public void normalizesBackslashSeparatedCentralDirectoryEntryNames() throws IOException {
+        byte[] directoryName = "dir\\".getBytes(StandardCharsets.UTF_8);
+        byte[] fileName = "dir\\file.txt".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchiveContent(twoEntryZipWithRawNames(directoryName, fileName));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(true, Files.isDirectory(fileSystem.getPath("/dir")));
+                assertEquals(true, Files.isRegularFile(fileSystem.getPath("/dir/file.txt")));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that slash and backslash spellings cannot bypass normalized duplicate-path detection.
+    @Test
+    public void rejectsDuplicateMixedSeparatorCentralDirectoryEntryNames() throws IOException {
+        byte[] firstName = "dir/file.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] secondName = "dir\\file.txt".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchiveContent(twoEntryZipWithRawNames(firstName, secondName));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                IOException exception = assertThrows(
+                        IOException.class,
+                        () -> Files.readAttributes(fileSystem.getPath("/dir/file.txt"), ZipArkivoEntryAttributes.class)
+                );
+                assertEquals(true, exception.getMessage().contains("Duplicate ZIP entry path"));
             }
         } finally {
             deleteTemporaryArchive(archivePath);

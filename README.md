@@ -128,17 +128,30 @@ interfaces instead of assuming universal streaming, framing, mutation, or multi-
 
 ## Build and verification
 
-Run the normal compilation, unit, API compatibility, interoperability, scalability, and publication checks with:
+Run the normal compilation, fast comprehensive Tier 1 tests, API compatibility, and publication checks with:
 
 ```text
 ./gradlew check
 ```
 
-The separately cached upstream corpus suite is opt-in:
+The slower upstream-corpus and interoperability tests are available as Tier 2. `tier2Test` runs only that tier, while
+`checkTier2` also includes the normal checks:
 
 ```text
-./gradlew realWorldTest
+./gradlew tier2Test
+./gradlew checkTier2
 ```
+
+Stress, scalability, and low-heap tests are isolated in Tier 3. `tier3Test` runs only that tier, while `checkTier3`
+includes all lower tiers and normal checks:
+
+```text
+./gradlew tier3Test
+./gradlew checkTier3
+```
+
+Upstream test data is downloaded from official source archives into the project-local test-data cache when an applicable
+optional tier is requested; binary corpus files are not stored in this repository.
 
 The build targets Java 17. The checked-in API baselines make unreviewed public or protected signature changes fail the
 normal `check` lifecycle.

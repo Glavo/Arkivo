@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.zip;
 import org.glavo.arkivo.archive.ArchiveEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.PosixFileAttributes;
 
@@ -18,10 +19,13 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes, ArchiveEn
     /// The numeric value returned when a ZIP entry CRC-32 value is not known.
     long UNKNOWN_CRC32 = -1L;
 
-    /// Returns a copy of the raw encoded ZIP entry path bytes.
-    byte[] rawPath();
+    /// The numeric value returned when a ZIP entry has no Unix user or group identifier.
+    long UNKNOWN_UNIX_ID = -1L;
 
-    /// Returns the decoded ZIP entry path text.
+    /// Returns a copy of the raw encoded ZIP entry path bytes.
+    byte @Unmodifiable [] rawPath();
+
+    /// Returns the decoded ZIP entry path text with archive separators normalized to `/`.
     String path();
 
     /// Returns the decoded ZIP entry comment text, or `null` when no comment is present.
@@ -48,6 +52,12 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes, ArchiveEn
     /// Returns the ZIP external file attributes.
     long externalAttributes();
 
+    /// Returns the numeric Unix owner user identifier, or `UNKNOWN_UNIX_ID` when absent.
+    long userId();
+
+    /// Returns the numeric Unix owner group identifier, or `UNKNOWN_UNIX_ID` when absent.
+    long groupId();
+
     /// Returns the numeric ZIP compression method identifier after resolving WinZip AES metadata.
     int compressionMethodId();
 
@@ -59,11 +69,11 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes, ArchiveEn
     @Nullable ZipEncryption encryption();
 
     /// Returns a copy of the raw local file header extra data bytes.
-    byte[] localExtraData();
+    byte @Unmodifiable [] localExtraData();
 
     /// Returns a copy of the raw central directory extra data bytes.
-    byte[] centralDirectoryExtraData();
+    byte @Unmodifiable [] centralDirectoryExtraData();
 
     /// Returns a copy of the raw ZIP entry comment bytes, or `null` when no comment is present.
-    byte @Nullable [] rawComment();
+    byte @Nullable @Unmodifiable [] rawComment();
 }

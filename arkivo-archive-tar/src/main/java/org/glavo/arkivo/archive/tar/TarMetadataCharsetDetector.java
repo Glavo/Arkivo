@@ -87,7 +87,10 @@ public interface TarMetadataCharsetDetector extends ArchiveMetadataCharsetDetect
         USTAR,
 
         /// A GNU header using the GNU ustar magic value.
-        GNU
+        GNU,
+
+        /// An xstar, xustar, or exustar header using the extended prefix and time fields.
+        XSTAR
     }
 
     /// Provides raw bytes and available TAR metadata to a charset detector.

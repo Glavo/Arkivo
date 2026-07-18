@@ -71,27 +71,10 @@ val prepareZstdTestCorpus = tasks.register<Sync>("prepareZstdTestCorpus") {
     into(zstdTestDataDirectory)
 }
 
-val realWorldTestSourceSet = sourceSets.create("realWorldTest") {
-    compileClasspath += sourceSets.main.get().output
-    runtimeClasspath += output + compileClasspath
-}
-
-configurations.named(realWorldTestSourceSet.implementationConfigurationName) {
-    extendsFrom(configurations.testImplementation.get())
-}
-configurations.named(realWorldTestSourceSet.compileOnlyConfigurationName) {
-    extendsFrom(configurations.testCompileOnly.get())
-}
-configurations.named(realWorldTestSourceSet.runtimeOnlyConfigurationName) {
-    extendsFrom(configurations.testRuntimeOnly.get())
-}
-
-tasks.register<Test>("realWorldTest") {
+tasks.named<Test>("tier2Test") {
     group = "verification"
     description = "Runs Zstandard tests against the pinned official golden corpus."
     dependsOn(prepareZstdTestCorpus)
     shouldRunAfter(tasks.test)
-    testClassesDirs = realWorldTestSourceSet.output.classesDirs
-    classpath = realWorldTestSourceSet.runtimeClasspath
     systemProperty("arkivo.zstd.testDataDirectory", zstdTestDataDirectory.get().asFile.absolutePath)
 }

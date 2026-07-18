@@ -64,9 +64,6 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
-import java.time.DateTimeException;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.CRC32;
@@ -421,11 +418,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         long dataOffset = dataOffset(entry);
         int compressionMethod = entry.compressionMethod();
         if (compressionMethod == ZipMethod.STORED.id() && !entry.encrypted()) {
-            return new ValidatingStoredEntryByteChannel(
-                    new BoundedSeekableByteChannel(openArchiveChannel(), dataOffset, entry.compressedSize),
-                    entry.crc32,
-                    entry.uncompressedSize
-            );
+            return openStoredEntryByteChannel(entry, dataOffset);
         }
         if (compressionMethod == ZipMethod.STORED.id()
                 || compressionMethod == ZipMethod.DEFLATED.id()
@@ -437,6 +430,30 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             return newDecodedEntryByteChannel(path, entry, dataOffset);
         }
         throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
+    }
+
+    /// Opens a validating stored-entry channel while preserving single-channel source lifecycle semantics.
+    private SeekableByteChannel openStoredEntryByteChannel(ZipEntryRecord entry, long dataOffset) throws IOException {
+        SeekableByteChannel archive = openArchiveChannel();
+        boolean completed = false;
+        Throwable failure = null;
+        try {
+            validateEntryDataDescriptor(archive, dataOffset, entry);
+            SeekableByteChannel result = new ValidatingStoredEntryByteChannel(
+                    new BoundedSeekableByteChannel(archive, dataOffset, entry.compressedSize),
+                    entry.crc32,
+                    entry.uncompressedSize
+            );
+            completed = true;
+            return result;
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            if (!completed) {
+                closeAfterFailedOpen(archive, failure);
+            }
+        }
     }
 
     /// Opens an input stream for an entry path.
@@ -688,6 +705,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         values.put("versionNeededToExtract", attributes.versionNeededToExtract());
         values.put("internalAttributes", attributes.internalAttributes());
         values.put("externalAttributes", attributes.externalAttributes());
+        values.put("userId", attributes.userId());
+        values.put("groupId", attributes.groupId());
         values.put("compressionMethodId", attributes.compressionMethodId());
         values.put("compressionMethod", attributes.compressionMethod());
         values.put("encryption", attributes.encryption());
@@ -737,6 +756,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             case "versionNeededToExtract" -> requireZipView(values, name, zipView, attributes.versionNeededToExtract());
             case "internalAttributes" -> requireZipView(values, name, zipView, attributes.internalAttributes());
             case "externalAttributes" -> requireZipView(values, name, zipView, attributes.externalAttributes());
+            case "userId" -> requireZipView(values, name, zipView, attributes.userId());
+            case "groupId" -> requireZipView(values, name, zipView, attributes.groupId());
             case "compressionMethodId" -> requireZipView(values, name, zipView, attributes.compressionMethodId());
             case "compressionMethod" -> requireZipView(values, name, zipView, attributes.compressionMethod());
             case "encryption" -> requireZipView(values, name, zipView, attributes.encryption());
@@ -887,7 +908,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
                 byte[] rawPath = readBytes(centralDirectory, variableOffset, nameLength);
                 byte[] extraData = readBytes(centralDirectory, variableOffset + nameLength, extraLength);
-                ZipExtraFields.validate(extraData);
+                ZipExtraFields.validateForReading(extraData);
                 byte[] rawComment = readBytes(centralDirectory, variableOffset + nameLength + extraLength, commentLength);
                 Zip64Values zip64 = Zip64Values.read(
                         extraData,
@@ -926,18 +947,19 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 if (key.isEmpty()) {
                     throw new IOException("ZIP entry is missing a path");
                 }
+                decodedPath = decodedPath.replace('\\', '/');
                 boolean directory = decodedPath.endsWith("/");
-                long actualLocalHeaderOffset = checkedZipOffsetAdd(
+                long storedLocalHeaderOffset = checkedZipOffsetAdd(
                         channel.volumeStartOffset(localHeaderDiskNumber),
                         localHeaderOffset,
                         "local header offset"
                 );
-                actualLocalHeaderOffset = checkedZipOffsetAdd(
-                        actualLocalHeaderOffset,
-                        endRecord.offsetAdjustment,
-                        "local header offset"
+                long actualLocalHeaderOffset = resolveLocalHeaderOffset(
+                        channel,
+                        storedLocalHeaderOffset,
+                        endRecord.offsetAdjustment
                 );
-                byte[] localExtraData = readLocalExtraData(
+                LocalHeaderMetadata localHeader = readLocalHeaderMetadata(
                         channel,
                         actualLocalHeaderOffset,
                         rawPath,
@@ -947,6 +969,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         compressedSize,
                         uncompressedSize,
                         extraData
+                );
+                ZipExtraFieldMetadata.EntryMetadata entryMetadata = ZipExtraFieldMetadata.resolve(
+                        localHeader.extraData,
+                        extraData,
+                        ZipExtraFieldMetadata.dosTime(lastModifiedDate, lastModifiedTime)
                 );
                 ZipEntryRecord entry = new ZipEntryRecord(
                         key,
@@ -962,13 +989,20 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         externalAttributes,
                         method,
                         actualLocalHeaderOffset,
-                        localExtraData,
+                        localHeader.extraData,
                         extraData,
                         decodedComment,
                         rawComment.length > 0 ? rawComment : null,
                         lastModifiedTime,
-                        dosTime(lastModifiedDate, lastModifiedTime),
-                        directory
+                        entryMetadata,
+                        directory,
+                        localHeader.usesDataDescriptor()
+                );
+                validateLocalRecord(
+                        channel,
+                        entry,
+                        localHeader.dataOffset,
+                        endRecord.actualCentralDirectoryOffset
                 );
                 if (entries.put(key, entry) != null) {
                     throw new IOException("Duplicate ZIP entry path: " + decodedPath);
@@ -1152,7 +1186,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
             byte[] rawPath = readBytes(buffer, variableOffset, nameLength);
             byte[] extraData = readBytes(buffer, variableOffset + nameLength, extraLength);
-            ZipExtraFields.validate(extraData);
+            ZipExtraFields.validateForReading(extraData);
             String decodedPath;
             try {
                 decodedPath = decoder.decodePath(
@@ -1202,7 +1236,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         long dataOffset = localHeaderVariableOffset(entry.localHeaderOffset, nameLength, "local file data offset");
         dataOffset = checkedZipOffsetAdd(dataOffset, extraLength, "local file data offset");
         long recordEnd = checkedZipOffsetAdd(dataOffset, entry.compressedSize, "local file data end");
-        if ((entry.generalPurposeFlags & DATA_DESCRIPTOR_FLAG) != 0) {
+        if (entry.localDataDescriptor) {
             recordEnd = checkedZipOffsetAdd(
                     recordEnd,
                     dataDescriptorSize(channel, recordEnd, entry),
@@ -1218,11 +1252,44 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         );
     }
 
+    /// Validates that local entry data and a structurally valid optional descriptor end before the central directory.
+    ///
+    /// The descriptor CRC is deliberately deferred until that entry is read or its raw local record is copied. This
+    /// keeps an unrelated bad entry CRC from making every other entry in the archive inaccessible.
+    private static void validateLocalRecord(
+            SeekableByteChannel channel,
+            ZipEntryRecord entry,
+            long dataOffset,
+            long centralDirectoryOffset
+    ) throws IOException {
+        long recordEnd = checkedZipOffsetAdd(dataOffset, entry.compressedSize, "local file data end");
+        if (entry.localDataDescriptor) {
+            recordEnd = checkedZipOffsetAdd(
+                    recordEnd,
+                    dataDescriptorSize(channel, recordEnd, entry, false),
+                    "local record end"
+            );
+        }
+        if (recordEnd > centralDirectoryOffset) {
+            throw new IOException("ZIP local record extends into the central directory: " + entry.path);
+        }
+    }
+
     /// Returns the exact size of a ZIP32 or ZIP64 data descriptor at the given offset.
     private static int dataDescriptorSize(
             SeekableByteChannel channel,
             long offset,
             ZipEntryRecord entry
+    ) throws IOException {
+        return dataDescriptorSize(channel, offset, entry, true);
+    }
+
+    /// Returns a descriptor size while optionally requiring its CRC to match central-directory metadata.
+    private static int dataDescriptorSize(
+            SeekableByteChannel channel,
+            long offset,
+            ZipEntryRecord entry,
+            boolean requireCrc
     ) throws IOException {
         long remaining = channel.size() - offset;
         if (remaining < 12) {
@@ -1241,26 +1308,26 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         ) != null;
         int size;
         if (preferZip64) {
-            size = matchingDataDescriptorSize(descriptor, entry, true, true);
+            size = matchingDataDescriptorSize(descriptor, entry, true, true, requireCrc);
             if (size < 0) {
-                size = matchingDataDescriptorSize(descriptor, entry, false, true);
+                size = matchingDataDescriptorSize(descriptor, entry, false, true, requireCrc);
             }
             if (size < 0) {
-                size = matchingDataDescriptorSize(descriptor, entry, true, false);
+                size = matchingDataDescriptorSize(descriptor, entry, true, false, requireCrc);
             }
             if (size < 0) {
-                size = matchingDataDescriptorSize(descriptor, entry, false, false);
+                size = matchingDataDescriptorSize(descriptor, entry, false, false, requireCrc);
             }
         } else {
-            size = matchingDataDescriptorSize(descriptor, entry, true, false);
+            size = matchingDataDescriptorSize(descriptor, entry, true, false, requireCrc);
             if (size < 0) {
-                size = matchingDataDescriptorSize(descriptor, entry, false, false);
+                size = matchingDataDescriptorSize(descriptor, entry, false, false, requireCrc);
             }
             if (size < 0) {
-                size = matchingDataDescriptorSize(descriptor, entry, true, true);
+                size = matchingDataDescriptorSize(descriptor, entry, true, true, requireCrc);
             }
             if (size < 0) {
-                size = matchingDataDescriptorSize(descriptor, entry, false, true);
+                size = matchingDataDescriptorSize(descriptor, entry, false, true, requireCrc);
             }
         }
         if (size < 0) {
@@ -1279,7 +1346,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             ByteBuffer descriptor,
             ZipEntryRecord entry,
             boolean signature,
-            boolean zip64
+            boolean zip64,
+            boolean requireCrc
     ) {
         int size = (signature ? Integer.BYTES : 0)
                 + Integer.BYTES
@@ -1298,7 +1366,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         if (compressedSize < 0 || uncompressedSize < 0) {
             return -1;
         }
-        return crc32 == entry.crc32
+        return (!requireCrc || crc32 == entry.crc32)
                 && compressedSize == entry.compressedSize
                 && uncompressedSize == entry.uncompressedSize
                 ? size
@@ -1441,6 +1509,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         boolean completed = false;
         Throwable failure = null;
         try {
+            validateEntryDataDescriptor(archive, dataOffset, entry);
             SeekableByteChannel compressed = new BoundedSeekableByteChannel(archive, dataOffset, entry.compressedSize);
             InputStream input = Channels.newInputStream(compressed);
             ZipAesExtraField aes = entry.aesExtraField();
@@ -1474,6 +1543,23 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 closeAfterFailedOpen(archive, failure);
             }
         }
+    }
+
+    /// Validates the complete data descriptor for the entry currently being opened.
+    private static void validateEntryDataDescriptor(
+            SeekableByteChannel channel,
+            long dataOffset,
+            ZipEntryRecord entry
+    ) throws IOException {
+        if (!entry.localDataDescriptor) {
+            return;
+        }
+        long descriptorOffset = checkedZipOffsetAdd(
+                dataOffset,
+                entry.compressedSize,
+                "ZIP data descriptor offset"
+        );
+        dataDescriptorSize(channel, descriptorOffset, entry);
     }
 
     /// Opens a raw Deflate decoding stream and owns the compressed stream.
@@ -1759,8 +1845,40 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         return bytes;
     }
 
-    /// Reads raw local file header extra data and validates local header metadata.
-    private static byte[] readLocalExtraData(
+    /// Resolves a local header offset while tolerating descriptors omitted from later stored offsets.
+    private static long resolveLocalHeaderOffset(
+            SeekableByteChannel channel,
+            long storedOffset,
+            long archiveOffsetAdjustment
+    ) throws IOException {
+        long adjustedOffset = checkedZipOffsetAdd(
+                storedOffset,
+                archiveOffsetAdjustment,
+                "local header offset"
+        );
+        if (hasLocalFileHeaderSignature(channel, adjustedOffset)) {
+            return adjustedOffset;
+        }
+        if (archiveOffsetAdjustment != 0 && hasLocalFileHeaderSignature(channel, storedOffset)) {
+            return storedOffset;
+        }
+        return adjustedOffset;
+    }
+
+    /// Returns whether the given physical offset begins with a local file header signature.
+    private static boolean hasLocalFileHeaderSignature(SeekableByteChannel channel, long offset) throws IOException {
+        long size = channel.size();
+        if (offset < 0 || size < Integer.BYTES || offset > size - Integer.BYTES) {
+            return false;
+        }
+        ByteBuffer signature = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
+        readFully(channel, offset, signature);
+        signature.flip();
+        return signature.getInt() == LOCAL_FILE_HEADER_SIGNATURE;
+    }
+
+    /// Reads and validates metadata from a local file header.
+    private static LocalHeaderMetadata readLocalHeaderMetadata(
             SeekableByteChannel channel,
             long offset,
             byte[] expectedName,
@@ -1809,7 +1927,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         ByteBuffer extra = ByteBuffer.allocate(extraLength);
         readFully(channel, extraOffset, extra);
         byte[] extraData = extra.array();
-        ZipExtraFields.validate(extraData);
+        ZipExtraFields.validateForReading(extraData);
         validateLocalAesExtraData(flags, method, extraData, expectedExtraData);
         if ((flags & DATA_DESCRIPTOR_FLAG) == 0) {
             if (crc32 != expectedCrc32) {
@@ -1823,7 +1941,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 throw new IOException("ZIP local header uncompressed size does not match central directory");
             }
         }
-        return extraData;
+        long dataOffset = checkedZipOffsetAdd(extraOffset, extraLength, "local file data offset");
+        return new LocalHeaderMetadata(extraData, flags, dataOffset);
     }
 
     /// Validates local WinZip AES metadata against the central directory metadata that drives entry decoding.
@@ -1862,23 +1981,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         return checkedZipOffsetAdd(offset, nameLength, description);
     }
 
-    /// Converts ZIP DOS date and time fields to a file time.
-    private static FileTime dosTime(int date, int time) {
-        int day = date & 0x1f;
-        int month = (date >>> 5) & 0x0f;
-        int year = ((date >>> 9) & 0x7f) + 1980;
-        int second = (time & 0x1f) * 2;
-        int minute = (time >>> 5) & 0x3f;
-        int hour = (time >>> 11) & 0x1f;
-        try {
-            return FileTime.from(LocalDateTime.of(year, month, day, hour, minute, second)
-                    .atZone(ZoneId.systemDefault())
-                    .toInstant());
-        } catch (DateTimeException exception) {
-            return FileTime.fromMillis(0);
-        }
-    }
-
     /// Reads the ZIP end of central directory record needed for central directory indexing.
     private static ZipEndRecord readEndRecord(ArchiveChannel channel) throws IOException {
         long size = channel.size();
@@ -1915,8 +2017,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     index + ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE,
                     commentLength
             );
-            if (centralDirectorySize == UINT32_MAX || centralDirectoryOffset == UINT32_MAX) {
-                return readZip64EndRecord(channel, searchOffset + index, archiveComment);
+            long eocdOffset = searchOffset + index;
+            if (hasZip64EndLocator(channel, eocdOffset)) {
+                return readZip64EndRecord(channel, eocdOffset, archiveComment);
             }
 
             int centralDirectoryDiskNumber = Short.toUnsignedInt(buffer.getShort(index + 6));
@@ -1947,6 +2050,18 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             throw new IOException("ZIP central directory is too large to index");
         }
         return (int) size;
+    }
+
+    /// Returns whether a ZIP64 locator immediately precedes the classic end record.
+    private static boolean hasZip64EndLocator(ArchiveChannel channel, long eocdOffset) throws IOException {
+        long locatorOffset = eocdOffset - ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE;
+        if (locatorOffset < 0) {
+            return false;
+        }
+        ByteBuffer signature = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
+        readFully(channel, locatorOffset, signature);
+        signature.flip();
+        return signature.getInt() == ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE;
     }
 
     /// Reads ZIP64 central directory location from the ZIP64 end records.
@@ -2178,7 +2293,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     buffer.getInt(index + ZIP_END_OF_CENTRAL_DIRECTORY_OFFSET_OFFSET)
             );
 
-            if (centralDirectorySize == UINT32_MAX || centralDirectoryOffset == UINT32_MAX) {
+            if (hasZip64EndLocator(channel, searchOffset + index)) {
                 long firstLocalHeaderOffset = locateFirstLocalFileHeaderOffset(channel, size);
                 if (firstLocalHeaderOffset >= 0) {
                     return normalizedPreambleRange(channel, firstLocalHeaderOffset);
@@ -2657,6 +2772,30 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
     }
 
+    /// Stores validated metadata read from one local file header.
+    private static final class LocalHeaderMetadata {
+        /// The raw local extra data.
+        private final byte @Unmodifiable [] extraData;
+
+        /// The local general purpose bit flags.
+        private final int generalPurposeFlags;
+
+        /// The physical offset at which compressed entry data begins.
+        private final long dataOffset;
+
+        /// Creates validated local file header metadata.
+        private LocalHeaderMetadata(byte[] extraData, int generalPurposeFlags, long dataOffset) {
+            this.extraData = Objects.requireNonNull(extraData, "extraData");
+            this.generalPurposeFlags = generalPurposeFlags;
+            this.dataOffset = dataOffset;
+        }
+
+        /// Returns whether the local header declares a trailing data descriptor.
+        private boolean usesDataDescriptor() {
+            return (generalPurposeFlags & DATA_DESCRIPTOR_FLAG) != 0;
+        }
+    }
+
     /// Stores parsed ZIP central directory metadata for one entry.
     private static final class ZipEntryRecord {
         /// The normalized entry key used by the file system index.
@@ -2713,11 +2852,14 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// The raw DOS last modification time field.
         private final int lastModifiedDosTime;
 
-        /// The last modified time.
-        private final FileTime lastModifiedTime;
+        /// The metadata resolved from DOS fields and recognized extra fields.
+        private final ZipExtraFieldMetadata.EntryMetadata entryMetadata;
 
         /// Whether this entry is a directory.
         private final boolean directory;
+
+        /// Whether the local header declares a trailing data descriptor.
+        private final boolean localDataDescriptor;
 
         /// Creates parsed ZIP central directory metadata for one entry.
         private ZipEntryRecord(
@@ -2739,8 +2881,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 @Nullable String comment,
                 byte @Nullable [] rawComment,
                 int lastModifiedDosTime,
-                FileTime lastModifiedTime,
-                boolean directory
+                ZipExtraFieldMetadata.EntryMetadata entryMetadata,
+                boolean directory,
+                boolean localDataDescriptor
         ) {
             this.key = key;
             this.rawPath = rawPath;
@@ -2760,8 +2903,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             this.comment = comment;
             this.rawComment = rawComment;
             this.lastModifiedDosTime = lastModifiedDosTime;
-            this.lastModifiedTime = lastModifiedTime;
+            this.entryMetadata = entryMetadata;
             this.directory = directory;
+            this.localDataDescriptor = localDataDescriptor;
         }
 
         /// Returns whether this entry is encrypted.
@@ -2944,6 +3088,20 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             return record != null ? record.externalAttributes : 0;
         }
 
+        /// Returns the numeric Unix owner user identifier, or `UNKNOWN_UNIX_ID` when absent.
+        @Override
+        public long userId() {
+            ZipEntryRecord record = entry;
+            return record != null ? record.entryMetadata.userId() : UNKNOWN_UNIX_ID;
+        }
+
+        /// Returns the numeric Unix owner group identifier, or `UNKNOWN_UNIX_ID` when absent.
+        @Override
+        public long groupId() {
+            ZipEntryRecord record = entry;
+            return record != null ? record.entryMetadata.groupId() : UNKNOWN_UNIX_ID;
+        }
+
         /// Returns the numeric ZIP compression method identifier after resolving WinZip AES metadata.
         @Override
         public int compressionMethodId() {
@@ -2989,19 +3147,21 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         @Override
         public FileTime lastModifiedTime() {
             ZipEntryRecord record = entry;
-            return record != null ? record.lastModifiedTime : FileTime.fromMillis(0);
+            return record != null ? record.entryMetadata.lastModifiedTime() : FileTime.fromMillis(0);
         }
 
         /// Returns the last access time.
         @Override
         public FileTime lastAccessTime() {
-            return lastModifiedTime();
+            ZipEntryRecord record = entry;
+            return record != null ? record.entryMetadata.lastAccessTime() : FileTime.fromMillis(0);
         }
 
         /// Returns the creation time.
         @Override
         public FileTime creationTime() {
-            return lastModifiedTime();
+            ZipEntryRecord record = entry;
+            return record != null ? record.entryMetadata.creationTime() : FileTime.fromMillis(0);
         }
 
         /// Returns whether this path is a regular file.
@@ -3047,16 +3207,16 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             return record != null ? record.key : syntheticDirectoryKey;
         }
 
-        /// Returns the synthesized owner.
+        /// Returns the owner represented by numeric Unix metadata, or the synthesized owner when absent.
         @Override
         public UserPrincipal owner() {
-            return ZipPosixSupport.DEFAULT_OWNER;
+            return ZipPosixSupport.owner(userId());
         }
 
-        /// Returns the synthesized group.
+        /// Returns the group represented by numeric Unix metadata, or the synthesized group when absent.
         @Override
         public GroupPrincipal group() {
-            return ZipPosixSupport.DEFAULT_GROUP;
+            return ZipPosixSupport.group(groupId());
         }
 
         /// Returns synthesized POSIX permissions.

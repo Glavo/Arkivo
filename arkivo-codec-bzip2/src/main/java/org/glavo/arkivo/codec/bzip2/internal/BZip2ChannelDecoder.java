@@ -530,11 +530,15 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
         }
         int selectorCount = bits.readBits(15);
         int maximumSelectorCount = 2 + blockSizeLimit / GROUP_SIZE;
-        if (selectorCount < 1 || selectorCount > maximumSelectorCount) {
+        if (selectorCount < 1) {
             throw new IOException("Invalid BZip2 selector count: " + selectorCount);
         }
 
-        byte[] selectors = readSelectors(groupCount, selectorCount);
+        byte[] selectors = readSelectors(
+                groupCount,
+                selectorCount,
+                Math.min(selectorCount, maximumSelectorCount)
+        );
         HuffmanTree[] trees = readHuffmanTrees(groupCount, alphabetSize);
         byte[] lastColumn = decodeLastColumn(usedBytes, selectors, trees);
         if (lastColumn.length == 0 || originalPointer < 0 || originalPointer >= lastColumn.length) {
@@ -581,20 +585,27 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
         return Arrays.copyOf(values, count);
     }
 
-    /// Reads and expands the move-to-front encoded Huffman selectors.
-    private byte[] readSelectors(int groupCount, int selectorCount) throws IOException {
-        byte[] selectors = new byte[selectorCount];
+    /// Reads every declared selector while retaining the prefix that the current block can use.
+    private byte[] readSelectors(
+            int groupCount,
+            int declaredSelectorCount,
+            int retainedSelectorCount
+    ) throws IOException {
+        byte[] selectors = new byte[retainedSelectorCount];
         byte[] moveToFront = new byte[groupCount];
         for (int index = 0; index < groupCount; index++) {
             moveToFront[index] = (byte) index;
         }
-        for (int index = 0; index < selectorCount; index++) {
+        for (int index = 0; index < declaredSelectorCount; index++) {
             int position = 0;
             while (bits.readBit()) {
                 position++;
                 if (position >= groupCount) {
                     throw new IOException("Invalid BZip2 selector MTF value");
                 }
+            }
+            if (index >= retainedSelectorCount) {
+                continue;
             }
             byte selector = moveToFront[position];
             System.arraycopy(moveToFront, 0, moveToFront, 1, position);

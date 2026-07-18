@@ -25,6 +25,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -151,7 +152,10 @@ final class TarArkivoSparseTest {
             assertFalse(attributes.isOther());
             assertEquals(expandedContent.length, attributes.size());
             assertEquals(FileTime.from(Instant.ofEpochSecond(11L)), attributes.lastAccessTime());
-            assertEquals(FileTime.from(Instant.ofEpochSecond(12L)), attributes.creationTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(11L)), attributes.recordedLastAccessTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(12L)), attributes.recordedStatusChangeTime());
+            assertNull(attributes.recordedCreationTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(10L)), attributes.creationTime());
             try (InputStream body = reader.openInputStream()) {
                 assertArrayEquals(expandedContent, body.readAllBytes());
             }

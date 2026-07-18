@@ -79,11 +79,14 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     /// The last modified time.
     private final FileTime lastModifiedTime;
 
-    /// The last access time.
-    private final FileTime lastAccessTime;
+    /// The last access time explicitly recorded by the archive, or `null` when absent.
+    private final @Nullable FileTime recordedLastAccessTime;
 
-    /// The creation time.
-    private final FileTime creationTime;
+    /// The inode status change time explicitly recorded by the archive, or `null` when absent.
+    private final @Nullable FileTime recordedStatusChangeTime;
+
+    /// The creation time explicitly recorded by the archive, or `null` when absent.
+    private final @Nullable FileTime recordedCreationTime;
 
     /// Creates parsed TAR entry attributes.
     TarEntryAttributes(
@@ -97,8 +100,9 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
             @Nullable String linkName,
             long size,
             FileTime lastModifiedTime,
-            FileTime lastAccessTime,
-            FileTime creationTime
+            @Nullable FileTime recordedLastAccessTime,
+            @Nullable FileTime recordedStatusChangeTime,
+            @Nullable FileTime recordedCreationTime
     ) {
         if (size < 0) {
             throw new IllegalArgumentException("size must not be negative");
@@ -113,8 +117,9 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
         this.linkName = linkName;
         this.size = size;
         this.lastModifiedTime = Objects.requireNonNull(lastModifiedTime, "lastModifiedTime");
-        this.lastAccessTime = Objects.requireNonNull(lastAccessTime, "lastAccessTime");
-        this.creationTime = Objects.requireNonNull(creationTime, "creationTime");
+        this.recordedLastAccessTime = recordedLastAccessTime;
+        this.recordedStatusChangeTime = recordedStatusChangeTime;
+        this.recordedCreationTime = recordedCreationTime;
     }
 
     /// Returns the decoded TAR entry path.
@@ -171,16 +176,34 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
         return lastModifiedTime;
     }
 
-    /// Returns the last access time.
+    /// Returns the last access time, falling back to the last modification time when absent.
     @Override
     public FileTime lastAccessTime() {
-        return lastAccessTime;
+        return recordedLastAccessTime != null ? recordedLastAccessTime : lastModifiedTime;
     }
 
-    /// Returns the creation time.
+    /// Returns the creation time, falling back to the last modification time when absent.
     @Override
     public FileTime creationTime() {
-        return creationTime;
+        return recordedCreationTime != null ? recordedCreationTime : lastModifiedTime;
+    }
+
+    /// Returns the last access time explicitly recorded by the archive.
+    @Override
+    public @Nullable FileTime recordedLastAccessTime() {
+        return recordedLastAccessTime;
+    }
+
+    /// Returns the inode status change time explicitly recorded by the archive.
+    @Override
+    public @Nullable FileTime recordedStatusChangeTime() {
+        return recordedStatusChangeTime;
+    }
+
+    /// Returns the creation time explicitly recorded by the archive.
+    @Override
+    public @Nullable FileTime recordedCreationTime() {
+        return recordedCreationTime;
     }
 
     /// Returns whether this entry is a regular file.
