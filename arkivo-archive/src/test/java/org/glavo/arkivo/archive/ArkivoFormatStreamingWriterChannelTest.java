@@ -22,16 +22,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies that archive streaming writer formats are channel-first.
 @NotNullByDefault
-public final class ArkivoStreamingWriterFormatChannelTest {
+public final class ArkivoFormatStreamingWriterChannelTest {
     /// Verifies the channel overload is the implementation contract and the stream overload is an adapter.
     @Test
     public void channelMethodDefinesImplementationContract() throws NoSuchMethodException {
-        Method channelMethod = ArkivoStreamingWriterFormat.class.getMethod(
+        Method channelMethod = ArkivoFormat.StreamingWriter.class.getMethod(
                 "openStreamingWriter",
                 WritableByteChannel.class,
                 ArchiveCreateOptions.class
         );
-        Method streamMethod = ArkivoStreamingWriterFormat.class.getMethod(
+        Method streamMethod = ArkivoFormat.StreamingWriter.class.getMethod(
                 "openStreamingWriter",
                 OutputStream.class,
                 ArchiveCreateOptions.class
@@ -59,7 +59,7 @@ public final class ArkivoStreamingWriterFormatChannelTest {
 
     /// Records the channel received through the abstract writer contract.
     @NotNullByDefault
-    private static final class TestStreamingWriterFormat implements ArkivoStreamingWriterFormat {
+    private static final class TestStreamingWriterFormat implements ArkivoFormat.StreamingWriter {
         /// The channel received by the implementation.
         private @Nullable WritableByteChannel openedChannel;
 

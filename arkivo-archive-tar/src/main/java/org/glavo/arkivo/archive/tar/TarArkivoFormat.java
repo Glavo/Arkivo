@@ -6,10 +6,10 @@ package org.glavo.arkivo.archive.tar;
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
+import org.glavo.arkivo.archive.ArkivoFormat.FileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
-import org.glavo.arkivo.archive.ArkivoStreamingWriterFormat;
+import org.glavo.arkivo.archive.ArkivoFormat.StreamingReader;
+import org.glavo.arkivo.archive.ArkivoFormat.StreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -32,9 +32,9 @@ import java.util.List;
 /// concrete TAR types.
 @NotNullByDefault
 public final class TarArkivoFormat implements
-        ArkivoFileSystemFormat.Writable,
-        ArkivoStreamingReaderFormat,
-        ArkivoStreamingWriterFormat {
+        FileSystem.Writable,
+        StreamingReader,
+        StreamingWriter {
     /// The size of one TAR header or padding block.
     private static final int BLOCK_SIZE = 512;
 

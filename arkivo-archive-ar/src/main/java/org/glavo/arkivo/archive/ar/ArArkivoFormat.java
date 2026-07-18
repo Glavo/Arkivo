@@ -8,10 +8,10 @@ import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
+import org.glavo.arkivo.archive.ArkivoFormat.FileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
-import org.glavo.arkivo.archive.ArkivoStreamingWriterFormat;
+import org.glavo.arkivo.archive.ArkivoFormat.StreamingReader;
+import org.glavo.arkivo.archive.ArkivoFormat.StreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -34,9 +34,9 @@ import java.util.Objects;
 /// close-time finalization, and update publication contracts as the corresponding concrete AR types.
 @NotNullByDefault
 public final class ArArkivoFormat implements
-        ArkivoFileSystemFormat.Writable,
-        ArkivoStreamingReaderFormat,
-        ArkivoStreamingWriterFormat {
+        FileSystem.Writable,
+        StreamingReader,
+        StreamingWriter {
     /// The stable AR format name.
     public static final String NAME = "ar";
 

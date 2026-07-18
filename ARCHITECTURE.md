@@ -107,9 +107,9 @@ dictionary identity and representation differ between algorithms.
 `ArkivoFormat` is the service-discovered identity of an archive format. Capability subinterfaces describe supported
 operations instead of assuming every container has the same access model:
 
-- `ArkivoFileSystemFormat` opens archives with a stable random-access namespace.
-- `ArkivoStreamingReaderFormat` reads entries from a forward-only source.
-- `ArkivoStreamingWriterFormat` writes entries to a forward-only target.
+- `ArkivoFormat.FileSystem` opens archives with a stable random-access namespace.
+- `ArkivoFormat.StreamingReader` reads entries from a forward-only source.
+- `ArkivoFormat.StreamingWriter` writes entries to a forward-only target.
 - volume capability interfaces accept logical multi-volume sources and targets.
 
 `ArkivoFormats` performs discovery and selects only formats implementing the capability required by the requested

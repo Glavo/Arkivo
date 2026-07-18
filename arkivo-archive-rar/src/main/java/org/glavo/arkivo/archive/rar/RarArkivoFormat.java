@@ -4,10 +4,10 @@
 package org.glavo.arkivo.archive.rar;
 
 import org.glavo.arkivo.archive.ArchiveReadOptions;
-import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
-import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
+import org.glavo.arkivo.archive.ArkivoFormat.PathVolume;
+import org.glavo.arkivo.archive.ArkivoFormat.VolumeFileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoVolumeStreamingReaderFormat;
+import org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.internal.RarSplitVolumePaths;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -32,9 +32,9 @@ import java.util.Objects;
 /// [RarArkivoStreamingReader].
 @NotNullByDefault
 public final class RarArkivoFormat implements
-        ArkivoPathVolumeFormat,
-        ArkivoVolumeFileSystemFormat,
-        ArkivoVolumeStreamingReaderFormat {
+        PathVolume,
+        VolumeFileSystem,
+        VolumeStreamingReader {
     /// The stable RAR format name.
     public static final String NAME = "rar";
 

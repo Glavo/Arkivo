@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies path-backed volume discovery and source construction.
 @NotNullByDefault
-public final class ArkivoPathVolumeFormatTest {
+public final class ArkivoFormatPathVolumeTest {
     /// Temporary paths used by each test.
     @TempDir
     public Path temporaryDirectory;
@@ -86,7 +86,7 @@ public final class ArkivoPathVolumeFormatTest {
     @NotNullByDefault
     private record TestPathVolumeFormat(
             @Nullable @Unmodifiable List<Path> paths
-    ) implements ArkivoPathVolumeFormat {
+    ) implements ArkivoFormat.PathVolume {
         /// Creates one test format with an immutable discovery result.
         private TestPathVolumeFormat {
             if (paths != null) {

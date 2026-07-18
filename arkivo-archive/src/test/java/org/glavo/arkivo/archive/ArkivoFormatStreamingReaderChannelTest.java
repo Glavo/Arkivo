@@ -26,16 +26,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies that archive streaming format implementations are channel-first.
 @NotNullByDefault
-public final class ArkivoStreamingReaderFormatChannelTest {
+public final class ArkivoFormatStreamingReaderChannelTest {
     /// Verifies the channel overload is the implementation contract and the stream overload is an adapter.
     @Test
     public void channelMethodDefinesImplementationContract() throws NoSuchMethodException {
-        Method channelMethod = ArkivoStreamingReaderFormat.class.getMethod(
+        Method channelMethod = ArkivoFormat.StreamingReader.class.getMethod(
                 "openStreamingReader",
                 ReadableByteChannel.class,
                 ArchiveReadOptions.class
         );
-        Method streamMethod = ArkivoStreamingReaderFormat.class.getMethod(
+        Method streamMethod = ArkivoFormat.StreamingReader.class.getMethod(
                 "openStreamingReader",
                 InputStream.class,
                 ArchiveReadOptions.class
@@ -96,7 +96,7 @@ public final class ArkivoStreamingReaderFormatChannelTest {
 
     /// Records the channel received through the abstract format contract.
     @NotNullByDefault
-    private static final class TestStreamingReaderFormat implements ArkivoStreamingReaderFormat {
+    private static final class TestStreamingReaderFormat implements ArkivoFormat.StreamingReader {
         /// The channel received by the implementation.
         private @Nullable ReadableByteChannel openedChannel;
 
@@ -119,7 +119,7 @@ public final class ArkivoStreamingReaderFormatChannelTest {
 
     /// Records and rejects the channel received through the path adapter.
     @NotNullByDefault
-    private static final class FailingStreamingReaderFormat implements ArkivoStreamingReaderFormat {
+    private static final class FailingStreamingReaderFormat implements ArkivoFormat.StreamingReader {
         /// The channel received before setup fails.
         private @Nullable ReadableByteChannel openedChannel;
 

@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
@@ -78,10 +77,10 @@ final class AllAggregationTest {
                 .collect(Collectors.toUnmodifiableSet());
 
         assertEquals(Set.of("7z", "ar", "cpio", "rar", "tar", "zip"), archiveFormatNames);
-        assertFalse(requireFormat(CPIOArkivoFormat.NAME) instanceof ArkivoFileSystemFormat);
+        assertFalse(requireFormat(CPIOArkivoFormat.NAME) instanceof ArkivoFormat.FileSystem);
         assertTrue(ArkivoFormats.installed().stream()
                 .filter(format -> !CPIOArkivoFormat.NAME.equals(format.name()))
-                .allMatch(ArkivoFileSystemFormat.class::isInstance));
+                .allMatch(ArkivoFormat.FileSystem.class::isInstance));
         assertEquals(
                 Set.of(
                         "bzip2",

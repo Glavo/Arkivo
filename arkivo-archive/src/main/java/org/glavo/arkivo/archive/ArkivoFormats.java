@@ -157,7 +157,7 @@ public final class ArkivoFormats {
     ///
     /// @param source the seekable channel whose ownership is transferred after argument validation
     /// @return a new read-only archive file system
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support file-system access
     public static ArkivoFileSystem openFileSystem(SeekableByteChannel source) throws IOException {
         return openFileSystem(source, ArchiveReadOptions.DEFAULT);
@@ -167,10 +167,10 @@ public final class ArkivoFormats {
     ///
     /// After argument validation, this method takes ownership of the channel and closes it when detection or setup fails.
     ///
-    /// @param source the seekable channel whose ownership is transferred after argument validation
+    /// @param source  the seekable channel whose ownership is transferred after argument validation
     /// @param options the read and lifecycle options
     /// @return a new archive file system
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support file-system access
     public static ArkivoFileSystem openFileSystem(
             SeekableByteChannel source,
@@ -183,7 +183,7 @@ public final class ArkivoFormats {
             if (format == null) {
                 throw new IOException("Unrecognized archive format");
             }
-            if (!(format instanceof ArkivoFileSystemFormat fileSystemFormat)) {
+            if (!(format instanceof ArkivoFormat.FileSystem fileSystemFormat)) {
                 throw new UnsupportedOperationException(
                         "Archive format does not support file-system access: " + format.name()
                 );
@@ -199,7 +199,7 @@ public final class ArkivoFormats {
     ///
     /// @param path the archive path
     /// @return a new read-only archive file system
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support file-system access
     public static ArkivoFileSystem openFileSystem(Path path) throws IOException {
         return openFileSystem(path, ArchiveReadOptions.DEFAULT);
@@ -207,10 +207,10 @@ public final class ArkivoFormats {
 
     /// Detects and opens an archive file system from a path with options.
     ///
-    /// @param path the archive path
+    /// @param path    the archive path
     /// @param options the read and lifecycle options
     /// @return a new archive file system
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support file-system access
     public static ArkivoFileSystem openFileSystem(
             Path path,
@@ -225,7 +225,7 @@ public final class ArkivoFormats {
         if (format == null) {
             throw new IOException("Unrecognized archive format");
         }
-        if (!(format instanceof ArkivoFileSystemFormat fileSystemFormat)) {
+        if (!(format instanceof ArkivoFormat.FileSystem fileSystemFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support file-system access: " + format.name()
             );
@@ -236,10 +236,10 @@ public final class ArkivoFormats {
     /// Opens an owning archive file system for the named installed format from one seekable channel.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the channel whose ownership is transferred after argument validation
+    /// @param source     the channel whose ownership is transferred after argument validation
     /// @return a new read-only archive file system
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support file-system access
     public static ArkivoFileSystem openFileSystem(
             String formatName,
@@ -253,11 +253,11 @@ public final class ArkivoFormats {
     /// After argument validation, this method owns the source and closes it when format lookup or setup fails.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the channel whose ownership is transferred after argument validation
-    /// @param options the read and lifecycle options
+    /// @param source     the channel whose ownership is transferred after argument validation
+    /// @param options    the read and lifecycle options
     /// @return a new archive file system
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support file-system access
     public static ArkivoFileSystem openFileSystem(
             String formatName,
@@ -268,7 +268,7 @@ public final class ArkivoFormats {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         try {
-            ArkivoFileSystemFormat format = requireFileSystemFormat(formatName);
+            ArkivoFormat.FileSystem format = requireFileSystemFormat(formatName);
             return format.open(source, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterFailedOpen(source, exception);
@@ -279,10 +279,10 @@ public final class ArkivoFormats {
     /// Opens an archive file system for the named installed format from a path.
     ///
     /// @param formatName the installed format name or alias
-    /// @param path the archive path
+    /// @param path       the archive path
     /// @return a new read-only archive file system
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support file-system access
     public static ArkivoFileSystem openFileSystem(String formatName, Path path) throws IOException {
         return openFileSystem(formatName, path, ArchiveReadOptions.DEFAULT);
@@ -293,11 +293,11 @@ public final class ArkivoFormats {
     /// This method bypasses signature detection and delegates path storage handling to the selected format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param path the archive path
-    /// @param options the read and lifecycle options
+    /// @param path       the archive path
+    /// @param options    the read and lifecycle options
     /// @return a new archive file system
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support file-system access
     public static ArkivoFileSystem openFileSystem(
             String formatName,
@@ -314,7 +314,7 @@ public final class ArkivoFormats {
     ///
     /// @param source the repeatable source whose ownership is transferred after argument validation
     /// @return a new read-only archive file system
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support file-system access
     public static ArkivoFileSystem openFileSystem(ArkivoSeekableChannelSource source) throws IOException {
         return openFileSystem(source, ArchiveReadOptions.DEFAULT);
@@ -324,10 +324,10 @@ public final class ArkivoFormats {
     ///
     /// After argument validation, this method owns the source and closes it when detection or setup fails.
     ///
-    /// @param source the repeatable source whose ownership is transferred after argument validation
+    /// @param source  the repeatable source whose ownership is transferred after argument validation
     /// @param options the read and lifecycle options
     /// @return a new archive file system
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support file-system access
     public static ArkivoFileSystem openFileSystem(
             ArkivoSeekableChannelSource source,
@@ -341,7 +341,7 @@ public final class ArkivoFormats {
             if (format == null) {
                 throw new IOException("Unrecognized archive format");
             }
-            if (!(format instanceof ArkivoFileSystemFormat fileSystemFormat)) {
+            if (!(format instanceof ArkivoFormat.FileSystem fileSystemFormat)) {
                 throw new UnsupportedOperationException(
                         "Archive format does not support file-system access: " + format.name()
                 );
@@ -357,7 +357,7 @@ public final class ArkivoFormats {
     ///
     /// @param source the volume source whose ownership is transferred after argument validation
     /// @return a new read-only multi-volume archive file system
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support multi-volume file-system access
     public static ArkivoFileSystem openFileSystem(ArkivoVolumeSource source) throws IOException {
         return openFileSystem(source, ArchiveReadOptions.DEFAULT);
@@ -368,10 +368,10 @@ public final class ArkivoFormats {
     /// Detection uses volume zero. After argument validation, this method owns the source and closes it when detection,
     /// capability validation, or setup fails.
     ///
-    /// @param source the volume source whose ownership is transferred after argument validation
+    /// @param source  the volume source whose ownership is transferred after argument validation
     /// @param options the read and lifecycle options
     /// @return a new multi-volume archive file system
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support multi-volume file-system access
     public static ArkivoFileSystem openFileSystem(
             ArkivoVolumeSource source,
@@ -385,7 +385,7 @@ public final class ArkivoFormats {
             if (format == null) {
                 throw new IOException("Unrecognized archive format");
             }
-            if (!(format instanceof ArkivoVolumeFileSystemFormat volumeFormat)) {
+            if (!(format instanceof ArkivoFormat.VolumeFileSystem volumeFormat)) {
                 throw new UnsupportedOperationException(
                         "Archive format does not support multi-volume file-system access: " + format.name()
                 );
@@ -400,10 +400,10 @@ public final class ArkivoFormats {
     /// Opens a read-only archive file system for the named format from an owned repeatable seekable source.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the repeatable source whose ownership is transferred after argument validation
+    /// @param source     the repeatable source whose ownership is transferred after argument validation
     /// @return a new read-only archive file system
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support file-system access
     public static ArkivoFileSystem openFileSystem(
             String formatName,
@@ -415,11 +415,11 @@ public final class ArkivoFormats {
     /// Opens an archive file system with options for the named format from a repeatable seekable source.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the repeatable source whose ownership is transferred after argument validation
-    /// @param options the read and lifecycle options
+    /// @param source     the repeatable source whose ownership is transferred after argument validation
+    /// @param options    the read and lifecycle options
     /// @return a new archive file system
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support file-system access
     public static ArkivoFileSystem openFileSystem(
             String formatName,
@@ -441,10 +441,10 @@ public final class ArkivoFormats {
     /// Opens a read-only multi-volume file system for the named format from an owned volume source.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the volume source whose ownership is transferred after argument validation
+    /// @param source     the volume source whose ownership is transferred after argument validation
     /// @return a new read-only multi-volume archive file system
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support multi-volume file-system access
     public static ArkivoFileSystem openFileSystem(
             String formatName,
@@ -456,11 +456,11 @@ public final class ArkivoFormats {
     /// Opens a multi-volume file system with options for the named format from an owned volume source.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the volume source whose ownership is transferred after argument validation
-    /// @param options the read and lifecycle options
+    /// @param source     the volume source whose ownership is transferred after argument validation
+    /// @param options    the read and lifecycle options
     /// @return a new multi-volume archive file system
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support multi-volume file-system access
     public static ArkivoFileSystem openFileSystem(
             String formatName,
@@ -483,7 +483,7 @@ public final class ArkivoFormats {
     ///
     /// @param path the existing archive path
     /// @return a writable archive file system that publishes a replacement on successful close
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened for update
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened for update
     /// @throws UnsupportedOperationException if the detected format does not support path-backed updates
     public static ArkivoFileSystem updateFileSystem(Path path) throws IOException {
         return updateFileSystem(path, ArchiveUpdateOptions.DEFAULT);
@@ -491,10 +491,10 @@ public final class ArkivoFormats {
 
     /// Detects and opens a complete-rewrite update of an existing path-backed archive with options.
     ///
-    /// @param path the existing archive path
+    /// @param path    the existing archive path
     /// @param options the update, publication, read-limit, and lifecycle options
     /// @return a writable archive file system that publishes a replacement on successful close
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened for update
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened for update
     /// @throws UnsupportedOperationException if the detected format does not support path-backed updates
     public static ArkivoFileSystem updateFileSystem(
             Path path,
@@ -506,7 +506,7 @@ public final class ArkivoFormats {
         if (format == null) {
             throw new IOException("Unrecognized archive format");
         }
-        if (!(format instanceof ArkivoFileSystemFormat.Writable writableFormat)) {
+        if (!(format instanceof ArkivoFormat.FileSystem.Writable writableFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support path-backed file-system updates: " + format.name()
             );
@@ -517,10 +517,10 @@ public final class ArkivoFormats {
     /// Opens a complete-rewrite update for the named path-backed archive format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param path the existing archive path
+    /// @param path       the existing archive path
     /// @return a writable archive file system that publishes a replacement on successful close
-    /// @throws IOException if the archive cannot be opened for update
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened for update
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support path-backed updates
     public static ArkivoFileSystem updateFileSystem(String formatName, Path path) throws IOException {
         return updateFileSystem(formatName, path, ArchiveUpdateOptions.DEFAULT);
@@ -529,11 +529,11 @@ public final class ArkivoFormats {
     /// Opens a complete-rewrite update for the named path-backed archive format with options.
     ///
     /// @param formatName the installed format name or alias
-    /// @param path the existing archive path
-    /// @param options the update, publication, read-limit, and lifecycle options
+    /// @param path       the existing archive path
+    /// @param options    the update, publication, read-limit, and lifecycle options
     /// @return a writable archive file system that publishes a replacement on successful close
-    /// @throws IOException if the archive cannot be opened for update
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened for update
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support path-backed updates
     public static ArkivoFileSystem updateFileSystem(
             String formatName,
@@ -549,10 +549,10 @@ public final class ArkivoFormats {
     /// Creates a new path-backed archive file system for the named format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param path the path at which to create the archive
+    /// @param path       the path at which to create the archive
     /// @return a new writable archive file system
-    /// @throws IOException if the archive backing cannot be created
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive backing cannot be created
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support path-backed creation
     public static ArkivoFileSystem createFileSystem(String formatName, Path path) throws IOException {
         return createFileSystem(formatName, path, ArchiveCreateOptions.DEFAULT);
@@ -561,11 +561,11 @@ public final class ArkivoFormats {
     /// Creates a new path-backed archive file system for the named format with options.
     ///
     /// @param formatName the installed format name or alias
-    /// @param path the path at which to create the archive
-    /// @param options the creation and lifecycle options
+    /// @param path       the path at which to create the archive
+    /// @param options    the creation and lifecycle options
     /// @return a new writable archive file system
-    /// @throws IOException if the archive backing cannot be created
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive backing cannot be created
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support path-backed creation
     public static ArkivoFileSystem createFileSystem(
             String formatName,
@@ -580,12 +580,12 @@ public final class ArkivoFormats {
 
     /// Detects and opens a complete-rewrite update from owned volumes to a transactional volume target.
     ///
-    /// @param source the volume source whose ownership is transferred after argument validation
-    /// @param target the transactional destination for the replacement volumes
+    /// @param source    the volume source whose ownership is transferred after argument validation
+    /// @param target    the transactional destination for the replacement volumes
     /// @param splitSize the positive maximum size of each output volume in bytes
     /// @return a writable archive file system that publishes replacement volumes on successful close
-    /// @throws IOException if the format cannot be detected or the update cannot be opened
-    /// @throws IllegalArgumentException if {@code splitSize} is not positive
+    /// @throws IOException                   if the format cannot be detected or the update cannot be opened
+    /// @throws IllegalArgumentException      if {@code splitSize} is not positive
     /// @throws UnsupportedOperationException if the detected format does not support multi-volume updates
     public static ArkivoFileSystem updateFileSystem(
             ArkivoVolumeSource source,
@@ -600,13 +600,13 @@ public final class ArkivoFormats {
     /// Detection uses volume zero. After argument validation, this method owns the source and closes it when detection,
     /// capability validation, or setup fails. The selected format controls target transaction publication.
     ///
-    /// @param source the volume source whose ownership is transferred after argument validation
-    /// @param target the transactional destination for the replacement volumes
+    /// @param source    the volume source whose ownership is transferred after argument validation
+    /// @param target    the transactional destination for the replacement volumes
     /// @param splitSize the positive maximum size of each output volume in bytes
-    /// @param options the update, publication, read-limit, and lifecycle options
+    /// @param options   the update, publication, read-limit, and lifecycle options
     /// @return a writable archive file system that publishes replacement volumes on successful close
-    /// @throws IOException if the format cannot be detected or the update cannot be opened
-    /// @throws IllegalArgumentException if {@code splitSize} is not positive
+    /// @throws IOException                   if the format cannot be detected or the update cannot be opened
+    /// @throws IllegalArgumentException      if {@code splitSize} is not positive
     /// @throws UnsupportedOperationException if the detected format does not support multi-volume updates
     public static ArkivoFileSystem updateFileSystem(
             ArkivoVolumeSource source,
@@ -624,7 +624,7 @@ public final class ArkivoFormats {
             if (format == null) {
                 throw new IOException("Unrecognized archive format");
             }
-            if (!(format instanceof ArkivoVolumeFileSystemFormat.Writable volumeFormat)) {
+            if (!(format instanceof ArkivoFormat.VolumeFileSystem.Writable volumeFormat)) {
                 throw new UnsupportedOperationException(
                         "Archive format does not support multi-volume file-system updates: " + format.name()
                 );
@@ -639,12 +639,12 @@ public final class ArkivoFormats {
     /// Opens a complete-rewrite multi-volume update for the named installed format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the volume source whose ownership is transferred after argument validation
-    /// @param target the transactional destination for the replacement volumes
-    /// @param splitSize the positive maximum size of each output volume in bytes
+    /// @param source     the volume source whose ownership is transferred after argument validation
+    /// @param target     the transactional destination for the replacement volumes
+    /// @param splitSize  the positive maximum size of each output volume in bytes
     /// @return a writable archive file system that publishes replacement volumes on successful close
-    /// @throws IOException if the update cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName} or {@code splitSize} is not positive
+    /// @throws IOException                   if the update cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName} or {@code splitSize} is not positive
     /// @throws UnsupportedOperationException if the named format does not support multi-volume updates
     public static ArkivoFileSystem updateFileSystem(
             String formatName,
@@ -661,13 +661,13 @@ public final class ArkivoFormats {
     /// detection is bypassed.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the volume source whose ownership is transferred after argument validation
-    /// @param target the transactional destination for the replacement volumes
-    /// @param splitSize the positive maximum size of each output volume in bytes
-    /// @param options the update, publication, read-limit, and lifecycle options
+    /// @param source     the volume source whose ownership is transferred after argument validation
+    /// @param target     the transactional destination for the replacement volumes
+    /// @param splitSize  the positive maximum size of each output volume in bytes
+    /// @param options    the update, publication, read-limit, and lifecycle options
     /// @return a writable archive file system that publishes replacement volumes on successful close
-    /// @throws IOException if the update cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName} or {@code splitSize} is not positive
+    /// @throws IOException                   if the update cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName} or {@code splitSize} is not positive
     /// @throws UnsupportedOperationException if the named format does not support multi-volume updates
     public static ArkivoFileSystem updateFileSystem(
             String formatName,
@@ -693,11 +693,11 @@ public final class ArkivoFormats {
     /// Creates a writable multi-volume file system for the named installed format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param target the transactional destination for the new volumes
-    /// @param splitSize the positive maximum size of each output volume in bytes
+    /// @param target     the transactional destination for the new volumes
+    /// @param splitSize  the positive maximum size of each output volume in bytes
     /// @return a new writable multi-volume archive file system
-    /// @throws IOException if the output transaction cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName} or {@code splitSize} is not positive
+    /// @throws IOException                   if the output transaction cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName} or {@code splitSize} is not positive
     /// @throws UnsupportedOperationException if the named format does not support multi-volume creation
     public static ArkivoFileSystem createFileSystem(
             String formatName,
@@ -712,12 +712,12 @@ public final class ArkivoFormats {
     /// The selected format opens and owns any output transaction created from the target.
     ///
     /// @param formatName the installed format name or alias
-    /// @param target the transactional destination for the new volumes
-    /// @param splitSize the positive maximum size of each output volume in bytes
-    /// @param options the creation and lifecycle options
+    /// @param target     the transactional destination for the new volumes
+    /// @param splitSize  the positive maximum size of each output volume in bytes
+    /// @param options    the creation and lifecycle options
     /// @return a new writable multi-volume archive file system
-    /// @throws IOException if the output transaction cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName} or {@code splitSize} is not positive
+    /// @throws IOException                   if the output transaction cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName} or {@code splitSize} is not positive
     /// @throws UnsupportedOperationException if the named format does not support multi-volume creation
     public static ArkivoFileSystem createFileSystem(
             String formatName,
@@ -736,7 +736,7 @@ public final class ArkivoFormats {
     ///
     /// @param path the archive path or one member of a discoverable volume set
     /// @return a new owning forward-only reader
-    /// @throws IOException if the archive format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the archive format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(Path path) throws IOException {
         return openStreamingReader(path, ArchiveReadOptions.DEFAULT);
@@ -747,10 +747,10 @@ public final class ArkivoFormats {
     /// Conventional multi-volume layouts are discovered before the path is treated as one forward-only file. The
     /// single-file fallback retains archive detection and installed outer source transformations.
     ///
-    /// @param path the archive path or one member of a discoverable volume set
+    /// @param path    the archive path or one member of a discoverable volume set
     /// @param options the read and lifecycle options
     /// @return a new owning forward-only reader
-    /// @throws IOException if the archive format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the archive format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             Path path,
@@ -768,10 +768,10 @@ public final class ArkivoFormats {
     /// Opens a streaming reader for the named format from a path.
     ///
     /// @param formatName the installed format name or alias
-    /// @param path the archive path or one member of a format-specific volume set
+    /// @param path       the archive path or one member of a format-specific volume set
     /// @return a new owning forward-only reader
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
@@ -786,11 +786,11 @@ public final class ArkivoFormats {
     /// discovery.
     ///
     /// @param formatName the installed format name or alias
-    /// @param path the archive path or one member of a format-specific volume set
-    /// @param options the read and lifecycle options
+    /// @param path       the archive path or one member of a format-specific volume set
+    /// @param options    the read and lifecycle options
     /// @return a new owning forward-only reader
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
@@ -807,7 +807,7 @@ public final class ArkivoFormats {
     ///
     /// @param source the volume source whose ownership is transferred after argument validation
     /// @return a new owning multi-volume forward-only reader
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support multi-volume forward-only reading
     public static ArkivoStreamingReader openStreamingReader(ArkivoVolumeSource source) throws IOException {
         return openStreamingReader(source, ArchiveReadOptions.DEFAULT);
@@ -818,10 +818,10 @@ public final class ArkivoFormats {
     /// Detection uses volume zero. After argument validation, this method owns the source and closes it when detection,
     /// capability validation, or reader setup fails.
     ///
-    /// @param source the volume source whose ownership is transferred after argument validation
+    /// @param source  the volume source whose ownership is transferred after argument validation
     /// @param options the read and lifecycle options
     /// @return a new owning multi-volume forward-only reader
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support multi-volume forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             ArkivoVolumeSource source,
@@ -835,7 +835,7 @@ public final class ArkivoFormats {
             if (format == null) {
                 throw new IOException("Unrecognized archive format");
             }
-            if (!(format instanceof ArkivoVolumeStreamingReaderFormat readerFormat)) {
+            if (!(format instanceof ArkivoFormat.VolumeStreamingReader readerFormat)) {
                 throw new UnsupportedOperationException(
                         "Archive format does not support multi-volume forward-only reading: " + format.name()
                 );
@@ -850,10 +850,10 @@ public final class ArkivoFormats {
     /// Opens a streaming reader for the named format from an owned multi-volume source.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the volume source whose ownership is transferred after argument validation
+    /// @param source     the volume source whose ownership is transferred after argument validation
     /// @return a new owning multi-volume forward-only reader
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support multi-volume forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
@@ -868,11 +868,11 @@ public final class ArkivoFormats {
     /// lookup, capability validation, or reader setup fails.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the volume source whose ownership is transferred after argument validation
-    /// @param options the read and lifecycle options
+    /// @param source     the volume source whose ownership is transferred after argument validation
+    /// @param options    the read and lifecycle options
     /// @return a new owning multi-volume forward-only reader
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support multi-volume forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
@@ -899,7 +899,7 @@ public final class ArkivoFormats {
     ///
     /// @param source the input stream whose ownership is transferred after argument validation
     /// @return a new owning forward-only reader
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(InputStream source) throws IOException {
         return openStreamingReader(source, ArchiveReadOptions.DEFAULT);
@@ -907,10 +907,10 @@ public final class ArkivoFormats {
 
     /// Detects and opens an archive from a forward-only input stream with options.
     ///
-    /// @param source the input stream whose ownership is transferred after argument validation
+    /// @param source  the input stream whose ownership is transferred after argument validation
     /// @param options the read and lifecycle options
     /// @return a new owning forward-only reader
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             InputStream source,
@@ -925,7 +925,7 @@ public final class ArkivoFormats {
     ///
     /// @param source the channel whose ownership is transferred after argument validation
     /// @return a new owning forward-only reader
-    /// @throws IOException if the format cannot be detected or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(ReadableByteChannel source) throws IOException {
         return openStreamingReader(source, ArchiveReadOptions.DEFAULT);
@@ -936,10 +936,10 @@ public final class ArkivoFormats {
     /// Raw archive recognition runs before optional source providers, so a valid archive always wins over a coincidental
     /// outer-wrapper signature. After argument validation, this method owns and closes the source on setup failure.
     ///
-    /// @param source the channel whose ownership is transferred after argument validation
+    /// @param source  the channel whose ownership is transferred after argument validation
     /// @param options the read and lifecycle options propagated through outer transformations
     /// @return a new owning forward-only reader
-    /// @throws IOException if the format cannot be detected, a transformation fails, or the archive cannot be opened
+    /// @throws IOException                   if the format cannot be detected, a transformation fails, or the archive cannot be opened
     /// @throws UnsupportedOperationException if the detected format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
@@ -983,10 +983,10 @@ public final class ArkivoFormats {
     /// Opens an owning streaming reader for the named installed archive format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the channel whose ownership is transferred after argument validation
+    /// @param source     the channel whose ownership is transferred after argument validation
     /// @return a new owning forward-only reader
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
@@ -1001,11 +1001,11 @@ public final class ArkivoFormats {
     /// source and closes it when format lookup or reader setup fails.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the channel whose ownership is transferred after argument validation
-    /// @param options the read and lifecycle options
+    /// @param source     the channel whose ownership is transferred after argument validation
+    /// @param options    the read and lifecycle options
     /// @return a new owning forward-only reader
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
@@ -1026,10 +1026,10 @@ public final class ArkivoFormats {
     /// Opens an owning streaming reader over an input stream for the named installed archive format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the input stream whose ownership is transferred after argument validation
+    /// @param source     the input stream whose ownership is transferred after argument validation
     /// @return a new owning forward-only reader
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
@@ -1043,11 +1043,11 @@ public final class ArkivoFormats {
     /// After argument validation, the stream is adapted to the channel-first named reader factory.
     ///
     /// @param formatName the installed format name or alias
-    /// @param source the input stream whose ownership is transferred after argument validation
-    /// @param options the read and lifecycle options
+    /// @param source     the input stream whose ownership is transferred after argument validation
+    /// @param options    the read and lifecycle options
     /// @return a new owning forward-only reader
-    /// @throws IOException if the archive cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the archive cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only reading
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
@@ -1067,10 +1067,10 @@ public final class ArkivoFormats {
     /// Opens an owning streaming writer for the named installed archive format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param target the channel whose ownership is transferred after argument validation
+    /// @param target     the channel whose ownership is transferred after argument validation
     /// @return a new owning forward-only writer
-    /// @throws IOException if the writer cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the writer cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only writing
     public static ArkivoStreamingWriter openStreamingWriter(
             String formatName,
@@ -1084,11 +1084,11 @@ public final class ArkivoFormats {
     /// After argument validation, this method owns the target and closes it when format lookup or writer setup fails.
     ///
     /// @param formatName the installed format name or alias
-    /// @param target the channel whose ownership is transferred after argument validation
-    /// @param options the creation options
+    /// @param target     the channel whose ownership is transferred after argument validation
+    /// @param options    the creation options
     /// @return a new owning forward-only writer
-    /// @throws IOException if the writer cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the writer cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only writing
     public static ArkivoStreamingWriter openStreamingWriter(
             String formatName,
@@ -1109,10 +1109,10 @@ public final class ArkivoFormats {
     /// Opens an owning streaming writer over an output stream for the named installed archive format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param target the output stream whose ownership is transferred after argument validation
+    /// @param target     the output stream whose ownership is transferred after argument validation
     /// @return a new owning forward-only writer
-    /// @throws IOException if the writer cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the writer cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only writing
     public static ArkivoStreamingWriter openStreamingWriter(
             String formatName,
@@ -1124,11 +1124,11 @@ public final class ArkivoFormats {
     /// Opens an owning streaming writer over an output stream with options.
     ///
     /// @param formatName the installed format name or alias
-    /// @param target the output stream whose ownership is transferred after argument validation
-    /// @param options the creation options
+    /// @param target     the output stream whose ownership is transferred after argument validation
+    /// @param options    the creation options
     /// @return a new owning forward-only writer
-    /// @throws IOException if the writer cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName}
+    /// @throws IOException                   if the writer cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName}
     /// @throws UnsupportedOperationException if the named format does not support forward-only writing
     public static ArkivoStreamingWriter openStreamingWriter(
             String formatName,
@@ -1146,11 +1146,11 @@ public final class ArkivoFormats {
     /// Opens a transactional multi-volume streaming writer for the named installed archive format.
     ///
     /// @param formatName the installed format name or alias
-    /// @param target the transactional destination for the output volumes
-    /// @param splitSize the positive maximum size of each output volume in bytes
+    /// @param target     the transactional destination for the output volumes
+    /// @param splitSize  the positive maximum size of each output volume in bytes
     /// @return a new transactional multi-volume writer
-    /// @throws IOException if the output transaction or writer cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName} or {@code splitSize} is not positive
+    /// @throws IOException                   if the output transaction or writer cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName} or {@code splitSize} is not positive
     /// @throws UnsupportedOperationException if the named format does not support multi-volume writing
     public static ArkivoStreamingWriter openStreamingWriter(
             String formatName,
@@ -1166,12 +1166,12 @@ public final class ArkivoFormats {
     /// controls transaction commit and rollback after setup succeeds.
     ///
     /// @param formatName the installed format name or alias
-    /// @param target the transactional destination for the output volumes
-    /// @param splitSize the positive maximum size of each output volume in bytes
-    /// @param options the creation options
+    /// @param target     the transactional destination for the output volumes
+    /// @param splitSize  the positive maximum size of each output volume in bytes
+    /// @param options    the creation options
     /// @return a new transactional multi-volume writer
-    /// @throws IOException if the output transaction or writer cannot be opened
-    /// @throws IllegalArgumentException if no installed format has {@code formatName} or {@code splitSize} is not positive
+    /// @throws IOException                   if the output transaction or writer cannot be opened
+    /// @throws IllegalArgumentException      if no installed format has {@code formatName} or {@code splitSize} is not positive
     /// @throws UnsupportedOperationException if the named format does not support multi-volume writing
     public static ArkivoStreamingWriter openStreamingWriter(
             String formatName,
@@ -1193,7 +1193,7 @@ public final class ArkivoFormats {
             ReadableByteChannel source,
             ArchiveReadOptions options
     ) throws IOException {
-        if (!(format instanceof ArkivoStreamingReaderFormat readerFormat)) {
+        if (!(format instanceof ArkivoFormat.StreamingReader readerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support forward-only reading: " + format.name()
             );
@@ -1207,7 +1207,7 @@ public final class ArkivoFormats {
             ArchiveReadOptions options
     ) throws IOException {
         for (ArkivoFormat candidate : installed()) {
-            if (!(candidate instanceof ArkivoPathVolumeFormat pathFormat)) {
+            if (!(candidate instanceof ArkivoFormat.PathVolume pathFormat)) {
                 continue;
             }
             @Nullable @Unmodifiable List<Path> volumePaths = pathFormat.discoverVolumePaths(path);
@@ -1228,7 +1228,7 @@ public final class ArkivoFormats {
                     source.close();
                     continue;
                 }
-                if (!(candidate instanceof ArkivoVolumeStreamingReaderFormat readerFormat)) {
+                if (!(candidate instanceof ArkivoFormat.VolumeStreamingReader readerFormat)) {
                     throw new UnsupportedOperationException(
                             "Archive format does not support multi-volume forward-only reading: " + candidate.name()
                     );
@@ -1245,8 +1245,8 @@ public final class ArkivoFormats {
     /// Detects a conventional path-backed multi-volume archive from its first physical volume.
     private static @Nullable ArkivoFormat detectDiscoveredPathVolumeFormat(Path path) throws IOException {
         for (ArkivoFormat candidate : installed()) {
-            if (!(candidate instanceof ArkivoPathVolumeFormat pathFormat)
-                    || !(candidate instanceof ArkivoVolumeFileSystemFormat)) {
+            if (!(candidate instanceof ArkivoFormat.PathVolume pathFormat)
+                    || !(candidate instanceof ArkivoFormat.VolumeFileSystem)) {
                 continue;
             }
             @Nullable @Unmodifiable List<Path> volumePaths = pathFormat.discoverVolumePaths(path);
@@ -1268,12 +1268,12 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring streaming reader support.
-    private static ArkivoStreamingReaderFormat requireStreamingReaderFormat(String formatName) throws IOException {
+    private static ArkivoFormat.StreamingReader requireStreamingReaderFormat(String formatName) throws IOException {
         @Nullable ArkivoFormat format = find(formatName);
         if (format == null) {
             throw new IOException("Unknown archive format: " + formatName);
         }
-        if (!(format instanceof ArkivoStreamingReaderFormat readerFormat)) {
+        if (!(format instanceof ArkivoFormat.StreamingReader readerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support forward-only reading: " + format.name()
             );
@@ -1282,12 +1282,12 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring streaming writer support.
-    private static ArkivoStreamingWriterFormat requireStreamingWriterFormat(String formatName) throws IOException {
+    private static ArkivoFormat.StreamingWriter requireStreamingWriterFormat(String formatName) throws IOException {
         @Nullable ArkivoFormat format = find(formatName);
         if (format == null) {
             throw new IOException("Unknown archive format: " + formatName);
         }
-        if (!(format instanceof ArkivoStreamingWriterFormat writerFormat)) {
+        if (!(format instanceof ArkivoFormat.StreamingWriter writerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support forward-only writing: " + format.name()
             );
@@ -1296,12 +1296,12 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring file-system support.
-    private static ArkivoFileSystemFormat requireFileSystemFormat(String formatName) throws IOException {
+    private static ArkivoFormat.FileSystem requireFileSystemFormat(String formatName) throws IOException {
         @Nullable ArkivoFormat format = find(formatName);
         if (format == null) {
             throw new IOException("Unknown archive format: " + formatName);
         }
-        if (!(format instanceof ArkivoFileSystemFormat fileSystemFormat)) {
+        if (!(format instanceof ArkivoFormat.FileSystem fileSystemFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support file-system access: " + format.name()
             );
@@ -1310,11 +1310,11 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring path-backed write support.
-    private static ArkivoFileSystemFormat.Writable requireWritableFileSystemFormat(
+    private static ArkivoFormat.FileSystem.Writable requireWritableFileSystemFormat(
             String formatName
     ) throws IOException {
-        ArkivoFileSystemFormat format = requireFileSystemFormat(formatName);
-        if (!(format instanceof ArkivoFileSystemFormat.Writable writableFormat)) {
+        ArkivoFormat.FileSystem format = requireFileSystemFormat(formatName);
+        if (!(format instanceof ArkivoFormat.FileSystem.Writable writableFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support path-backed file-system writes: " + format.name()
             );
@@ -1323,11 +1323,11 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring multi-volume file-system support.
-    private static ArkivoVolumeFileSystemFormat requireVolumeFileSystemFormat(
+    private static ArkivoFormat.VolumeFileSystem requireVolumeFileSystemFormat(
             String formatName
     ) throws IOException {
-        ArkivoFileSystemFormat format = requireFileSystemFormat(formatName);
-        if (!(format instanceof ArkivoVolumeFileSystemFormat volumeFormat)) {
+        ArkivoFormat.FileSystem format = requireFileSystemFormat(formatName);
+        if (!(format instanceof ArkivoFormat.VolumeFileSystem volumeFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support multi-volume file-system access: " + format.name()
             );
@@ -1336,11 +1336,11 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring multi-volume write support.
-    private static ArkivoVolumeFileSystemFormat.Writable requireWritableVolumeFileSystemFormat(
+    private static ArkivoFormat.VolumeFileSystem.Writable requireWritableVolumeFileSystemFormat(
             String formatName
     ) throws IOException {
-        ArkivoVolumeFileSystemFormat format = requireVolumeFileSystemFormat(formatName);
-        if (!(format instanceof ArkivoVolumeFileSystemFormat.Writable writableFormat)) {
+        ArkivoFormat.VolumeFileSystem format = requireVolumeFileSystemFormat(formatName);
+        if (!(format instanceof ArkivoFormat.VolumeFileSystem.Writable writableFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support multi-volume file-system writes: " + format.name()
             );
@@ -1349,11 +1349,11 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring multi-volume streaming reader support.
-    private static ArkivoVolumeStreamingReaderFormat requireVolumeStreamingReaderFormat(
+    private static ArkivoFormat.VolumeStreamingReader requireVolumeStreamingReaderFormat(
             String formatName
     ) throws IOException {
-        ArkivoStreamingReaderFormat format = requireStreamingReaderFormat(formatName);
-        if (!(format instanceof ArkivoVolumeStreamingReaderFormat readerFormat)) {
+        ArkivoFormat.StreamingReader format = requireStreamingReaderFormat(formatName);
+        if (!(format instanceof ArkivoFormat.VolumeStreamingReader readerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support multi-volume forward-only reading: " + format.name()
             );
@@ -1362,11 +1362,11 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring multi-volume streaming writer support.
-    private static ArkivoVolumeStreamingWriterFormat requireVolumeStreamingWriterFormat(
+    private static ArkivoFormat.VolumeStreamingWriter requireVolumeStreamingWriterFormat(
             String formatName
     ) throws IOException {
-        ArkivoStreamingWriterFormat format = requireStreamingWriterFormat(formatName);
-        if (!(format instanceof ArkivoVolumeStreamingWriterFormat writerFormat)) {
+        ArkivoFormat.StreamingWriter format = requireStreamingWriterFormat(formatName);
+        if (!(format instanceof ArkivoFormat.VolumeStreamingWriter writerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support multi-volume forward-only writing: " + format.name()
             );

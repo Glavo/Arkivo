@@ -6,11 +6,11 @@ package org.glavo.arkivo.archive.sevenzip;
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
-import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
-import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
+import org.glavo.arkivo.archive.ArkivoFormat.FileSystem;
+import org.glavo.arkivo.archive.ArkivoFormat.PathVolume;
+import org.glavo.arkivo.archive.ArkivoFormat.VolumeFileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoVolumeStreamingWriterFormat;
+import org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingWriter;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipSplitVolumePaths;
@@ -38,10 +38,10 @@ import java.util.Objects;
 /// [SevenZipArkivoFileSystem] and [SevenZipArkivoStreamingWriter].
 @NotNullByDefault
 public final class SevenZipArkivoFormat implements
-        ArkivoPathVolumeFormat,
-        ArkivoVolumeFileSystemFormat.Writable,
-        ArkivoVolumeStreamingWriterFormat,
-        ArkivoFileSystemFormat.Writable {
+        PathVolume,
+        VolumeFileSystem.Writable,
+        VolumeStreamingWriter,
+        FileSystem.Writable {
     /// The stable 7z format name.
     public static final String NAME = "7z";
 

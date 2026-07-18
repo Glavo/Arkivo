@@ -5,8 +5,8 @@ package org.glavo.arkivo.archive.cpio;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
-import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
-import org.glavo.arkivo.archive.ArkivoStreamingWriterFormat;
+import org.glavo.arkivo.archive.ArkivoFormat.StreamingReader;
+import org.glavo.arkivo.archive.ArkivoFormat.StreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -26,7 +26,7 @@ import java.util.Objects;
 /// Factory methods transfer source or target ownership to the returned reader or writer, which closes it with the
 /// archive cursor.
 @NotNullByDefault
-public final class CPIOArkivoFormat implements ArkivoStreamingReaderFormat, ArkivoStreamingWriterFormat {
+public final class CPIOArkivoFormat implements StreamingReader, StreamingWriter {
     /// The stable CPIO format name.
     public static final String NAME = "cpio";
 
