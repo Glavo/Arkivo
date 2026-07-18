@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -110,7 +109,7 @@ public final class GzipCodecTest {
         byte[] first = "first Arkivo gzip member".getBytes(StandardCharsets.UTF_8);
         byte[] second = "second Arkivo gzip member".getBytes(StandardCharsets.UTF_8);
         GzipCodec codec = new GzipCodec()
-                .withCompressionStrategy(CompressionStrategy.HUFFMAN_ONLY);
+                .withStrategy(DeflateStrategy.HUFFMAN_ONLY);
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
         CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(

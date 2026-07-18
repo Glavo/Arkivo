@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.deflate.ZlibDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -50,12 +50,12 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
     /// Creates a zlib encoder with immutable stream configuration.
     ///
     /// @param compressionLevel bounded Deflate compression level from zero through nine
-    /// @param dictionary preset dictionary, or null
-    /// @param strategy compression strategy
+    /// @param dictionary       preset dictionary, or null
+    /// @param strategy         Deflate strategy
     public ZlibEncoder(
             int compressionLevel,
             @Nullable ZlibDictionary dictionary,
-            CompressionStrategy strategy
+            DeflateStrategy strategy
     ) {
         this.compressionLevel = compressionLevel;
         this.dictionaryConfigured = dictionary != null;

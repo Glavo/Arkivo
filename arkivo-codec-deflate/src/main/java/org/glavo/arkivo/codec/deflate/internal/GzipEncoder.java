@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -45,8 +45,8 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
     /// Creates a gzip encoder with immutable member configuration.
     ///
     /// @param compressionLevel bounded Deflate compression level from zero through nine
-    /// @param strategy compression strategy
-    public GzipEncoder(int compressionLevel, CompressionStrategy strategy) {
+    /// @param strategy         Deflate strategy
+    public GzipEncoder(int compressionLevel, DeflateStrategy strategy) {
         this.compressionLevel = compressionLevel;
         this.body = new DeflateEncoderEngine(
                 DeflateEncoderEngine.Format.DEFLATE,

@@ -144,7 +144,6 @@ org.glavo.arkivo.codec.CompressionCodec$Flushable
 org.glavo.arkivo.codec.CompressionCodec$FlushableFramed
 org.glavo.arkivo.codec.CompressionCodec$Framed
 org.glavo.arkivo.codec.CompressionCodec$LevelConfigurable
-org.glavo.arkivo.codec.CompressionCodec$StrategyConfigurable
 org.glavo.arkivo.codec.CompressionDecoder
 org.glavo.arkivo.codec.CompressionDecoder$DictionaryAware
 org.glavo.arkivo.codec.CompressionDecoder$Framed
@@ -158,7 +157,6 @@ org.glavo.arkivo.codec.CompressionFormat
 org.glavo.arkivo.codec.CompressionFormatRegistry
 org.glavo.arkivo.codec.CompressionFormats
 org.glavo.arkivo.codec.CompressionProbeResult
-org.glavo.arkivo.codec.CompressionStrategy
 org.glavo.arkivo.codec.DecodingOptions
 org.glavo.arkivo.codec.DecompressingReadableByteChannel
 org.glavo.arkivo.codec.DecompressingReadableByteChannel$Framed
@@ -180,6 +178,7 @@ org.glavo.arkivo.codec.deflate.Deflate64Codec
 org.glavo.arkivo.codec.deflate.Deflate64Format
 org.glavo.arkivo.codec.deflate.DeflateCodec
 org.glavo.arkivo.codec.deflate.DeflateFormat
+org.glavo.arkivo.codec.deflate.DeflateStrategy
 org.glavo.arkivo.codec.deflate.GzipCodec
 org.glavo.arkivo.codec.deflate.GzipFormat
 org.glavo.arkivo.codec.deflate.ZlibCodec

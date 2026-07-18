@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
@@ -30,7 +29,6 @@ import java.util.Objects;
 @NotNullByDefault
 public final class DeflateCodec
         implements CompressionCodec.LevelConfigurable<DeflateCodec>,
-        CompressionCodec.StrategyConfigurable<DeflateCodec>,
         CompressionCodec.DictionaryConfigurable<DeflateCodec, RawCompressionDictionary>,
         CompressionCodec.Flushable<DeflateCodec> {
     /// The minimum raw Deflate match-search level.
@@ -44,7 +42,7 @@ public final class DeflateCodec
 
     /// The default immutable raw Deflate codec configuration.
     public static final DeflateCodec DEFAULT =
-            new DeflateCodec(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT, null);
+            new DeflateCodec(DEFAULT_COMPRESSION_LEVEL, DeflateStrategy.DEFAULT, null);
 
     /// The fixed Deflate history-window size.
     private static final long DECODING_WINDOW_SIZE = 1L << 15;
@@ -52,21 +50,21 @@ public final class DeflateCodec
     /// The configured match-search level.
     private final int compressionLevel;
 
-    /// The configured generic compression strategy.
-    private final CompressionStrategy compressionStrategy;
+    /// The configured Deflate strategy.
+    private final DeflateStrategy strategy;
 
     /// The configured preset dictionary, or null.
     private final @Nullable RawCompressionDictionary dictionary;
 
     /// Creates the default raw Deflate codec configuration.
     public DeflateCodec() {
-        this(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT, null);
+        this(DEFAULT_COMPRESSION_LEVEL, DeflateStrategy.DEFAULT, null);
     }
 
     /// Creates a validated raw Deflate codec configuration.
     private DeflateCodec(
             long compressionLevel,
-            CompressionStrategy compressionStrategy,
+            DeflateStrategy strategy,
             @Nullable RawCompressionDictionary dictionary
     ) {
         if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
@@ -76,7 +74,7 @@ public final class DeflateCodec
             );
         }
         this.compressionLevel = Math.toIntExact(compressionLevel);
-        this.compressionStrategy = Objects.requireNonNull(compressionStrategy, "compressionStrategy");
+        this.strategy = Objects.requireNonNull(strategy, "strategy");
         this.dictionary = dictionary;
     }
 
@@ -116,22 +114,26 @@ public final class DeflateCodec
     public DeflateCodec withCompressionLevel(long compressionLevel) {
         return compressionLevel == this.compressionLevel
                 ? this
-                : new DeflateCodec(compressionLevel, compressionStrategy, dictionary);
+                : new DeflateCodec(compressionLevel, strategy, dictionary);
     }
 
-    /// Returns the configured generic compression strategy.
-    @Override
-    public CompressionStrategy compressionStrategy() {
-        return compressionStrategy;
+    /// Returns the configured Deflate strategy.
+    ///
+    /// @return the configured Deflate strategy
+    public DeflateStrategy strategy() {
+        return strategy;
     }
 
-    /// Returns an immutable codec with the requested generic compression strategy.
-    @Override
-    public DeflateCodec withCompressionStrategy(CompressionStrategy compressionStrategy) {
-        Objects.requireNonNull(compressionStrategy, "compressionStrategy");
-        return compressionStrategy == this.compressionStrategy
+    /// Returns an immutable codec with the requested Deflate strategy.
+    ///
+    /// @param strategy the requested Deflate strategy
+    /// @return this instance when unchanged, otherwise a codec using `strategy`
+    /// @throws NullPointerException if `strategy` is `null`
+    public DeflateCodec withStrategy(DeflateStrategy strategy) {
+        Objects.requireNonNull(strategy, "strategy");
+        return strategy == this.strategy
                 ? this
-                : new DeflateCodec(compressionLevel, compressionStrategy, dictionary);
+                : new DeflateCodec(compressionLevel, strategy, dictionary);
     }
 
     /// Returns the configured preset dictionary, or null.
@@ -146,7 +148,7 @@ public final class DeflateCodec
         Objects.requireNonNull(dictionary, "dictionary");
         return dictionary == this.dictionary
                 ? this
-                : new DeflateCodec(compressionLevel, compressionStrategy, dictionary);
+                : new DeflateCodec(compressionLevel, strategy, dictionary);
     }
 
     /// Returns an immutable codec without a preset dictionary.
@@ -154,14 +156,14 @@ public final class DeflateCodec
     public DeflateCodec withoutDictionary() {
         return dictionary == null
                 ? this
-                : new DeflateCodec(compressionLevel, compressionStrategy, null);
+                : new DeflateCodec(compressionLevel, strategy, null);
     }
 
     /// Creates a transport-independent raw Deflate encoder.
     @Override
     public CompressionEncoder.Flushable newEncoder(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
-        return new DeflateEncoder(compressionLevel, dictionary, compressionStrategy);
+        return new DeflateEncoder(compressionLevel, dictionary, strategy);
     }
 
     /// Creates a transport-independent raw Deflate decoder with operation-scoped limits.

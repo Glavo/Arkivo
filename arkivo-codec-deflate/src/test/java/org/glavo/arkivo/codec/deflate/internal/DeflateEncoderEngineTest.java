@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -29,17 +29,17 @@ final class DeflateEncoderEngineTest {
     void selectsAllDeflateBlockTypes() throws IOException, DataFormatException {
         byte[] storedInput = new byte[2_048];
         new Random(1L).nextBytes(storedInput);
-        byte[] stored = encode(storedInput, 0, CompressionStrategy.DEFAULT, 31, 3);
+        byte[] stored = encode(storedInput, 0, DeflateStrategy.DEFAULT, 31, 3);
         assertEquals(0, firstBlockType(stored));
         assertArrayEquals(storedInput, inflate(stored));
 
         byte[] fixedInput = {1, 2, 3};
-        byte[] fixed = encode(fixedInput, 6, CompressionStrategy.DEFAULT, 1, 1);
+        byte[] fixed = encode(fixedInput, 6, DeflateStrategy.DEFAULT, 1, 1);
         assertEquals(1, firstBlockType(fixed));
         assertArrayEquals(fixedInput, inflate(fixed));
 
         byte[] dynamicInput = "dynamic Huffman block selection ".repeat(2_000).getBytes(StandardCharsets.UTF_8);
-        byte[] dynamic = encode(dynamicInput, 6, CompressionStrategy.DEFAULT, 113, 2);
+        byte[] dynamic = encode(dynamicInput, 6, DeflateStrategy.DEFAULT, 113, 2);
         assertEquals(2, firstBlockType(dynamic));
         assertArrayEquals(dynamicInput, inflate(dynamic));
     }
@@ -62,7 +62,7 @@ final class DeflateEncoderEngineTest {
         }
         byte[] source = input.toByteArray();
 
-        byte[] encoded = encode(source, 9, CompressionStrategy.HUFFMAN_ONLY, 97, 5);
+        byte[] encoded = encode(source, 9, DeflateStrategy.HUFFMAN_ONLY, 97, 5);
 
         assertEquals(2, firstBlockType(encoded));
         assertArrayEquals(source, inflate(encoded));
@@ -72,7 +72,7 @@ final class DeflateEncoderEngineTest {
     @Test
     void interoperatesAcrossStrategiesAndLevels() throws IOException, DataFormatException {
         Random random = new Random(0xdef1_8eL);
-        for (CompressionStrategy strategy : CompressionStrategy.values()) {
+        for (DeflateStrategy strategy : DeflateStrategy.values()) {
             for (int level : new int[]{1, 6, 9}) {
                 for (int iteration = 0; iteration < 8; iteration++) {
                     byte[] source = new byte[257 + random.nextInt(8_192)];
@@ -101,8 +101,8 @@ final class DeflateEncoderEngineTest {
     void huffmanOnlyDisablesMatchSearch() throws IOException {
         byte[] source = "strategy-sensitive repeated payload ".repeat(3_000).getBytes(StandardCharsets.UTF_8);
 
-        byte[] normal = encode(source, 6, CompressionStrategy.DEFAULT, 1_003, 31);
-        byte[] literalOnly = encode(source, 6, CompressionStrategy.HUFFMAN_ONLY, 1_003, 31);
+        byte[] normal = encode(source, 6, DeflateStrategy.DEFAULT, 1_003, 31);
+        byte[] literalOnly = encode(source, 6, DeflateStrategy.HUFFMAN_ONLY, 1_003, 31);
 
         assertTrue(normal.length < literalOnly.length / 4);
     }
@@ -111,7 +111,7 @@ final class DeflateEncoderEngineTest {
     private static byte @Unmodifiable [] encode(
             byte[] input,
             int compressionLevel,
-            CompressionStrategy strategy,
+            DeflateStrategy strategy,
             int sourceFragmentSize,
             int targetSize
     ) throws IOException {

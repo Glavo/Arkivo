@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -25,7 +25,7 @@ public final class Deflate64Encoder implements CompressionEncoder.Flushable {
                 DeflateEncoderEngine.Format.DEFLATE64,
                 compressionLevel,
                 null,
-                CompressionStrategy.DEFAULT
+                DeflateStrategy.DEFAULT
         );
     }
 

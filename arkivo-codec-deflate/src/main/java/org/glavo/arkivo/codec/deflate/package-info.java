@@ -11,7 +11,8 @@
 /// Codec instances are immutable and safe for concurrent use. Their configuration methods return new values and may
 /// return the receiver when no value changes. Each created encoder or decoder owns independent mutable state, is not
 /// safe for concurrent use, and retains no caller [java.nio.ByteBuffer] after an operation returns. Buffer positions
-/// report the exact input consumed and output produced.
+/// report the exact input consumed and output produced. [DeflateCodec], [ZlibCodec], and [GzipCodec] expose
+/// [DeflateStrategy] as a Deflate-specific encoding choice.
 ///
 /// Raw Deflate, Deflate64, and zlib encoders support nonterminal `flush`, which reaches a decodable boundary without
 /// ending the stream; `finish` writes the terminal block and any wrapper trailer. Gzip additionally exposes frames:

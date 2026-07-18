@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -22,12 +22,12 @@ public final class DeflateEncoder implements CompressionEncoder.Flushable {
     /// Creates a raw Deflate encoder with immutable stream configuration.
     ///
     /// @param compressionLevel bounded match-search level from zero through nine
-    /// @param dictionary preset dictionary, or null
-    /// @param strategy compression strategy
+    /// @param dictionary       preset dictionary, or null
+    /// @param strategy         Deflate strategy
     public DeflateEncoder(
             int compressionLevel,
             @Nullable RawCompressionDictionary dictionary,
-            CompressionStrategy strategy
+            DeflateStrategy strategy
     ) {
         this.engine = new DeflateEncoderEngine(
                 DeflateEncoderEngine.Format.DEFLATE,

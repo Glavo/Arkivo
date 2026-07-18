@@ -678,23 +678,6 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         C withCompressionLevel(long compressionLevel);
     }
 
-    /// Describes an immutable codec configuration with a selectable generic compression strategy.
-    ///
-    /// @param <C> the concrete immutable codec type returned by configuration methods
-    @NotNullByDefault
-    interface StrategyConfigurable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
-        /// Returns the configured compression strategy.
-        ///
-        /// @return the configured compression strategy
-        CompressionStrategy compressionStrategy();
-
-        /// Returns an immutable codec configured with the requested compression strategy.
-        ///
-        /// @param compressionStrategy the requested generic compression strategy
-        /// @return an immutable codec with the requested compression strategy
-        C withCompressionStrategy(CompressionStrategy compressionStrategy);
-    }
-
     /// Describes an immutable codec configuration with an optional format-specific compression dictionary.
     ///
     /// @param <C> the concrete immutable codec type returned by configuration methods

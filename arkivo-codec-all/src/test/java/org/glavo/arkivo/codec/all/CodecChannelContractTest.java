@@ -11,7 +11,6 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
-import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecodingOptions;
@@ -710,75 +709,6 @@ final class CodecChannelContractTest {
         return codec.withCompressionLevel(codec.minimumCompressionLevel());
     }
 
-    /// Verifies Deflate-family strategy subinterfaces and observable strategy behavior.
-    @Test
-    void appliesCompressionStrategies() throws IOException {
-        Set<String> strategyCodecs = Set.of("deflate", "gzip", "zlib");
-        byte[] input = (
-                "Arkivo compression strategy repeated payload 0123456789abcdef;"
-        ).repeat(4_096).getBytes(StandardCharsets.UTF_8);
-
-        for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
-            boolean expected = strategyCodecs.contains(codec.format().name());
-            assertEquals(expected, codec instanceof CompressionCodec.StrategyConfigurable<?>, codec.format().name());
-            if (!(codec instanceof CompressionCodec.StrategyConfigurable<?> strategyCodec)) {
-                continue;
-            }
-
-            long defaultSize = CompressionCodec.UNKNOWN_SIZE;
-            long huffmanOnlySize = CompressionCodec.UNKNOWN_SIZE;
-            for (CompressionStrategy strategy : CompressionStrategy.values()) {
-                CompressionCodec<?> configured =
-                        strategyCodec.withCompressionStrategy(strategy);
-                ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
-                configured.compress(
-                        Channels.newChannel(new ByteArrayInputStream(input)),
-                        Channels.newChannel(compressedBytes)
-                );
-
-                ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-                configured.decompress(
-                        Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                        Channels.newChannel(decodedBytes)
-                );
-                assertArrayEquals(input, decodedBytes.toByteArray(), codec.format().name() + ": " + strategy);
-                if (strategy == CompressionStrategy.DEFAULT) {
-                    defaultSize = compressedBytes.size();
-                } else if (strategy == CompressionStrategy.HUFFMAN_ONLY) {
-                    huffmanOnlySize = compressedBytes.size();
-                }
-            }
-            assertTrue(defaultSize > 0L, codec.format().name());
-            assertTrue(huffmanOnlySize > defaultSize, codec.format().name());
-
-            for (CompressionStrategy strategy : Set.of(
-                    CompressionStrategy.FILTERED,
-                    CompressionStrategy.HUFFMAN_ONLY
-            )) {
-                CompressionCodec<?> configured =
-                        strategyCodec.withCompressionStrategy(strategy);
-                ByteArrayOutputStream emptyCompressed = new ByteArrayOutputStream();
-                try (CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
-                        Channels.newChannel(emptyCompressed),
-                        EncodingOptions.DEFAULT,
-                        ResourceOwnership.BORROWED
-                )) {
-                    if (strategy == CompressionStrategy.HUFFMAN_ONLY) {
-                        ((CompressingWritableByteChannel.Flushable) encoder).flush();
-                    }
-                    encoder.finish();
-                }
-                ByteArrayOutputStream emptyDecoded = new ByteArrayOutputStream();
-                configured.decompress(
-                        Channels.newChannel(new ByteArrayInputStream(emptyCompressed.toByteArray())),
-                        Channels.newChannel(emptyDecoded)
-                );
-                assertEquals(0, emptyDecoded.size(), codec.format().name() + ": " + strategy);
-            }
-        }
-    }
-
     /// Verifies dictionary configuration subinterfaces and preset-dictionary round trips.
     @Test
     void roundTripsPresetDictionariesForEveryDictionaryCodec() throws IOException {
@@ -811,9 +741,6 @@ final class CodecChannelContractTest {
                 continue;
             }
 
-            if (configured instanceof CompressionCodec.StrategyConfigurable<?> strategyCodec) {
-                configured = strategyCodec.withCompressionStrategy(CompressionStrategy.FILTERED);
-            }
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             configured.compress(
                     Channels.newChannel(new ByteArrayInputStream(input)),

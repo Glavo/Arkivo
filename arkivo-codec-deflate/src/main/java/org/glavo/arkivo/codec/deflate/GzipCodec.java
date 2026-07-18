@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
@@ -28,7 +27,6 @@ import java.util.Objects;
 @NotNullByDefault
 public final class GzipCodec
         implements CompressionCodec.LevelConfigurable<GzipCodec>,
-        CompressionCodec.StrategyConfigurable<GzipCodec>,
         CompressionCodec.FlushableFramed<GzipCodec> {
     /// The minimum gzip Deflate match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
@@ -41,7 +39,7 @@ public final class GzipCodec
 
     /// The default immutable gzip codec configuration.
     public static final GzipCodec DEFAULT =
-            new GzipCodec(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT);
+            new GzipCodec(DEFAULT_COMPRESSION_LEVEL, DeflateStrategy.DEFAULT);
 
     /// The fixed Deflate history-window size used by gzip members.
     private static final long DECODING_WINDOW_SIZE = 1L << 15;
@@ -49,16 +47,16 @@ public final class GzipCodec
     /// The configured Deflate match-search level.
     private final int compressionLevel;
 
-    /// The configured generic compression strategy.
-    private final CompressionStrategy compressionStrategy;
+    /// The configured Deflate strategy.
+    private final DeflateStrategy strategy;
 
     /// Creates the default gzip codec configuration.
     public GzipCodec() {
-        this(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT);
+        this(DEFAULT_COMPRESSION_LEVEL, DeflateStrategy.DEFAULT);
     }
 
     /// Creates a validated gzip codec configuration.
-    private GzipCodec(long compressionLevel, CompressionStrategy compressionStrategy) {
+    private GzipCodec(long compressionLevel, DeflateStrategy strategy) {
         if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
                 || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
             throw new IllegalArgumentException(
@@ -66,7 +64,7 @@ public final class GzipCodec
             );
         }
         this.compressionLevel = Math.toIntExact(compressionLevel);
-        this.compressionStrategy = Objects.requireNonNull(compressionStrategy, "compressionStrategy");
+        this.strategy = Objects.requireNonNull(strategy, "strategy");
     }
 
     /// Returns the canonical gzip format.
@@ -105,22 +103,26 @@ public final class GzipCodec
     public GzipCodec withCompressionLevel(long compressionLevel) {
         return compressionLevel == this.compressionLevel
                 ? this
-                : new GzipCodec(compressionLevel, compressionStrategy);
+                : new GzipCodec(compressionLevel, strategy);
     }
 
-    /// Returns the configured generic compression strategy.
-    @Override
-    public CompressionStrategy compressionStrategy() {
-        return compressionStrategy;
+    /// Returns the configured Deflate strategy.
+    ///
+    /// @return the configured Deflate strategy
+    public DeflateStrategy strategy() {
+        return strategy;
     }
 
-    /// Returns an immutable gzip codec with the requested generic compression strategy.
-    @Override
-    public GzipCodec withCompressionStrategy(CompressionStrategy compressionStrategy) {
-        Objects.requireNonNull(compressionStrategy, "compressionStrategy");
-        return compressionStrategy == this.compressionStrategy
+    /// Returns an immutable gzip codec with the requested Deflate strategy.
+    ///
+    /// @param strategy the requested Deflate strategy
+    /// @return this instance when unchanged, otherwise a codec using `strategy`
+    /// @throws NullPointerException if `strategy` is `null`
+    public GzipCodec withStrategy(DeflateStrategy strategy) {
+        Objects.requireNonNull(strategy, "strategy");
+        return strategy == this.strategy
                 ? this
-                : new GzipCodec(compressionLevel, compressionStrategy);
+                : new GzipCodec(compressionLevel, strategy);
     }
 
 
@@ -128,7 +130,7 @@ public final class GzipCodec
     @Override
     public CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
-        return new GzipEncoder(compressionLevel, compressionStrategy);
+        return new GzipEncoder(compressionLevel, strategy);
     }
 
     /// Creates a transport-independent gzip member decoder with operation-scoped limits.

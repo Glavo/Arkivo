@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.CompressionStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -36,8 +35,8 @@ final class DeflateEncoderConfigurationTest {
         assertEquals(0L, CODEC.minimumCompressionLevel());
         assertEquals(9L, CODEC.maximumCompressionLevel());
         assertEquals(6L, CODEC.defaultCompressionLevel());
-        assertThrows(IllegalArgumentException.class, () -> encode(new byte[0], configuration(-1, CompressionStrategy.DEFAULT)));
-        assertThrows(IllegalArgumentException.class, () -> encode(new byte[0], configuration(10, CompressionStrategy.DEFAULT)));
+        assertThrows(IllegalArgumentException.class, () -> encode(new byte[0], configuration(-1, DeflateStrategy.DEFAULT)));
+        assertThrows(IllegalArgumentException.class, () -> encode(new byte[0], configuration(10, DeflateStrategy.DEFAULT)));
     }
 
     /// Verifies level zero emits stored blocks while higher levels use match search.
@@ -45,8 +44,8 @@ final class DeflateEncoderConfigurationTest {
     void levelZeroUsesStoredBlocks() throws IOException {
         byte[] source = "level-sensitive raw Deflate payload ".repeat(2_000).getBytes(StandardCharsets.UTF_8);
 
-        byte[] stored = encode(source, configuration(0, CompressionStrategy.DEFAULT));
-        byte[] compressed = encode(source, configuration(9, CompressionStrategy.DEFAULT));
+        byte[] stored = encode(source, configuration(0, DeflateStrategy.DEFAULT));
+        byte[] compressed = encode(source, configuration(9, DeflateStrategy.DEFAULT));
 
         assertEquals(0, Byte.toUnsignedInt(stored[0]) >>> 1 & 3);
         assertTrue(compressed.length < stored.length / 8);
@@ -60,7 +59,7 @@ final class DeflateEncoderConfigurationTest {
         byte[] source = new byte[64 * 1024];
         new Random(0xdef1_a7eL).nextBytes(source);
 
-        byte[] encoded = encode(source, configuration(6, CompressionStrategy.DEFAULT));
+        byte[] encoded = encode(source, configuration(6, DeflateStrategy.DEFAULT));
 
         assertEquals(0, Byte.toUnsignedInt(encoded[0]) >>> 1 & 3);
         assertArrayEquals(source, inflate(encoded));
@@ -78,24 +77,24 @@ final class DeflateEncoderConfigurationTest {
         System.arraycopy(pattern, 0, source, 2 * pattern.length, pattern.length);
         Arrays.fill(source, 3 * pattern.length, source.length, (byte) 'A');
 
-        byte[] encoded = encode(source, configuration(9, CompressionStrategy.DEFAULT));
+        byte[] encoded = encode(source, configuration(9, DeflateStrategy.DEFAULT));
 
         assertArrayEquals(source, inflate(encoded));
         assertTrue(encoded.length < source.length / 2);
     }
 
-    /// Verifies all generic strategy values reach the pure Java encoder and produce interoperable streams.
+    /// Verifies all Deflate strategies reach the pure Java encoder and produce interoperable streams.
     @Test
-    void supportsEveryCompressionStrategy() throws IOException {
+    void supportsEveryDeflateStrategy() throws IOException {
         byte[] source = "strategy configuration interoperability ".repeat(1_500).getBytes(StandardCharsets.UTF_8);
         int defaultSize = 0;
         int huffmanOnlySize = 0;
-        for (CompressionStrategy strategy : CompressionStrategy.values()) {
+        for (DeflateStrategy strategy : DeflateStrategy.values()) {
             byte[] encoded = encode(source, configuration(6, strategy));
             assertArrayEquals(source, inflate(encoded));
-            if (strategy == CompressionStrategy.DEFAULT) {
+            if (strategy == DeflateStrategy.DEFAULT) {
                 defaultSize = encoded.length;
-            } else if (strategy == CompressionStrategy.HUFFMAN_ONLY) {
+            } else if (strategy == DeflateStrategy.HUFFMAN_ONLY) {
                 huffmanOnlySize = encoded.length;
             }
         }
@@ -103,8 +102,8 @@ final class DeflateEncoderConfigurationTest {
     }
 
     /// Creates an immutable codec configuration for one level and strategy.
-    private static DeflateCodec configuration(long level, CompressionStrategy strategy) {
-        return CODEC.withCompressionLevel(level).withCompressionStrategy(strategy);
+    private static DeflateCodec configuration(long level, DeflateStrategy strategy) {
+        return CODEC.withCompressionLevel(level).withStrategy(strategy);
     }
 
     /// Encodes source bytes through the public channel adapter.

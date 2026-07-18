@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
@@ -30,7 +29,6 @@ import java.util.Objects;
 @NotNullByDefault
 public final class ZlibCodec
         implements CompressionCodec.LevelConfigurable<ZlibCodec>,
-        CompressionCodec.StrategyConfigurable<ZlibCodec>,
         CompressionCodec.DictionaryConfigurable<ZlibCodec, ZlibDictionary>,
         CompressionCodec.Flushable<ZlibCodec> {
     /// The minimum zlib Deflate match-search level.
@@ -44,26 +42,26 @@ public final class ZlibCodec
 
     /// The default immutable zlib codec configuration.
     public static final ZlibCodec DEFAULT =
-            new ZlibCodec(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT, null);
+            new ZlibCodec(DEFAULT_COMPRESSION_LEVEL, DeflateStrategy.DEFAULT, null);
 
     /// The configured Deflate match-search level.
     private final int compressionLevel;
 
-    /// The configured generic compression strategy.
-    private final CompressionStrategy compressionStrategy;
+    /// The configured Deflate strategy.
+    private final DeflateStrategy strategy;
 
     /// The configured preset dictionary, or null.
     private final @Nullable ZlibDictionary dictionary;
 
     /// Creates the default zlib codec configuration.
     public ZlibCodec() {
-        this(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT, null);
+        this(DEFAULT_COMPRESSION_LEVEL, DeflateStrategy.DEFAULT, null);
     }
 
     /// Creates a validated zlib codec configuration.
     private ZlibCodec(
             long compressionLevel,
-            CompressionStrategy compressionStrategy,
+            DeflateStrategy strategy,
             @Nullable ZlibDictionary dictionary
     ) {
         if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
@@ -73,7 +71,7 @@ public final class ZlibCodec
             );
         }
         this.compressionLevel = Math.toIntExact(compressionLevel);
-        this.compressionStrategy = Objects.requireNonNull(compressionStrategy, "compressionStrategy");
+        this.strategy = Objects.requireNonNull(strategy, "strategy");
         this.dictionary = dictionary;
     }
 
@@ -113,22 +111,26 @@ public final class ZlibCodec
     public ZlibCodec withCompressionLevel(long compressionLevel) {
         return compressionLevel == this.compressionLevel
                 ? this
-                : new ZlibCodec(compressionLevel, compressionStrategy, dictionary);
+                : new ZlibCodec(compressionLevel, strategy, dictionary);
     }
 
-    /// Returns the configured generic compression strategy.
-    @Override
-    public CompressionStrategy compressionStrategy() {
-        return compressionStrategy;
+    /// Returns the configured Deflate strategy.
+    ///
+    /// @return the configured Deflate strategy
+    public DeflateStrategy strategy() {
+        return strategy;
     }
 
-    /// Returns an immutable zlib codec with the requested generic compression strategy.
-    @Override
-    public ZlibCodec withCompressionStrategy(CompressionStrategy compressionStrategy) {
-        Objects.requireNonNull(compressionStrategy, "compressionStrategy");
-        return compressionStrategy == this.compressionStrategy
+    /// Returns an immutable zlib codec with the requested Deflate strategy.
+    ///
+    /// @param strategy the requested Deflate strategy
+    /// @return this instance when unchanged, otherwise a codec using `strategy`
+    /// @throws NullPointerException if `strategy` is `null`
+    public ZlibCodec withStrategy(DeflateStrategy strategy) {
+        Objects.requireNonNull(strategy, "strategy");
+        return strategy == this.strategy
                 ? this
-                : new ZlibCodec(compressionLevel, compressionStrategy, dictionary);
+                : new ZlibCodec(compressionLevel, strategy, dictionary);
     }
 
     /// Returns the configured preset dictionary, or null.
@@ -143,7 +145,7 @@ public final class ZlibCodec
         Objects.requireNonNull(dictionary, "dictionary");
         return dictionary == this.dictionary
                 ? this
-                : new ZlibCodec(compressionLevel, compressionStrategy, dictionary);
+                : new ZlibCodec(compressionLevel, strategy, dictionary);
     }
 
     /// Returns an immutable zlib codec without a preset dictionary.
@@ -151,7 +153,7 @@ public final class ZlibCodec
     public ZlibCodec withoutDictionary() {
         return dictionary == null
                 ? this
-                : new ZlibCodec(compressionLevel, compressionStrategy, null);
+                : new ZlibCodec(compressionLevel, strategy, null);
     }
 
 
@@ -159,7 +161,7 @@ public final class ZlibCodec
     @Override
     public CompressionEncoder.Flushable newEncoder(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
-        return new ZlibEncoder(compressionLevel, dictionary, compressionStrategy);
+        return new ZlibEncoder(compressionLevel, dictionary, strategy);
     }
 
     /// Creates an unrestricted dictionary-aware zlib stream decoder.

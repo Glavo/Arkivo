@@ -1,15 +1,13 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec;
+package org.glavo.arkivo.codec.deflate;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Selects how a compressor searches for repeated input.
-///
-/// A `CompressionCodec.StrategyConfigurable<?>` exposes this common strategy set as immutable codec configuration.
+/// Selects how a Deflate encoder searches for repeated input and emits literals.
 @NotNullByDefault
-public enum CompressionStrategy {
+public enum DeflateStrategy {
     /// Uses the codec's normal match search and entropy coding.
     DEFAULT,
 

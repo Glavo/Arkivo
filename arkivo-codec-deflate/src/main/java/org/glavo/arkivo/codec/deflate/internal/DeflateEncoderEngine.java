@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -87,8 +87,8 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
     /// Configured compression level restored by reset.
     private final int compressionLevel;
 
-    /// Configured compression strategy restored by reset.
-    private final CompressionStrategy strategy;
+    /// Configured Deflate strategy restored by reset.
+    private final DeflateStrategy strategy;
 
     /// Configured preset dictionary bytes, or null.
     private final byte @Nullable @Unmodifiable [] dictionary;
@@ -155,15 +155,15 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
     /// Creates an encoder for one Deflate-family format and immutable stream configuration.
     ///
-    /// @param format selected bitstream semantics
+    /// @param format           selected bitstream semantics
     /// @param compressionLevel bounded match-search level from zero through nine
-    /// @param dictionary initial history content, or null
-    /// @param strategy match-selection strategy
+    /// @param dictionary       initial history content, or null
+    /// @param strategy         match-selection strategy
     public DeflateEncoderEngine(
             Format format,
             int compressionLevel,
             byte @Nullable [] dictionary,
-            CompressionStrategy strategy
+            DeflateStrategy strategy
     ) {
         this.format = Objects.requireNonNull(format, "format");
         if (compressionLevel < 0 || compressionLevel > 9) {
@@ -401,7 +401,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         tokenCount = 0;
         tokenExtraBitCost = 0L;
 
-        if (strategy == CompressionStrategy.HUFFMAN_ONLY) {
+        if (strategy == DeflateStrategy.HUFFMAN_ONLY) {
             for (int position = 0; position < blockSize; position++) {
                 addLiteral(Byte.toUnsignedInt(block[position]));
             }
@@ -411,7 +411,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             while (position < blockSize) {
                 int logicalPosition = historySize + position;
                 Match match = findAndInsertMatch(logicalPosition);
-                if (strategy == CompressionStrategy.FILTERED && match.length() <= 5) {
+                if (strategy == DeflateStrategy.FILTERED && match.length() <= 5) {
                     match = Match.NONE;
                 }
                 if (match.length() >= MINIMUM_MATCH_LENGTH) {
@@ -782,8 +782,8 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
     }
 
     /// Resolves the bounded hash-chain search count for one compression configuration.
-    private static int searchLimit(int compressionLevel, CompressionStrategy strategy) {
-        if (compressionLevel == 0 || strategy == CompressionStrategy.HUFFMAN_ONLY) {
+    private static int searchLimit(int compressionLevel, DeflateStrategy strategy) {
+        if (compressionLevel == 0 || strategy == DeflateStrategy.HUFFMAN_ONLY) {
             return 0;
         }
         return 1 << Math.min(compressionLevel + 1, 10);
@@ -858,7 +858,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
     /// Describes one selected LZ77 match.
     ///
-    /// @param length match length
+    /// @param length   match length
     /// @param distance backward match distance
     @NotNullByDefault
     private record Match(int length, int distance) {
@@ -1221,17 +1221,17 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
     /// Stores a complete dynamic-Huffman block plan.
     ///
-    /// @param literalLengthCode literal/length code table
-    /// @param distanceCode distance code table
-    /// @param codeLengthCode code-length code table
-    /// @param runLengthSymbols encoded data-tree length symbols
+    /// @param literalLengthCode    literal/length code table
+    /// @param distanceCode         distance code table
+    /// @param codeLengthCode       code-length code table
+    /// @param runLengthSymbols     encoded data-tree length symbols
     /// @param runLengthExtraValues encoded repeat values
-    /// @param runLengthExtraBits encoded repeat bit counts
-    /// @param runLengthCount number of encoded length entries
-    /// @param literalLengthCount number of transmitted literal/length code lengths
-    /// @param distanceCount number of transmitted distance code lengths
-    /// @param codeLengthCount number of transmitted code-length code lengths
-    /// @param bitCost complete dynamic block cost
+    /// @param runLengthExtraBits   encoded repeat bit counts
+    /// @param runLengthCount       number of encoded length entries
+    /// @param literalLengthCount   number of transmitted literal/length code lengths
+    /// @param distanceCount        number of transmitted distance code lengths
+    /// @param codeLengthCount      number of transmitted code-length code lengths
+    /// @param bitCost              complete dynamic block cost
     @NotNullByDefault
     private record DynamicPlan(
             HuffmanCode literalLengthCode,
