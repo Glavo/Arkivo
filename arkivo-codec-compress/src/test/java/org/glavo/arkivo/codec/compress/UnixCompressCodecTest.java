@@ -36,7 +36,6 @@ public final class UnixCompressCodecTest {
     @Test
     public void exposesFormatMetadataAndConfiguration() {
         UnixCompressFormat format = UnixCompressFormat.instance();
-        assertSame(format, UnixCompressFormat.provider());
         assertSame(format, UnixCompressCodec.DEFAULT.format());
         assertSame(format, CompressionFormats.require("compress"));
         assertSame(format, CompressionFormats.require("z"));

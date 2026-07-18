@@ -20,13 +20,8 @@ public final class ZstdFormat implements CompressionFormat {
     /// The canonical Zstandard format instance.
     private static final ZstdFormat INSTANCE = new ZstdFormat();
 
-    /// Creates a classpath-discoverable Zstandard format descriptor.
+    /// Creates a service-discoverable Zstandard format descriptor.
     public ZstdFormat() {
-    }
-
-    /// Returns the canonical Zstandard service provider.
-    public static ZstdFormat provider() {
-        return INSTANCE;
     }
 
     /// Returns the canonical Zstandard format instance.

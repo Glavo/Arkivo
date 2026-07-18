@@ -18,13 +18,8 @@ public final class Deflate64Format implements CompressionFormat {
     /// The canonical raw Deflate64 format instance.
     private static final Deflate64Format INSTANCE = new Deflate64Format();
 
-    /// Creates a classpath-discoverable Deflate64 format descriptor.
+    /// Creates a service-discoverable Deflate64 format descriptor.
     public Deflate64Format() {
-    }
-
-    /// Returns the canonical Deflate64 service provider.
-    public static Deflate64Format provider() {
-        return INSTANCE;
     }
 
     /// Returns the canonical raw Deflate64 format instance.

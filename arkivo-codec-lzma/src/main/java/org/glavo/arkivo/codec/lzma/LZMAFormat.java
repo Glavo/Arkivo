@@ -15,13 +15,8 @@ public final class LZMAFormat implements CompressionFormat {
     /// The canonical LZMA-alone format instance.
     private static final LZMAFormat INSTANCE = new LZMAFormat();
 
-    /// Creates a classpath-discoverable LZMA-alone format descriptor.
+    /// Creates a service-discoverable LZMA-alone format descriptor.
     public LZMAFormat() {
-    }
-
-    /// Returns the canonical LZMA-alone service provider.
-    public static LZMAFormat provider() {
-        return INSTANCE;
     }
 
     /// Returns the canonical LZMA-alone format instance.

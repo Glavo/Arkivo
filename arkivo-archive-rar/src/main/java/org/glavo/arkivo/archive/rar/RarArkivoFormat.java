@@ -35,13 +35,8 @@ public final class RarArkivoFormat implements
     /// The shared RAR format instance.
     private static final RarArkivoFormat INSTANCE = new RarArkivoFormat();
 
-    /// Creates a classpath-discoverable RAR format descriptor.
+    /// Creates a service-discoverable RAR format descriptor.
     public RarArkivoFormat() {
-    }
-
-    /// Returns the canonical RAR service provider.
-    public static RarArkivoFormat provider() {
-        return INSTANCE;
     }
 
     /// Returns the shared RAR format descriptor.

@@ -33,13 +33,8 @@ public final class LZ4Format implements CompressionFormat {
     /// Canonical LZ4 frame format instance.
     private static final LZ4Format INSTANCE = new LZ4Format();
 
-    /// Creates a classpath-discoverable LZ4 frame format descriptor.
+    /// Creates a service-discoverable LZ4 frame format descriptor.
     public LZ4Format() {
-    }
-
-    /// Returns the canonical LZ4 frame service provider.
-    public static LZ4Format provider() {
-        return INSTANCE;
     }
 
     /// Returns the canonical LZ4 frame format instance.

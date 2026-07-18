@@ -15,13 +15,8 @@ public final class DeflateFormat implements CompressionFormat {
     /// The canonical raw Deflate format instance.
     private static final DeflateFormat INSTANCE = new DeflateFormat();
 
-    /// Creates a classpath-discoverable raw Deflate format descriptor.
+    /// Creates a service-discoverable raw Deflate format descriptor.
     public DeflateFormat() {
-    }
-
-    /// Returns the canonical raw Deflate service provider.
-    public static DeflateFormat provider() {
-        return INSTANCE;
     }
 
     /// Returns the canonical raw Deflate format instance.

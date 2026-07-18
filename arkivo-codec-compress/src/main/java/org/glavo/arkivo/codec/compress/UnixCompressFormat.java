@@ -26,13 +26,8 @@ public final class UnixCompressFormat implements CompressionFormat {
     /// The canonical Unix compress format instance.
     private static final UnixCompressFormat INSTANCE = new UnixCompressFormat();
 
-    /// Creates a classpath-discoverable Unix compress format descriptor.
+    /// Creates a service-discoverable Unix compress format descriptor.
     public UnixCompressFormat() {
-    }
-
-    /// Returns the canonical Unix compress service provider.
-    public static UnixCompressFormat provider() {
-        return INSTANCE;
     }
 
     /// Returns the canonical Unix compress format instance.

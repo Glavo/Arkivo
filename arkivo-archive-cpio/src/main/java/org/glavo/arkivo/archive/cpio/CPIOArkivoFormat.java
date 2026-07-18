@@ -28,13 +28,8 @@ public final class CPIOArkivoFormat implements ArkivoStreamingReaderFormat, Arki
     /// The shared CPIO format instance.
     private static final CPIOArkivoFormat INSTANCE = new CPIOArkivoFormat();
 
-    /// Creates a classpath-discoverable CPIO format descriptor.
+    /// Creates a service-discoverable CPIO format descriptor.
     public CPIOArkivoFormat() {
-    }
-
-    /// Returns the canonical CPIO service provider.
-    public static CPIOArkivoFormat provider() {
-        return INSTANCE;
     }
 
     /// Returns the shared CPIO format descriptor.

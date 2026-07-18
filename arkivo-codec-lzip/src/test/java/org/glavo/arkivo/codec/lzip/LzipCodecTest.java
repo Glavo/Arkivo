@@ -50,7 +50,6 @@ public final class LzipCodecTest {
     public void metadataAndConfiguration() {
         LzipCodec codec = new LzipCodec();
         assertSame(LzipFormat.instance(), codec.format());
-        assertSame(LzipFormat.instance(), LzipFormat.provider());
         assertEquals("lzip", codec.format().name());
         assertEquals(Arrays.asList("lz", "tlz"), codec.format().fileExtensions());
         assertEquals(LzipCodec.DEFAULT_DICTIONARY_SIZE, codec.dictionarySize());
