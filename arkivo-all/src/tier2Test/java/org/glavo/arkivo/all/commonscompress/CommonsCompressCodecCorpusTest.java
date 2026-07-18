@@ -5,6 +5,8 @@ package org.glavo.arkivo.all.commonscompress;
 
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipFile;
+import org.apache.commons.compress.compressors.lz4.BlockLZ4CompressorInputStream;
+import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
@@ -15,6 +17,9 @@ import org.glavo.arkivo.codec.deflate.DeflateCodec;
 import org.glavo.arkivo.codec.deflate.GzipCodec;
 import org.glavo.arkivo.codec.deflate.ZlibCodec;
 import org.glavo.arkivo.codec.lzma.LZMACodec;
+import org.glavo.arkivo.codec.lz4.LZ4BlockCodec;
+import org.glavo.arkivo.codec.lz4.LZ4BlockSize;
+import org.glavo.arkivo.codec.lz4.LZ4Codec;
 import org.glavo.arkivo.codec.xz.XZCodec;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -36,6 +41,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
@@ -150,6 +156,39 @@ final class CommonsCompressCodecCorpusTest {
 
         assertArrayEquals(canonicalTar, decompressComplete(new ZstdCodec(), compressedTar));
         assertArrayEquals(canonicalText, decompressComplete(new ZstdCodec(), compressedText));
+    }
+
+    /// Verifies Commons Compress decodes Arkivo-produced independent, linked, and raw LZ4 blocks.
+    @Test
+    void commonsCompressDecodesArkivoLz4Output() throws IOException {
+        byte @Unmodifiable [] expected = CommonsCompressTestResources.read("bla.dump");
+        for (LZ4Codec codec : List.of(
+                LZ4Codec.builder()
+                        .blockSize(LZ4BlockSize.KIB_64)
+                        .blockChecksum(true)
+                        .contentChecksum(true)
+                        .build(),
+                LZ4Codec.builder()
+                        .blockSize(LZ4BlockSize.KIB_64)
+                        .independentBlocks(false)
+                        .blockChecksum(true)
+                        .contentChecksum(true)
+                        .build()
+        )) {
+            byte @Unmodifiable [] compressed = compressComplete(codec, expected);
+            try (InputStream decoder = new FramedLZ4CompressorInputStream(
+                    new ByteArrayInputStream(compressed)
+            )) {
+                assertArrayEquals(expected, decoder.readAllBytes());
+            }
+        }
+
+        byte @Unmodifiable [] rawCompressed = compressComplete(new LZ4BlockCodec(), expected);
+        try (InputStream decoder = new BlockLZ4CompressorInputStream(
+                new ByteArrayInputStream(rawCompressed)
+        )) {
+            assertArrayEquals(expected, decoder.readAllBytes());
+        }
     }
 
     /// Verifies independently supplied upstream Zstandard frames decode when concatenated.
@@ -352,6 +391,21 @@ final class CommonsCompressCodecCorpusTest {
                         "13b896d551a100401b0d3982e0729efc2e8d7aeb09a36c0a51e48ec2bd15ea8b"
                 ),
                 fixture("lzma/bla.tar.lzma", new LZMACodec(), "bla.tar.lzma", 10_240, BLA_TAR_SHA256),
+                fixture("lz4/bla.tar.lz4", new LZ4Codec(), "bla.tar.lz4", 10_240, BLA_TAR_SHA256),
+                fixture(
+                        "lz4/bla.dump.lz4",
+                        new LZ4Codec(),
+                        "bla.dump.lz4",
+                        92_160,
+                        "996ddd41f26eb211736b8f8dc06d905d697f05ce8b963792cc65a86e07bd0e6d"
+                ),
+                fixture(
+                        "lz4-block/bla.tar.block_lz4",
+                        new LZ4BlockCodec(),
+                        "bla.tar.block_lz4",
+                        10_240,
+                        BLA_TAR_SHA256
+                ),
                 fixture("xz/bla.tar.xz", new XZCodec(), "bla.tar.xz", 10_240, BLA_TAR_SHA256),
                 fixture("xz/multiple.xz", new XZCodec(), "multiple.xz", 2, AB_SHA256),
                 new CodecFixture("zstd/bla.tar.zst", new ZstdCodec(), zstdTar, 10_240, BLA_TAR_SHA256),
@@ -403,6 +457,22 @@ final class CommonsCompressCodecCorpusTest {
                 malformed("bzip2/truncated", new BZip2Codec(), CommonsCompressTestResources.read("bla.txt.bz2"), true),
                 malformed("lzma/truncated", new LZMACodec(), CommonsCompressTestResources.read("bla.tar.lzma"), true),
                 malformed("xz/truncated", new XZCodec(), CommonsCompressTestResources.read("bla.tar.xz"), true),
+                malformed("lz4/truncated", new LZ4Codec(), CommonsCompressTestResources.read("bla.tar.lz4"), true),
+                Arguments.of(
+                        "lz4/invalid-zero-offset",
+                        new LZ4Codec(),
+                        CommonsCompressTestResources.read("COMPRESS-490/ArithmeticException.lz4")
+                ),
+                Arguments.of(
+                        "lz4/invalid-back-reference-at-start",
+                        new LZ4Codec(),
+                        CommonsCompressTestResources.read("COMPRESS-490/ArrayIndexOutOfBoundsException1.lz4")
+                ),
+                Arguments.of(
+                        "lz4/invalid-offset-too-large",
+                        new LZ4Codec(),
+                        CommonsCompressTestResources.read("COMPRESS-490/ArrayIndexOutOfBoundsException2.lz4")
+                ),
                 malformed(
                         "zstd/truncated",
                         new ZstdCodec(),
@@ -479,6 +549,19 @@ final class CommonsCompressCodecCorpusTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
+                Channels.newChannel(output)
+        );
+        return output.toByteArray();
+    }
+
+    /// Compresses a complete byte array through the channel transfer API.
+    private static byte @Unmodifiable [] compressComplete(
+            CompressionCodec<?> codec,
+            byte @Unmodifiable [] source
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(source)),
                 Channels.newChannel(output)
         );
         return output.toByteArray();

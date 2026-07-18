@@ -9,6 +9,7 @@ module org.glavo.arkivo.codec {
     exports org.glavo.arkivo.codec.spi to
             org.glavo.arkivo.codec.bzip2,
             org.glavo.arkivo.codec.deflate,
+            org.glavo.arkivo.codec.lz4,
             org.glavo.arkivo.codec.lzma,
             org.glavo.arkivo.codec.ppmd,
             org.glavo.arkivo.codec.xz,

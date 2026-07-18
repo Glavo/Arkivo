@@ -81,6 +81,8 @@ public final class TarArkivoFormat implements
                 "txz",
                 "tar.lzma",
                 "tlz",
+                "tar.lz4",
+                "tlz4",
                 "tar.zst",
                 "tzst"
         );

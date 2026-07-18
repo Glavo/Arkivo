@@ -74,6 +74,10 @@ val publicationMetadata = mapOf(
         "Arkivo LZMA Codec",
         "Provides pure Java raw LZMA, LZMA-alone, and LZMA2 buffer engines and channel adapters."
     ),
+    "arkivo-codec-lz4" to ArkivoPublicationMetadata(
+        "Arkivo LZ4 Codec",
+        "Provides pure Java standard LZ4 frame and raw-block buffer engines and channel adapters."
+    ),
     "arkivo-codec-ppmd" to ArkivoPublicationMetadata(
         "Arkivo PPMd Codec",
         "Provides pure Java raw PPMd7 buffer engines and channel adapters."
@@ -346,6 +350,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec:compile:$publicationVersion",
         "org.glavo:arkivo-codec-bzip2:compile:$publicationVersion",
         "org.glavo:arkivo-codec-deflate:compile:$publicationVersion",
+        "org.glavo:arkivo-codec-lz4:compile:$publicationVersion",
         "org.glavo:arkivo-codec-lzma:compile:$publicationVersion",
         "org.glavo:arkivo-codec-ppmd:compile:$publicationVersion",
         "org.glavo:arkivo-codec-xz:compile:$publicationVersion",
@@ -354,6 +359,7 @@ val expectedDependencies = mapOf(
     "arkivo-codec-bzip2" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-deflate" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-lzma" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
+    "arkivo-codec-lz4" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-ppmd" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-xz" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",

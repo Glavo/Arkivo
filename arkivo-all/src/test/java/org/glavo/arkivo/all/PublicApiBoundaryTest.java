@@ -64,6 +64,7 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.codec.transform", "org.glavo.arkivo.codec"),
             Map.entry("org.glavo.arkivo.codec.bzip2", "org.glavo.arkivo.codec.bzip2"),
             Map.entry("org.glavo.arkivo.codec.deflate", "org.glavo.arkivo.codec.deflate"),
+            Map.entry("org.glavo.arkivo.codec.lz4", "org.glavo.arkivo.codec.lz4"),
             Map.entry("org.glavo.arkivo.codec.lzma", "org.glavo.arkivo.codec.lzma"),
             Map.entry("org.glavo.arkivo.codec.ppmd", "org.glavo.arkivo.codec.ppmd"),
             Map.entry("org.glavo.arkivo.codec.xz", "org.glavo.arkivo.codec.xz"),
@@ -82,6 +83,7 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.archive.zip", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.codec.bzip2", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.deflate", Set.of("org.glavo.arkivo.codec")),
+            Map.entry("org.glavo.arkivo.codec.lz4", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.lzma", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.ppmd", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.xz", Set.of(

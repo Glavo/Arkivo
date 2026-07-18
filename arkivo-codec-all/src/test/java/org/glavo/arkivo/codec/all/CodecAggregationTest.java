@@ -30,6 +30,8 @@ final class CodecAggregationTest {
                         "deflate",
                         "deflate64",
                         "gzip",
+                        "lz4",
+                        "lz4-block",
                         "lzma",
                         "lzma-raw",
                         "lzma2",

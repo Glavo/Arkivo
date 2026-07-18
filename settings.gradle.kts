@@ -9,6 +9,7 @@ include(
     "arkivo-codec-bzip2",
     "arkivo-codec-xz",
     "arkivo-codec-lzma",
+    "arkivo-codec-lz4",
     "arkivo-codec-ppmd",
     "arkivo-codec-zstd",
     "arkivo-archive-all",

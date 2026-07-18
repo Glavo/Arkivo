@@ -126,7 +126,7 @@ final class CodecChannelContractTest {
     /// Verifies flushable encoders through explicit incremental directives.
     @Test
     void flushesIncrementalFramesForEveryFlushableCodec() throws IOException {
-        Set<String> flushCodecs = Set.of("deflate", "deflate64", "gzip", "xz", "zlib", "zstd");
+        Set<String> flushCodecs = Set.of("deflate", "deflate64", "gzip", "lz4", "xz", "zlib", "zstd");
         byte[] first = ("first flushed segment " + "0123456789abcdef".repeat(512))
                 .getBytes(StandardCharsets.UTF_8);
         byte[] second = " and final segment".getBytes(StandardCharsets.UTF_8);
@@ -217,8 +217,8 @@ final class CodecChannelContractTest {
     /// Verifies multi-frame encoders and concatenated-frame decoders share one cumulative context.
     @Test
     void roundTripsMultipleFramesForEveryFramedCodec() throws IOException {
-        Set<String> multiFrameCodecs = Set.of("bzip2", "gzip", "xz", "zstd");
-        Set<String> concatenatedFrameCodecs = Set.of("bzip2", "gzip", "xz", "zstd");
+        Set<String> multiFrameCodecs = Set.of("bzip2", "gzip", "lz4", "xz", "zstd");
+        Set<String> concatenatedFrameCodecs = Set.of("bzip2", "gzip", "lz4", "xz", "zstd");
         byte[] first = "first independent frame".getBytes(StandardCharsets.UTF_8);
         byte[] second = "second independent frame".getBytes(StandardCharsets.UTF_8);
 
@@ -1031,6 +1031,8 @@ final class CodecChannelContractTest {
                 "deflate",
                 "deflate64",
                 "gzip",
+                "lz4",
+                "lz4-block",
                 "lzma",
                 "lzma-raw",
                 "lzma2",

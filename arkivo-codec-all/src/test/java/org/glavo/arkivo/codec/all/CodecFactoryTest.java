@@ -107,7 +107,7 @@ final class CodecFactoryTest {
     /// Verifies automatic decoder discovery replays prefixes for every signed codec.
     @Test
     void detectsAndOpensEverySignedCodec() throws IOException {
-        Set<String> expected = Set.of("bzip2", "gzip", "xz", "zlib", "zstd");
+        Set<String> expected = Set.of("bzip2", "gzip", "lz4", "xz", "zlib", "zstd");
         Set<String> signed = CompressionFormats.installed()
                 .stream()
                 .filter(format -> format.probeSize() > 0)

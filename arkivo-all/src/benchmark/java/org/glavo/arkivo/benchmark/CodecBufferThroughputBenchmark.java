@@ -54,7 +54,7 @@ public class CodecBufferThroughputBenchmark {
     private static final int LZMA_DICTIONARY_SIZE = 1 << 20;
 
     /// The stable compression format name selected for the current benchmark trial.
-    @Param({"bzip2", "deflate", "deflate64", "gzip", "lzma", "lzma-raw", "lzma2", "ppmd", "xz", "zlib", "zstd"})
+    @Param({"bzip2", "deflate", "deflate64", "gzip", "lz4", "lz4-block", "lzma", "lzma-raw", "lzma2", "ppmd", "xz", "zlib", "zstd"})
     public String formatName = "gzip";
 
     /// The deterministic uncompressed bytes used to verify decoder output.

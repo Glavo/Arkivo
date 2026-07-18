@@ -171,6 +171,12 @@ org.glavo.arkivo.codec.deflate.ZlibCodec
 org.glavo.arkivo.codec.deflate.ZlibDictionary
 org.glavo.arkivo.codec.deflate.ZlibDictionaryRequest
 org.glavo.arkivo.codec.deflate.ZlibFormat
+org.glavo.arkivo.codec.lz4.LZ4BlockCodec
+org.glavo.arkivo.codec.lz4.LZ4BlockFormat
+org.glavo.arkivo.codec.lz4.LZ4BlockSize
+org.glavo.arkivo.codec.lz4.LZ4Codec
+org.glavo.arkivo.codec.lz4.LZ4Codec$Builder
+org.glavo.arkivo.codec.lz4.LZ4Format
 org.glavo.arkivo.codec.lzma.LZMA2Codec
 org.glavo.arkivo.codec.lzma.LZMA2Format
 org.glavo.arkivo.codec.lzma.LZMACodec

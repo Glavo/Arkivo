@@ -68,18 +68,18 @@ bla.cpio	5120	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream 
 bla.deflate.7z	497	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
 bla.deflate64.7z	503	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
 bla.dump	92160	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
-bla.dump.lz4	1443	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.dump.lz4	1443	TESTED_CODEC_TIER2	decoded by the standard LZ4 frame codec in Tier 2
 bla.encrypted.7z	566	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
 bla.jar	1391	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
 bla.noendheaderoffset.7z	512	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
 bla.pack	1649	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
 bla.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
-bla.tar.block_lz4	604	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.tar.block_lz4	604	TESTED_CODEC_TIER2	decoded by the raw LZ4 block codec in Tier 2
 bla.tar.br	401	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
 bla.tar.bz2	543	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 bla.tar.deflate	462	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
 bla.tar.deflatez	468	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
-bla.tar.lz4	623	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.tar.lz4	623	TESTED_CODEC_TIER2	decoded by the standard LZ4 frame codec in Tier 2
 bla.tar.lzma	481	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
 bla.tar.sz	995	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
 bla.tar.xz	528	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
@@ -156,9 +156,9 @@ COMPRESS-477/split_zip_created_by_zip/split_zip_created_by_zip.zip	57763	TESTED_
 COMPRESS-477/split_zip_created_by_zip/zip_to_compare_created_by_zip_zip64.zip	584681	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
 COMPRESS-477/split_zip_created_by_zip/zip_to_compare_created_by_zip.zip	582047	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
 COMPRESS-479.zip	557	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
-COMPRESS-490/ArithmeticException.lz4	29	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
-COMPRESS-490/ArrayIndexOutOfBoundsException1.lz4	17	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
-COMPRESS-490/ArrayIndexOutOfBoundsException2.lz4	405	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+COMPRESS-490/ArithmeticException.lz4	29	TESTED_CODEC_TIER2	rejected as a malformed LZ4 frame in Tier 2
+COMPRESS-490/ArrayIndexOutOfBoundsException1.lz4	17	TESTED_CODEC_TIER2	rejected as a malformed LZ4 frame in Tier 2
+COMPRESS-490/ArrayIndexOutOfBoundsException2.lz4	405	TESTED_CODEC_TIER2	rejected as a malformed LZ4 frame in Tier 2
 COMPRESS-492.7z	39	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
 COMPRESS-529-fail.tar	1536	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 COMPRESS-530-fail.tar	525	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract

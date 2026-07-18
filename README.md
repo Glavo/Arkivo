@@ -117,9 +117,9 @@ Archive modules currently cover:
 - 7z file systems and streaming writers, with mutation, solid archives, encryption, and split-volume support.
 - Read-only RAR4 and RAR5 file systems and streaming readers.
 
-Compression support currently covers BZip2, raw Deflate, Deflate64, gzip, raw LZMA, LZMA-alone, LZMA2, PPMd7, XZ,
-zlib, and Zstandard. The codec layer also provides Delta and BCJ executable transforms. All compression implementations
-are pure Java.
+Compression support currently covers BZip2, raw Deflate, Deflate64, gzip, LZ4 frame and raw block, raw LZMA,
+LZMA-alone, LZMA2, PPMd7, XZ, zlib, and Zstandard. The codec layer also provides Delta and BCJ executable transforms.
+All compression implementations are pure Java.
 
 Not every format has the same lifecycle or framing model. Codec objects are immutable configurations: generic optional
 configuration is exposed through codec subinterfaces, while incremental flush and frame behavior is exposed through

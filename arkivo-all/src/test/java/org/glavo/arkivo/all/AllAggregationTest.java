@@ -84,6 +84,8 @@ final class AllAggregationTest {
                         "deflate",
                         "deflate64",
                         "gzip",
+                        "lz4",
+                        "lz4-block",
                         "lzma",
                         "lzma-raw",
                         "lzma2",
@@ -196,6 +198,8 @@ final class AllAggregationTest {
                         "txz",
                         "tar.lzma",
                         "tlz",
+                        "tar.lz4",
+                        "tlz4",
                         "tar.zst",
                         "tzst"
                 ),
@@ -308,7 +312,7 @@ final class AllAggregationTest {
     /// Verifies unified detection for every codec with a reliable stream signature.
     @Test
     void detectsAllSignatureBearingCompressionFormats() throws IOException {
-        Set<String> expectedNames = Set.of("bzip2", "gzip", "xz", "zlib", "zstd");
+        Set<String> expectedNames = Set.of("bzip2", "gzip", "lz4", "xz", "zlib", "zstd");
         Set<String> detectedNames = CompressionFormats.installed()
                 .stream()
                 .filter(format -> format.probeSize() > 0)

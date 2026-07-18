@@ -770,7 +770,7 @@ final class StreamingAggregationTest {
     /// Verifies TAR readers automatically detect every installed compression format with a reliable stream signature.
     @Test
     void opensCompressedTarStreamsWithInstalledFormats() throws IOException {
-        for (String formatName : Set.of("bzip2", "gzip", "xz", "zlib", "zstd")) {
+        for (String formatName : Set.of("bzip2", "gzip", "lz4", "xz", "zlib", "zstd")) {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             TarArchiveOptions.Create options = TarArchiveOptions.CREATE_DEFAULTS.withCompression(
                     CompressionFormats.require(formatName).defaultCodec()

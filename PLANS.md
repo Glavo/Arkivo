@@ -23,6 +23,7 @@ arkivo-codec
 arkivo-codec-all
 arkivo-codec-bzip2
 arkivo-codec-deflate
+arkivo-codec-lz4
 arkivo-codec-lzma
 arkivo-codec-ppmd
 arkivo-codec-xz
@@ -177,9 +178,10 @@ The primary incremental API uses caller-owned `ByteBuffer` pairs through `Compre
 or target buffers after an operation returns. Shared adapters expose the same engines as `ReadableByteChannel` and
 `WritableByteChannel` contexts with explicit endpoint ownership.
 
-Deflate, Deflate64, gzip, and zlib share pure Java format-parameterized buffer engines. BZip2, Zstandard, raw LZMA,
-LZMA-alone, raw LZMA2, XZ, and PPMd also provide transport-independent buffer engines. PPMd range decoding preserves
-partially normalized arithmetic intervals and context-chain progress across arbitrarily fragmented caller buffers.
+Deflate, Deflate64, gzip, and zlib share pure Java format-parameterized buffer engines. BZip2, LZ4 frame and raw block,
+Zstandard, raw LZMA, LZMA-alone, raw LZMA2, XZ, and PPMd also provide transport-independent buffer engines. PPMd range
+decoding preserves partially normalized arithmetic intervals and context-chain progress across arbitrarily fragmented
+caller buffers.
 
 Allocating and fixed `ByteBuffer` operations drive transport-independent engines directly. They accept heap and direct
 buffers in any source and target combination, including read-only sources and nonzero buffer ranges. Targets must be
@@ -202,6 +204,11 @@ inspection APIs. Magicless streams require caller selection and do not participa
 checksum policy verifies XXH64 trailers by default or consumes them without verification when
 `ZstdCodec.withVerifyChecksums(false)` is selected, preserving subsequent concatenated-frame boundaries in either
 physical format.
+
+LZ4 support distinguishes the self-describing standard frame format from EOF-delimited raw blocks. Standard frames
+support the four defined block sizes, independent and linked blocks, optional block and content checksums, skippable
+frames, and concatenated-frame decoding. Raw blocks use an explicit immutable decoded-size bound because the block
+format carries neither compressed nor decoded size metadata.
 
 XZ exposes the same decompression checksum policy for optional Block Checks. The default configuration verifies every
 supported Check, while `XZCodec.withVerifyChecksums(false)` consumes the format-defined Check field without calculating
