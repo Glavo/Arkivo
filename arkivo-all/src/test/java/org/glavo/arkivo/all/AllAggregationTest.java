@@ -9,6 +9,7 @@ import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ar.ArArkivoFormat;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
+import org.glavo.arkivo.archive.cpio.CPIOArkivoFormat;
 import org.glavo.arkivo.archive.rar.RarArkivoFormat;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
@@ -76,16 +77,21 @@ final class AllAggregationTest {
                 .map(CompressionFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
 
-        assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), archiveFormatNames);
-        assertTrue(ArkivoFormats.installed().stream().allMatch(ArkivoFileSystemFormat.class::isInstance));
+        assertEquals(Set.of("7z", "ar", "cpio", "rar", "tar", "zip"), archiveFormatNames);
+        assertFalse(requireFormat(CPIOArkivoFormat.NAME) instanceof ArkivoFileSystemFormat);
+        assertTrue(ArkivoFormats.installed().stream()
+                .filter(format -> !CPIOArkivoFormat.NAME.equals(format.name()))
+                .allMatch(ArkivoFileSystemFormat.class::isInstance));
         assertEquals(
                 Set.of(
                         "bzip2",
+                        "compress",
                         "deflate",
                         "deflate64",
                         "gzip",
                         "lz4",
                         "lz4-block",
+                        "lzip",
                         "lzma",
                         "lzma-raw",
                         "lzma2",
@@ -181,6 +187,7 @@ final class AllAggregationTest {
         assertDetected("7z", new byte[]{'7', 'z', (byte) 0xbc, (byte) 0xaf, 0x27, 0x1c});
         assertDetected("rar", new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00});
         assertDetected("ar", "!<arch>\n".getBytes(StandardCharsets.US_ASCII));
+        assertDetected("cpio", "070701".getBytes(StandardCharsets.US_ASCII));
         assertDetected("tar", tarArchive());
         assertDetected("tar", new byte[1024]);
 
@@ -194,9 +201,12 @@ final class AllAggregationTest {
                         "tar.bz2",
                         "tbz2",
                         "tbz",
+                        "tar.Z",
+                        "taz",
                         "tar.xz",
                         "txz",
                         "tar.lzma",
+                        "tar.lz",
                         "tlz",
                         "tar.lz4",
                         "tlz4",
@@ -208,6 +218,7 @@ final class AllAggregationTest {
         assertEquals(List.of("7z"), requireFormat("7z").fileExtensions());
         assertEquals(List.of("rar"), requireFormat("rar").fileExtensions());
         assertEquals(List.of("a", "ar", "deb"), requireFormat("ar").fileExtensions());
+        assertEquals(List.of("cpio"), requireFormat("cpio").fileExtensions());
 
         byte[] signature = new byte[]{'P', 'K', 5, 6};
         ByteBuffer prefix = ByteBuffer.allocate(signature.length + 2).order(ByteOrder.LITTLE_ENDIAN);
@@ -312,7 +323,9 @@ final class AllAggregationTest {
     /// Verifies unified detection for every codec with a reliable stream signature.
     @Test
     void detectsAllSignatureBearingCompressionFormats() throws IOException {
-        Set<String> expectedNames = Set.of("bzip2", "gzip", "lz4", "xz", "zlib", "zstd");
+        Set<String> expectedNames = Set.of(
+                "bzip2", "compress", "gzip", "lz4", "lzip", "xz", "zlib", "zstd"
+        );
         Set<String> detectedNames = CompressionFormats.installed()
                 .stream()
                 .filter(format -> format.probeSize() > 0)

@@ -10,6 +10,7 @@ import org.gradle.api.file.RelativePath
 
 dependencies {
     api(project(":arkivo-codec"))
+    implementation(project(":arkivo-base"))
     testImplementation("org.lz4:lz4-pure-java:1.8.0")
 }
 

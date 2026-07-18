@@ -27,11 +27,13 @@ final class CodecAggregationTest {
         assertEquals(
                 Set.of(
                         "bzip2",
+                        "compress",
                         "deflate",
                         "deflate64",
                         "gzip",
                         "lz4",
                         "lz4-block",
+                        "lzip",
                         "lzma",
                         "lzma-raw",
                         "lzma2",

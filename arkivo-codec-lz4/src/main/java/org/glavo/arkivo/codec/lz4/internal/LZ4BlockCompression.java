@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.lz4.internal;
 
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.util.Arrays;
@@ -141,8 +142,8 @@ final class LZ4BlockCompression {
         }
         System.arraycopy(input, literalOffset, output, outputPosition, literalLength);
         outputPosition += literalLength;
-        output[outputPosition++] = (byte) matchOffset;
-        output[outputPosition++] = (byte) (matchOffset >>> 8);
+        ByteArrayAccess.writeShortLittleEndian(output, outputPosition, (short) matchOffset);
+        outputPosition += Short.BYTES;
         if (matchCode >= 15) {
             outputPosition = writeLength(output, outputPosition, matchCode - 15);
         }
@@ -177,10 +178,7 @@ final class LZ4BlockCompression {
 
     /// Returns a 16-bit hash of four bytes starting at the supplied position.
     private static int hash(byte[] input, int position) {
-        int value = Byte.toUnsignedInt(input[position])
-                | Byte.toUnsignedInt(input[position + 1]) << 8
-                | Byte.toUnsignedInt(input[position + 2]) << 16
-                | Byte.toUnsignedInt(input[position + 3]) << 24;
+        int value = ByteArrayAccess.readIntLittleEndian(input, position);
         return value * -1_640_531_535 >>> 16;
     }
 

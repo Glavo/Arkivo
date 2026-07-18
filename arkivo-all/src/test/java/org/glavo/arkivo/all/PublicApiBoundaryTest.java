@@ -56,6 +56,7 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.archive", "org.glavo.arkivo.archive"),
             Map.entry("org.glavo.arkivo.archive.spi", "org.glavo.arkivo.archive"),
             Map.entry("org.glavo.arkivo.archive.ar", "org.glavo.arkivo.archive.ar"),
+            Map.entry("org.glavo.arkivo.archive.cpio", "org.glavo.arkivo.archive.cpio"),
             Map.entry("org.glavo.arkivo.archive.rar", "org.glavo.arkivo.archive.rar"),
             Map.entry("org.glavo.arkivo.archive.sevenzip", "org.glavo.arkivo.archive.sevenzip"),
             Map.entry("org.glavo.arkivo.archive.tar", "org.glavo.arkivo.archive.tar"),
@@ -63,8 +64,10 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.codec", "org.glavo.arkivo.codec"),
             Map.entry("org.glavo.arkivo.codec.transform", "org.glavo.arkivo.codec"),
             Map.entry("org.glavo.arkivo.codec.bzip2", "org.glavo.arkivo.codec.bzip2"),
+            Map.entry("org.glavo.arkivo.codec.compress", "org.glavo.arkivo.codec.compress"),
             Map.entry("org.glavo.arkivo.codec.deflate", "org.glavo.arkivo.codec.deflate"),
             Map.entry("org.glavo.arkivo.codec.lz4", "org.glavo.arkivo.codec.lz4"),
+            Map.entry("org.glavo.arkivo.codec.lzip", "org.glavo.arkivo.codec.lzip"),
             Map.entry("org.glavo.arkivo.codec.lzma", "org.glavo.arkivo.codec.lzma"),
             Map.entry("org.glavo.arkivo.codec.ppmd", "org.glavo.arkivo.codec.ppmd"),
             Map.entry("org.glavo.arkivo.codec.xz", "org.glavo.arkivo.codec.xz"),
@@ -74,6 +77,7 @@ public final class PublicApiBoundaryTest {
     /// Lists the public module dependencies exposed transitively by each module with exported types.
     private static final @Unmodifiable Map<String, @Unmodifiable Set<String>> TRANSITIVE_REQUIREMENTS = Map.ofEntries(
             Map.entry("org.glavo.arkivo.archive.ar", Set.of("org.glavo.arkivo.archive")),
+            Map.entry("org.glavo.arkivo.archive.cpio", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.archive.rar", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.archive.sevenzip", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.archive.tar", Set.of(
@@ -82,8 +86,10 @@ public final class PublicApiBoundaryTest {
             )),
             Map.entry("org.glavo.arkivo.archive.zip", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.codec.bzip2", Set.of("org.glavo.arkivo.codec")),
+            Map.entry("org.glavo.arkivo.codec.compress", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.deflate", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.lz4", Set.of("org.glavo.arkivo.codec")),
+            Map.entry("org.glavo.arkivo.codec.lzip", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.lzma", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.ppmd", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.xz", Set.of(

@@ -6,7 +6,10 @@ package org.glavo.arkivo.codec.lz4.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lz4.LZ4BlockSize;
+import org.glavo.arkivo.codec.lz4.LZ4Dictionary;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -25,6 +28,9 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     /// Maximum match distance retained between linked blocks.
     private static final int MAXIMUM_HISTORY_SIZE = 65_535;
 
+    /// Empty prefix history.
+    private static final byte[] EMPTY_HISTORY = new byte[0];
+
     /// Configured standard maximum decoded block size.
     private final LZ4BlockSize blockSize;
 
@@ -36,6 +42,12 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
 
     /// Whether every frame carries a decoded-content xxHash-32 checksum.
     private final boolean contentChecksum;
+
+    /// Owned effective external dictionary history.
+    private final byte[] dictionaryHistory;
+
+    /// Unsigned dictionary identifier, or the no-identifier sentinel.
+    private final long dictionaryId;
 
     /// Owned decoded bytes collected for the current block.
     private final byte[] block;
@@ -66,12 +78,15 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
             LZ4BlockSize blockSize,
             boolean independentBlocks,
             boolean blockChecksum,
-            boolean contentChecksum
+            boolean contentChecksum,
+            @Nullable LZ4Dictionary dictionary
     ) {
         this.blockSize = Objects.requireNonNull(blockSize, "blockSize");
         this.independentBlocks = independentBlocks;
         this.blockChecksum = blockChecksum;
         this.contentChecksum = contentChecksum;
+        dictionaryHistory = dictionary == null ? EMPTY_HISTORY : dictionary.bytes();
+        dictionaryId = dictionary == null ? LZ4Dictionary.NO_DICTIONARY_ID : dictionary.dictionaryId();
         block = new byte[blockSize.byteSize()];
     }
 
@@ -233,7 +248,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         }
     }
 
-    /// Emits the standard magic and minimum frame descriptor.
+    /// Emits the standard magic and configured frame descriptor.
     private void emitHeader() {
         int flags = 0x40;
         if (independentBlocks) {
@@ -245,16 +260,23 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         if (contentChecksum) {
             flags |= 0x04;
         }
+        if (dictionaryId != LZ4Dictionary.NO_DICTIONARY_ID) {
+            flags |= 0x01;
+        }
         int blockDescriptor = blockSize.descriptorCode() << 4;
-        byte[] descriptor = {(byte) flags, (byte) blockDescriptor};
-        byte[] header = new byte[7];
+        byte[] descriptor = new byte[2 + (dictionaryId != LZ4Dictionary.NO_DICTIONARY_ID ? Integer.BYTES : 0)];
+        descriptor[0] = (byte) flags;
+        descriptor[1] = (byte) blockDescriptor;
+        if (dictionaryId != LZ4Dictionary.NO_DICTIONARY_ID) {
+            ByteArrayAccess.writeIntLittleEndian(descriptor, 2, (int) dictionaryId);
+        }
+        byte[] header = new byte[FRAME_MAGIC.length + descriptor.length + 1];
         System.arraycopy(FRAME_MAGIC, 0, header, 0, FRAME_MAGIC.length);
-        header[4] = descriptor[0];
-        header[5] = descriptor[1];
-        header[6] = (byte) (XXHash32.hash(descriptor) >>> 8);
+        System.arraycopy(descriptor, 0, header, FRAME_MAGIC.length, descriptor.length);
+        header[header.length - 1] = (byte) (XXHash32.hash(descriptor) >>> 8);
         queue(header);
         contentHash.reset();
-        history = new byte[0];
+        history = dictionaryHistory;
         frameStarted = true;
     }
 
@@ -262,17 +284,21 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     private void emitBlock() throws IOException {
         byte[] decoded = Arrays.copyOf(block, blockLength);
         byte[] compressed = independentBlocks
-                ? LZ4BlockCompression.compress(decoded)
+                ? LZ4BlockCompression.compress(decoded, dictionaryHistory)
                 : LZ4BlockCompression.compress(decoded, history);
         boolean uncompressed = compressed.length >= decoded.length;
         byte[] payload = uncompressed ? decoded : compressed;
         int encodedLength = Integer.BYTES + payload.length + (blockChecksum ? Integer.BYTES : 0);
         byte[] encoded = new byte[encodedLength];
         int blockHeader = payload.length | (uncompressed ? 0x8000_0000 : 0);
-        writeInt(encoded, 0, blockHeader);
+        ByteArrayAccess.writeIntLittleEndian(encoded, 0, blockHeader);
         System.arraycopy(payload, 0, encoded, Integer.BYTES, payload.length);
         if (blockChecksum) {
-            writeInt(encoded, Integer.BYTES + payload.length, (int) XXHash32.hash(payload));
+            ByteArrayAccess.writeIntLittleEndian(
+                    encoded,
+                    Integer.BYTES + payload.length,
+                    (int) XXHash32.hash(payload)
+            );
         }
         queue(encoded);
         if (!independentBlocks) {
@@ -285,7 +311,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     private void emitTrailer() {
         byte[] trailer = new byte[Integer.BYTES + (contentChecksum ? Integer.BYTES : 0)];
         if (contentChecksum) {
-            writeInt(trailer, Integer.BYTES, (int) contentHash.value());
+            ByteArrayAccess.writeIntLittleEndian(trailer, Integer.BYTES, (int) contentHash.value());
         }
         queue(trailer);
     }
@@ -335,16 +361,8 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         blockLength = 0;
         frameStarted = false;
         trailerQueued = false;
-        history = new byte[0];
+        history = EMPTY_HISTORY;
         contentHash.reset();
-    }
-
-    /// Writes one little-endian 32-bit integer.
-    private static void writeInt(byte[] bytes, int offset, int value) {
-        bytes[offset] = (byte) value;
-        bytes[offset + 1] = (byte) (value >>> 8);
-        bytes[offset + 2] = (byte) (value >>> 16);
-        bytes[offset + 3] = (byte) (value >>> 24);
     }
 
     /// Requires the exact encoder lifecycle state.

@@ -24,6 +24,6 @@ final class ArchiveAggregationTest {
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
 
-        assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), names);
+        assertEquals(Set.of("7z", "ar", "cpio", "rar", "tar", "zip"), names);
     }
 }

@@ -85,16 +85,7 @@ Writable archive file systems use ordinary NIO operations. Closing the file syst
 
 ```java
 Path archive = Path.of("example.zip");
-ArchiveOptions writable = ArchiveOptions.of(
-        ArkivoFileSystem.OPEN_OPTIONS,
-        Set.of(
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE
-        )
-);
-
-try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, writable)) {
+try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.create(archive)) {
     Files.createDirectories(fileSystem.getPath("/docs"));
     Files.writeString(fileSystem.getPath("/docs/readme.txt"), "Hello from Arkivo");
 }
@@ -112,13 +103,15 @@ workloads can use `openStreamingReader` and `openStreamingWriter` instead of bui
 Archive modules currently cover:
 
 - AR file systems and streaming readers/writers.
+- CPIO streaming readers/writers for `newc`, CRC, old portable ASCII, and old binary archives.
 - TAR file systems and streaming readers/writers, including detected or selected outer compression.
 - ZIP file systems and streaming readers/writers, with mutation, encryption, and split-volume support.
 - 7z file systems and streaming writers, with mutation, solid archives, encryption, and split-volume support.
 - Read-only RAR4 and RAR5 file systems and streaming readers.
 
-Compression support currently covers BZip2, raw Deflate, Deflate64, gzip, LZ4 frame and raw block, raw LZMA,
-LZMA-alone, LZMA2, PPMd7, XZ, zlib, and Zstandard. The codec layer also provides Delta and BCJ executable transforms.
+Compression support currently covers BZip2, Unix compress (`.Z`), raw Deflate, Deflate64, gzip, LZ4 frame and raw block,
+lzip, raw LZMA, LZMA-alone, LZMA2, PPMd7, XZ, zlib, and Zstandard. The codec layer also provides Delta and BCJ
+executable transforms.
 All compression implementations are pure Java.
 
 Not every format has the same lifecycle or framing model. Codec objects are immutable configurations: generic optional

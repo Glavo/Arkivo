@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.lz4.internal;
 
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.util.Arrays;
@@ -116,7 +117,7 @@ final class XXHash32 {
 
         int position = 0;
         while (position + Integer.BYTES <= memorySize) {
-            hash += readInt(memory, position) * PRIME_3;
+            hash += ByteArrayAccess.readIntLittleEndian(memory, position) * PRIME_3;
             hash = Integer.rotateLeft(hash, 17) * PRIME_4;
             position += Integer.BYTES;
         }
@@ -153,10 +154,10 @@ final class XXHash32 {
 
     /// Processes one complete 16-byte stripe.
     private void processStripe(byte[] bytes, int offset) {
-        accumulator1 = round(accumulator1, readInt(bytes, offset));
-        accumulator2 = round(accumulator2, readInt(bytes, offset + 4));
-        accumulator3 = round(accumulator3, readInt(bytes, offset + 8));
-        accumulator4 = round(accumulator4, readInt(bytes, offset + 12));
+        accumulator1 = round(accumulator1, ByteArrayAccess.readIntLittleEndian(bytes, offset));
+        accumulator2 = round(accumulator2, ByteArrayAccess.readIntLittleEndian(bytes, offset + 4));
+        accumulator3 = round(accumulator3, ByteArrayAccess.readIntLittleEndian(bytes, offset + 8));
+        accumulator4 = round(accumulator4, ByteArrayAccess.readIntLittleEndian(bytes, offset + 12));
     }
 
     /// Mixes one four-byte word into a large-input accumulator.
@@ -166,11 +167,4 @@ final class XXHash32 {
         return accumulator * PRIME_1;
     }
 
-    /// Reads one little-endian 32-bit word.
-    private static int readInt(byte[] bytes, int offset) {
-        return Byte.toUnsignedInt(bytes[offset])
-                | Byte.toUnsignedInt(bytes[offset + 1]) << 8
-                | Byte.toUnsignedInt(bytes[offset + 2]) << 16
-                | Byte.toUnsignedInt(bytes[offset + 3]) << 24;
-    }
 }

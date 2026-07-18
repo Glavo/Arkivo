@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.lz4.internal;
 
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -111,8 +112,9 @@ final class LZ4BlockDecompression {
             if (compressed.length - inputPosition < 2) {
                 throw new IOException("Truncated LZ4 match offset");
             }
-            int matchOffset = Byte.toUnsignedInt(compressed[inputPosition])
-                    | Byte.toUnsignedInt(compressed[inputPosition + 1]) << 8;
+            int matchOffset = Short.toUnsignedInt(
+                    ByteArrayAccess.readShortLittleEndian(compressed, inputPosition)
+            );
             inputPosition += 2;
             if (matchOffset == 0 || matchOffset > outputSize + dictionaryLength) {
                 throw new IOException("Invalid LZ4 match offset: " + matchOffset);

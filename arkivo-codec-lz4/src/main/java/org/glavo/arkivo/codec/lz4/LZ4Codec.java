@@ -11,12 +11,15 @@ import org.glavo.arkivo.codec.lz4.internal.LZ4FrameDecoder;
 import org.glavo.arkivo.codec.lz4.internal.LZ4FrameEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
 
 /// Provides an immutable standard LZ4 frame configuration and transport-independent engines.
 @NotNullByDefault
-public final class LZ4Codec implements CompressionCodec.FlushableFramed<LZ4Codec> {
+public final class LZ4Codec
+        implements CompressionCodec.DictionaryConfigurable<LZ4Codec, LZ4Dictionary>,
+        CompressionCodec.FlushableFramed<LZ4Codec> {
     /// The default immutable LZ4 frame configuration.
     public static final LZ4Codec DEFAULT = builder().build();
 
@@ -35,6 +38,9 @@ public final class LZ4Codec implements CompressionCodec.FlushableFramed<LZ4Codec
     /// Whether decoders verify checksums present in input frames.
     private final boolean verifyChecksums;
 
+    /// Configured external prefix dictionary, or null.
+    private final @Nullable LZ4Dictionary dictionary;
+
     /// Creates the default LZ4 frame configuration.
     public LZ4Codec() {
         this(new Builder());
@@ -47,6 +53,7 @@ public final class LZ4Codec implements CompressionCodec.FlushableFramed<LZ4Codec
         blockChecksum = builder.blockChecksum;
         contentChecksum = builder.contentChecksum;
         verifyChecksums = builder.verifyChecksums;
+        dictionary = builder.dictionary;
     }
 
     /// Returns a builder initialized to interoperable LZ4 frame defaults.
@@ -88,6 +95,25 @@ public final class LZ4Codec implements CompressionCodec.FlushableFramed<LZ4Codec
     /// Returns whether decoders verify checksums present in input frames.
     public boolean verifiesChecksums() {
         return verifyChecksums;
+    }
+
+    /// Returns the configured external prefix dictionary, or null.
+    @Override
+    public @Nullable LZ4Dictionary dictionary() {
+        return dictionary;
+    }
+
+    /// Returns an immutable codec with the requested external prefix dictionary.
+    @Override
+    public LZ4Codec withDictionary(LZ4Dictionary dictionary) {
+        Objects.requireNonNull(dictionary, "dictionary");
+        return dictionary == this.dictionary ? this : toBuilder().dictionary(dictionary).build();
+    }
+
+    /// Returns an immutable codec without an external prefix dictionary.
+    @Override
+    public LZ4Codec withoutDictionary() {
+        return dictionary == null ? this : toBuilder().withoutDictionary().build();
     }
 
     /// Returns an immutable codec with the requested maximum decoded block size.
@@ -134,7 +160,8 @@ public final class LZ4Codec implements CompressionCodec.FlushableFramed<LZ4Codec
                 ? 0L
                 : 1L + (sourceSize - 1L) / blockSize.byteSize();
         long perBlockOverhead = Integer.BYTES + (blockChecksum ? Integer.BYTES : 0L);
-        long frameOverhead = 7L + Integer.BYTES + (contentChecksum ? Integer.BYTES : 0L);
+        long dictionaryIdSize = dictionary != null && dictionary.hasDictionaryId() ? Integer.BYTES : 0L;
+        long frameOverhead = 7L + dictionaryIdSize + Integer.BYTES + (contentChecksum ? Integer.BYTES : 0L);
         try {
             return Math.addExact(
                     sourceSize,
@@ -152,22 +179,32 @@ public final class LZ4Codec implements CompressionCodec.FlushableFramed<LZ4Codec
                 blockSize,
                 independentBlocks,
                 blockChecksum,
-                contentChecksum
+                contentChecksum,
+                dictionary
         );
     }
 
     /// Creates a transport-independent LZ4 frame decoder with operation-scoped limits.
     @Override
-    public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) {
+    public CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> newDecoder(
+            DecompressionLimits limits
+    ) {
         Objects.requireNonNull(limits, "limits");
         return CompressionDecoderSupport.limitEngineOutput(
                 new LZ4FrameDecoder(
+                        dictionary,
                         limits.effectiveMaximumWindowSize(),
                         limits.maximumMemorySize(),
                         verifyChecksums
                 ),
                 limits.maximumOutputSize()
         );
+    }
+
+    /// Creates a dictionary-aware decoder without operation-scoped safety limits.
+    @Override
+    public CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> newDecoder() {
+        return newDecoder(DecompressionLimits.UNLIMITED);
     }
 
     /// Builds immutable standard LZ4 frame configurations.
@@ -188,6 +225,9 @@ public final class LZ4Codec implements CompressionCodec.FlushableFramed<LZ4Codec
         /// Selected checksum-verification policy.
         private boolean verifyChecksums = true;
 
+        /// Selected external prefix dictionary, or null.
+        private @Nullable LZ4Dictionary dictionary;
+
         /// Creates a builder initialized to standard defaults.
         public Builder() {
         }
@@ -199,6 +239,7 @@ public final class LZ4Codec implements CompressionCodec.FlushableFramed<LZ4Codec
             blockChecksum = codec.blockChecksum;
             contentChecksum = codec.contentChecksum;
             verifyChecksums = codec.verifyChecksums;
+            dictionary = codec.dictionary;
         }
 
         /// Selects the maximum decoded block size.
@@ -228,6 +269,18 @@ public final class LZ4Codec implements CompressionCodec.FlushableFramed<LZ4Codec
         /// Selects whether decoders verify checksums present in input frames.
         public Builder verifyChecksums(boolean verifyChecksums) {
             this.verifyChecksums = verifyChecksums;
+            return this;
+        }
+
+        /// Selects the external prefix dictionary used by encoders and decoders.
+        public Builder dictionary(LZ4Dictionary dictionary) {
+            this.dictionary = Objects.requireNonNull(dictionary, "dictionary");
+            return this;
+        }
+
+        /// Removes the external prefix dictionary from this builder.
+        public Builder withoutDictionary() {
+            dictionary = null;
             return this;
         }
 

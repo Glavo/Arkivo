@@ -5,8 +5,10 @@
 module org.glavo.arkivo.codec.all {
     requires transitive org.glavo.arkivo.codec;
     requires transitive org.glavo.arkivo.codec.bzip2;
+    requires transitive org.glavo.arkivo.codec.compress;
     requires transitive org.glavo.arkivo.codec.deflate;
     requires transitive org.glavo.arkivo.codec.lz4;
+    requires transitive org.glavo.arkivo.codec.lzip;
     requires transitive org.glavo.arkivo.codec.lzma;
     requires transitive org.glavo.arkivo.codec.ppmd;
     requires transitive org.glavo.arkivo.codec.xz;

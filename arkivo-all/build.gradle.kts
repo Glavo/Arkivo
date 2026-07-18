@@ -69,6 +69,14 @@ val downloadLibarchiveTestSources = tasks.register<DownloadVerifiedFile>("downlo
 
 val libarchiveFixtureNames = listOf(
     "test_read_format_ar.ar.uu",
+    "test_read_format_cpio_bin_be.cpio.uu",
+    "test_read_format_cpio_bin_le.cpio.uu",
+    "test_compat_cpio_1.cpio.uu",
+    "test_read_format_cpio_filename_utf8_jp.cpio.uu",
+    "test_read_format_cpio_filename_utf8_ru.cpio.uu",
+    "test_read_format_cpio_filename_koi8r.cpio.uu",
+    "test_read_format_cpio_filename_eucjp.cpio.uu",
+    "test_read_format_cpio_filename_cp866.cpio.uu",
     "test_compat_gtar_1.tar.uu",
     "test_compat_gtar_2.tar.uu",
     "test_read_format_zip.zip.uu",
@@ -216,14 +224,17 @@ val moduleProjectPaths = listOf(
     ":arkivo-archive-7z",
     ":arkivo-archive-all",
     ":arkivo-archive-ar",
+    ":arkivo-archive-cpio",
     ":arkivo-archive-rar",
     ":arkivo-archive-tar",
     ":arkivo-archive-zip",
     ":arkivo-codec",
     ":arkivo-codec-all",
     ":arkivo-codec-bzip2",
+    ":arkivo-codec-compress",
     ":arkivo-codec-deflate",
     ":arkivo-codec-lz4",
+    ":arkivo-codec-lzip",
     ":arkivo-codec-lzma",
     ":arkivo-codec-ppmd",
     ":arkivo-codec-xz",
@@ -275,6 +286,7 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.archive",
             "org.glavo.arkivo.archive.all",
             "org.glavo.arkivo.archive.ar",
+            "org.glavo.arkivo.archive.cpio",
             "org.glavo.arkivo.archive.rar",
             "org.glavo.arkivo.archive.sevenzip",
             "org.glavo.arkivo.archive.tar",
@@ -282,8 +294,10 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.codec",
             "org.glavo.arkivo.codec.all",
             "org.glavo.arkivo.codec.bzip2",
+            "org.glavo.arkivo.codec.compress",
             "org.glavo.arkivo.codec.deflate",
             "org.glavo.arkivo.codec.lz4",
+            "org.glavo.arkivo.codec.lzip",
             "org.glavo.arkivo.codec.lzma",
             "org.glavo.arkivo.codec.ppmd",
             "org.glavo.arkivo.codec.xz",
@@ -317,12 +331,14 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.archive.all" to setOf(
                 archiveModule,
                 "org.glavo.arkivo.archive.ar",
+                "org.glavo.arkivo.archive.cpio",
                 "org.glavo.arkivo.archive.rar",
                 "org.glavo.arkivo.archive.sevenzip",
                 "org.glavo.arkivo.archive.tar",
                 "org.glavo.arkivo.archive.zip"
             ),
             "org.glavo.arkivo.archive.ar" to setOf(archiveModule),
+            "org.glavo.arkivo.archive.cpio" to setOf(archiveModule),
             "org.glavo.arkivo.archive.rar" to setOf(archiveModule),
             "org.glavo.arkivo.archive.sevenzip" to setOf(archiveModule),
             "org.glavo.arkivo.archive.tar" to setOf(archiveModule, codecModule),
@@ -330,16 +346,20 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.codec.all" to setOf(
                 codecModule,
                 "org.glavo.arkivo.codec.bzip2",
+                "org.glavo.arkivo.codec.compress",
                 "org.glavo.arkivo.codec.deflate",
                 "org.glavo.arkivo.codec.lz4",
+                "org.glavo.arkivo.codec.lzip",
                 "org.glavo.arkivo.codec.lzma",
                 "org.glavo.arkivo.codec.ppmd",
                 "org.glavo.arkivo.codec.xz",
                 "org.glavo.arkivo.codec.zstd"
             ),
             "org.glavo.arkivo.codec.bzip2" to setOf(codecModule),
+            "org.glavo.arkivo.codec.compress" to setOf(codecModule),
             "org.glavo.arkivo.codec.deflate" to setOf(codecModule),
             "org.glavo.arkivo.codec.lz4" to setOf(codecModule),
+            "org.glavo.arkivo.codec.lzip" to setOf(codecModule),
             "org.glavo.arkivo.codec.lzma" to setOf(codecModule),
             "org.glavo.arkivo.codec.ppmd" to setOf(codecModule),
             "org.glavo.arkivo.codec.xz" to setOf(
@@ -365,6 +385,7 @@ val verifyModuleDescriptors by tasks.registering {
                 "org.glavo.arkivo.archive.spi"
             ),
             "org.glavo.arkivo.archive.ar" to setOf("org.glavo.arkivo.archive.ar"),
+            "org.glavo.arkivo.archive.cpio" to setOf("org.glavo.arkivo.archive.cpio"),
             "org.glavo.arkivo.archive.rar" to setOf("org.glavo.arkivo.archive.rar"),
             "org.glavo.arkivo.archive.sevenzip" to setOf("org.glavo.arkivo.archive.sevenzip"),
             "org.glavo.arkivo.archive.tar" to setOf("org.glavo.arkivo.archive.tar"),
@@ -374,8 +395,10 @@ val verifyModuleDescriptors by tasks.registering {
                 "org.glavo.arkivo.codec.transform"
             ),
             "org.glavo.arkivo.codec.bzip2" to setOf("org.glavo.arkivo.codec.bzip2"),
+            "org.glavo.arkivo.codec.compress" to setOf("org.glavo.arkivo.codec.compress"),
             "org.glavo.arkivo.codec.deflate" to setOf("org.glavo.arkivo.codec.deflate"),
             "org.glavo.arkivo.codec.lz4" to setOf("org.glavo.arkivo.codec.lz4"),
+            "org.glavo.arkivo.codec.lzip" to setOf("org.glavo.arkivo.codec.lzip"),
             "org.glavo.arkivo.codec.lzma" to setOf("org.glavo.arkivo.codec.lzma"),
             "org.glavo.arkivo.codec.ppmd" to setOf("org.glavo.arkivo.codec.ppmd"),
             "org.glavo.arkivo.codec.xz" to setOf("org.glavo.arkivo.codec.xz"),
@@ -396,8 +419,10 @@ val verifyModuleDescriptors by tasks.registering {
             codecModule to mapOf(
                 "org.glavo.arkivo.codec.spi" to setOf(
                     "org.glavo.arkivo.codec.bzip2",
+                    "org.glavo.arkivo.codec.compress",
                     "org.glavo.arkivo.codec.deflate",
                     "org.glavo.arkivo.codec.lz4",
+                    "org.glavo.arkivo.codec.lzip",
                     "org.glavo.arkivo.codec.lzma",
                     "org.glavo.arkivo.codec.ppmd",
                     "org.glavo.arkivo.codec.xz",
@@ -406,9 +431,12 @@ val verifyModuleDescriptors by tasks.registering {
             ),
             "org.glavo.arkivo.base" to mapOf(
                 "org.glavo.arkivo.internal" to setOf(
+                    "org.glavo.arkivo.archive.cpio",
                     "org.glavo.arkivo.archive.rar",
                     "org.glavo.arkivo.archive.sevenzip",
                     "org.glavo.arkivo.archive.zip",
+                    "org.glavo.arkivo.codec.lz4",
+                    "org.glavo.arkivo.codec.lzip",
                     "org.glavo.arkivo.codec.xz",
                     "org.glavo.arkivo.codec.zstd"
                 )
@@ -416,6 +444,7 @@ val verifyModuleDescriptors by tasks.registering {
             archiveModule to mapOf(
                 "org.glavo.arkivo.archive.internal" to setOf(
                     "org.glavo.arkivo.archive.ar",
+                    "org.glavo.arkivo.archive.cpio",
                     "org.glavo.arkivo.archive.rar",
                     "org.glavo.arkivo.archive.sevenzip",
                     "org.glavo.arkivo.archive.tar",
@@ -476,6 +505,9 @@ val verifyModuleDescriptors by tasks.registering {
                     "org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider"
                 )
             ),
+            "org.glavo.arkivo.archive.cpio" to mapOf(
+                archiveFormatService to setOf("org.glavo.arkivo.archive.cpio.CPIOArkivoFormat")
+            ),
             "org.glavo.arkivo.archive.rar" to mapOf(
                 archiveFormatService to setOf("org.glavo.arkivo.archive.rar.RarArkivoFormat"),
                 fileSystemProviderService to setOf(
@@ -505,6 +537,11 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.codec.bzip2" to mapOf(
                 compressionFormatService to setOf("org.glavo.arkivo.codec.bzip2.BZip2Format")
             ),
+            "org.glavo.arkivo.codec.compress" to mapOf(
+                compressionFormatService to setOf(
+                    "org.glavo.arkivo.codec.compress.UnixCompressFormat"
+                )
+            ),
             "org.glavo.arkivo.codec.deflate" to mapOf(
                 compressionFormatService to setOf(
                     "org.glavo.arkivo.codec.deflate.DeflateFormat",
@@ -519,6 +556,9 @@ val verifyModuleDescriptors by tasks.registering {
                     "org.glavo.arkivo.codec.lz4.LZ4BlockFormat",
                     "org.glavo.arkivo.codec.lz4.LZ4Format"
                 )
+            ),
+            "org.glavo.arkivo.codec.lzip" to mapOf(
+                compressionFormatService to setOf("org.glavo.arkivo.codec.lzip.LzipFormat")
             ),
 
             "org.glavo.arkivo.codec.lzma" to mapOf(

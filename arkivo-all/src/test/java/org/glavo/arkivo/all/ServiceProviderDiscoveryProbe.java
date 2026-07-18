@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArkivoFormat;
+import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -20,14 +22,20 @@ public final class ServiceProviderDiscoveryProbe {
     private static final @Unmodifiable Set<String> EXPECTED_SCHEMES =
             Set.of("arkivo+7z", "arkivo+ar", "arkivo+rar", "arkivo+tar", "arkivo+zip");
 
+    /// Expected archive format names, including formats without an NIO file-system provider.
+    private static final @Unmodifiable Set<String> EXPECTED_ARCHIVE_FORMAT_NAMES =
+            Set.of("7z", "ar", "cpio", "rar", "tar", "zip");
+
     /// Expected compression format names.
     private static final @Unmodifiable Set<String> EXPECTED_FORMAT_NAMES = Set.of(
             "bzip2",
+            "compress",
             "deflate",
             "deflate64",
             "gzip",
             "lz4",
             "lz4-block",
+            "lzip",
             "lzma",
             "lzma-raw",
             "lzma2",
@@ -52,6 +60,17 @@ public final class ServiceProviderDiscoveryProbe {
             throw new AssertionError(
                     "Installed Arkivo file system provider schemes " + actualSchemes
                             + " differ from " + EXPECTED_SCHEMES
+            );
+        }
+
+        @Unmodifiable List<ArkivoFormat> archiveFormats = ArkivoFormats.installed();
+        Set<String> actualArchiveFormatNames = archiveFormats.stream()
+                .map(ArkivoFormat::name)
+                .collect(Collectors.toUnmodifiableSet());
+        if (!EXPECTED_ARCHIVE_FORMAT_NAMES.equals(actualArchiveFormatNames)) {
+            throw new AssertionError(
+                    "Installed Arkivo archive formats " + actualArchiveFormatNames
+                            + " differ from " + EXPECTED_ARCHIVE_FORMAT_NAMES
             );
         }
 

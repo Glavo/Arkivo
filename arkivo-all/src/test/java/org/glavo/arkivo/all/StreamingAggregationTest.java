@@ -22,6 +22,7 @@ import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
+import org.glavo.arkivo.archive.cpio.CPIOArkivoStreamingWriter;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
@@ -86,7 +87,7 @@ final class StreamingAggregationTest {
                 .filter(ArkivoStreamingReaderFormat.class::isInstance)
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
-        assertEquals(Set.of("ar", "rar", "tar", "zip"), formatNames);
+        assertEquals(Set.of("ar", "cpio", "rar", "tar", "zip"), formatNames);
     }
 
     /// Verifies named reader lookup opens every readable streaming format without signature dispatch.
@@ -94,6 +95,7 @@ final class StreamingAggregationTest {
     void readsEveryStreamingFormatByName() throws IOException {
         for (Map.Entry<String, byte[]> archive : Map.of(
                 "ar", arArchive(),
+                "cpio", cpioArchive(),
                 "tar", tarArchive(),
                 "zip", zipArchive()
         ).entrySet()) {
@@ -173,7 +175,7 @@ final class StreamingAggregationTest {
                 .filter(ArkivoStreamingWriterFormat.class::isInstance)
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
-        assertEquals(Set.of("7z", "ar", "tar", "zip"), formatNames);
+        assertEquals(Set.of("7z", "ar", "cpio", "tar", "zip"), formatNames);
     }
 
     /// Verifies the installed formats that advertise transactional multi-volume streaming writers.
@@ -430,7 +432,7 @@ final class StreamingAggregationTest {
     /// Verifies unified writer lookup creates every writable streaming archive through an owned channel.
     @Test
     void writesEveryStreamingFormatByName() throws IOException {
-        for (String formatName : Set.of("7z", "ar", "tar", "zip")) {
+        for (String formatName : Set.of("7z", "ar", "cpio", "tar", "zip")) {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             WritableByteChannel target = Channels.newChannel(output);
             try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(formatName, target)) {
@@ -764,6 +766,7 @@ final class StreamingAggregationTest {
     void opensWritableStreamingFormatsFromInputStreams() throws IOException {
         assertArchive(tarArchive());
         assertArchive(arArchive());
+        assertArchive(cpioArchive());
         assertArchive(zipArchive());
     }
 
@@ -830,6 +833,7 @@ final class StreamingAggregationTest {
     @Test
     void retriesStreamingWriterTargetClosure() throws IOException {
         assertWriterCloseRetry("ar", ArArkivoStreamingWriter::open);
+        assertWriterCloseRetry("cpio", CPIOArkivoStreamingWriter::open);
         assertWriterCloseRetry("tar", TarArkivoStreamingWriter::open);
         assertWriterCloseRetry("zip", ZipArkivoStreamingWriter::open);
         assertWriterCloseRetry("7z", SevenZipArkivoStreamingWriter::open);
@@ -859,6 +863,7 @@ final class StreamingAggregationTest {
     @Test
     void retriesStreamingReaderSourceClosure() throws IOException {
         assertReaderCloseRetry("ar", arArchive());
+        assertReaderCloseRetry("cpio", cpioArchive());
         assertReaderCloseRetry("tar", tarArchive());
         assertReaderCloseRetry("zip", zipArchive());
         assertReaderCloseRetry("rar", new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00});
@@ -1006,6 +1011,15 @@ final class StreamingAggregationTest {
     private static byte[] arArchive() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            writeEntry(writer);
+        }
+        return output.toByteArray();
+    }
+
+    /// Creates a CPIO archive with one entry.
+    private static byte[] cpioArchive() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(output)) {
             writeEntry(writer);
         }
         return output.toByteArray();

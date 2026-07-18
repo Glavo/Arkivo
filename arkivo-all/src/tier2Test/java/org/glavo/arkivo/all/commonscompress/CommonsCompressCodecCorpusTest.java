@@ -12,6 +12,7 @@ import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.bzip2.BZip2Codec;
+import org.glavo.arkivo.codec.compress.UnixCompressCodec;
 import org.glavo.arkivo.codec.deflate.Deflate64Codec;
 import org.glavo.arkivo.codec.deflate.DeflateCodec;
 import org.glavo.arkivo.codec.deflate.GzipCodec;
@@ -389,6 +390,13 @@ final class CommonsCompressCodecCorpusTest {
                         "lbzip2_32767.bz2",
                         5,
                         "13b896d551a100401b0d3982e0729efc2e8d7aeb09a36c0a51e48ec2bd15ea8b"
+                ),
+                fixture(
+                        "compress/bla.tar.Z",
+                        new UnixCompressCodec(),
+                        "bla.tar.Z",
+                        10_240,
+                        BLA_TAR_SHA256
                 ),
                 fixture("lzma/bla.tar.lzma", new LZMACodec(), "bla.tar.lzma", 10_240, BLA_TAR_SHA256),
                 fixture("lz4/bla.tar.lz4", new LZ4Codec(), "bla.tar.lz4", 10_240, BLA_TAR_SHA256),

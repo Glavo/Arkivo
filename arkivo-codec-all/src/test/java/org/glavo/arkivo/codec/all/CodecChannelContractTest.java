@@ -20,6 +20,8 @@ import org.glavo.arkivo.codec.bzip2.BZip2Codec;
 import org.glavo.arkivo.codec.deflate.DeflateCodec;
 import org.glavo.arkivo.codec.deflate.ZlibCodec;
 import org.glavo.arkivo.codec.deflate.ZlibDictionary;
+import org.glavo.arkivo.codec.lz4.LZ4Codec;
+import org.glavo.arkivo.codec.lz4.LZ4Dictionary;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -217,8 +219,8 @@ final class CodecChannelContractTest {
     /// Verifies multi-frame encoders and concatenated-frame decoders share one cumulative context.
     @Test
     void roundTripsMultipleFramesForEveryFramedCodec() throws IOException {
-        Set<String> multiFrameCodecs = Set.of("bzip2", "gzip", "lz4", "xz", "zstd");
-        Set<String> concatenatedFrameCodecs = Set.of("bzip2", "gzip", "lz4", "xz", "zstd");
+        Set<String> multiFrameCodecs = Set.of("bzip2", "gzip", "lz4", "lzip", "xz", "zstd");
+        Set<String> concatenatedFrameCodecs = Set.of("bzip2", "gzip", "lz4", "lzip", "xz", "zstd");
         byte[] first = "first independent frame".getBytes(StandardCharsets.UTF_8);
         byte[] second = "second independent frame".getBytes(StandardCharsets.UTF_8);
 
@@ -774,7 +776,7 @@ final class CodecChannelContractTest {
     /// Verifies dictionary configuration subinterfaces and preset-dictionary round trips.
     @Test
     void roundTripsPresetDictionariesForEveryDictionaryCodec() throws IOException {
-        Set<String> dictionaryCodecs = Set.of("deflate", "zlib", "zstd");
+        Set<String> dictionaryCodecs = Set.of("deflate", "lz4", "zlib", "zstd");
         byte[] dictionaryBytes = (
                 "Arkivo shared preset dictionary: "
                         + "common-prefix/alpha/beta/gamma/0123456789;"
@@ -795,6 +797,8 @@ final class CodecChannelContractTest {
                 configured = deflateCodec.withDictionary(RawCompressionDictionary.of(dictionaryBytes));
             } else if (codec instanceof ZlibCodec zlibCodec) {
                 configured = zlibCodec.withDictionary(ZlibDictionary.of(dictionaryBytes));
+            } else if (codec instanceof LZ4Codec lz4Codec) {
+                configured = lz4Codec.withDictionary(LZ4Dictionary.rawContent(dictionaryBytes));
             } else if (codec instanceof ZstdCodec zstdCodec) {
                 configured = zstdCodec.withDictionary(ZstdDictionary.rawContent(dictionaryBytes));
             } else {
@@ -1028,11 +1032,13 @@ final class CodecChannelContractTest {
     @Test
     void enforcesMaximumWindowSizeAcrossApplicableCodecs() throws IOException {
         Set<String> windowCodecs = Set.of(
+                "compress",
                 "deflate",
                 "deflate64",
                 "gzip",
                 "lz4",
                 "lz4-block",
+                "lzip",
                 "lzma",
                 "lzma-raw",
                 "lzma2",

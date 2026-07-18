@@ -8,10 +8,11 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.List;
 import java.util.Objects;
 
-/// Describes the discoverable standard LZ4 frame format.
+/// Describes the discoverable LZ4 frame family decoded by the standard codec.
 @NotNullByDefault
 public final class LZ4Format implements CompressionFormat {
     /// The stable standard LZ4 frame format name.
@@ -19,6 +20,9 @@ public final class LZ4Format implements CompressionFormat {
 
     /// Standard LZ4 frame magic in little-endian byte order.
     public static final long FRAME_MAGIC = 0x184d_2204L;
+
+    /// Legacy LZ4 frame magic in little-endian byte order.
+    public static final long LEGACY_FRAME_MAGIC = 0x184c_2102L;
 
     /// Lowest standard LZ4 skippable-frame magic value.
     public static final long FIRST_SKIPPABLE_FRAME_MAGIC = 0x184d_2a50L;
@@ -67,7 +71,7 @@ public final class LZ4Format implements CompressionFormat {
         return Integer.BYTES;
     }
 
-    /// Returns whether the prefix starts with a standard or skippable LZ4 frame magic value.
+    /// Returns whether the prefix starts with a standard, skippable, or legacy LZ4 frame magic value.
     @Override
     public boolean matches(ByteBuffer prefix) {
         Objects.requireNonNull(prefix, "prefix");
@@ -75,7 +79,7 @@ public final class LZ4Format implements CompressionFormat {
             return false;
         }
         long magic = readUnsignedInt(prefix, prefix.position());
-        return magic == FRAME_MAGIC || isSkippableFrameMagic(magic);
+        return magic == FRAME_MAGIC || magic == LEGACY_FRAME_MAGIC || isSkippableFrameMagic(magic);
     }
 
     /// Returns whether an unsigned 32-bit value identifies an LZ4 skippable frame.
@@ -83,7 +87,7 @@ public final class LZ4Format implements CompressionFormat {
         return magic >= FIRST_SKIPPABLE_FRAME_MAGIC && magic <= LAST_SKIPPABLE_FRAME_MAGIC;
     }
 
-    /// Returns the default immutable LZ4 frame codec.
+    /// Returns the default codec, which encodes standard frames and also decodes legacy frames.
     @Override
     public LZ4Codec defaultCodec() {
         return LZ4Codec.DEFAULT;
@@ -92,10 +96,7 @@ public final class LZ4Format implements CompressionFormat {
     /// Reads an unsigned little-endian integer without changing the buffer state.
     private static long readUnsignedInt(ByteBuffer buffer, int offset) {
         return Integer.toUnsignedLong(
-                Byte.toUnsignedInt(buffer.get(offset))
-                        | Byte.toUnsignedInt(buffer.get(offset + 1)) << 8
-                        | Byte.toUnsignedInt(buffer.get(offset + 2)) << 16
-                        | Byte.toUnsignedInt(buffer.get(offset + 3)) << 24
+                buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).getInt(offset)
         );
     }
 }

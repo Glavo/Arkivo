@@ -114,7 +114,7 @@ public abstract class ArkivoStreamingWriter implements Closeable {
         } catch (IOException | RuntimeException | Error exception) {
             if (failure == null) {
                 failure = exception;
-            } else {
+            } else if (failure != exception) {
                 failure.addSuppressed(exception);
             }
         }

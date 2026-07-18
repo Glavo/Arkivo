@@ -8,22 +8,31 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.lz4.LZ4BlockSize;
+import org.glavo.arkivo.codec.lz4.LZ4Dictionary;
+import org.glavo.arkivo.codec.lz4.LZ4DictionaryRequest;
 import org.glavo.arkivo.codec.lz4.LZ4Format;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Incrementally decodes one standard or skippable LZ4 frame without retaining caller-owned buffers.
+/// Incrementally decodes one standard, skippable, or legacy LZ4 frame without retaining caller-owned buffers.
 @NotNullByDefault
-public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
-    /// Legacy LZ4 frame magic, which this decoder deliberately does not interpret as standard framing.
-    private static final long LEGACY_FRAME_MAGIC = 0x184c_2102L;
+public final class LZ4FrameDecoder
+        implements CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> {
+    /// Fixed decoded block size used by the legacy frame representation.
+    private static final int LEGACY_BLOCK_SIZE = 8 * 1024 * 1024;
+
+    /// Largest valid compressed payload for one legacy block.
+    private static final int MAXIMUM_LEGACY_COMPRESSED_BLOCK_SIZE =
+            Math.toIntExact(LZ4BlockCompression.maxCompressedLength(LEGACY_BLOCK_SIZE));
 
     /// Maximum match distance retained between linked blocks.
     private static final int MAXIMUM_HISTORY_SIZE = 65_535;
@@ -37,6 +46,12 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
     /// Empty prefix history.
     private static final byte[] EMPTY_HISTORY = new byte[0];
 
+    /// Owned effective bytes of the initially configured dictionary.
+    private final byte[] initialDictionaryHistory;
+
+    /// Initially configured dictionary identifier, or the no-identifier sentinel.
+    private final long initialDictionaryId;
+
     /// Maximum permitted match distance, or the unlimited sentinel.
     private final long maximumWindowSize;
 
@@ -45,6 +60,12 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
 
     /// Whether block and content checksums are verified.
     private final boolean verifyChecksums;
+
+    /// Owned effective external dictionary bytes for the current decoding session.
+    private byte[] dictionaryHistory = EMPTY_HISTORY;
+
+    /// Active dictionary identifier, or the no-identifier sentinel.
+    private long dictionaryId = LZ4Dictionary.NO_DICTIONARY_ID;
 
     /// Incrementally collected frame magic.
     private final ByteBuffer magic = ByteBuffer.allocate(Integer.BYTES);
@@ -94,6 +115,12 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
     /// Whether the current physical block is stored without compression.
     private boolean uncompressedBlock;
 
+    /// Whether a legacy partial block has already established the logical final block.
+    private boolean legacyPartialBlock;
+
+    /// Dictionary identifier requested by the current standard frame.
+    private long requiredDictionaryId = LZ4Dictionary.NO_DICTIONARY_ID;
+
     /// Prefix history retained for the next linked block.
     private byte[] history = EMPTY_HISTORY;
 
@@ -105,13 +132,18 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
 
     /// Creates an LZ4 frame decoder with operation-scoped safety settings.
     public LZ4FrameDecoder(
+            @Nullable LZ4Dictionary dictionary,
             long maximumWindowSize,
             long maximumMemorySize,
             boolean verifyChecksums
     ) {
+        initialDictionaryHistory = dictionary == null ? EMPTY_HISTORY : dictionary.bytes();
+        initialDictionaryId = dictionary == null ? LZ4Dictionary.NO_DICTIONARY_ID : dictionary.dictionaryId();
         this.maximumWindowSize = maximumWindowSize;
         this.maximumMemorySize = maximumMemorySize;
         this.verifyChecksums = verifyChecksums;
+        dictionaryHistory = initialDictionaryHistory;
+        dictionaryId = initialDictionaryId;
         prepareDescriptor();
     }
 
@@ -134,6 +166,9 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
         requireOpen();
         if (state == State.FINISHED) {
             return CodecOutcome.FINISHED;
+        }
+        if (state == State.NEEDS_DICTIONARY) {
+            return CodecOutcome.NEEDS_DICTIONARY;
         }
 
         while (true) {
@@ -161,7 +196,9 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
                         return requireMoreInput(endOfInput);
                     }
                     skippableSize.flip();
-                    skippableBytes = readUnsignedInt(skippableSize, 0);
+                    skippableBytes = Integer.toUnsignedLong(
+                            ByteArrayAccess.readIntLittleEndian(skippableSize.array(), 0)
+                    );
                     skippableSize.clear();
                     state = State.SKIPPABLE_PAYLOAD;
                 }
@@ -223,6 +260,25 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
                     finishStandardFrame();
                     return CodecOutcome.FINISHED;
                 }
+                case LEGACY_BLOCK_HEADER -> {
+                    @Nullable CodecOutcome outcome = beginLegacyBlock(source, endOfInput);
+                    if (outcome != null) {
+                        return outcome;
+                    }
+                }
+                case LEGACY_BLOCK_PAYLOAD -> {
+                    byte[] currentPayload = Objects.requireNonNull(payload);
+                    int copied = Math.min(source.remaining(), currentPayload.length - payloadSize);
+                    source.get(currentPayload, payloadSize, copied);
+                    payloadSize += copied;
+                    if (payloadSize != currentPayload.length) {
+                        return requireMoreInput(endOfInput);
+                    }
+                    decodeLegacyBlock();
+                }
+                case NEEDS_DICTIONARY -> {
+                    return CodecOutcome.NEEDS_DICTIONARY;
+                }
                 case FINISHED -> {
                     return CodecOutcome.FINISHED;
                 }
@@ -231,10 +287,34 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
         }
     }
 
+    /// Returns the dictionary request produced by the current standard frame.
+    @Override
+    public LZ4DictionaryRequest dictionaryRequest() {
+        if (state != State.NEEDS_DICTIONARY) {
+            throw new IllegalStateException("LZ4 decoder is not waiting for a dictionary");
+        }
+        return new LZ4DictionaryRequest(requiredDictionaryId);
+    }
+
+    /// Supplies the identified dictionary requested by the parsed frame descriptor.
+    @Override
+    public void provideDictionary(LZ4Dictionary dictionary) throws IOException {
+        Objects.requireNonNull(dictionary, "dictionary");
+        requireOpen();
+        LZ4DictionaryRequest request = dictionaryRequest();
+        if (!request.matches(dictionary)) {
+            throw new IOException("Configured LZ4 dictionary does not satisfy " + request);
+        }
+        installDictionary(dictionary);
+        beginStandardFrame();
+    }
+
     /// Abandons the current frame and restores the initial decoder state.
     @Override
     public void reset() {
         requireOpen();
+        dictionaryHistory = initialDictionaryHistory;
+        dictionaryId = initialDictionaryId;
         clearFrameState();
         state = State.MAGIC;
     }
@@ -243,22 +323,32 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
     @Override
     public void close() {
         clearFrameState();
+        dictionaryHistory = EMPTY_HISTORY;
+        dictionaryId = LZ4Dictionary.NO_DICTIONARY_ID;
         state = State.CLOSED;
     }
 
-    /// Interprets a collected standard, skippable, or unsupported legacy magic value.
+    /// Interprets a collected standard, skippable, or legacy magic value.
     private void parseMagic() throws IOException {
         magic.flip();
-        long value = readUnsignedInt(magic, 0);
+        long value = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(magic.array(), 0));
         magic.clear();
         if (value == LZ4Format.FRAME_MAGIC) {
+            requireMemory(configuredDictionaryStorageSize());
             prepareDescriptor();
             state = State.DESCRIPTOR;
         } else if (LZ4Format.isSkippableFrameMagic(value)) {
+            requireMemory(configuredDictionaryStorageSize());
             skippableSize.clear();
             state = State.SKIPPABLE_SIZE;
-        } else if (value == LEGACY_FRAME_MAGIC) {
-            throw new IOException("Legacy LZ4 frames are not supported");
+        } else if (value == LZ4Format.LEGACY_FRAME_MAGIC) {
+            requireMemory(configuredDictionaryStorageSize());
+            CompressionDecoderSupport.requireWindowSize(maximumWindowSize, MAXIMUM_HISTORY_SIZE);
+            maximumBlockSize = LEGACY_BLOCK_SIZE;
+            legacyPartialBlock = false;
+            payload = null;
+            payloadSize = 0;
+            state = State.LEGACY_BLOCK_HEADER;
         } else {
             throw new IOException("Invalid LZ4 frame magic");
         }
@@ -311,7 +401,7 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
 
         int position = 2;
         if ((flags & 0x08) != 0) {
-            expectedContentSize = readLong(bytes, position);
+            expectedContentSize = ByteArrayAccess.readLongLittleEndian(bytes, position);
             if (expectedContentSize < 0L) {
                 throw new IOException("LZ4 frame content size exceeds the Java long range");
             }
@@ -319,15 +409,27 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
         } else {
             expectedContentSize = CompressionCodec.UNKNOWN_SIZE;
         }
-        if ((flags & 0x01) != 0) {
-            long dictionaryId = readUnsignedInt(bytes, position);
-            throw new IOException("LZ4 frame dictionaries are not supported (dictionary ID " + dictionaryId + ")");
-        }
-
         descriptor.clear();
+        if ((flags & 0x01) != 0) {
+            long frameDictionaryId = Integer.toUnsignedLong(
+                    ByteArrayAccess.readIntLittleEndian(bytes, position)
+            );
+            if (dictionaryId != frameDictionaryId) {
+                requiredDictionaryId = frameDictionaryId;
+                state = State.NEEDS_DICTIONARY;
+                return;
+            }
+        }
+        beginStandardFrame();
+    }
+
+    /// Initializes standard-frame block, history, checksum, and size state after dictionary resolution.
+    private void beginStandardFrame() throws IOException {
+        requireMemory(configuredDictionaryStorageSize());
         decodedContentSize = 0L;
         contentHash.reset();
-        history = EMPTY_HISTORY;
+        history = dictionaryHistory;
+        requiredDictionaryId = LZ4Dictionary.NO_DICTIONARY_ID;
         blockHeader.clear();
         state = State.BLOCK_HEADER;
     }
@@ -335,7 +437,7 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
     /// Parses a physical block header and allocates its bounded payload.
     private boolean beginBlock() throws IOException {
         blockHeader.flip();
-        int value = readInt(blockHeader, 0);
+        int value = ByteArrayAccess.readIntLittleEndian(blockHeader.array(), 0);
         blockHeader.clear();
         int size = value & 0x7fff_ffff;
         if (size == 0) {
@@ -353,17 +455,74 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
         if (size > maximumBlockSize) {
             throw new IOException("LZ4 physical block exceeds its descriptor maximum");
         }
-        requireMemory((long) size + history.length);
+        requireMemory((long) size + retainedHistoryStorageSize());
         payload = new byte[size];
         payloadSize = 0;
         state = State.BLOCK_PAYLOAD;
         return false;
     }
 
+    /// Parses one legacy block header without consuming a following frame magic value.
+    private @Nullable CodecOutcome beginLegacyBlock(ByteBuffer source, boolean endOfInput) throws IOException {
+        if (source.remaining() < Integer.BYTES) {
+            if (!endOfInput) {
+                return CodecOutcome.NEEDS_INPUT;
+            }
+            if (!source.hasRemaining()) {
+                state = State.FINISHED;
+                return CodecOutcome.FINISHED;
+            }
+            throw new EOFException("Truncated LZ4 legacy block header");
+        }
+
+        long value = readUnsignedInt(source, source.position());
+        if (isFrameMagic(value)) {
+            state = State.FINISHED;
+            return CodecOutcome.FINISHED;
+        }
+        if (value == 0L) {
+            source.position(source.position() + Integer.BYTES);
+            state = State.FINISHED;
+            return CodecOutcome.FINISHED;
+        }
+        if (legacyPartialBlock) {
+            throw new IOException("LZ4 legacy frame contains data after its final partial block");
+        }
+        if (value > MAXIMUM_LEGACY_COMPRESSED_BLOCK_SIZE) {
+            throw new IOException("LZ4 legacy compressed block exceeds its format maximum");
+        }
+
+        source.position(source.position() + Integer.BYTES);
+        int size = Math.toIntExact(value);
+        requireMemory(size);
+        payload = new byte[size];
+        payloadSize = 0;
+        state = State.LEGACY_BLOCK_PAYLOAD;
+        return null;
+    }
+
+    /// Decodes one complete legacy block and queues its owned output.
+    private void decodeLegacyBlock() throws IOException {
+        byte[] currentPayload = Objects.requireNonNull(payload);
+        LZ4BlockDecompression.Result result = LZ4BlockDecompression.decompress(
+                currentPayload,
+                LEGACY_BLOCK_SIZE,
+                maximumWindowSize,
+                memoryLimitAfterDetachedDictionaries(EMPTY_HISTORY)
+        );
+        byte[] decoded = result.bytes();
+        int decodedLength = result.length();
+        legacyPartialBlock = decodedLength < LEGACY_BLOCK_SIZE;
+        output = ByteBuffer.wrap(decoded, 0, decodedLength).slice().asReadOnlyBuffer();
+        payload = null;
+        payloadSize = 0;
+        state = State.LEGACY_BLOCK_HEADER;
+    }
+
     /// Verifies the checksum over the physical compressed or raw block payload.
     private void verifyBlockChecksum() throws IOException {
         checksum.flip();
-        int stored = readInt(checksum, 0);
+        int stored = ByteArrayAccess.readIntLittleEndian(checksum.array(), 0);
         checksum.clear();
         if (verifyChecksums && stored != (int) XXHash32.hash(Objects.requireNonNull(payload))) {
             throw new IOException("LZ4 block checksum mismatch");
@@ -379,12 +538,13 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
             decoded = currentPayload;
             decodedLength = currentPayload.length;
         } else {
+            byte[] blockDictionary = independentBlocks ? dictionaryHistory : history;
             LZ4BlockDecompression.Result result = LZ4BlockDecompression.decompress(
                     currentPayload,
-                    independentBlocks ? EMPTY_HISTORY : history,
+                    blockDictionary,
                     maximumBlockSize,
                     maximumWindowSize,
-                    maximumMemorySize
+                    memoryLimitAfterDetachedDictionaries(blockDictionary)
             );
             decoded = result.bytes();
             decodedLength = result.length();
@@ -411,6 +571,7 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
                             + decodedStorageSize
                             + history.length
                             + retainedHistorySize
+                            + detachedDictionaryStorageSize(history)
             );
             appendHistory(decoded, decodedLength);
         }
@@ -424,7 +585,7 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
     /// Verifies the decoded-content checksum from the frame trailer.
     private void verifyContentChecksum() throws IOException {
         checksum.flip();
-        int stored = readInt(checksum, 0);
+        int stored = ByteArrayAccess.readIntLittleEndian(checksum.array(), 0);
         checksum.clear();
         if (verifyChecksums && stored != (int) contentHash.value()) {
             throw new IOException("LZ4 content checksum mismatch");
@@ -495,6 +656,52 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
         descriptor.limit(2);
     }
 
+    /// Installs an immutable session dictionary without retaining caller-owned buffers.
+    private void installDictionary(LZ4Dictionary dictionary) throws DecompressionMemoryLimitException {
+        requireMemory((long) initialDictionaryHistory.length + dictionary.size());
+        dictionaryHistory = dictionary.bytes();
+        dictionaryId = dictionary.dictionaryId();
+    }
+
+    /// Returns whether an unsigned value begins a standard, skippable, or legacy LZ4 frame.
+    private static boolean isFrameMagic(long value) {
+        return value == LZ4Format.FRAME_MAGIC
+                || value == LZ4Format.LEGACY_FRAME_MAGIC
+                || LZ4Format.isSkippableFrameMagic(value);
+    }
+
+    /// Returns storage occupied by the distinct initial and active dictionary arrays.
+    private long configuredDictionaryStorageSize() {
+        return initialDictionaryHistory.length
+                + (dictionaryHistory == initialDictionaryHistory ? 0L : dictionaryHistory.length);
+    }
+
+    /// Returns storage occupied by distinct configured dictionaries and linked-block history.
+    private long retainedHistoryStorageSize() {
+        return configuredDictionaryStorageSize()
+                + (history == initialDictionaryHistory || history == dictionaryHistory ? 0L : history.length);
+    }
+
+    /// Returns configured-dictionary storage not already represented by the supplied block dictionary.
+    private long detachedDictionaryStorageSize(byte[] blockDictionary) {
+        long storageSize = initialDictionaryHistory == blockDictionary ? 0L : initialDictionaryHistory.length;
+        if (dictionaryHistory != blockDictionary && dictionaryHistory != initialDictionaryHistory) {
+            storageSize += dictionaryHistory.length;
+        }
+        return storageSize;
+    }
+
+    /// Returns the memory limit available after charging configured dictionaries outside block decompression.
+    private long memoryLimitAfterDetachedDictionaries(byte[] blockDictionary)
+            throws DecompressionMemoryLimitException {
+        if (maximumMemorySize < 0L) {
+            return maximumMemorySize;
+        }
+        long detachedStorageSize = detachedDictionaryStorageSize(blockDictionary);
+        requireMemory(detachedStorageSize);
+        return maximumMemorySize - detachedStorageSize;
+    }
+
     /// Enforces one concrete decoder working-memory requirement.
     private void requireMemory(long requiredMemorySize) throws DecompressionMemoryLimitException {
         if (maximumMemorySize >= 0L && requiredMemorySize > maximumMemorySize) {
@@ -510,36 +717,11 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
         return CodecOutcome.NEEDS_INPUT;
     }
 
-    /// Reads one signed little-endian 32-bit integer from a buffer.
-    private static int readInt(ByteBuffer buffer, int offset) {
-        return Byte.toUnsignedInt(buffer.get(offset))
-                | Byte.toUnsignedInt(buffer.get(offset + 1)) << 8
-                | Byte.toUnsignedInt(buffer.get(offset + 2)) << 16
-                | Byte.toUnsignedInt(buffer.get(offset + 3)) << 24;
-    }
-
     /// Reads one unsigned little-endian 32-bit integer from a buffer.
     private static long readUnsignedInt(ByteBuffer buffer, int offset) {
-        return Integer.toUnsignedLong(readInt(buffer, offset));
-    }
-
-    /// Reads one unsigned little-endian 32-bit integer from an array.
-    private static long readUnsignedInt(byte[] bytes, int offset) {
         return Integer.toUnsignedLong(
-                Byte.toUnsignedInt(bytes[offset])
-                        | Byte.toUnsignedInt(bytes[offset + 1]) << 8
-                        | Byte.toUnsignedInt(bytes[offset + 2]) << 16
-                        | Byte.toUnsignedInt(bytes[offset + 3]) << 24
+                buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN).getInt(offset)
         );
-    }
-
-    /// Reads one little-endian 64-bit integer from an array.
-    private static long readLong(byte[] bytes, int offset) {
-        long value = 0L;
-        for (int index = Long.BYTES - 1; index >= 0; index--) {
-            value = value << 8 | Byte.toUnsignedLong(bytes[offset + index]);
-        }
-        return value;
     }
 
     /// Clears all mutable per-frame buffers and metadata.
@@ -560,6 +742,8 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
         payload = null;
         payloadSize = 0;
         uncompressedBlock = false;
+        legacyPartialBlock = false;
+        requiredDictionaryId = LZ4Dictionary.NO_DICTIONARY_ID;
         history = EMPTY_HISTORY;
         output = EMPTY_OUTPUT;
     }
@@ -597,6 +781,15 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
 
         /// A decoded-content checksum is being collected.
         CONTENT_CHECKSUM,
+
+        /// A legacy compressed-block size or implicit frame boundary is being inspected.
+        LEGACY_BLOCK_HEADER,
+
+        /// One legacy compressed block payload is being collected.
+        LEGACY_BLOCK_PAYLOAD,
+
+        /// Decoding is paused until the dictionary identified by the frame is supplied.
+        NEEDS_DICTIONARY,
 
         /// The current standard or skippable frame completed.
         FINISHED,

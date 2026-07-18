@@ -10,6 +10,7 @@ module org.glavo.arkivo.archive {
     exports org.glavo.arkivo.archive.spi;
     exports org.glavo.arkivo.archive.internal to
             org.glavo.arkivo.archive.ar,
+            org.glavo.arkivo.archive.cpio,
             org.glavo.arkivo.archive.rar,
             org.glavo.arkivo.archive.sevenzip,
             org.glavo.arkivo.archive.tar,

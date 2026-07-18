@@ -9,6 +9,7 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -148,7 +149,7 @@ public final class LZ4CodecTest {
 
         LZ4Codec blockCodec = contentCodec.withBlockChecksum(true);
         byte[] badBlock = compress(blockCodec, input);
-        int payloadSize = readInt(badBlock, 7) & 0x7fff_ffff;
+        int payloadSize = ByteArrayAccess.readIntLittleEndian(badBlock, 7) & 0x7fff_ffff;
         badBlock[11 + payloadSize] ^= 1;
         assertThrows(IOException.class, () -> decompress(blockCodec, badBlock));
         assertArrayEquals(input, decompress(blockCodec.withVerifyChecksums(false), badBlock));
@@ -171,7 +172,7 @@ public final class LZ4CodecTest {
         }
 
         byte[] framePrefix = Arrays.copyOf(compress(new LZ4Codec(), new byte[0]), 11);
-        writeInt(framePrefix, 7, maximumMemorySize + 1);
+        ByteArrayAccess.writeIntLittleEndian(framePrefix, 7, maximumMemorySize + 1);
         try (CompressionDecoder decoder = new LZ4Codec().newDecoder(limits)) {
             assertThrows(
                     DecompressionMemoryLimitException.class,
@@ -180,7 +181,7 @@ public final class LZ4CodecTest {
         }
     }
 
-    /// Verifies standard and skippable magic detection plus installed aliases.
+    /// Verifies standard, legacy, and skippable magic detection plus installed aliases.
     @Test
     public void formatMetadataAndDiscovery() {
         assertSame(LZ4Format.instance(), CompressionFormats.require("lz4"));
@@ -188,7 +189,8 @@ public final class LZ4CodecTest {
         assertSame(LZ4BlockFormat.instance(), CompressionFormats.require("lz4-raw"));
         assertTrue(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x04, 0x22, 0x4d, 0x18})));
         assertTrue(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x50, 0x2a, 0x4d, 0x18})));
-        assertFalse(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x02, 0x21, 0x4c, 0x18})));
+        assertTrue(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x02, 0x21, 0x4c, 0x18})));
+        assertFalse(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x02, 0x21, 0x4c, 0x19})));
         assertEquals(0, LZ4BlockFormat.instance().probeSize());
     }
 
@@ -268,19 +270,4 @@ public final class LZ4CodecTest {
         return bytes;
     }
 
-    /// Reads one little-endian integer from an array.
-    private static int readInt(byte[] bytes, int offset) {
-        return Byte.toUnsignedInt(bytes[offset])
-                | Byte.toUnsignedInt(bytes[offset + 1]) << 8
-                | Byte.toUnsignedInt(bytes[offset + 2]) << 16
-                | Byte.toUnsignedInt(bytes[offset + 3]) << 24;
-    }
-
-    /// Writes one little-endian integer into an array.
-    private static void writeInt(byte[] bytes, int offset, int value) {
-        bytes[offset] = (byte) value;
-        bytes[offset + 1] = (byte) (value >>> 8);
-        bytes[offset + 2] = (byte) (value >>> 16);
-        bytes[offset + 3] = (byte) (value >>> 24);
-    }
 }

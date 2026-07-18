@@ -5,9 +5,15 @@ package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
+import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
+import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributes;
+import org.glavo.arkivo.archive.cpio.CPIOArkivoStreamingReader;
+import org.glavo.arkivo.archive.cpio.CPIOBinaryByteOrder;
+import org.glavo.arkivo.archive.cpio.CPIODialect;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
@@ -35,6 +41,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.Channels;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -95,6 +102,103 @@ public final class LibarchiveArchiveCorpusTest {
             assertArEntry(fileSystem, "gghh.o", 1001L, 4L, "3333");
             assertArEntry(fileSystem, "hhhhjjjjkkkkllll.o", 1001L, 9L, "987654321");
         }
+    }
+
+    /// Verifies historical binary CPIO headers in both supported 16-bit word byte orders.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("binaryCpioFixtures")
+    public void readsBinaryCpioByteOrders(
+            String fixtureName,
+            CPIOBinaryByteOrder expectedByteOrder
+    ) throws IOException {
+        ReadableByteChannel source = Channels.newChannel(
+                new ByteArrayInputStream(decodeFixtureBytes(fixtureName))
+        );
+        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source)) {
+            assertTrue(reader.next());
+            CPIOArkivoEntryAttributes attributes = reader.readAttributes(CPIOArkivoEntryAttributes.class);
+            assertEquals("file1111222233334444", attributes.path());
+            assertEquals(CPIODialect.OLD_BINARY, attributes.dialect());
+            assertEquals(expectedByteOrder, attributes.binaryByteOrder());
+            assertEquals(5L, attributes.size());
+            assertEquals(1_240_664_175_000L, attributes.lastModifiedTime().toMillis());
+            assertEquals(0100644, attributes.mode());
+            assertEquals(1000L, attributes.userId());
+            assertEquals(0L, attributes.groupId());
+            try (InputStream input = reader.openInputStream()) {
+                assertEquals(5, input.readAllBytes().length);
+            }
+            assertFalse(reader.next());
+        }
+        assertFalse(source.isOpen());
+    }
+
+    /// Verifies the new-ASCII fixture whose repeated inode values distinguish single links from hard links.
+    @Test
+    public void readsCpioRepeatedInodeCompatibilityFixture() throws IOException {
+        @Unmodifiable List<String> expectedNames = List.of("foo1", "foo2", "bar1", "bar2");
+        @Unmodifiable List<Long> inodes;
+        @Unmodifiable List<Long> linkCounts;
+        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
+                new ByteArrayInputStream(decodeFixtureBytes("test_compat_cpio_1.cpio.uu"))
+        )) {
+            List<String> names = new java.util.ArrayList<>();
+            List<Long> observedInodes = new java.util.ArrayList<>();
+            List<Long> observedLinkCounts = new java.util.ArrayList<>();
+            while (reader.next()) {
+                CPIOArkivoEntryAttributes attributes = reader.readAttributes(CPIOArkivoEntryAttributes.class);
+                assertEquals(CPIODialect.NEW_ASCII, attributes.dialect());
+                assertTrue(attributes.isRegularFile());
+                assertEquals(1_260_250_228_000L, attributes.lastModifiedTime().toMillis());
+                assertEquals(1000L, attributes.userId());
+                assertEquals(1000L, attributes.groupId());
+                assertEquals(0100644, attributes.mode());
+                names.add(attributes.path());
+                observedInodes.add(attributes.inode());
+                observedLinkCounts.add(attributes.linkCount());
+                try (InputStream input = reader.openInputStream()) {
+                    assertEquals(attributes.size(), input.readAllBytes().length);
+                }
+            }
+            assertEquals(expectedNames, names);
+            inodes = List.copyOf(observedInodes);
+            linkCounts = List.copyOf(observedLinkCounts);
+        }
+        assertEquals(inodes.get(0), inodes.get(1));
+        assertEquals(inodes.get(2), inodes.get(3));
+        assertEquals(List.of(1L, 1L, 2L, 2L), linkCounts);
+    }
+
+    /// Verifies portable-ASCII CPIO names decoded with explicit UTF-8 and legacy metadata charsets.
+    @ParameterizedTest(name = "{0} [{1}]")
+    @MethodSource("cpioMetadataCharsetFixtures")
+    public void readsCpioMetadataCharsets(
+            String fixtureName,
+            Charset metadataCharset,
+            @Unmodifiable List<String> expectedNames,
+            @Unmodifiable List<Long> expectedSizes
+    ) throws IOException {
+        CPIOArchiveOptions.Read options = CPIOArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(
+                ArchiveMetadataCharsetDetector.fixed(metadataCharset)
+        );
+        int entryIndex = 0;
+        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
+                new ByteArrayInputStream(decodeFixtureBytes(fixtureName)),
+                options
+        )) {
+            while (reader.next()) {
+                CPIOArkivoEntryAttributes attributes = reader.readAttributes(CPIOArkivoEntryAttributes.class);
+                assertTrue(entryIndex < expectedNames.size(), fixtureName);
+                assertEquals(CPIODialect.OLD_ASCII, attributes.dialect());
+                assertEquals(expectedNames.get(entryIndex), attributes.path());
+                assertEquals(expectedSizes.get(entryIndex).longValue(), attributes.size());
+                try (InputStream input = reader.openInputStream()) {
+                    assertEquals(attributes.size(), input.readAllBytes().length);
+                }
+                entryIndex++;
+            }
+        }
+        assertEquals(expectedNames.size(), entryIndex);
     }
 
     /// Verifies GNU TAR long names, long link targets, and base-256 numeric fields.
@@ -734,6 +838,54 @@ public final class LibarchiveArchiveCorpusTest {
                         1053016L,
                         0x6b5b364dL,
                         List.of(SevenZipCoderMethod.ZSTANDARD, SevenZipCoderMethod.BCJ_SPARC)
+                )
+        );
+    }
+
+    /// Returns historical binary CPIO fixtures in both word byte orders.
+    private static Stream<Arguments> binaryCpioFixtures() {
+        return Stream.of(
+                Arguments.of("test_read_format_cpio_bin_be.cpio.uu", CPIOBinaryByteOrder.BIG_ENDIAN),
+                Arguments.of("test_read_format_cpio_bin_le.cpio.uu", CPIOBinaryByteOrder.LITTLE_ENDIAN)
+        );
+    }
+
+    /// Returns UTF-8 and legacy-charset CPIO filename fixtures with their decoded names and payload sizes.
+    private static Stream<Arguments> cpioMetadataCharsetFixtures() {
+        @Unmodifiable List<String> japaneseNames = List.of("漢字.txt", "表.txt");
+        @Unmodifiable List<Long> japaneseSizes = List.of(8L, 4L);
+        @Unmodifiable List<String> russianNames = List.of("ПРИВЕТ", "привет");
+        @Unmodifiable List<Long> russianSizes = List.of(6L, 6L);
+        return Stream.of(
+                Arguments.of(
+                        "test_read_format_cpio_filename_utf8_jp.cpio.uu",
+                        StandardCharsets.UTF_8,
+                        japaneseNames,
+                        japaneseSizes
+                ),
+                Arguments.of(
+                        "test_read_format_cpio_filename_utf8_ru.cpio.uu",
+                        StandardCharsets.UTF_8,
+                        russianNames,
+                        russianSizes
+                ),
+                Arguments.of(
+                        "test_read_format_cpio_filename_koi8r.cpio.uu",
+                        Charset.forName("KOI8-R"),
+                        russianNames,
+                        russianSizes
+                ),
+                Arguments.of(
+                        "test_read_format_cpio_filename_eucjp.cpio.uu",
+                        Charset.forName("EUC-JP"),
+                        japaneseNames,
+                        japaneseSizes
+                ),
+                Arguments.of(
+                        "test_read_format_cpio_filename_cp866.cpio.uu",
+                        Charset.forName("IBM866"),
+                        russianNames,
+                        russianSizes
                 )
         );
     }
