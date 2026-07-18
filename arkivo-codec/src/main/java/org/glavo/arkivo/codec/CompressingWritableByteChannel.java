@@ -7,18 +7,30 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousCloseException;
+import java.nio.channels.ClosedByInterruptException;
+import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Accepts uncompressed bytes and writes encoded bytes to a backing channel.
 ///
-/// Contexts are stateful and not safe for concurrent use. A write is a blocking codec operation: on success it advances
-/// the source position by the returned count, and Arkivo-provided contexts consume every remaining source byte. A
-/// nonempty operation that cannot make transport or codec progress fails with `IOException` instead of busy-waiting.
+/// Contexts are stateful and not safe for concurrent data operations. A write is a blocking codec operation: on success
+/// it advances the source position by the returned count, and Arkivo-provided contexts consume every remaining source
+/// byte. A nonempty operation that cannot make transport or codec progress fails with `IOException` instead of
+/// busy-waiting.
 ///
 /// Closing or finishing always releases the encoder. A borrowed backing channel remains open; an owned channel is closed
 /// after final output is written. Finalization failure still makes this channel closed for writes, while an owned-target
 /// close failure can be retried by calling [#finish()] or [#close()] again.
+///
+/// Contexts created by [CompressionCodec]'s default channel factories and
+/// [org.glavo.arkivo.codec.spi.CodecChannelAdapters] implement [InterruptibleChannel] exactly when their backing target
+/// does. For such a context, interrupting a thread during an encoding operation closes the context and target and reports
+/// [ClosedByInterruptException]. Calling `close()` from another thread during an operation similarly closes the target
+/// and makes that operation report [AsynchronousCloseException]. These terminal cancellations release encoder state
+/// without emitting remaining final output and may therefore close even a borrowed target. An idle `close()` remains
+/// graceful and follows the configured ownership policy.
 @NotNullByDefault
 public interface CompressingWritableByteChannel extends WritableByteChannel {
     /// Processes all remaining source bytes while keeping the active encoding open.

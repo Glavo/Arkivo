@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.spi;
 
 import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
@@ -15,12 +16,17 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.InterruptibleChannel;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies algorithm-independent decompression limit handling.
 @NotNullByDefault
@@ -177,6 +183,60 @@ final class CompressionDecoderSupportTest {
         );
     }
 
+    /// Verifies output limiters advertise interruption only when their delegates do.
+    @Test
+    void preservesInterruptibleChannelCapability() {
+        DecompressingReadableByteChannel plain =
+                CompressionDecoderSupport.limitChannelOutput(new TestChannel(new byte[]{1}), 1L);
+        assertFalse(plain instanceof InterruptibleChannel);
+
+        DecompressingReadableByteChannel interruptible =
+                CompressionDecoderSupport.limitChannelOutput(new InterruptibleTestChannel(new byte[]{1}), 1L);
+        assertInstanceOf(InterruptibleChannel.class, interruptible);
+
+        DecompressingReadableByteChannel framed =
+                CompressionDecoderSupport.limitChannelOutput(new FramedTestChannel(new byte[]{1}), 1L);
+        assertInstanceOf(DecompressingReadableByteChannel.Framed.class, framed);
+        assertFalse(framed instanceof InterruptibleChannel);
+
+        DecompressingReadableByteChannel.Framed interruptibleFramed =
+                CompressionDecoderSupport.limitChannelOutput(
+                        new InterruptibleFramedTestChannel(new byte[]{1}),
+                        1L
+                );
+        assertInstanceOf(InterruptibleChannel.class, interruptibleFramed);
+    }
+
+    /// Verifies output counters retain bytes produced before an interrupted delegate operation fails.
+    @Test
+    void recordsPartialOutputWhenInterruptibleDelegateFails() {
+        DecompressingReadableByteChannel decoder = CompressionDecoderSupport.limitChannelOutput(
+                new PartiallyFailingFramedChannel(),
+                2L
+        );
+        ByteBuffer target = ByteBuffer.allocate(2);
+        try {
+            assertThrows(ClosedByInterruptException.class, () -> decoder.read(target));
+            assertEquals(1, target.position());
+            assertEquals(1L, decoder.outputBytes());
+        } finally {
+            assertTrue(Thread.interrupted());
+        }
+
+        DecompressingReadableByteChannel.Framed framedDecoder = CompressionDecoderSupport.limitChannelOutput(
+                new PartiallyFailingFramedChannel(),
+                2L
+        );
+        ByteBuffer framedTarget = ByteBuffer.allocate(2);
+        try {
+            assertThrows(ClosedByInterruptException.class, () -> framedDecoder.decodeFrame(framedTarget));
+            assertEquals(1, framedTarget.position());
+            assertEquals(1L, framedDecoder.outputBytes());
+        } finally {
+            assertTrue(Thread.interrupted());
+        }
+    }
+
     /// Verifies exact-limit output reaches EOF and restores a caller buffer's original limit.
     @Test
     void acceptsExactLimitAndPreservesBufferLimit() throws IOException {
@@ -268,7 +328,7 @@ final class CompressionDecoderSupportTest {
 
     /// Supplies identity-decoded bytes with explicit counters and lifecycle state.
     @NotNullByDefault
-    private static final class TestChannel implements DecompressingReadableByteChannel {
+    private static class TestChannel implements DecompressingReadableByteChannel {
         /// The decoded bytes returned by this decoder.
         private final ByteBuffer content;
 
@@ -279,7 +339,7 @@ final class CompressionDecoderSupportTest {
         private boolean open = true;
 
         /// Creates a decoder over fixed content.
-        private TestChannel(byte[] content) {
+        protected TestChannel(byte[] content) {
             this.content = ByteBuffer.wrap(Objects.requireNonNull(content, "content"));
         }
 
@@ -312,6 +372,103 @@ final class CompressionDecoderSupportTest {
         }
 
         /// Returns the identity output byte count.
+        @Override
+        public long outputBytes() {
+            return outputBytes;
+        }
+
+        /// Returns whether this decoder remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this decoder.
+        @Override
+        public void close() {
+            open = false;
+        }
+    }
+
+    /// Supplies fixed decoded content while advertising interruption support.
+    @NotNullByDefault
+    private static final class InterruptibleTestChannel
+            extends TestChannel
+            implements InterruptibleChannel {
+        /// Creates an interruptible decoder over fixed content.
+        private InterruptibleTestChannel(byte[] content) {
+            super(content);
+        }
+    }
+
+    /// Supplies fixed decoded content with frame-boundary control.
+    @NotNullByDefault
+    private static class FramedTestChannel
+            extends TestChannel
+            implements DecompressingReadableByteChannel.Framed {
+        /// Creates a framed decoder over fixed content.
+        protected FramedTestChannel(byte[] content) {
+            super(content);
+        }
+
+        /// Decodes fixed content through the current synthetic frame.
+        @Override
+        public CodecResult decodeFrame(ByteBuffer target) throws IOException {
+            return decode(target);
+        }
+    }
+
+    /// Supplies fixed decoded content with frame-boundary and interruption support.
+    @NotNullByDefault
+    private static final class InterruptibleFramedTestChannel
+            extends FramedTestChannel
+            implements InterruptibleChannel {
+        /// Creates an interruptible framed decoder over fixed content.
+        private InterruptibleFramedTestChannel(byte[] content) {
+            super(content);
+        }
+    }
+
+    /// Produces one byte before terminating each operation through thread interruption.
+    @NotNullByDefault
+    private static final class PartiallyFailingFramedChannel
+            implements DecompressingReadableByteChannel.Framed, InterruptibleChannel {
+        /// The number of bytes produced before interruption.
+        private long outputBytes;
+
+        /// Whether this decoder remains open.
+        private boolean open = true;
+
+        /// Produces one byte, closes this decoder, and reports interruption.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            Objects.requireNonNull(target, "target");
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+            if (!target.hasRemaining()) {
+                return 0;
+            }
+            target.put((byte) 1);
+            outputBytes++;
+            open = false;
+            Thread.currentThread().interrupt();
+            throw new ClosedByInterruptException();
+        }
+
+        /// Produces one byte through the ordinary decoding path before reporting interruption.
+        @Override
+        public CodecResult decodeFrame(ByteBuffer target) throws IOException {
+            return decode(target);
+        }
+
+        /// Returns the synthetic compressed input count.
+        @Override
+        public long inputBytes() {
+            return outputBytes;
+        }
+
+        /// Returns the produced byte count.
         @Override
         public long outputBytes() {
             return outputBytes;

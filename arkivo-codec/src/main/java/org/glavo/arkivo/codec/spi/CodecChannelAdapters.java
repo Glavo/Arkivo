@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec.spi;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
@@ -11,6 +10,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DictionaryRequiredException;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -18,11 +18,16 @@ import org.jetbrains.annotations.UnmodifiableView;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Adapts transport-independent compression engines to the blocking Arkivo channel contracts.
+///
+/// Returned adapters implement [InterruptibleChannel] exactly when their backing endpoint does. An interrupt or
+/// concurrent close during an active operation is abortive and closes that endpoint even when it is borrowed; ordinary
+/// idle closure retains the endpoint according to [ResourceOwnership].
 @NotNullByDefault
 public final class CodecChannelAdapters {
     /// Default compressed-data staging-buffer size.
@@ -34,9 +39,9 @@ public final class CodecChannelAdapters {
 
     /// Creates an encoding channel whose runtime capabilities match the created engine.
     ///
-    /// @param target the channel that receives compressed bytes
+    /// @param target    the channel that receives compressed bytes
     /// @param ownership whether closing the returned channel also closes `target`
-    /// @param factory the factory for a fresh encoder engine
+    /// @param factory   the factory for a fresh encoder engine
     /// @return a new encoding channel that preserves the engine's supported capabilities
     /// @throws IOException if the encoder cannot be created or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel newWritableByteChannel(
@@ -50,22 +55,35 @@ public final class CodecChannelAdapters {
         OwnedChannelCloser targetCloser = new OwnedChannelCloser(target, ownership);
         CompressionEncoder encoder = createEncoder(factory, targetCloser);
         if (encoder instanceof CompressionEncoder.FlushableFramed flushableFramedEncoder) {
-            return new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder);
+            FlushableFramedEncodingChannel channel =
+                    new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder);
+            return target instanceof InterruptibleChannel
+                    ? new InterruptibleFlushableFramedEncodingChannel(target, channel)
+                    : channel;
         }
         if (encoder instanceof CompressionEncoder.Framed framedEncoder) {
-            return new FramedEncodingChannel(target, targetCloser, framedEncoder);
+            FramedEncodingChannel channel = new FramedEncodingChannel(target, targetCloser, framedEncoder);
+            return target instanceof InterruptibleChannel
+                    ? new InterruptibleFramedEncodingChannel(target, channel)
+                    : channel;
         }
         if (encoder instanceof CompressionEncoder.Flushable flushableEncoder) {
-            return new FlushableEncodingChannel(target, targetCloser, flushableEncoder);
+            FlushableEncodingChannel channel = new FlushableEncodingChannel(target, targetCloser, flushableEncoder);
+            return target instanceof InterruptibleChannel
+                    ? new InterruptibleFlushableEncodingChannel(target, channel)
+                    : channel;
         }
-        return new EncodingChannel(target, targetCloser, encoder);
+        EncodingChannel channel = new EncodingChannel(target, targetCloser, encoder);
+        return target instanceof InterruptibleChannel
+                ? new InterruptibleEncodingChannel(target, channel)
+                : channel;
     }
 
     /// Creates an encoding channel with nonterminal flush support.
     ///
-    /// @param target the channel that receives compressed bytes
+    /// @param target    the channel that receives compressed bytes
     /// @param ownership whether closing the returned channel also closes `target`
-    /// @param factory the factory for a fresh flush-capable encoder engine
+    /// @param factory   the factory for a fresh flush-capable encoder engine
     /// @return a new flush-capable encoding channel
     /// @throws IOException if the encoder cannot be created or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel.Flushable newFlushableWritableByteChannel(
@@ -79,16 +97,23 @@ public final class CodecChannelAdapters {
         OwnedChannelCloser targetCloser = new OwnedChannelCloser(target, ownership);
         CompressionEncoder.Flushable encoder = createEncoder(factory, targetCloser);
         if (encoder instanceof CompressionEncoder.FlushableFramed flushableFramedEncoder) {
-            return new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder);
+            FlushableFramedEncodingChannel channel =
+                    new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder);
+            return target instanceof InterruptibleChannel
+                    ? new InterruptibleFlushableFramedEncodingChannel(target, channel)
+                    : channel;
         }
-        return new FlushableEncodingChannel(target, targetCloser, encoder);
+        FlushableEncodingChannel channel = new FlushableEncodingChannel(target, targetCloser, encoder);
+        return target instanceof InterruptibleChannel
+                ? new InterruptibleFlushableEncodingChannel(target, channel)
+                : channel;
     }
 
     /// Creates an encoding channel that can finish independently terminated frames.
     ///
-    /// @param target the channel that receives compressed bytes
+    /// @param target    the channel that receives compressed bytes
     /// @param ownership whether closing the returned channel also closes `target`
-    /// @param factory the factory for a fresh frame-capable encoder engine
+    /// @param factory   the factory for a fresh frame-capable encoder engine
     /// @return a new frame-capable encoding channel
     /// @throws IOException if the encoder cannot be created or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel.Framed newFramedWritableByteChannel(
@@ -102,16 +127,23 @@ public final class CodecChannelAdapters {
         OwnedChannelCloser targetCloser = new OwnedChannelCloser(target, ownership);
         CompressionEncoder.Framed encoder = createEncoder(factory, targetCloser);
         if (encoder instanceof CompressionEncoder.FlushableFramed flushableFramedEncoder) {
-            return new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder);
+            FlushableFramedEncodingChannel channel =
+                    new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder);
+            return target instanceof InterruptibleChannel
+                    ? new InterruptibleFlushableFramedEncodingChannel(target, channel)
+                    : channel;
         }
-        return new FramedEncodingChannel(target, targetCloser, encoder);
+        FramedEncodingChannel channel = new FramedEncodingChannel(target, targetCloser, encoder);
+        return target instanceof InterruptibleChannel
+                ? new InterruptibleFramedEncodingChannel(target, channel)
+                : channel;
     }
 
     /// Creates an encoding channel with both frame-boundary and nonterminal-flush support.
     ///
-    /// @param target the channel that receives compressed bytes
+    /// @param target    the channel that receives compressed bytes
     /// @param ownership whether closing the returned channel also closes `target`
-    /// @param factory the factory for a fresh frame- and flush-capable encoder engine
+    /// @param factory   the factory for a fresh frame- and flush-capable encoder engine
     /// @return a new frame- and flush-capable encoding channel
     /// @throws IOException if the encoder cannot be created or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel.FlushableFramed newFlushableFramedWritableByteChannel(
@@ -124,14 +156,18 @@ public final class CodecChannelAdapters {
         Objects.requireNonNull(factory, "factory");
         OwnedChannelCloser targetCloser = new OwnedChannelCloser(target, ownership);
         CompressionEncoder.FlushableFramed encoder = createEncoder(factory, targetCloser);
-        return new FlushableFramedEncodingChannel(target, targetCloser, encoder);
+        FlushableFramedEncodingChannel channel =
+                new FlushableFramedEncodingChannel(target, targetCloser, encoder);
+        return target instanceof InterruptibleChannel
+                ? new InterruptibleFlushableFramedEncodingChannel(target, channel)
+                : channel;
     }
 
     /// Creates a decoding channel whose runtime frame capability matches the created engine.
     ///
-    /// @param source the channel that supplies compressed bytes
+    /// @param source    the channel that supplies compressed bytes
     /// @param ownership whether closing the returned channel also closes `source`
-    /// @param factory the factory for a fresh decoder engine
+    /// @param factory   the factory for a fresh decoder engine
     /// @return a new decoding channel that preserves the engine's frame capability
     /// @throws IOException if the decoder cannot be created or an owned source cannot be closed after creation fails
     public static DecompressingReadableByteChannel newReadableByteChannel(
@@ -145,16 +181,22 @@ public final class CodecChannelAdapters {
         OwnedChannelCloser sourceCloser = new OwnedChannelCloser(source, ownership);
         CompressionDecoder decoder = createDecoder(factory, sourceCloser);
         if (decoder instanceof CompressionDecoder.Framed framedDecoder) {
-            return new FramedDecodingChannel(source, sourceCloser, framedDecoder);
+            FramedDecodingChannel channel = new FramedDecodingChannel(source, sourceCloser, framedDecoder);
+            return source instanceof InterruptibleChannel
+                    ? new InterruptibleFramedDecodingChannel(source, channel)
+                    : channel;
         }
-        return new DecodingChannel(source, sourceCloser, decoder, false);
+        DecodingChannel channel = new DecodingChannel(source, sourceCloser, decoder, false);
+        return source instanceof InterruptibleChannel
+                ? new InterruptibleDecodingChannel(source, channel)
+                : channel;
     }
 
     /// Creates a decoding channel that can stop at independently terminated frame boundaries.
     ///
-    /// @param source the channel that supplies compressed bytes
+    /// @param source    the channel that supplies compressed bytes
     /// @param ownership whether closing the returned channel also closes `source`
-    /// @param factory the factory for a fresh frame-capable decoder engine
+    /// @param factory   the factory for a fresh frame-capable decoder engine
     /// @return a new frame-capable decoding channel
     /// @throws IOException if the decoder cannot be created or an owned source cannot be closed after creation fails
     public static DecompressingReadableByteChannel.Framed newFramedReadableByteChannel(
@@ -167,7 +209,10 @@ public final class CodecChannelAdapters {
         Objects.requireNonNull(factory, "factory");
         OwnedChannelCloser sourceCloser = new OwnedChannelCloser(source, ownership);
         CompressionDecoder.Framed decoder = createDecoder(factory, sourceCloser);
-        return new FramedDecodingChannel(source, sourceCloser, decoder);
+        FramedDecodingChannel channel = new FramedDecodingChannel(source, sourceCloser, decoder);
+        return source instanceof InterruptibleChannel
+                ? new InterruptibleFramedDecodingChannel(source, channel)
+                : channel;
     }
 
     /// Creates one transport-independent encoder.
@@ -322,6 +367,24 @@ public final class CodecChannelAdapters {
             targetCloser.closeAfter(failure);
         }
 
+        /// Aborts encoding without emitting any remaining frame or stream trailer.
+        private void abort() throws IOException {
+            if (finished) {
+                targetCloser.close();
+                return;
+            }
+            finished = true;
+            open = false;
+
+            @Nullable Throwable failure = null;
+            try {
+                encoder.close();
+            } catch (RuntimeException | Error exception) {
+                failure = exception;
+            }
+            targetCloser.closeAfter(failure);
+        }
+
         /// Returns the number of uncompressed bytes accepted from callers.
         @Override
         public long inputBytes() {
@@ -414,11 +477,16 @@ public final class CodecChannelAdapters {
         private void writeOutput() throws IOException {
             output.flip();
             while (output.hasRemaining()) {
-                int written = target.write(output);
+                int start = output.position();
+                int written;
+                try {
+                    written = target.write(output);
+                } finally {
+                    outputBytes += output.position() - start;
+                }
                 if (written == 0) {
                     throw new IOException("Compression target channel made no progress");
                 }
-                outputBytes += written;
             }
         }
 
@@ -521,6 +589,137 @@ public final class CodecChannelAdapters {
             flushEngine(flushableEncoder);
         }
     }
+
+    /// Adds interruptible-channel lifecycle semantics to an encoding adapter.
+    @NotNullByDefault
+    private static class InterruptibleEncodingChannel
+            implements CompressingWritableByteChannel, InterruptibleChannel {
+        /// Transport-independent encoding adapter.
+        private final EncodingChannel delegate;
+
+        /// Interruptible operation and close state.
+        private final InterruptibleChannelSupport state;
+
+        /// Creates an interruptible encoding adapter.
+        private InterruptibleEncodingChannel(WritableByteChannel target, EncodingChannel delegate) {
+            this.delegate = delegate;
+            this.state = new InterruptibleChannelSupport(target);
+        }
+
+        /// Encodes source bytes as one interruptible operation.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            return state.execute(() -> delegate.write(source), delegate::abort);
+        }
+
+        /// Gracefully finishes an idle encoder or aborts an active operation.
+        @Override
+        public void finish() throws IOException {
+            close();
+        }
+
+        /// Returns the delegate's accepted input count.
+        @Override
+        public long inputBytes() {
+            return delegate.inputBytes();
+        }
+
+        /// Returns the delegate's emitted output count.
+        @Override
+        public long outputBytes() {
+            return delegate.outputBytes();
+        }
+
+        /// Returns whether this interruptible adapter accepts another operation.
+        @Override
+        public boolean isOpen() {
+            return state.isOpen();
+        }
+
+        /// Gracefully finishes an idle encoder or aborts an active operation.
+        @Override
+        public void close() throws IOException {
+            state.close(delegate::finish, delegate::abort);
+        }
+
+        /// Executes a capability-specific operation under the interruptible lifecycle.
+        protected final void execute(InterruptibleChannelSupport.IOAction operation) throws IOException {
+            state.execute(operation, delegate::abort);
+        }
+    }
+
+    /// Adds interruptible-channel semantics to a flush-capable encoding adapter.
+    @NotNullByDefault
+    private static final class InterruptibleFlushableEncodingChannel
+            extends InterruptibleEncodingChannel
+            implements CompressingWritableByteChannel.Flushable {
+        /// Flush-capable delegate.
+        private final FlushableEncodingChannel flushableDelegate;
+
+        /// Creates an interruptible flush-capable adapter.
+        private InterruptibleFlushableEncodingChannel(
+                WritableByteChannel target,
+                FlushableEncodingChannel delegate
+        ) {
+            super(target, delegate);
+            this.flushableDelegate = delegate;
+        }
+
+        /// Flushes the active encoding as one interruptible operation.
+        @Override
+        public void flush() throws IOException {
+            execute(flushableDelegate::flush);
+        }
+    }
+
+    /// Adds interruptible-channel semantics to a frame-capable encoding adapter.
+    @NotNullByDefault
+    private static class InterruptibleFramedEncodingChannel
+            extends InterruptibleEncodingChannel
+            implements CompressingWritableByteChannel.Framed {
+        /// Frame-capable delegate.
+        private final FramedEncodingChannel framedDelegate;
+
+        /// Creates an interruptible frame-capable adapter.
+        private InterruptibleFramedEncodingChannel(
+                WritableByteChannel target,
+                FramedEncodingChannel delegate
+        ) {
+            super(target, delegate);
+            this.framedDelegate = delegate;
+        }
+
+        /// Finishes the current frame as one interruptible operation.
+        @Override
+        public void finishFrame() throws IOException {
+            execute(framedDelegate::finishFrame);
+        }
+    }
+
+    /// Adds interruptible-channel semantics to a flush- and frame-capable encoding adapter.
+    @NotNullByDefault
+    private static final class InterruptibleFlushableFramedEncodingChannel
+            extends InterruptibleFramedEncodingChannel
+            implements CompressingWritableByteChannel.FlushableFramed {
+        /// Flush- and frame-capable delegate.
+        private final FlushableFramedEncodingChannel flushableFramedDelegate;
+
+        /// Creates an interruptible flush- and frame-capable adapter.
+        private InterruptibleFlushableFramedEncodingChannel(
+                WritableByteChannel target,
+                FlushableFramedEncodingChannel delegate
+        ) {
+            super(target, delegate);
+            this.flushableFramedDelegate = delegate;
+        }
+
+        /// Flushes the active frame as one interruptible operation.
+        @Override
+        public void flush() throws IOException {
+            execute(flushableFramedDelegate::flush);
+        }
+    }
+
     /// Drives a decoder engine from a blocking readable channel.
     @NotNullByDefault
     private static class DecodingChannel implements DecompressingReadableByteChannel {
@@ -635,11 +834,15 @@ public final class CodecChannelAdapters {
                 }
                 int inputPosition = input.position();
                 int outputPosition = target.position();
-                CodecOutcome outcome = endOfInput
-                        ? decoder.finish(input, target)
-                        : decoder.decode(input, target);
-                inputBytes += input.position() - inputPosition;
-                outputBytes += target.position() - outputPosition;
+                CodecOutcome outcome;
+                try {
+                    outcome = endOfInput
+                            ? decoder.finish(input, target)
+                            : decoder.decode(input, target);
+                } finally {
+                    inputBytes += input.position() - inputPosition;
+                    outputBytes += target.position() - outputPosition;
+                }
 
                 if (outcome == CodecOutcome.FINISHED) {
                     if (!concatenatedFrames) {
@@ -769,7 +972,18 @@ public final class CodecChannelAdapters {
         /// Refills the compressed input staging buffer or records physical EOF.
         private void readInput() throws IOException {
             input.clear();
-            int read = source.read(input);
+            int start = input.position();
+            int read;
+            boolean completed = false;
+            try {
+                read = source.read(input);
+                completed = true;
+            } finally {
+                sourceBytes += input.position() - start;
+                if (!completed) {
+                    input.flip();
+                }
+            }
             if (read < 0) {
                 endOfInput = true;
                 input.limit(0);
@@ -778,7 +992,6 @@ public final class CodecChannelAdapters {
             if (read == 0) {
                 throw new IOException("Compression source channel made no progress");
             }
-            sourceBytes += read;
             input.flip();
         }
 
@@ -810,6 +1023,101 @@ public final class CodecChannelAdapters {
             return decodeInternal(target, true);
         }
     }
+
+    /// Adds interruptible-channel lifecycle semantics to a decoding adapter.
+    @NotNullByDefault
+    private static class InterruptibleDecodingChannel
+            implements DecompressingReadableByteChannel, InterruptibleChannel {
+        /// Transport-independent decoding adapter.
+        private final DecodingChannel delegate;
+
+        /// Interruptible operation and close state.
+        private final InterruptibleChannelSupport state;
+
+        /// Creates an interruptible decoding adapter.
+        private InterruptibleDecodingChannel(ReadableByteChannel source, DecodingChannel delegate) {
+            this.delegate = delegate;
+            this.state = new InterruptibleChannelSupport(source);
+        }
+
+        /// Reads decoded bytes as one interruptible operation.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            return state.execute(() -> delegate.read(target), delegate::close);
+        }
+
+        /// Decodes into a target as one interruptible operation.
+        @Override
+        public CodecResult decode(ByteBuffer target) throws IOException {
+            return state.execute(() -> delegate.decode(target), delegate::close);
+        }
+
+        /// Returns the delegate's logically consumed input count.
+        @Override
+        public long inputBytes() {
+            return delegate.inputBytes();
+        }
+
+        /// Returns the delegate's fetched source count.
+        @Override
+        public long sourceBytes() {
+            return delegate.sourceBytes();
+        }
+
+        /// Returns the delegate's transient unconsumed-input view.
+        @Override
+        public @UnmodifiableView ByteBuffer unconsumedInput() {
+            return delegate.unconsumedInput();
+        }
+
+        /// Returns the delegate's produced output count.
+        @Override
+        public long outputBytes() {
+            return delegate.outputBytes();
+        }
+
+        /// Returns whether this interruptible adapter accepts another operation.
+        @Override
+        public boolean isOpen() {
+            return state.isOpen();
+        }
+
+        /// Releases an idle decoder or aborts an active operation.
+        @Override
+        public void close() throws IOException {
+            state.close(delegate::close, delegate::close);
+        }
+
+        /// Executes a capability-specific operation under the interruptible lifecycle.
+        protected final <T> T execute(InterruptibleChannelSupport.IOOperation<T> operation) throws IOException {
+            return state.execute(operation, delegate::close);
+        }
+    }
+
+    /// Adds interruptible-channel semantics to a frame-capable decoding adapter.
+    @NotNullByDefault
+    private static final class InterruptibleFramedDecodingChannel
+            extends InterruptibleDecodingChannel
+            implements DecompressingReadableByteChannel.Framed {
+        /// Frame-capable delegate.
+        private final FramedDecodingChannel framedDelegate;
+
+        /// Creates an interruptible frame-capable decoding adapter.
+        private InterruptibleFramedDecodingChannel(
+                ReadableByteChannel source,
+                FramedDecodingChannel delegate
+        ) {
+            super(source, delegate);
+            this.framedDelegate = delegate;
+        }
+
+        /// Decodes through one frame boundary as an interruptible operation.
+        @Override
+        public CodecResult decodeFrame(ByteBuffer target) throws IOException {
+            return execute(() -> framedDelegate.decodeFrame(target));
+        }
+    }
+
     /// Combines lifecycle failures while preserving the first failure as primary.
     private static Throwable mergeFailure(@Nullable Throwable primary, Throwable secondary) {
         if (primary == null) {

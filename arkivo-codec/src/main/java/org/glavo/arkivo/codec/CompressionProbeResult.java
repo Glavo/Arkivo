@@ -9,6 +9,7 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
@@ -16,6 +17,7 @@ import java.util.Objects;
 ///
 /// Instances have resource identity rather than value identity. A result owns its channel until `takeChannel()`
 /// transfers ownership or `close()` closes it.
+/// The replay channel implements [InterruptibleChannel] exactly when the original source does.
 @NotNullByDefault
 public final class CompressionProbeResult implements AutoCloseable {
     /// The detected format, or `null` when no installed format matched.
@@ -57,7 +59,7 @@ public final class CompressionProbeResult implements AutoCloseable {
 
     /// Transfers and returns the channel that replays the consumed prefix before the remaining source.
     ///
-    /// @return the logical channel, whose ownership is transferred to the caller
+    /// @return the logical channel, whose ownership and interruption capability are transferred to the caller
     /// @throws IllegalStateException when the channel was already transferred or closed
     public synchronized ReadableByteChannel takeChannel() {
         @Nullable ReadableByteChannel current = channel;

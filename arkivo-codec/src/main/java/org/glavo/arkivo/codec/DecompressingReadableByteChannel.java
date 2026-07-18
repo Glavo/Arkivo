@@ -8,17 +8,28 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousCloseException;
+import java.nio.channels.ClosedByInterruptException;
+import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
 /// Reads compressed bytes from a backing channel and exposes decoded bytes.
 ///
-/// Contexts are stateful and not safe for concurrent use. A read may block while obtaining compressed input and advances
-/// the target position by the positive count it returns; an empty target returns zero without reading the source.
-/// Arkivo-provided contexts fail with `IOException` when a nonempty operation cannot make codec or transport progress.
+/// Contexts are stateful and not safe for concurrent data operations. A read may block while obtaining compressed input
+/// and advances the target position by the positive count it returns; an empty target returns zero without reading the
+/// source. Arkivo-provided contexts fail with `IOException` when a nonempty operation cannot make codec or transport
+/// progress.
 ///
 /// Closing always releases decoder state. A borrowed backing source remains open; an owned source is closed. Closing does
 /// not drain compressed input or verify that the current encoding is complete.
+///
+/// Contexts created by [CompressionCodec]'s default channel factories and
+/// [org.glavo.arkivo.codec.spi.CodecChannelAdapters] implement [InterruptibleChannel] exactly when their backing source
+/// does. For such a context, interrupting a thread during decoding closes the context and source and reports
+/// [ClosedByInterruptException]. Calling `close()` from another thread during an operation similarly closes the source
+/// and makes that operation report [AsynchronousCloseException]. These terminal cancellations may close even a borrowed
+/// source. An idle `close()` follows the configured ownership policy.
 @NotNullByDefault
 public interface DecompressingReadableByteChannel extends ReadableByteChannel {
     /// Decodes bytes into the target and reports progress and end-of-input state.

@@ -7,6 +7,8 @@
 /// Format and codec values are safe to share. Encoders, decoders, and their channel or stream contexts are stateful and
 /// must be confined to one operation unless a type explicitly documents stronger thread safety. Buffer-driven methods
 /// communicate byte progress through [java.nio.ByteBuffer#position()] and never take ownership of caller buffers.
+/// The default [CompressionCodec] channel factories preserve [java.nio.channels.InterruptibleChannel] when their backing
+/// channel implements it, including terminal interruption and asynchronous-close behavior.
 @NotNullByDefault
 package org.glavo.arkivo.codec;
 

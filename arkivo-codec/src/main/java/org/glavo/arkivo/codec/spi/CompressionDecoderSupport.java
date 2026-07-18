@@ -14,6 +14,7 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.InterruptibleChannel;
 import java.util.Objects;
 
 /// Applies operation-scoped safety behavior around decoder engines and channel contexts.
@@ -27,9 +28,9 @@ public final class CompressionDecoderSupport {
     ///
     /// A negative maximum leaves the window size unrestricted.
     ///
-    /// @param maximumWindowSize the maximum permitted window size, or a negative value for no limit
+    /// @param maximumWindowSize  the maximum permitted window size, or a negative value for no limit
     /// @param requiredWindowSize the nonnegative window size required by the compressed stream
-    /// @throws IllegalArgumentException if `requiredWindowSize` is negative
+    /// @throws IllegalArgumentException                                 if `requiredWindowSize` is negative
     /// @throws org.glavo.arkivo.codec.DecompressionWindowLimitException if the required window exceeds a nonnegative
     /// maximum
     public static void requireWindowSize(
@@ -51,7 +52,7 @@ public final class CompressionDecoderSupport {
     ///
     /// A negative value leaves the decoder unchanged.
     ///
-    /// @param decoder the decoder to constrain
+    /// @param decoder           the decoder to constrain
     /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
     /// @return `decoder` when the maximum is negative; otherwise, an output-limiting decoder
     public static CompressionDecoder limitEngineOutput(
@@ -69,7 +70,7 @@ public final class CompressionDecoderSupport {
     ///
     /// A negative value leaves the decoder unchanged.
     ///
-    /// @param decoder the frame-capable decoder to constrain
+    /// @param decoder           the frame-capable decoder to constrain
     /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
     /// @return `decoder` when the maximum is negative; otherwise, a frame-capable output-limiting decoder
     public static CompressionDecoder.Framed limitEngineOutput(
@@ -87,13 +88,13 @@ public final class CompressionDecoderSupport {
     ///
     /// A negative value leaves the decoder unchanged.
     ///
-    /// @param <D> the format-specific dictionary type
-    /// @param <R> the format-specific dictionary request type
-    /// @param decoder the dictionary-aware decoder to constrain
+    /// @param <D>               the format-specific dictionary type
+    /// @param <R>               the format-specific dictionary request type
+    /// @param decoder           the dictionary-aware decoder to constrain
     /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
     /// @return `decoder` when the maximum is negative; otherwise, a dictionary-aware output-limiting decoder
     public static <D extends CompressionDictionary, R extends DictionaryRequest<D>>
-            CompressionDecoder.DictionaryAware<D, R> limitEngineOutput(
+    CompressionDecoder.DictionaryAware<D, R> limitEngineOutput(
             CompressionDecoder.DictionaryAware<D, R> decoder,
             long maximumOutputSize
     ) {
@@ -108,14 +109,14 @@ public final class CompressionDecoderSupport {
     ///
     /// A negative value leaves the decoder unchanged.
     ///
-    /// @param <D> the format-specific dictionary type
-    /// @param <R> the format-specific dictionary request type
-    /// @param decoder the frame- and dictionary-aware decoder to constrain
+    /// @param <D>               the format-specific dictionary type
+    /// @param <R>               the format-specific dictionary request type
+    /// @param decoder           the frame- and dictionary-aware decoder to constrain
     /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
     /// @return `decoder` when the maximum is negative; otherwise, a frame- and dictionary-aware output-limiting
     /// decoder
     public static <D extends CompressionDictionary, R extends DictionaryRequest<D>>
-            CompressionDecoder.FramedDictionaryAware<D, R> limitEngineOutput(
+    CompressionDecoder.FramedDictionaryAware<D, R> limitEngineOutput(
             CompressionDecoder.FramedDictionaryAware<D, R> decoder,
             long maximumOutputSize
     ) {
@@ -130,10 +131,10 @@ public final class CompressionDecoderSupport {
     ///
     /// A negative value leaves the channel unchanged.
     ///
-    /// @param decoder the decoding channel to constrain
+    /// @param decoder           the decoding channel to constrain
     /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
-    /// @return `decoder` when the maximum is negative; otherwise, an output-limiting channel that preserves frame
-    /// support when present
+    /// @return `decoder` when the maximum is negative; otherwise, an output-limiting channel that preserves frame and
+    /// interruption support when present
     public static DecompressingReadableByteChannel limitChannelOutput(
             DecompressingReadableByteChannel decoder,
             long maximumOutputSize
@@ -143,7 +144,13 @@ public final class CompressionDecoderSupport {
             return decoder;
         }
         if (decoder instanceof DecompressingReadableByteChannel.Framed framedDecoder) {
+            if (decoder instanceof InterruptibleChannel) {
+                return new InterruptibleFramedOutputLimitingChannel(framedDecoder, maximumOutputSize);
+            }
             return new FramedOutputLimitingChannel(framedDecoder, maximumOutputSize);
+        }
+        if (decoder instanceof InterruptibleChannel) {
+            return new InterruptibleOutputLimitingChannel(decoder, maximumOutputSize);
         }
         return new OutputLimitingChannel(decoder, maximumOutputSize);
     }
@@ -152,9 +159,10 @@ public final class CompressionDecoderSupport {
     ///
     /// A negative value leaves the channel unchanged.
     ///
-    /// @param decoder the frame-capable decoding channel to constrain
+    /// @param decoder           the frame-capable decoding channel to constrain
     /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
-    /// @return `decoder` when the maximum is negative; otherwise, a frame-capable output-limiting channel
+    /// @return `decoder` when the maximum is negative; otherwise, a frame-capable output-limiting channel that
+    /// preserves interruption support when present
     public static DecompressingReadableByteChannel.Framed limitChannelOutput(
             DecompressingReadableByteChannel.Framed decoder,
             long maximumOutputSize
@@ -163,8 +171,12 @@ public final class CompressionDecoderSupport {
         if (maximumOutputSize < 0L) {
             return decoder;
         }
+        if (decoder instanceof InterruptibleChannel) {
+            return new InterruptibleFramedOutputLimitingChannel(decoder, maximumOutputSize);
+        }
         return new FramedOutputLimitingChannel(decoder, maximumOutputSize);
     }
+
     /// Enforces a total maximum output size over a channel decoding session.
     @NotNullByDefault
     private static class OutputLimitingChannel
@@ -201,7 +213,7 @@ public final class CompressionDecoderSupport {
                 throw limitException();
             }
             if (!target.hasRemaining()) {
-                return 0;
+                return decoder.read(target);
             }
 
             long remaining = maximumOutputSize - outputBytes;
@@ -213,16 +225,13 @@ public final class CompressionDecoderSupport {
             if (target.remaining() > remaining) {
                 target.limit(target.position() + Math.toIntExact(remaining));
             }
-            int read;
+            int start = target.position();
             try {
-                read = decoder.read(target);
+                return decoder.read(target);
             } finally {
                 target.limit(originalLimit);
+                outputBytes += target.position() - start;
             }
-            if (read > 0) {
-                outputBytes += read;
-            }
-            return read;
         }
 
         /// Decodes without returning more than the configured maximum.
@@ -259,9 +268,9 @@ public final class CompressionDecoderSupport {
                 result = decodeDelegate(target, stopAtFrame);
             } finally {
                 target.limit(originalLimit);
+                outputBytes += target.position() - start;
             }
             int produced = target.position() - start;
-            outputBytes += produced;
             return new CodecResult(result.inputBytes(), produced, result.status());
         }
 
@@ -340,13 +349,27 @@ public final class CompressionDecoderSupport {
         }
     }
 
+    /// Preserves interruption support through a channel output limiter.
+    @NotNullByDefault
+    private static final class InterruptibleOutputLimitingChannel
+            extends OutputLimitingChannel
+            implements InterruptibleChannel {
+        /// Creates an interruptible output-limiting channel.
+        private InterruptibleOutputLimitingChannel(
+                DecompressingReadableByteChannel decoder,
+                long maximumOutputSize
+        ) {
+            super(decoder, maximumOutputSize);
+        }
+    }
+
     /// Preserves frame-boundary control through a channel output limiter.
     @NotNullByDefault
-    private static final class FramedOutputLimitingChannel
+    private static class FramedOutputLimitingChannel
             extends OutputLimitingChannel
             implements DecompressingReadableByteChannel.Framed {
         /// Creates a frame-capable output-limiting channel.
-        private FramedOutputLimitingChannel(
+        protected FramedOutputLimitingChannel(
                 DecompressingReadableByteChannel.Framed decoder,
                 long maximumOutputSize
         ) {
@@ -357,6 +380,20 @@ public final class CompressionDecoderSupport {
         @Override
         public CodecResult decodeFrame(ByteBuffer target) throws IOException {
             return decodeLimited(target, true);
+        }
+    }
+
+    /// Preserves frame-boundary control and interruption support through a channel output limiter.
+    @NotNullByDefault
+    private static final class InterruptibleFramedOutputLimitingChannel
+            extends FramedOutputLimitingChannel
+            implements InterruptibleChannel {
+        /// Creates an interruptible frame-capable output-limiting channel.
+        private InterruptibleFramedOutputLimitingChannel(
+                DecompressingReadableByteChannel.Framed decoder,
+                long maximumOutputSize
+        ) {
+            super(decoder, maximumOutputSize);
         }
     }
 }

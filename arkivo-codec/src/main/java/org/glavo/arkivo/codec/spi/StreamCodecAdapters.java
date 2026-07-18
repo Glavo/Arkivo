@@ -22,6 +22,10 @@ import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Adapts stream-based codec implementations to Arkivo's channel context SPI.
+///
+/// Stream APIs cannot report partial progress after failure or separate graceful encoder finalization from abortive
+/// resource release. Returned adapters therefore do not advertise `InterruptibleChannel`, even when their backing
+/// endpoint does. Implementations requiring interruptible channel semantics should use [CodecChannelAdapters].
 @NotNullByDefault
 public final class StreamCodecAdapters {
     /// Creates no instances.
@@ -30,10 +34,10 @@ public final class StreamCodecAdapters {
 
     /// Creates an encoding channel around a stream-based codec implementation.
     ///
-    /// @param target the channel that receives compressed bytes
+    /// @param target    the channel that receives compressed bytes
     /// @param ownership whether closing the returned channel also closes `target`
-    /// @param factory the factory that opens the codec output stream
-    /// @return a new encoding channel backed by the opened codec stream
+    /// @param factory   the factory that opens the codec output stream
+    /// @return a new encoding channel backed by the opened codec stream, without interruptible-channel semantics
     /// @throws IOException if the codec stream cannot be opened or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel newWritableByteChannel(
             WritableByteChannel target,
@@ -64,10 +68,10 @@ public final class StreamCodecAdapters {
 
     /// Creates a decoding channel around a stream-based codec implementation.
     ///
-    /// @param source the channel that supplies compressed bytes
+    /// @param source    the channel that supplies compressed bytes
     /// @param ownership whether closing the returned channel also closes `source`
-    /// @param factory the factory that opens the codec input stream
-    /// @return a new decoding channel backed by the opened codec stream
+    /// @param factory   the factory that opens the codec input stream
+    /// @return a new decoding channel backed by the opened codec stream, without interruptible-channel semantics
     /// @throws IOException if the codec stream cannot be opened or an owned source cannot be closed after creation fails
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
@@ -158,26 +162,30 @@ public final class StreamCodecAdapters {
                 return 0;
             }
 
+            int start = source.position();
             int written = source.remaining();
-            if (source.hasArray()) {
-                output.write(
-                        source.array(),
-                        source.arrayOffset() + source.position(),
-                        written
-                );
-                source.position(source.limit());
-            } else {
-                byte[] buffer = new byte[Math.min(written, 8192)];
-                while (source.hasRemaining()) {
-                    int chunkSize = Math.min(source.remaining(), buffer.length);
-                    ByteBuffer chunk = source.duplicate();
-                    chunk.limit(chunk.position() + chunkSize);
-                    chunk.get(buffer, 0, chunkSize);
-                    output.write(buffer, 0, chunkSize);
-                    source.position(source.position() + chunkSize);
+            try {
+                if (source.hasArray()) {
+                    output.write(
+                            source.array(),
+                            source.arrayOffset() + source.position(),
+                            written
+                    );
+                    source.position(source.limit());
+                } else {
+                    byte[] buffer = new byte[Math.min(written, 8192)];
+                    while (source.hasRemaining()) {
+                        int chunkSize = Math.min(source.remaining(), buffer.length);
+                        ByteBuffer chunk = source.duplicate();
+                        chunk.limit(chunk.position() + chunkSize);
+                        chunk.get(buffer, 0, chunkSize);
+                        output.write(buffer, 0, chunkSize);
+                        source.position(source.position() + chunkSize);
+                    }
                 }
+            } finally {
+                inputBytes += source.position() - start;
             }
-            inputBytes += written;
             return written;
         }
 
@@ -270,11 +278,12 @@ public final class StreamCodecAdapters {
             if (!open) {
                 throw new ClosedChannelException();
             }
-            int read = channel.read(target);
-            if (read > 0) {
-                outputBytes += read;
+            int start = target.position();
+            try {
+                return channel.read(target);
+            } finally {
+                outputBytes += target.position() - start;
             }
-            return read;
         }
 
         /// Returns the consumed compressed byte count.

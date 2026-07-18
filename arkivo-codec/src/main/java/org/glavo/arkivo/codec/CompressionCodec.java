@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
@@ -24,13 +25,17 @@ import java.util.Objects;
 /// Implementations must be safe for concurrent use. Stateful encoding and decoding progress belongs exclusively to
 /// engines and channel or stream contexts created by a codec; those operation objects are not safe for concurrent use.
 ///
-/// Endpoint factories validate arguments before applying [ResourceOwnership]. With `BORROWED`, closing the returned
-/// context releases codec state but leaves the endpoint open. With `OWNED`, the context closes the endpoint after codec
-/// finalization or release, and setup failure closes it without hiding the primary failure.
+/// Endpoint factories validate arguments before applying [ResourceOwnership]. During ordinary idle closure, `BORROWED`
+/// releases codec state but leaves the endpoint open, while `OWNED` also closes it after codec finalization or release.
+/// Setup failure closes an owned endpoint without hiding the primary failure.
 ///
 /// Channel-to-channel convenience operations are blocking, reject zero-progress transports with `IOException`, and
 /// leave both caller channels open. One-shot buffer operations never retain buffers or change their limits. They advance
 /// positions to report partial as well as successful progress.
+///
+/// The default channel factories preserve [InterruptibleChannel]: their result implements it exactly when the supplied
+/// channel does. Interrupting an active operation or closing its context concurrently is terminal and can close a
+/// borrowed endpoint, as specified by [CompressingWritableByteChannel] and [DecompressingReadableByteChannel].
 ///
 /// @param <C> the concrete immutable codec type represented by this configuration
 @NotNullByDefault
@@ -111,8 +116,8 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates a decompressing readable channel with operation-scoped safety limits and explicit source ownership.
     ///
-    /// @param source the channel that supplies compressed bytes
-    /// @param limits the output, window, and memory limits for the decoding session
+    /// @param source    the channel that supplies compressed bytes
+    /// @param limits    the output, window, and memory limits for the decoding session
     /// @param ownership whether closing the returned channel also closes `source`
     /// @return a new limited decompressing channel
     /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
@@ -151,7 +156,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates an unlimited decompressing readable channel with explicit source ownership.
     ///
-    /// @param source the channel that supplies compressed bytes
+    /// @param source    the channel that supplies compressed bytes
     /// @param ownership whether closing the returned channel also closes `source`
     /// @return a new unlimited decompressing channel
     /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
@@ -173,7 +178,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates a compressing output stream with explicit target ownership.
     ///
-    /// @param target the stream that receives compressed bytes
+    /// @param target    the stream that receives compressed bytes
     /// @param ownership whether closing the returned stream also closes `target`
     /// @return a new compressing output stream
     /// @throws IOException if the encoder cannot be initialized or ownership cleanup fails
@@ -199,8 +204,8 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates a decompressing input stream with operation-scoped limits and explicit source ownership.
     ///
-    /// @param source the stream that supplies compressed bytes
-    /// @param limits the output, window, and memory limits for the decoding session
+    /// @param source    the stream that supplies compressed bytes
+    /// @param limits    the output, window, and memory limits for the decoding session
     /// @param ownership whether closing the returned stream also closes `source`
     /// @return a new limited decompressing input stream
     /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
@@ -232,7 +237,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates an unlimited decompressing input stream with explicit source ownership.
     ///
-    /// @param source the stream that supplies compressed bytes
+    /// @param source    the stream that supplies compressed bytes
     /// @param ownership whether closing the returned stream also closes `source`
     /// @return a new unlimited decompressing input stream
     /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
@@ -317,10 +322,10 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// `maximumOutputSize` must be between zero and [Integer#MAX_VALUE]. The returned buffer has position zero and its
     /// limit equals the decoded size.
     ///
-    /// @param source the buffer supplying a complete compressed encoding
+    /// @param source            the buffer supplying a complete compressed encoding
     /// @param maximumOutputSize the finite maximum number of decoded bytes to allocate
     /// @return a newly allocated heap buffer containing the decoded bytes
-    /// @throws IOException if the encoding is invalid, truncated, or exceeds a configured limit
+    /// @throws IOException              if the encoding is invalid, truncated, or exceeds a configured limit
     /// @throws IllegalArgumentException if `maximumOutputSize` is negative or exceeds [Integer#MAX_VALUE]
     default ByteBuffer decompress(ByteBuffer source, long maximumOutputSize) throws IOException {
         return decompress(source, DecompressionLimits.ofMaximumOutputSize(maximumOutputSize));
@@ -335,7 +340,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @param source the buffer supplying the compressed encoding
     /// @param limits the output, window, and memory limits for this operation
     /// @return a newly allocated heap buffer containing the decoded bytes
-    /// @throws IOException if the encoding is invalid, truncated, or exceeds a configured limit
+    /// @throws IOException              if the encoding is invalid, truncated, or exceeds a configured limit
     /// @throws IllegalArgumentException if the maximum output limit is unlimited or exceeds [Integer#MAX_VALUE]
     default ByteBuffer decompress(ByteBuffer source, DecompressionLimits limits) throws IOException {
         return ByteBufferCodecSupport.decompressAllocating(this, source, limits);
@@ -350,8 +355,8 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @param target the distinct writable buffer receiving the complete encoding
     /// @throws java.nio.BufferOverflowException when the target cannot hold the complete encoding
     /// @throws java.nio.ReadOnlyBufferException when the target is read-only
-    /// @throws IllegalArgumentException when source and target are the same buffer
-    /// @throws IOException if encoding or finalization fails
+    /// @throws IllegalArgumentException         when source and target are the same buffer
+    /// @throws IOException                      if encoding or finalization fails
     default void compress(ByteBuffer source, ByteBuffer target) throws IOException {
         ByteBufferCodecSupport.compress(this, source, target);
     }
@@ -362,8 +367,8 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @param target the distinct writable buffer receiving decoded bytes
     /// @throws java.nio.BufferOverflowException when the target cannot hold the complete decoded output
     /// @throws java.nio.ReadOnlyBufferException when the target is read-only
-    /// @throws IllegalArgumentException when source and target are the same buffer
-    /// @throws IOException if the encoding is invalid, truncated, or cannot be decoded
+    /// @throws IllegalArgumentException         when source and target are the same buffer
+    /// @throws IOException                      if the encoding is invalid, truncated, or cannot be decoded
     default void decompress(ByteBuffer source, ByteBuffer target) throws IOException {
         decompress(source, target, DecompressionLimits.UNLIMITED);
     }
@@ -379,8 +384,8 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @param limits the output, window, and memory limits for this operation
     /// @throws java.nio.BufferOverflowException when the target cannot hold the decoded output
     /// @throws java.nio.ReadOnlyBufferException when the target is read-only
-    /// @throws IllegalArgumentException when source and target are the same buffer
-    /// @throws IOException if the encoding is invalid, truncated, or exceeds a configured limit
+    /// @throws IllegalArgumentException         when source and target are the same buffer
+    /// @throws IOException                      if the encoding is invalid, truncated, or exceeds a configured limit
     default void decompress(
             ByteBuffer source,
             ByteBuffer target,
@@ -511,10 +516,10 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         /// `maximumOutputSize` must be between zero and [Integer#MAX_VALUE]. If `source` has no remaining bytes, this
         /// operation returns an empty buffer without creating a decoder.
         ///
-        /// @param source the buffer beginning with the compressed frame, or an empty buffer representing no frame
+        /// @param source            the buffer beginning with the compressed frame, or an empty buffer representing no frame
         /// @param maximumOutputSize the finite maximum number of decoded frame bytes to allocate
         /// @return a newly allocated heap buffer containing the decoded frame
-        /// @throws IOException if the frame is invalid, truncated, or exceeds a configured limit
+        /// @throws IOException              if the frame is invalid, truncated, or exceeds a configured limit
         /// @throws IllegalArgumentException if `maximumOutputSize` is negative or exceeds [Integer#MAX_VALUE]
         default ByteBuffer decompressFrame(ByteBuffer source, long maximumOutputSize) throws IOException {
             return decompressFrame(source, DecompressionLimits.ofMaximumOutputSize(maximumOutputSize));
@@ -530,7 +535,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         /// @param source the buffer beginning with the compressed frame, or an empty buffer representing no frame
         /// @param limits the output, window, and memory limits for this frame
         /// @return a newly allocated heap buffer containing the decoded frame
-        /// @throws IOException if the frame is invalid, truncated, or exceeds a configured limit
+        /// @throws IOException              if the frame is invalid, truncated, or exceeds a configured limit
         /// @throws IllegalArgumentException if the maximum output limit is unlimited or exceeds [Integer#MAX_VALUE]
         default ByteBuffer decompressFrame(ByteBuffer source, DecompressionLimits limits) throws IOException {
             return ByteBufferCodecSupport.decompressFrameAllocating(this, source, limits);
@@ -544,8 +549,8 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         /// @param target the distinct writable buffer receiving the decoded frame
         /// @throws java.nio.BufferOverflowException when the target cannot hold the complete frame
         /// @throws java.nio.ReadOnlyBufferException when the target is read-only
-        /// @throws IllegalArgumentException when source and target are the same buffer
-        /// @throws IOException if the frame is invalid, truncated, or cannot be decoded
+        /// @throws IllegalArgumentException         when source and target are the same buffer
+        /// @throws IOException                      if the frame is invalid, truncated, or cannot be decoded
         default void decompressFrame(ByteBuffer source, ByteBuffer target) throws IOException {
             decompressFrame(source, target, DecompressionLimits.UNLIMITED);
         }
@@ -561,8 +566,8 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         /// @param limits the output, window, and memory limits for this frame
         /// @throws java.nio.BufferOverflowException when the target cannot hold the complete frame
         /// @throws java.nio.ReadOnlyBufferException when the target is read-only
-        /// @throws IllegalArgumentException when source and target are the same buffer
-        /// @throws IOException if the frame is invalid, truncated, or exceeds a configured limit
+        /// @throws IllegalArgumentException         when source and target are the same buffer
+        /// @throws IOException                      if the frame is invalid, truncated, or exceeds a configured limit
         default void decompressFrame(
                 ByteBuffer source,
                 ByteBuffer target,
@@ -693,17 +698,17 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         ///
         /// @param pledgedSourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
         /// @return a fresh encoder configured with the pledged input size
-        /// @throws IOException if the encoder's resources cannot be initialized
+        /// @throws IOException              if the encoder's resources cannot be initialized
         /// @throws IllegalArgumentException if `pledgedSourceSize` is less than [#UNKNOWN_SIZE]
         E newEncoder(long pledgedSourceSize) throws IOException;
 
         /// Creates a compressing channel with exact uncompressed source-size metadata and explicit target ownership.
         ///
-        /// @param target the channel that receives compressed bytes
+        /// @param target            the channel that receives compressed bytes
         /// @param pledgedSourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
-        /// @param ownership whether closing the returned channel also closes `target`
+        /// @param ownership         whether closing the returned channel also closes `target`
         /// @return a new compressing channel configured with the pledged input size
-        /// @throws IOException if the encoder cannot be initialized or ownership cleanup fails
+        /// @throws IOException              if the encoder cannot be initialized or ownership cleanup fails
         /// @throws IllegalArgumentException if `pledgedSourceSize` is less than [#UNKNOWN_SIZE]
         default CompressingWritableByteChannel newWritableByteChannel(
                 WritableByteChannel target,
@@ -721,10 +726,10 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
         /// Creates a compressing channel with exact source-size metadata that borrows the target channel.
         ///
-        /// @param target the channel that receives compressed bytes and remains open after the returned channel closes
+        /// @param target            the channel that receives compressed bytes and remains open after the returned channel closes
         /// @param pledgedSourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
         /// @return a new compressing channel configured with the pledged input size
-        /// @throws IOException if the encoder cannot be initialized
+        /// @throws IOException              if the encoder cannot be initialized
         /// @throws IllegalArgumentException if `pledgedSourceSize` is less than [#UNKNOWN_SIZE]
         default CompressingWritableByteChannel newWritableByteChannel(
                 WritableByteChannel target,
