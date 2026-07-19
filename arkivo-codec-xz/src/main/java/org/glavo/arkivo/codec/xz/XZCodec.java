@@ -8,7 +8,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.xz.internal.XZChannelEncoder;
 import org.glavo.arkivo.codec.xz.internal.XZDecoder;
 import org.glavo.arkivo.codec.xz.internal.XZEncoder;

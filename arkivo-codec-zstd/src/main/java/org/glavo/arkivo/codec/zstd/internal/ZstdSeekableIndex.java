@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.ResourceOwnership;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;

@@ -8,6 +8,7 @@
 /// BSD extended names as required.
 module org.glavo.arkivo.archive.ar {
     requires transitive org.glavo.arkivo.archive;
+    requires org.glavo.arkivo.archive.codec;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.archive.ar;

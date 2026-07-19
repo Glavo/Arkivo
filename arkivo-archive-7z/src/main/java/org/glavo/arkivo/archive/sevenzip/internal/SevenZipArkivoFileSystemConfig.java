@@ -8,7 +8,7 @@ import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -119,8 +119,8 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The requested 7z file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
 
-    /// The storage used to stage decoded random-read and update entry bodies, or `null` for format defaults.
-    private final @Nullable ArkivoEditStorage editStorage;
+    /// The factory for storage used to stage decoded random-read and update entry bodies, or `null` for defaults.
+    private final @Nullable ArkivoEditStorageFactory editStorageFactory;
 
     /// The target used to publish a rewritten single-volume update, or `null` for default publication.
     private final @Nullable ArkivoCommitTarget commitTarget;
@@ -176,7 +176,7 @@ public final class SevenZipArkivoFileSystemConfig {
             boolean splitSizeConfigured,
             boolean encryptHeaders,
             ArkivoFileSystemThreadSafety threadSafety,
-            @Nullable ArkivoEditStorage editStorage,
+            @Nullable ArkivoEditStorageFactory editStorageFactory,
             @Nullable ArkivoCommitTarget commitTarget,
             ArchiveReadLimits readLimits
     ) {
@@ -195,7 +195,7 @@ public final class SevenZipArkivoFileSystemConfig {
         this.splitSizeConfigured = splitSizeConfigured;
         this.encryptHeaders = encryptHeaders;
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
-        this.editStorage = editStorage;
+        this.editStorageFactory = editStorageFactory;
         this.commitTarget = commitTarget;
         this.readLimits = Objects.requireNonNull(readLimits, "readLimits");
     }
@@ -266,7 +266,7 @@ public final class SevenZipArkivoFileSystemConfig {
                 options.getOrDefault(ENCRYPT_HEADERS, false),
                 options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
                 ),
-                options.get(ArchiveEnvironmentOptions.EDIT_STORAGE),
+                options.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY),
                 options.get(ArchiveEnvironmentOptions.COMMIT_TARGET),
                 readLimits
         );
@@ -287,7 +287,7 @@ public final class SevenZipArkivoFileSystemConfig {
         if (!config.archiveUpdate() && config.commitTarget() != null) {
             throw new IllegalArgumentException("7z commit targets require read/write update mode");
         }
-        if (config.archiveWritable() && !config.archiveUpdate() && config.editStorage() != null) {
+        if (config.archiveWritable() && !config.archiveUpdate() && config.editStorageFactory() != null) {
             throw new IllegalArgumentException("7z edit storage is unavailable in forward-only write mode");
         }
         if (config.archiveUpdate()
@@ -314,7 +314,7 @@ public final class SevenZipArkivoFileSystemConfig {
                 false,
                 false,
                 options.common().threadSafety(),
-                options.common().editStorage(),
+                options.common().editStorageFactory(),
                 null,
                 options.common().limits()
         );
@@ -358,7 +358,7 @@ public final class SevenZipArkivoFileSystemConfig {
                 splitSizeConfigured,
                 options.encryptHeaders(),
                 options.common().threadSafety(),
-                options.common().editStorage(),
+                options.common().editStorageFactory(),
                 null,
                 ArchiveReadLimits.UNLIMITED
         );
@@ -402,7 +402,7 @@ public final class SevenZipArkivoFileSystemConfig {
                 splitSizeConfigured,
                 options.encryptHeaders(),
                 options.common().threadSafety(),
-                options.common().editStorage(),
+                options.common().editStorageFactory(),
                 options.common().commitTarget(),
                 options.common().limits()
         );
@@ -498,11 +498,11 @@ public final class SevenZipArkivoFileSystemConfig {
     }
 
 
-    /// Returns the configured update entry storage, or `null` for the default temporary-file storage.
+    /// Returns the configured update entry-storage factory, or `null` for default temporary-file storage.
     ///
-    /// @return the caller-supplied staging storage, or `null` to use temporary files
-    public @Nullable ArkivoEditStorage editStorage() {
-        return editStorage;
+    /// @return the caller-supplied staging-storage factory, or `null` to use temporary files
+    public @Nullable ArkivoEditStorageFactory editStorageFactory() {
+        return editStorageFactory;
     }
 
 

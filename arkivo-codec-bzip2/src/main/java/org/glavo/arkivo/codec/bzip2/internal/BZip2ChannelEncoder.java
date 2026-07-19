@@ -5,7 +5,8 @@ package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.EncodingOptions;
+import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -108,7 +109,7 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
         block = new byte[blockSize * BLOCK_SIZE_UNIT];
         bits = new BitOutput(target);
         try {
-            startFrame();
+            startFrameIfNeeded();
         } catch (IOException | RuntimeException | Error exception) {
             targetCloser.closeAfter(exception);
             throw exception;
@@ -123,7 +124,7 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
         if (!source.hasRemaining()) {
             return 0;
         }
-        startFrame();
+        startFrameIfNeeded();
         int start = source.position();
         while (source.hasRemaining()) {
             addByte(Byte.toUnsignedInt(source.get()));
@@ -139,6 +140,17 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     public void flush() throws IOException {
         ensureOpen();
         bits.flush();
+    }
+
+    /// Explicitly starts another BZip2 frame after a completed boundary.
+    @Override
+    public void startFrame(EncodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        ensureWritable();
+        if (frameActive) {
+            throw new IllegalStateException("A BZip2 frame is already active");
+        }
+        startFrameIfNeeded();
     }
 
     /// Finishes the active BZip2 stream while retaining the encoder for another stream.
@@ -200,7 +212,7 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     }
 
     /// Lazily starts another BZip2 stream after an explicit frame boundary.
-    private void startFrame() throws IOException {
+    private void startFrameIfNeeded() throws IOException {
         if (frameActive) {
             return;
         }

@@ -8,6 +8,7 @@
 /// multi-volume publication.
 module org.glavo.arkivo.archive.zip {
     requires transitive org.glavo.arkivo.archive;
+    requires org.glavo.arkivo.archive.codec;
     requires org.glavo.arkivo.base;
     requires org.glavo.arkivo.codec;
     requires org.glavo.arkivo.codec.deflate;

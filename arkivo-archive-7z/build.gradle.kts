@@ -2,6 +2,7 @@ import java.util.zip.ZipFile
 
 dependencies {
     api(project(":arkivo-archive"))
+    implementation(project(":arkivo-archive-codec"))
     implementation(project(":arkivo-base"))
     implementation(project(":arkivo-codec"))
     implementation(project(":arkivo-codec-lzma"))

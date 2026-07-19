@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
+import org.glavo.arkivo.codec.internal.StreamCodecAdapters;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;

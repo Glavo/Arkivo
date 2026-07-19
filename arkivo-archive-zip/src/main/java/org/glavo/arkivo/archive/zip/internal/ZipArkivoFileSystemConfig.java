@@ -9,7 +9,7 @@ import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -109,8 +109,8 @@ public final class ZipArkivoFileSystemConfig {
     /// The requested ZIP file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
 
-    /// The configured edit storage override, or `null` when the file system should choose a default.
-    private final @Nullable ArkivoEditStorage editStorage;
+    /// The configured edit-storage factory, or `null` when the file system should choose a default.
+    private final @Nullable ArkivoEditStorageFactory editStorageFactory;
 
     /// The configured commit target override, or `null` when the file system should choose a default.
     private final @Nullable ArkivoCommitTarget commitTarget;
@@ -126,7 +126,7 @@ public final class ZipArkivoFileSystemConfig {
     /// @param splitSize the maximum output volume size, or [#NO_SPLIT_SIZE]
     /// @param legacyCharsetDetector the detector for names and comments without Unicode metadata
     /// @param threadSafety the synchronization strategy
-    /// @param editStorage the edit storage override, or `null` to select a default
+    /// @param editStorageFactory the edit-storage factory, or `null` to select a default
     /// @param commitTarget the publication target override, or `null` to select a default
     /// @throws NullPointerException if `openOptions`, an option element, `defaultEncryption`,
     /// `legacyCharsetDetector`, or `threadSafety` is `null`
@@ -138,7 +138,7 @@ public final class ZipArkivoFileSystemConfig {
             long splitSize,
             ArchiveMetadataCharsetDetector legacyCharsetDetector,
             ArkivoFileSystemThreadSafety threadSafety,
-            @Nullable ArkivoEditStorage editStorage,
+            @Nullable ArkivoEditStorageFactory editStorageFactory,
             @Nullable ArkivoCommitTarget commitTarget
     ) {
         this(
@@ -148,7 +148,7 @@ public final class ZipArkivoFileSystemConfig {
                 splitSize,
                 legacyCharsetDetector,
                 threadSafety,
-                editStorage,
+                editStorageFactory,
                 commitTarget,
                 ArchiveReadLimits.UNLIMITED
         );
@@ -162,7 +162,7 @@ public final class ZipArkivoFileSystemConfig {
             long splitSize,
             ArchiveMetadataCharsetDetector legacyCharsetDetector,
             ArkivoFileSystemThreadSafety threadSafety,
-            @Nullable ArkivoEditStorage editStorage,
+            @Nullable ArkivoEditStorageFactory editStorageFactory,
             @Nullable ArkivoCommitTarget commitTarget,
             ArchiveReadLimits readLimits
     ) {
@@ -185,7 +185,7 @@ public final class ZipArkivoFileSystemConfig {
                 "legacyCharsetDetector"
         );
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
-        this.editStorage = editStorage;
+        this.editStorageFactory = editStorageFactory;
         this.commitTarget = commitTarget;
         this.readLimits = Objects.requireNonNull(readLimits, "readLimits");
     }
@@ -247,7 +247,8 @@ public final class ZipArkivoFileSystemConfig {
                         ArchiveEnvironmentOptions.THREAD_SAFETY,
                         ArkivoFileSystemThreadSafety.CONCURRENT_READ
                 );
-        ArkivoEditStorage editStorage = options.get(ArchiveEnvironmentOptions.EDIT_STORAGE);
+        @Nullable ArkivoEditStorageFactory editStorageFactory =
+                options.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY);
         ArkivoCommitTarget commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
 
         ArchiveReadLimits readLimits =
@@ -259,7 +260,7 @@ public final class ZipArkivoFileSystemConfig {
                 splitSize,
                 legacyCharsetDetector,
                 threadSafety,
-                editStorage,
+                editStorageFactory,
                 commitTarget,
                 readLimits
         );
@@ -279,7 +280,7 @@ public final class ZipArkivoFileSystemConfig {
                 NO_SPLIT_SIZE,
                 options.legacyCharsetDetector(),
                 options.common().threadSafety(),
-                options.common().editStorage(),
+                options.common().editStorageFactory(),
                 null,
                 options.common().limits()
         );
@@ -299,7 +300,7 @@ public final class ZipArkivoFileSystemConfig {
                 NO_SPLIT_SIZE,
                 ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR,
                 options.common().threadSafety(),
-                options.common().editStorage(),
+                options.common().editStorageFactory(),
                 null,
                 ArchiveReadLimits.UNLIMITED
         );
@@ -319,7 +320,7 @@ public final class ZipArkivoFileSystemConfig {
                 NO_SPLIT_SIZE,
                 options.legacyCharsetDetector(),
                 options.common().threadSafety(),
-                options.common().editStorage(),
+                options.common().editStorageFactory(),
                 options.common().commitTarget(),
                 options.common().limits()
         );
@@ -374,11 +375,11 @@ public final class ZipArkivoFileSystemConfig {
         return threadSafety;
     }
 
-    /// Returns the configured edit storage override, or `null` when the file system should choose a default.
+    /// Returns the configured edit-storage factory, or `null` when the file system should choose a default.
     ///
-    /// @return the edit storage override, or `null` to select a default
-    public @Nullable ArkivoEditStorage editStorage() {
-        return editStorage;
+    /// @return the edit-storage factory, or `null` to select a default
+    public @Nullable ArkivoEditStorageFactory editStorageFactory() {
+        return editStorageFactory;
     }
 
     /// Returns the configured commit target override, or `null` when the file system should choose a default.

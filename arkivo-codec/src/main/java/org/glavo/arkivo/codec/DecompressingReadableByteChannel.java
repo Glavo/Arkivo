@@ -25,7 +25,7 @@ import java.util.Objects;
 /// not drain compressed input or verify that the current encoding is complete.
 ///
 /// Contexts created by [CompressionCodec]'s default channel factories and
-/// [org.glavo.arkivo.codec.spi.CodecChannelAdapters] implement [InterruptibleChannel] exactly when their backing source
+/// [org.glavo.arkivo.codec.internal.CodecChannelAdapters] implement [InterruptibleChannel] exactly when their backing source
 /// does. For such a context, interrupting a thread during decoding closes the context and source and reports
 /// [ClosedByInterruptException]. Calling `close()` from another thread during an operation similarly closes the source
 /// and makes that operation report [AsynchronousCloseException]. These terminal cancellations may close even a borrowed

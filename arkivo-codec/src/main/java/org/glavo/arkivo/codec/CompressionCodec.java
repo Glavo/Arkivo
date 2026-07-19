@@ -6,8 +6,8 @@ package org.glavo.arkivo.codec;
 import org.glavo.arkivo.codec.internal.ByteBufferCodecSupport;
 import org.glavo.arkivo.codec.internal.CodecTransferSupport;
 import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
-import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CodecChannelAdapters;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -111,7 +111,8 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     ///
     /// Each successful call returns independent mutable state owned by the caller. Closing the engine does not affect
     /// this codec or engines created by other calls. For a framed encoder, [EncodingOptions#sourceSize()] describes the
-    /// first frame only; later frames begin without exact source-size metadata.
+    /// initial frame; later frames receive independent options through
+    /// [CompressionEncoder.Framed#startFrame(EncodingOptions)] or default options when started implicitly.
     ///
     /// @param options the parameters for this encoder session
     /// @return a fresh encoder with independent mutable state
@@ -416,8 +417,9 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     interface Framed<C extends CompressionCodec<C>> extends CompressionCodec<C> {
         /// Creates a fresh frame-capable encoder using operation-scoped options.
         ///
-        /// [EncodingOptions#sourceSize()] describes the first frame only. Frames started after
-        /// [CompressionEncoder.Framed#finishFrame(ByteBuffer)] do not inherit the first frame's source size.
+        /// [EncodingOptions#sourceSize()] describes the initial frame only. Frames started after
+        /// [CompressionEncoder.Framed#finishFrame(ByteBuffer)] do not inherit that source size and may be configured
+        /// independently through [CompressionEncoder.Framed#startFrame(EncodingOptions)].
         ///
         /// @param options the parameters for this encoder session
         /// @return a fresh frame-capable encoder

@@ -66,9 +66,7 @@ public final class ZipDecoderLimitsTest {
         ZipArchiveOptions.Read readOptions = readOptions(limits);
         ZipArchiveOptions.Update updateOptions = new ZipArchiveOptions.Update(
                 ArchiveUpdateOptions.DEFAULT.withLimits(limits),
-                null,
-                ZipArchiveOptions.UPDATE_DEFAULTS.defaultEncryption(),
-                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
+                ZipArchiveOptions.UPDATE_DEFAULTS.defaultEncryption()
         );
 
         assertSame(limits, ZipArkivoFileSystemConfig.fromReadOptions(readOptions).readLimits());
@@ -131,11 +129,7 @@ public final class ZipDecoderLimitsTest {
 
     /// Returns a ZIP read configuration containing the given limits.
     private static ZipArchiveOptions.Read readOptions(ArchiveReadLimits limits) {
-        return new ZipArchiveOptions.Read(
-                ArchiveReadOptions.DEFAULT.withLimits(limits),
-                null,
-                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
-        );
+        return new ZipArchiveOptions.Read(ArchiveReadOptions.DEFAULT.withLimits(limits));
     }
 
     /// Returns archive limits with only a deliberately tiny compression window ceiling.

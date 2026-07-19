@@ -256,7 +256,6 @@ public final class SevenZipSolidOutputTest {
 
         SevenZipArchiveOptions.Update updateOptions = new SevenZipArchiveOptions.Update(
                 ArchiveUpdateOptions.DEFAULT,
-                null,
                 SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE),
                 SevenZipFilterChain.EMPTY,
                 2,
@@ -300,7 +299,7 @@ public final class SevenZipSolidOutputTest {
         }
         try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                 firstVolume,
-                new SevenZipArchiveOptions.Read(ArchiveReadOptions.DEFAULT, passwordProvider)
+                new SevenZipArchiveOptions.Read(ArchiveReadOptions.DEFAULT.withPasswordProvider(passwordProvider))
         )) {
             assertArrayEquals(first, Files.readAllBytes(fileSystem.getPath("/first.bin")));
             assertArrayEquals(second, Files.readAllBytes(fileSystem.getPath("/second.bin")));
@@ -334,8 +333,7 @@ public final class SevenZipSolidOutputTest {
             boolean encryptHeaders
     ) {
         return new SevenZipArchiveOptions.Create(
-                ArchiveCreateOptions.DEFAULT,
-                passwordProvider,
+                ArchiveCreateOptions.DEFAULT.withPasswordProvider(passwordProvider),
                 compression,
                 SevenZipFilterChain.EMPTY,
                 solidFileCount,

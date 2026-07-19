@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.ClosedDirectoryStreamException;
@@ -48,6 +49,9 @@ public abstract class ArkivoFileSystem extends FileSystem {
     /// Strict-mode resources that must close before the file system backing closes.
     private final Set<ManagedResource> managedResources =
             Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /// Coordinates ownership of the close transition between concurrent close callers.
+    private final Object lifecycleMonitor = new Object();
 
     /// Whether a close operation currently owns the exclusive operation lock.
     private volatile boolean lifecycleClosing;
@@ -106,37 +110,56 @@ public abstract class ArkivoFileSystem extends FileSystem {
 
     /// Begins a close operation that excludes other coordinated operations and closes strict-mode resources.
     ///
-    /// The call blocks until all coordinated operations finish, then prevents new operations from starting. In strict
-    /// mode it attempts to close every registered resource before returning. Subclass backing-resource cleanup belongs
-    /// inside the returned token's scope; closing the token marks coordinated close complete, releases the exclusive
-    /// lock, and reports any strict-resource cleanup failure.
+    /// The call first prevents new operations from starting. In strict mode it then closes registered resources before
+    /// waiting for active operations, allowing an interruptible delegate close to release a thread blocked in I/O. Once
+    /// all earlier operations have left, it closes any resource registered by an operation that was already active and
+    /// returns with exclusive coordination held. Subclass backing-resource cleanup belongs inside the returned token's
+    /// scope; closing the token marks coordinated close complete, releases the lock, and reports resource failures.
     ///
     /// @return a token that completes coordinated close and releases the exclusive operation lock
     protected final CloseOperation beginCloseOperation() {
-        @Nullable ReentrantReadWriteLock currentLock = operationLock;
-        @Nullable Lock writeLock = null;
-        if (currentLock != null) {
-            writeLock = currentLock.writeLock();
-            writeLock.lock();
-        }
-        lifecycleClosing = true;
-        lifecycleCloseThread = Thread.currentThread();
-
-        @Nullable Throwable resourceFailure = null;
-        if (threadSafety == ArkivoFileSystemThreadSafety.STRICT) {
-            ManagedResource[] resources;
-            synchronized (managedResources) {
-                resources = managedResources.toArray(ManagedResource[]::new);
-            }
-            for (ManagedResource resource : resources) {
+        Thread currentThread = Thread.currentThread();
+        boolean interrupted = false;
+        synchronized (lifecycleMonitor) {
+            while (lifecycleClosing && lifecycleCloseThread != currentThread) {
                 try {
-                    resource.forceClose();
-                } catch (IOException | RuntimeException | Error exception) {
-                    resourceFailure = appendFailure(resourceFailure, exception);
+                    lifecycleMonitor.wait();
+                } catch (InterruptedException exception) {
+                    interrupted = true;
                 }
             }
+            if (lifecycleClosing) {
+                throw new IllegalStateException("Reentrant archive file system close is not supported");
+            }
+            lifecycleClosing = true;
+            lifecycleCloseThread = currentThread;
         }
-        return new CloseOperation(this, writeLock, resourceFailure);
+        if (interrupted) {
+            currentThread.interrupt();
+        }
+
+        @Nullable ReentrantReadWriteLock currentLock = operationLock;
+        @Nullable Lock writeLock = null;
+        @Nullable Throwable resourceFailure = null;
+        try {
+            if (threadSafety == ArkivoFileSystemThreadSafety.STRICT) {
+                resourceFailure = closeStrictResources(resourceFailure);
+            }
+            if (currentLock != null) {
+                writeLock = currentLock.writeLock();
+                writeLock.lock();
+            }
+            if (threadSafety == ArkivoFileSystemThreadSafety.STRICT) {
+                resourceFailure = closeStrictResources(resourceFailure);
+            }
+            return new CloseOperation(this, writeLock, resourceFailure);
+        } catch (RuntimeException | Error exception) {
+            if (writeLock != null && currentLock != null && currentLock.isWriteLockedByCurrentThread()) {
+                writeLock.unlock();
+            }
+            abandonCloseTransition();
+            throw exception;
+        }
     }
 
     /// Coordinates a seekable read-only channel with this file system's lifecycle.
@@ -145,10 +168,16 @@ public abstract class ArkivoFileSystem extends FileSystem {
     /// close it first. The delegate itself is returned unchanged when synchronization is disabled.
     ///
     /// @param channel the channel whose ownership is transferred to the returned managed resource
-    /// @return a lifecycle-coordinated channel, or {@code channel} when synchronization is disabled
+    /// @return a lifecycle-coordinated channel preserving [InterruptibleChannel] when implemented by `channel`, or
+    ///         `channel` when synchronization is disabled
     protected final SeekableByteChannel manageReadChannel(SeekableByteChannel channel) {
         Objects.requireNonNull(channel, "channel");
-        return operationLock == null ? channel : new ManagedSeekableByteChannel(this, channel, false);
+        if (operationLock == null) {
+            return channel;
+        }
+        return channel instanceof InterruptibleChannel
+                ? new InterruptibleManagedSeekableByteChannel(this, channel, false)
+                : new ManagedSeekableByteChannel(this, channel, false);
     }
 
     /// Coordinates a forward-only readable channel with this file system's lifecycle.
@@ -156,10 +185,16 @@ public abstract class ArkivoFileSystem extends FileSystem {
     /// The returned wrapper owns the delegate and treats its reads as coordinated read operations.
     ///
     /// @param channel the channel whose ownership is transferred to the returned managed resource
-    /// @return a lifecycle-coordinated channel, or {@code channel} when synchronization is disabled
+    /// @return a lifecycle-coordinated channel preserving [InterruptibleChannel] when implemented by `channel`, or
+    ///         `channel` when synchronization is disabled
     protected final ReadableByteChannel manageReadableChannel(ReadableByteChannel channel) {
         Objects.requireNonNull(channel, "channel");
-        return operationLock == null ? channel : new ManagedReadableByteChannel(this, channel);
+        if (operationLock == null) {
+            return channel;
+        }
+        return channel instanceof InterruptibleChannel
+                ? new InterruptibleManagedReadableByteChannel(this, channel)
+                : new ManagedReadableByteChannel(this, channel);
     }
 
     /// Coordinates a seekable writable channel with this file system's lifecycle.
@@ -168,10 +203,16 @@ public abstract class ArkivoFileSystem extends FileSystem {
     /// represents mutable entry state. The wrapper owns the delegate.
     ///
     /// @param channel the channel whose ownership is transferred to the returned managed resource
-    /// @return a lifecycle-coordinated channel, or {@code channel} when synchronization is disabled
+    /// @return a lifecycle-coordinated channel preserving [InterruptibleChannel] when implemented by `channel`, or
+    ///         `channel` when synchronization is disabled
     protected final SeekableByteChannel manageWriteChannel(SeekableByteChannel channel) {
         Objects.requireNonNull(channel, "channel");
-        return operationLock == null ? channel : new ManagedSeekableByteChannel(this, channel, true);
+        if (operationLock == null) {
+            return channel;
+        }
+        return channel instanceof InterruptibleChannel
+                ? new InterruptibleManagedSeekableByteChannel(this, channel, true)
+                : new ManagedSeekableByteChannel(this, channel, true);
     }
 
     /// Coordinates a readable stream with this file system's lifecycle.
@@ -209,29 +250,25 @@ public abstract class ArkivoFileSystem extends FileSystem {
         return operationLock == null ? stream : new ManagedDirectoryStream<>(this, stream);
     }
 
-    /// Begins a read or write operation and rejects work after coordinated close completion.
+    /// Begins a read or write operation and rejects new work after coordinated close starts.
+    ///
+    /// Reentrant calls remain part of the operation that already holds a lock, so close cannot invalidate an operation
+    /// halfway through its implementation.
     private Operation beginOperation(boolean write) {
         @Nullable ReentrantReadWriteLock currentLock = operationLock;
         if (currentLock == null) {
             return Operation.NONE;
         }
+        boolean nestedOperation = currentLock.isWriteLockedByCurrentThread()
+                || currentLock.getReadHoldCount() != 0;
         Lock selectedLock = write ? currentLock.writeLock() : currentLock.readLock();
         selectedLock.lock();
-        if ((lifecycleClosing || lifecycleClosed) && lifecycleCloseThread != Thread.currentThread()) {
+        if ((lifecycleClosing || lifecycleClosed)
+                && lifecycleCloseThread != Thread.currentThread()
+                && !nestedOperation) {
             selectedLock.unlock();
             throw new ClosedFileSystemException();
         }
-        return new Operation(selectedLock);
-    }
-
-    /// Begins a resource close that remains legal after file system close completion.
-    private Operation beginResourceCloseOperation(boolean write) {
-        @Nullable ReentrantReadWriteLock currentLock = operationLock;
-        if (currentLock == null) {
-            return Operation.NONE;
-        }
-        Lock selectedLock = write ? currentLock.writeLock() : currentLock.readLock();
-        selectedLock.lock();
         return new Operation(selectedLock);
     }
 
@@ -253,12 +290,40 @@ public abstract class ArkivoFileSystem extends FileSystem {
         }
     }
 
+    /// Attempts to close the current strict-resource snapshot and returns the accumulated failure.
+    private @Nullable Throwable closeStrictResources(@Nullable Throwable previousFailure) {
+        ManagedResource[] resources;
+        synchronized (managedResources) {
+            resources = managedResources.toArray(ManagedResource[]::new);
+        }
+        @Nullable Throwable failure = previousFailure;
+        for (ManagedResource resource : resources) {
+            try {
+                resource.forceClose();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        return failure;
+    }
+
+    /// Releases a claimed close transition after setup fails before a token can be returned.
+    private void abandonCloseTransition() {
+        synchronized (lifecycleMonitor) {
+            lifecycleClosing = false;
+            lifecycleCloseThread = null;
+            lifecycleMonitor.notifyAll();
+        }
+    }
+
     /// Adds a secondary failure as suppressed when a primary failure already exists.
     private static Throwable appendFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure == null) {
             return exception;
         }
-        failure.addSuppressed(exception);
+        if (failure != exception) {
+            failure.addSuppressed(exception);
+        }
         return failure;
     }
 
@@ -338,9 +403,12 @@ public abstract class ArkivoFileSystem extends FileSystem {
                 return;
             }
             closed = true;
-            fileSystem.lifecycleClosed = true;
-            fileSystem.lifecycleClosing = false;
-            fileSystem.lifecycleCloseThread = null;
+            synchronized (fileSystem.lifecycleMonitor) {
+                fileSystem.lifecycleClosed = true;
+                fileSystem.lifecycleClosing = false;
+                fileSystem.lifecycleCloseThread = null;
+                fileSystem.lifecycleMonitor.notifyAll();
+            }
             if (lock != null) {
                 lock.unlock();
             }
@@ -351,7 +419,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
     /// Defines one resource that strict close can terminate directly.
     @NotNullByDefault
     private interface ManagedResource {
-        /// Closes this resource while the file system already holds its exclusive operation lock.
+        /// Closes this resource directly, including while another thread is active in its delegate.
         void forceClose() throws IOException;
     }
 
@@ -371,13 +439,11 @@ public abstract class ArkivoFileSystem extends FileSystem {
         }
 
         /// Closes this resource through the file system's resource-close operation.
-        protected final void closeManaged(boolean write) throws IOException {
-            try (Operation ignored = fileSystem.beginResourceCloseOperation(write)) {
-                closeDirect();
-            }
+        protected final void closeManaged() throws IOException {
+            closeDirect();
         }
 
-        /// Closes this resource while the file system already excludes other operations.
+        /// Closes this resource directly so interruptible I/O can be released before exclusive coordination is acquired.
         @Override
         public final void forceClose() throws IOException {
             closeDirect();
@@ -408,7 +474,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
         }
 
         /// Closes the delegate once and unregisters this resource after successful cleanup.
-        private void closeDirect() throws IOException {
+        private synchronized void closeDirect() throws IOException {
             if (!resourceOpen) {
                 return;
             }
@@ -423,7 +489,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
 
     /// Coordinates one seekable channel with file system operations and close.
     @NotNullByDefault
-    private static final class ManagedSeekableByteChannel extends AbstractManagedResource
+    private static class ManagedSeekableByteChannel extends AbstractManagedResource
             implements SeekableByteChannel {
         /// The underlying entry channel.
         private final SeekableByteChannel delegate;
@@ -509,7 +575,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
         /// Closes this channel and unregisters it from strict file system close.
         @Override
         public void close() throws IOException {
-            closeManaged(writable);
+            closeManaged();
         }
 
         /// Selects the operation mode for non-writing channel methods.
@@ -524,9 +590,23 @@ public abstract class ArkivoFileSystem extends FileSystem {
         }
     }
 
+    /// Preserves the interruptible-channel marker of one managed seekable delegate.
+    @NotNullByDefault
+    private static final class InterruptibleManagedSeekableByteChannel
+            extends ManagedSeekableByteChannel implements InterruptibleChannel {
+        /// Creates an interruptible managed seekable channel.
+        private InterruptibleManagedSeekableByteChannel(
+                ArkivoFileSystem fileSystem,
+                SeekableByteChannel delegate,
+                boolean writable
+        ) {
+            super(fileSystem, delegate, writable);
+        }
+    }
+
     /// Coordinates one forward-only readable channel with file system operations and close.
     @NotNullByDefault
-    private static final class ManagedReadableByteChannel extends AbstractManagedResource
+    private static class ManagedReadableByteChannel extends AbstractManagedResource
             implements ReadableByteChannel {
         /// The underlying readable channel.
         private final ReadableByteChannel delegate;
@@ -556,13 +636,26 @@ public abstract class ArkivoFileSystem extends FileSystem {
         /// Closes this channel and unregisters it from strict file system close.
         @Override
         public void close() throws IOException {
-            closeManaged(false);
+            closeManaged();
         }
 
         /// Closes the underlying channel.
         @Override
         protected void closeDelegate() throws IOException {
             delegate.close();
+        }
+    }
+
+    /// Preserves the interruptible-channel marker of one managed forward-only delegate.
+    @NotNullByDefault
+    private static final class InterruptibleManagedReadableByteChannel
+            extends ManagedReadableByteChannel implements InterruptibleChannel {
+        /// Creates an interruptible managed readable channel.
+        private InterruptibleManagedReadableByteChannel(
+                ArkivoFileSystem fileSystem,
+                ReadableByteChannel delegate
+        ) {
+            super(fileSystem, delegate);
         }
     }
 
@@ -576,7 +669,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
         private final InputStream delegate;
 
         /// Whether this stream remains open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// Creates and registers one managed input stream.
         private ManagedInputStream(ArkivoFileSystem fileSystem, InputStream delegate) {
@@ -625,9 +718,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
         /// Closes this stream and unregisters it from strict file system close.
         @Override
         public void close() throws IOException {
-            try (Operation ignored = fileSystem.beginResourceCloseOperation(false)) {
-                forceClose();
-            }
+            forceClose();
         }
 
         /// Marks the delegate under the shared operation lock.
@@ -656,7 +747,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
 
         /// Closes this stream directly while strict close already owns the exclusive lock.
         @Override
-        public void forceClose() throws IOException {
+        public synchronized void forceClose() throws IOException {
             if (!open) {
                 return;
             }
@@ -700,7 +791,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
         private final OutputStream delegate;
 
         /// Whether this stream remains open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// Creates and registers one managed output stream.
         private ManagedOutputStream(ArkivoFileSystem fileSystem, OutputStream delegate) {
@@ -740,14 +831,12 @@ public abstract class ArkivoFileSystem extends FileSystem {
         /// Closes this stream and unregisters it from strict file system close.
         @Override
         public void close() throws IOException {
-            try (Operation ignored = fileSystem.beginResourceCloseOperation(true)) {
-                forceClose();
-            }
+            forceClose();
         }
 
         /// Closes this stream directly while strict close already owns the exclusive lock.
         @Override
-        public void forceClose() throws IOException {
+        public synchronized void forceClose() throws IOException {
             if (!open) {
                 return;
             }
@@ -784,7 +873,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
         private final DirectoryStream<P> delegate;
 
         /// Whether this stream remains open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// Creates and registers one managed directory stream.
         private ManagedDirectoryStream(ArkivoFileSystem fileSystem, DirectoryStream<P> delegate) {
@@ -805,14 +894,12 @@ public abstract class ArkivoFileSystem extends FileSystem {
         /// Closes this directory stream and unregisters it from strict file system close.
         @Override
         public void close() throws IOException {
-            try (Operation ignored = fileSystem.beginResourceCloseOperation(false)) {
-                forceClose();
-            }
+            forceClose();
         }
 
         /// Closes this stream directly while strict close already owns the exclusive lock.
         @Override
-        public void forceClose() throws IOException {
+        public synchronized void forceClose() throws IOException {
             if (!open) {
                 return;
             }

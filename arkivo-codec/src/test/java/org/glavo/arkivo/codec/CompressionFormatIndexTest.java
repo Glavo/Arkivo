@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec;
 
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;

@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
@@ -166,15 +167,16 @@ public final class ZipArkivoFileSystemConfigTest {
     @Test
     public void editStrategies() {
         ArkivoEditStorage storage = ArkivoEditStorage.memory();
+        ArkivoEditStorageFactory storageFactory = () -> storage;
         ArkivoCommitTarget commitTarget = ArkivoCommitTarget.replaceOriginal();
         Map<String, Object> environment = Map.of(
-                "arkivo.editStorage", storage,
+                "arkivo.editStorageFactory", storageFactory,
                 "arkivo.commitTarget", commitTarget
         );
 
         ZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
-        assertSame(storage, config.editStorage());
+        assertSame(storageFactory, config.editStorageFactory());
         assertSame(commitTarget, config.commitTarget());
     }
 

@@ -4,8 +4,10 @@
 package org.glavo.arkivo.archive;
 
 import org.glavo.arkivo.archive.internal.ArkivoStreamingSource;
+import org.glavo.arkivo.archive.internal.ArchiveSizeLimitChannel;
 import org.glavo.arkivo.archive.internal.PrefixReplayReadableByteChannel;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.archive.internal.TemporaryArchiveSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -184,7 +186,7 @@ public final class ArkivoFormats {
         try {
             @Nullable ArkivoFormat format = detect(source);
             if (format == null) {
-                throw new IOException("Unrecognized archive format");
+                return openTransformedFileSystem(source, options);
             }
             if (!(format instanceof ArkivoFormat.FileSystem fileSystemFormat)) {
                 throw new UnsupportedOperationException(
@@ -226,7 +228,15 @@ public final class ArkivoFormats {
             format = detectDiscoveredPathVolumeFormat(path);
         }
         if (format == null) {
-            throw new IOException("Unrecognized archive format");
+            TransformedArchive transformed = detectTransformedArchive(
+                    Files.newByteChannel(path, StandardOpenOption.READ),
+                    options
+            );
+            if (transformed.outerCompressionLayers() == 1L
+                    && transformed.format() instanceof ArkivoFormat.FileSystem.OuterCompressed outerCompressed) {
+                return outerCompressed.open(path, options);
+            }
+            return openTransformedFileSystem(Files.newByteChannel(path, StandardOpenOption.READ), options);
         }
         if (!(format instanceof ArkivoFormat.FileSystem fileSystemFormat)) {
             throw new UnsupportedOperationException(
@@ -342,7 +352,17 @@ public final class ArkivoFormats {
         try {
             @Nullable ArkivoFormat format = detect(owned);
             if (format == null) {
-                throw new IOException("Unrecognized archive format");
+                TransformedArchive transformed = detectTransformedArchive(owned.openChannel(), options);
+                if (transformed.outerCompressionLayers() == 1L
+                        && transformed.format() instanceof ArkivoFormat.FileSystem.OuterCompressed outerCompressed) {
+                    return outerCompressed.open(owned, options);
+                }
+                ArkivoFileSystem fileSystem;
+                try (SeekableByteChannel channel = owned.openChannel()) {
+                    fileSystem = openTransformedFileSystem(channel, options);
+                }
+                closeSupersededSource(owned, fileSystem);
+                return fileSystem;
             }
             if (!(format instanceof ArkivoFormat.FileSystem fileSystemFormat)) {
                 throw new UnsupportedOperationException(
@@ -386,7 +406,16 @@ public final class ArkivoFormats {
         try {
             @Nullable ArkivoFormat format = detect(owned);
             if (format == null) {
-                throw new IOException("Unrecognized archive format");
+                @Nullable SeekableByteChannel channel = owned.openVolume(0L);
+                if (channel == null) {
+                    throw new IOException("Unrecognized archive format");
+                }
+                ArkivoFileSystem fileSystem;
+                try (channel) {
+                    fileSystem = openTransformedFileSystem(channel, options);
+                }
+                closeSupersededSource(owned, fileSystem);
+                return fileSystem;
             }
             if (!(format instanceof ArkivoFormat.VolumeFileSystem volumeFormat)) {
                 throw new UnsupportedOperationException(
@@ -507,7 +536,17 @@ public final class ArkivoFormats {
         Objects.requireNonNull(options, "options");
         @Nullable ArkivoFormat format = detect(path);
         if (format == null) {
-            throw new IOException("Unrecognized archive format");
+            TransformedArchive transformed = detectTransformedArchive(
+                    Files.newByteChannel(path, StandardOpenOption.READ),
+                    options.readOptions()
+            );
+            format = transformed.format();
+            if (transformed.outerCompressionLayers() != 1L
+                    || !(format instanceof ArkivoFormat.FileSystem.OuterCompressed)) {
+                throw new UnsupportedOperationException(
+                        "Archive format does not support updating an outer-compressed source: " + format.name()
+                );
+            }
         }
         if (!(format instanceof ArkivoFormat.FileSystem.Writable writableFormat)) {
             throw new UnsupportedOperationException(
@@ -836,7 +875,13 @@ public final class ArkivoFormats {
         try {
             @Nullable ArkivoFormat format = detect(owned);
             if (format == null) {
-                throw new IOException("Unrecognized archive format");
+                @Nullable SeekableByteChannel channel = owned.openVolume(0L);
+                if (channel == null) {
+                    throw new IOException("Unrecognized archive format");
+                }
+                ArkivoStreamingReader reader = openStreamingReader(channel, options);
+                closeSupersededSource(owned, reader);
+                return reader;
             }
             if (!(format instanceof ArkivoFormat.VolumeStreamingReader readerFormat)) {
                 throw new UnsupportedOperationException(
@@ -952,27 +997,30 @@ public final class ArkivoFormats {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         ReadableByteChannel current = source;
+        long outerCompressionLayers = 0L;
         try {
-            ArchiveProbe rawProbe = probeArchive(current);
-            current = rawProbe.channel();
-            @Nullable ArkivoFormat format = rawProbe.format();
-            if (format != null) {
-                return openDetectedArchive(format, current, options);
-            }
-
-            @Nullable ArkivoStreamingSource transformed = OptionalCompressionSupport.probe(current, options);
-            if (transformed != null) {
-                current = transformed.takeChannel();
-                if (transformed.transformed()) {
-                    ArchiveProbe transformedProbe = probeArchive(current);
-                    current = transformedProbe.channel();
-                    format = transformedProbe.format();
-                    if (format != null) {
-                        return openDetectedArchive(format, current, options);
-                    }
+            while (true) {
+                ArchiveProbe archiveProbe = probeArchive(current);
+                current = archiveProbe.channel();
+                @Nullable ArkivoFormat format = archiveProbe.format();
+                if (format != null) {
+                    return openDetectedArchive(format, current, options);
                 }
+
+                @Nullable ArkivoStreamingSource transformed = OptionalCompressionSupport.probe(current, options);
+                if (transformed == null) {
+                    throw new IOException("Unrecognized archive format");
+                }
+                current = transformed.takeChannel();
+                if (!transformed.transformed()) {
+                    throw new IOException("Unrecognized archive format");
+                }
+                outerCompressionLayers = acceptOuterCompressionLayer(outerCompressionLayers, options.limits());
+                current = ArchiveSizeLimitChannel.wrap(
+                        current,
+                        options.limits().maximumDecodedArchiveSize()
+                );
             }
-            throw new IOException("Unrecognized archive format");
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterFailedOpen(current, exception);
             throw exception;
@@ -1186,6 +1234,142 @@ public final class ArkivoFormats {
                 .openStreamingWriter(target, splitSize, options);
     }
 
+    /// Decodes installed outer compression layers and opens a detected archive file system from a temporary source.
+    private static ArkivoFileSystem openTransformedFileSystem(
+            ReadableByteChannel source,
+            ArchiveReadOptions options
+    ) throws IOException {
+        ReadableByteChannel current = Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(options, "options");
+        long outerCompressionLayers = 0L;
+        try {
+            while (true) {
+                ArchiveProbe archiveProbe = probeArchive(current);
+                current = archiveProbe.channel();
+                @Nullable ArkivoFormat format = archiveProbe.format();
+                if (format != null) {
+                    if (!(format instanceof ArkivoFormat.FileSystem fileSystemFormat)) {
+                        throw new UnsupportedOperationException(
+                                "Archive format does not support file-system access: " + format.name()
+                        );
+                    }
+                    TemporaryArchiveSource materialized = TemporaryArchiveSource.materialize(
+                            current,
+                            options.limits().maximumDecodedArchiveSize()
+                    );
+                    try {
+                        return fileSystemFormat.open(materialized, options);
+                    } catch (IOException | RuntimeException | Error exception) {
+                        closeAfterFailedOpen(materialized, exception);
+                        throw exception;
+                    }
+                }
+
+                @Nullable ArkivoStreamingSource transformed = OptionalCompressionSupport.probe(current, options);
+                if (transformed == null) {
+                    throw new IOException("Unrecognized archive format");
+                }
+                current = transformed.takeChannel();
+                if (!transformed.transformed()) {
+                    throw new IOException("Unrecognized archive format");
+                }
+                outerCompressionLayers = acceptOuterCompressionLayer(outerCompressionLayers, options.limits());
+                current = ArchiveSizeLimitChannel.wrap(
+                        current,
+                        options.limits().maximumDecodedArchiveSize()
+                );
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            closeAfterFailedOpen(current, exception);
+            throw exception;
+        }
+    }
+
+    /// Decodes installed outer compression layers and returns the first recognized logical archive format.
+    private static TransformedArchive detectTransformedArchive(
+            ReadableByteChannel source,
+            ArchiveReadOptions options
+    ) throws IOException {
+        ReadableByteChannel current = Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(options, "options");
+        long outerCompressionLayers = 0L;
+        try {
+            while (true) {
+                ArchiveProbe archiveProbe = probeArchive(current);
+                current = archiveProbe.channel();
+                @Nullable ArkivoFormat format = archiveProbe.format();
+                if (format != null) {
+                    current.close();
+                    return new TransformedArchive(format, outerCompressionLayers);
+                }
+
+                @Nullable ArkivoStreamingSource transformed = OptionalCompressionSupport.probe(current, options);
+                if (transformed == null) {
+                    throw new IOException("Unrecognized archive format");
+                }
+                current = transformed.takeChannel();
+                if (!transformed.transformed()) {
+                    throw new IOException("Unrecognized archive format");
+                }
+                outerCompressionLayers = acceptOuterCompressionLayer(outerCompressionLayers, options.limits());
+                current = ArchiveSizeLimitChannel.wrap(
+                        current,
+                        options.limits().maximumDecodedArchiveSize()
+                );
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            closeAfterFailedOpen(current, exception);
+            throw exception;
+        }
+    }
+
+    /// Describes a format recognized after decoding one or more outer compression layers.
+    ///
+    /// @param format the recognized logical archive format
+    /// @param outerCompressionLayers the positive number of decoded outer layers
+    @NotNullByDefault
+    private record TransformedArchive(ArkivoFormat format, long outerCompressionLayers) {
+        /// Validates the transformed-format result.
+        private TransformedArchive {
+            Objects.requireNonNull(format, "format");
+            if (outerCompressionLayers <= 0L) {
+                throw new IllegalArgumentException("outerCompressionLayers must be positive");
+            }
+        }
+    }
+
+    /// Accounts for one decoded outer compression layer.
+    private static long acceptOuterCompressionLayer(long previous, ArchiveReadLimits limits)
+            throws ArkivoReadLimitException {
+        long actual = previous == Long.MAX_VALUE ? Long.MAX_VALUE : previous + 1L;
+        long maximum = limits.maximumOuterCompressionLayers();
+        if (maximum >= 0L && actual > maximum) {
+            throw new ArkivoReadLimitException(
+                    ArkivoReadLimitKind.OUTER_COMPRESSION_LAYERS,
+                    maximum,
+                    actual,
+                    null
+            );
+        }
+        return actual;
+    }
+
+    /// Closes a source superseded by a materialized file system, closing that file system if source cleanup fails.
+    private static void closeSupersededSource(Closeable source, Closeable replacement) throws IOException {
+        try {
+            source.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
+                replacement.close();
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                if (exception != cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            }
+            throw exception;
+        }
+    }
+
     /// Opens a detected forward-only format over the logical source.
     private static ArkivoStreamingReader openDetectedArchive(
             ArkivoFormat format,
@@ -1267,10 +1451,10 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring streaming reader support.
-    private static ArkivoFormat.StreamingReader requireStreamingReaderFormat(String formatName) throws IOException {
+    private static ArkivoFormat.StreamingReader requireStreamingReaderFormat(String formatName) {
         @Nullable ArkivoFormat format = find(formatName);
         if (format == null) {
-            throw new IOException("Unknown archive format: " + formatName);
+            throw new IllegalArgumentException("Unknown archive format: " + formatName);
         }
         if (!(format instanceof ArkivoFormat.StreamingReader readerFormat)) {
             throw new UnsupportedOperationException(
@@ -1281,10 +1465,10 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring streaming writer support.
-    private static ArkivoFormat.StreamingWriter requireStreamingWriterFormat(String formatName) throws IOException {
+    private static ArkivoFormat.StreamingWriter requireStreamingWriterFormat(String formatName) {
         @Nullable ArkivoFormat format = find(formatName);
         if (format == null) {
-            throw new IOException("Unknown archive format: " + formatName);
+            throw new IllegalArgumentException("Unknown archive format: " + formatName);
         }
         if (!(format instanceof ArkivoFormat.StreamingWriter writerFormat)) {
             throw new UnsupportedOperationException(
@@ -1295,10 +1479,10 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring file-system support.
-    private static ArkivoFormat.FileSystem requireFileSystemFormat(String formatName) throws IOException {
+    private static ArkivoFormat.FileSystem requireFileSystemFormat(String formatName) {
         @Nullable ArkivoFormat format = find(formatName);
         if (format == null) {
-            throw new IOException("Unknown archive format: " + formatName);
+            throw new IllegalArgumentException("Unknown archive format: " + formatName);
         }
         if (!(format instanceof ArkivoFormat.FileSystem fileSystemFormat)) {
             throw new UnsupportedOperationException(
@@ -1311,7 +1495,7 @@ public final class ArkivoFormats {
     /// Returns the named installed format after requiring path-backed write support.
     private static ArkivoFormat.FileSystem.Writable requireWritableFileSystemFormat(
             String formatName
-    ) throws IOException {
+    ) {
         ArkivoFormat.FileSystem format = requireFileSystemFormat(formatName);
         if (!(format instanceof ArkivoFormat.FileSystem.Writable writableFormat)) {
             throw new UnsupportedOperationException(
@@ -1324,7 +1508,7 @@ public final class ArkivoFormats {
     /// Returns the named installed format after requiring multi-volume file-system support.
     private static ArkivoFormat.VolumeFileSystem requireVolumeFileSystemFormat(
             String formatName
-    ) throws IOException {
+    ) {
         ArkivoFormat.FileSystem format = requireFileSystemFormat(formatName);
         if (!(format instanceof ArkivoFormat.VolumeFileSystem volumeFormat)) {
             throw new UnsupportedOperationException(
@@ -1337,7 +1521,7 @@ public final class ArkivoFormats {
     /// Returns the named installed format after requiring multi-volume write support.
     private static ArkivoFormat.VolumeFileSystem.Writable requireWritableVolumeFileSystemFormat(
             String formatName
-    ) throws IOException {
+    ) {
         ArkivoFormat.VolumeFileSystem format = requireVolumeFileSystemFormat(formatName);
         if (!(format instanceof ArkivoFormat.VolumeFileSystem.Writable writableFormat)) {
             throw new UnsupportedOperationException(
@@ -1350,7 +1534,7 @@ public final class ArkivoFormats {
     /// Returns the named installed format after requiring multi-volume streaming reader support.
     private static ArkivoFormat.VolumeStreamingReader requireVolumeStreamingReaderFormat(
             String formatName
-    ) throws IOException {
+    ) {
         ArkivoFormat.StreamingReader format = requireStreamingReaderFormat(formatName);
         if (!(format instanceof ArkivoFormat.VolumeStreamingReader readerFormat)) {
             throw new UnsupportedOperationException(
@@ -1363,7 +1547,7 @@ public final class ArkivoFormats {
     /// Returns the named installed format after requiring multi-volume streaming writer support.
     private static ArkivoFormat.VolumeStreamingWriter requireVolumeStreamingWriterFormat(
             String formatName
-    ) throws IOException {
+    ) {
         ArkivoFormat.StreamingWriter format = requireStreamingWriterFormat(formatName);
         if (!(format instanceof ArkivoFormat.VolumeStreamingWriter writerFormat)) {
             throw new UnsupportedOperationException(

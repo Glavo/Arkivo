@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.compress.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.compress.UnixCompressFormat;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

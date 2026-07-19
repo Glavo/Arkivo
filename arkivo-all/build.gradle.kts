@@ -24,6 +24,7 @@ dependencies {
     api(project(":arkivo-archive"))
     api(project(":arkivo-archive-all"))
     api(project(":arkivo-codec-all"))
+    implementation(project(":arkivo-archive-codec"))
     testImplementation("org.tukaani:xz:1.12")
     testImplementation("org.apache.commons:commons-compress:1.28.0")
     add(benchmarkSourceSet.compileOnlyConfigurationName, "org.jetbrains:annotations:26.1.0")
@@ -222,6 +223,7 @@ val moduleProjectPaths = listOf(
     ":arkivo-all",
     ":arkivo-base",
     ":arkivo-archive",
+    ":arkivo-archive-codec",
     ":arkivo-archive-7z",
     ":arkivo-archive-all",
     ":arkivo-archive-ar",
@@ -285,6 +287,7 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.all",
             "org.glavo.arkivo.base",
             "org.glavo.arkivo.archive",
+            "org.glavo.arkivo.archive.codec",
             "org.glavo.arkivo.archive.all",
             "org.glavo.arkivo.archive.ar",
             "org.glavo.arkivo.archive.cpio",
@@ -429,7 +432,7 @@ val verifyModuleDescriptors by tasks.registering {
 
         val expectedQualifiedExports = mapOf(
             codecModule to mapOf(
-                "org.glavo.arkivo.codec.spi" to setOf(
+                "org.glavo.arkivo.codec.internal" to setOf(
                     "org.glavo.arkivo.codec.bzip2",
                     "org.glavo.arkivo.codec.compress",
                     "org.glavo.arkivo.codec.deflate",
@@ -456,6 +459,7 @@ val verifyModuleDescriptors by tasks.registering {
             archiveModule to mapOf(
                 "org.glavo.arkivo.archive.internal" to setOf(
                     "org.glavo.arkivo.all",
+                    "org.glavo.arkivo.archive.codec",
                     "org.glavo.arkivo.archive.ar",
                     "org.glavo.arkivo.archive.cpio",
                     "org.glavo.arkivo.archive.rar",
@@ -492,8 +496,8 @@ val verifyModuleDescriptors by tasks.registering {
         }
 
         val expectedQualifiedOpens = mapOf(
-            "org.glavo.arkivo.all" to mapOf(
-                "org.glavo.arkivo.all.internal" to setOf(archiveModule)
+            "org.glavo.arkivo.archive.codec" to mapOf(
+                "org.glavo.arkivo.archive.codec.internal" to setOf(archiveModule)
             )
         )
         descriptors.forEach { (moduleName, descriptor) ->

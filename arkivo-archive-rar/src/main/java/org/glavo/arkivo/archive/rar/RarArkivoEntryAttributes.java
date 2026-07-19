@@ -47,7 +47,7 @@ public interface RarArkivoEntryAttributes extends ArchiveEntryAttributes {
 
     /// Returns the decoded RAR entry path.
     ///
-    /// @return the normalized archive path recorded for this entry
+    /// @return the effective path recorded for this entry before file-system node normalization
     String path();
 
     /// Returns the RAR host operating system value.

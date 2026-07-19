@@ -7,6 +7,7 @@
 /// exposed as a streaming format; this module does not provide an NIO archive file system.
 module org.glavo.arkivo.archive.cpio {
     requires transitive org.glavo.arkivo.archive;
+    requires org.glavo.arkivo.archive.codec;
     requires org.glavo.arkivo.base;
     requires static org.jetbrains.annotations;
 

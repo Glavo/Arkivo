@@ -61,7 +61,7 @@ public final class TarIndexedStorageTest {
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(
                 archive,
                 TarArchiveOptions.CREATE_DEFAULTS.withCommon(
-                        ArchiveCreateOptions.DEFAULT.withEditStorage(storage)
+                        ArchiveCreateOptions.DEFAULT.withEditStorageFactory(() -> storage)
                 )
         )) {
             var writerEntry66 = writer.beginFile("file.txt");
@@ -84,7 +84,7 @@ public final class TarIndexedStorageTest {
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(
                     archivePath,
                     TarArchiveOptions.READ_DEFAULTS.withCommon(
-                            ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                            ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
                     )
             )) {
                 byte[] expected = "shared-content".getBytes(StandardCharsets.UTF_8);
@@ -107,7 +107,7 @@ public final class TarIndexedStorageTest {
         TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(
                 archivePath,
                 TarArchiveOptions.READ_DEFAULTS.withCommon(
-                        ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
                 )
         );
         try {

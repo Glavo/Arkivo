@@ -89,7 +89,10 @@ public final class LZ4FrameDictionaryAndLegacyTest {
             assertTrue((frame[4] & 1) != 0);
             assertEquals(
                     dictionary.dictionaryId(),
-                    Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(frame, 6))
+                    Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(
+                            frame,
+                            dictionaryIdOffset(frame)
+                    ))
             );
             assertArrayEquals(input, decompress(codec, frame), "independent=" + independent);
             assertArrayEquals(
@@ -109,7 +112,10 @@ public final class LZ4FrameDictionaryAndLegacyTest {
         LZ4Dictionary zero = LZ4Dictionary.identified(0L, dictionaryBytes);
         byte[] identifiedFrame = compress(new LZ4Codec().withDictionary(zero), input);
         assertTrue((identifiedFrame[4] & 1) != 0);
-        assertEquals(0, ByteArrayAccess.readIntLittleEndian(identifiedFrame, 6));
+        assertEquals(
+                0,
+                ByteArrayAccess.readIntLittleEndian(identifiedFrame, dictionaryIdOffset(identifiedFrame))
+        );
         assertTrue(new LZ4DictionaryRequest(0L).matches(zero));
         assertArrayEquals(input, decodeFragmentedDirect(new LZ4Codec(), identifiedFrame, zero));
 
@@ -226,6 +232,11 @@ public final class LZ4FrameDictionaryAndLegacyTest {
     /// Compresses one complete standard frame into an owned byte array.
     private static byte[] compress(LZ4Codec codec, byte[] input) throws IOException {
         return bytes(codec.compress(ByteBuffer.wrap(input)));
+    }
+
+    /// Returns the dictionary-identifier offset derived from the frame descriptor flags.
+    private static int dictionaryIdOffset(byte[] frame) {
+        return 6 + ((frame[4] & 0x08) != 0 ? Long.BYTES : 0);
     }
 
     /// Decompresses all concatenated frames into one owned byte array.

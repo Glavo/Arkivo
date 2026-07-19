@@ -11,7 +11,7 @@ import org.glavo.arkivo.codec.lz4.LZ4BlockSize;
 import org.glavo.arkivo.codec.lz4.LZ4Dictionary;
 import org.glavo.arkivo.codec.lz4.LZ4DictionaryRequest;
 import org.glavo.arkivo.codec.lz4.LZ4Format;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;

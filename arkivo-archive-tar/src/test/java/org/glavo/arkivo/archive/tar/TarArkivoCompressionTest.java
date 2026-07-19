@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -22,12 +23,23 @@ import java.nio.file.StandardOpenOption;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies compressed TAR file system creation, detection, reading, and update behavior.
 @NotNullByDefault
 final class TarArkivoCompressionTest {
+    /// Verifies that every lifecycle has an explicit, role-correct default compression policy.
+    @Test
+    void exposesExplicitCompressionPolicyDefaults() {
+        assertSame(TarCompression.DETECT, TarArchiveOptions.READ_DEFAULTS.compression());
+        assertSame(TarCompression.UNCOMPRESSED, TarArchiveOptions.CREATE_DEFAULTS.compression());
+        assertSame(TarCompression.DETECT, TarArchiveOptions.UPDATE_DEFAULTS.sourceCompression());
+        assertSame(TarCompression.PRESERVE, TarArchiveOptions.UPDATE_DEFAULTS.targetCompression());
+    }
+
     /// Verifies gzip creation, automatic read detection, and compression-preserving update.
     @Test
     void createsReadsAndUpdatesAutoDetectedGzipArchive() throws IOException {
@@ -56,6 +68,35 @@ final class TarArkivoCompressionTest {
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
                 assertEquals("updated", Files.readString(fileSystem.getPath("/value.txt")));
                 assertEquals("added", Files.readString(fileSystem.getPath("/added.txt")));
+            }
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies that source detection and replacement encoding are independently configurable during update.
+    @Test
+    void updatesDetectedGzipArchiveToUncompressedTar() throws IOException {
+        Path archivePath = Files.createTempFile("arkivo-tar-gzip-to-plain-", ".tar");
+        try {
+            createCompressedArchive(archivePath, "gzip");
+            TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS.withUncompressedTarget();
+
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(archivePath, options)) {
+                Files.writeString(
+                        fileSystem.getPath("/value.txt"),
+                        "updated",
+                        StandardCharsets.UTF_8,
+                        StandardOpenOption.TRUNCATE_EXISTING
+                );
+            }
+
+            assertNull(CompressionFormats.detect(archivePath));
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(
+                    archivePath,
+                    TarArchiveOptions.READ_DEFAULTS.withoutCompression()
+            )) {
+                assertEquals("updated", Files.readString(fileSystem.getPath("/value.txt")));
             }
         } finally {
             Files.deleteIfExists(archivePath);
@@ -122,9 +163,11 @@ final class TarArkivoCompressionTest {
         try {
             createCompressedArchive(sourcePath, "deflate");
             byte[] original = Files.readAllBytes(sourcePath);
+            CompressionCodec<?> codec = CompressionFormats.require("deflate").defaultCodec();
             TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS
                     .withCommon(ArchiveUpdateOptions.DEFAULT.withCommitTarget(ArkivoCommitTarget.writeTo(targetPath)))
-                    .withCompression(CompressionFormats.require("deflate").defaultCodec());
+                    .withSourceCompression(codec)
+                    .withTargetCompression(codec);
 
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(source, options)) {
                 Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);

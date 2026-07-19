@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.rar;
 
 import org.glavo.arkivo.archive.ArchiveReadOptions;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -94,7 +94,9 @@ public final class RarLowHeapStorageProbe {
     /// Opens the archive with explicit temporary storage and verifies random access to the large entry.
     private static void verifyArchive(Path archivePath, Path storageDirectory) throws IOException {
         RarArchiveOptions.Read options = RarArchiveOptions.READ_DEFAULTS.withCommon(
-                ArchiveReadOptions.DEFAULT.withEditStorage(ArkivoEditStorage.temporaryFiles(storageDirectory))
+                ArchiveReadOptions.DEFAULT.withEditStorageFactory(
+                        ArkivoEditStorageFactory.temporaryFiles(storageDirectory)
+                )
         );
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, options)) {
             Path entry = fileSystem.getPath("/large.bin");

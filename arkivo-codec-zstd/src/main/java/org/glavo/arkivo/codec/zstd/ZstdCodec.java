@@ -10,7 +10,7 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.SeekableEncodingOptions;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoderParameters;

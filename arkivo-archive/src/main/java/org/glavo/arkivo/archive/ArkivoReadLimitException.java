@@ -94,6 +94,8 @@ public final class ArkivoReadLimitException extends IOException {
             case ENTRY_SIZE -> "Archive entry size";
             case TOTAL_ENTRY_SIZE -> "Total archive entry size";
             case METADATA_SIZE -> "Archive metadata size";
+            case DECODED_ARCHIVE_SIZE -> "Decoded archive size";
+            case OUTER_COMPRESSION_LAYERS -> "Outer compression layer count";
         };
         String pathSuffix = entryPath != null ? " for " + entryPath : "";
         return subject + pathSuffix + " exceeds the configured maximum of " + maximum

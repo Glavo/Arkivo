@@ -104,7 +104,6 @@ final class SevenZipDecodedEntryStorageTest {
                 archive,
                 new SevenZipArchiveOptions.Create(
                         org.glavo.arkivo.archive.ArchiveCreateOptions.DEFAULT,
-                        null,
                         SevenZipCompression.deflate(1),
                         SevenZipFilterChain.EMPTY,
                         SevenZipArchiveOptions.DEFAULT_SOLID_FILE_COUNT,
@@ -121,8 +120,7 @@ final class SevenZipDecodedEntryStorageTest {
     /// Returns read options using the requested decoded-content storage.
     private static SevenZipArchiveOptions.Read readOptions(ArkivoEditStorage storage) {
         return new SevenZipArchiveOptions.Read(
-                ArchiveReadOptions.DEFAULT.withEditStorage(storage),
-                null
+                ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
         );
     }
 

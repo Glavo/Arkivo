@@ -336,6 +336,11 @@ final class CodecChannelContractTest {
                 }
                 assertEquals(emptyFrameSize, compressed.size(), codec.format().name());
 
+                encoder.startFrame();
+                encoder.finishFrame();
+                int twoEmptyFramesSize = compressed.size();
+                assertTrue(twoEmptyFramesSize > emptyFrameSize, codec.format().name());
+
                 CodecResult finished = encoder.finishFrame(ByteBuffer.wrap(content));
                 assertEquals(CodecResult.Status.FRAME_FINISHED, finished.status(), codec.format().name());
                 int completeSize = compressed.size();
@@ -349,6 +354,14 @@ final class CodecChannelContractTest {
                 CodecResult empty = decoder.decodeFrame(ByteBuffer.allocate(3));
                 assertEquals(CodecResult.Status.FRAME_FINISHED, empty.status(), codec.format().name());
                 assertEquals(0L, empty.outputBytes(), codec.format().name());
+
+                CodecResult explicitlyStartedEmpty = decoder.decodeFrame(ByteBuffer.allocate(3));
+                assertEquals(
+                        CodecResult.Status.FRAME_FINISHED,
+                        explicitlyStartedEmpty.status(),
+                        codec.format().name()
+                );
+                assertEquals(0L, explicitlyStartedEmpty.outputBytes(), codec.format().name());
 
                 ByteArrayOutputStream decoded = new ByteArrayOutputStream();
                 while (true) {

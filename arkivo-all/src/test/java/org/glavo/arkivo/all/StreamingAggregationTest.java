@@ -126,8 +126,8 @@ final class StreamingAggregationTest {
         ReadableByteChannel unknownSource = Channels.newChannel(
                 new ByteArrayInputStream(new byte[]{1, 2, 3})
         );
-        IOException unknownFailure = assertThrows(
-                IOException.class,
+        IllegalArgumentException unknownFailure = assertThrows(
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openStreamingReader("missing", unknownSource)
         );
         assertEquals("Unknown archive format: missing", unknownFailure.getMessage());
@@ -144,8 +144,8 @@ final class StreamingAggregationTest {
         assertFalse(writeOnlySource.isOpen());
 
         TrackingInputStream unknownStream = new TrackingInputStream(new byte[]{1, 2, 3});
-        IOException unknownStreamFailure = assertThrows(
-                IOException.class,
+        IllegalArgumentException unknownStreamFailure = assertThrows(
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openStreamingReader("missing", unknownStream)
         );
         assertEquals("Unknown archive format: missing", unknownStreamFailure.getMessage());
@@ -331,8 +331,8 @@ final class StreamingAggregationTest {
         assertEquals(1, unsupported.closeCount());
 
         TrackingVolumeSource unknown = new TrackingVolumeSource(new byte[][]{{1, 2, 3}});
-        IOException unknownFailure = assertThrows(
-                IOException.class,
+        IllegalArgumentException unknownFailure = assertThrows(
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openStreamingReader("missing", (ArkivoVolumeSource) unknown)
         );
         assertEquals("Unknown archive format: missing", unknownFailure.getMessage());
@@ -370,7 +370,7 @@ final class StreamingAggregationTest {
         TrackingVolumeSource source = new TrackingVolumeSource(new byte[][]{zipArchive()});
 
         assertThrows(
-                IOException.class,
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openStreamingReader("missing", (ArkivoVolumeSource) source)
         );
 
@@ -396,8 +396,8 @@ final class StreamingAggregationTest {
         assertEquals(0, unsupportedTarget.openOutputCount());
 
         RecordingVolumeTarget unknownTarget = new RecordingVolumeTarget();
-        IOException unknownFailure = assertThrows(
-                IOException.class,
+        IllegalArgumentException unknownFailure = assertThrows(
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openStreamingWriter("missing", unknownTarget, 64L)
         );
         assertEquals("Unknown archive format: missing", unknownFailure.getMessage());
@@ -498,7 +498,7 @@ final class StreamingAggregationTest {
     void closesSingleSeekableChannelAfterSetupFailure() throws IOException {
         ByteArraySeekableByteChannel channel = new ByteArraySeekableByteChannel(zipArchive());
         assertThrows(
-                IOException.class,
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openFileSystem("missing", channel)
         );
         assertFalse(channel.isOpen());
@@ -550,6 +550,7 @@ final class StreamingAggregationTest {
         try {
             Files.write(compressedTar, compressedTarArchive());
             assertPathFileSystem(compressedTar, "tar");
+            assertPathFileSystem(compressedTar, null);
         } finally {
             Files.deleteIfExists(compressedTar);
         }
@@ -559,8 +560,8 @@ final class StreamingAggregationTest {
     @Test
     void closesNamedFileSystemChannelsAfterSetupFailure() throws IOException {
         ByteArraySeekableByteChannel unknown = new ByteArraySeekableByteChannel(new byte[]{1, 2, 3, 4});
-        IOException unknownFailure = assertThrows(
-                IOException.class,
+        IllegalArgumentException unknownFailure = assertThrows(
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openFileSystem("missing", unknown)
         );
         assertEquals("Unknown archive format: missing", unknownFailure.getMessage());
@@ -629,6 +630,7 @@ final class StreamingAggregationTest {
         assertRepeatableSourceFileSystem(null, emptyRar, true);
         assertRepeatableSourceFileSystem("sevenzip", sevenZipArchive(), false);
         assertRepeatableSourceFileSystem("tar", compressedTarArchive(), false);
+        assertRepeatableSourceFileSystem(null, compressedTarArchive(), false);
     }
 
     /// Verifies detected and named unified factories update every editable path-backed format.
@@ -715,8 +717,8 @@ final class StreamingAggregationTest {
 
         TrackingVolumeSource unknownSource = new TrackingVolumeSource(splitArchive(zipArchive(), 11));
         RecordingVolumeTarget unknownTarget = new RecordingVolumeTarget();
-        IOException unknownFailure = assertThrows(
-                IOException.class,
+        IllegalArgumentException unknownFailure = assertThrows(
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.updateFileSystem("missing", unknownSource, unknownTarget, 64L)
         );
         assertEquals("Unknown archive format: missing", unknownFailure.getMessage());
@@ -738,8 +740,8 @@ final class StreamingAggregationTest {
     @Test
     void closesArchiveSourcesAfterUnifiedSetupFailure() throws IOException {
         TrackingSeekableSource unknownSeekable = new TrackingSeekableSource(new byte[]{1, 2, 3, 4});
-        IOException unknownSeekableFailure = assertThrows(
-                IOException.class,
+        IllegalArgumentException unknownSeekableFailure = assertThrows(
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openFileSystem("missing", unknownSeekable)
         );
         assertEquals("Unknown archive format: missing", unknownSeekableFailure.getMessage());
@@ -755,7 +757,7 @@ final class StreamingAggregationTest {
 
         TrackingVolumeSource invalidZip = new TrackingVolumeSource(new byte[][]{zipArchive()});
         assertThrows(
-                IOException.class,
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openFileSystem("missing", (ArkivoVolumeSource) invalidZip)
         );
         assertEquals(1, invalidZip.closeCount());
@@ -807,6 +809,33 @@ final class StreamingAggregationTest {
         }
     }
 
+    /// Verifies generic reads materialize non-native wrappers while generic updates reject unsafe delegation.
+    @Test
+    void handlesOuterCompressedZipWithoutTreatingZipAsWrapperAware() throws IOException {
+        Path archive = Files.createTempFile("arkivo-outer-compressed-zip-", ".zip.gz");
+        try {
+            ByteBuffer compressed = CompressionFormats.require("gzip")
+                    .defaultCodec()
+                    .compress(ByteBuffer.wrap(zipArchive()));
+            byte[] bytes = new byte[compressed.remaining()];
+            compressed.get(bytes);
+            Files.write(archive, bytes);
+
+            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive)) {
+                assertInstanceOf(ZipArkivoFileSystem.class, fileSystem);
+                assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)));
+            }
+
+            UnsupportedOperationException exception = assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> ArkivoFormats.updateFileSystem(archive)
+            );
+            assertTrue(exception.getMessage().contains("zip"));
+        } finally {
+            Files.deleteIfExists(archive);
+        }
+    }
+
     /// Verifies raw archive validation takes precedence over a coincidental compression signature.
     @Test
     void prefersValidatedRawArchiveOverCompressionSignature() throws IOException {
@@ -843,8 +872,8 @@ final class StreamingAggregationTest {
     @Test
     void rejectsUnavailableStreamingWritersAndClosesTargets() {
         WritableByteChannel unknownTarget = Channels.newChannel(new ByteArrayOutputStream());
-        IOException unknownFailure = assertThrows(
-                IOException.class,
+        IllegalArgumentException unknownFailure = assertThrows(
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openStreamingWriter("missing", unknownTarget)
         );
         assertEquals("Unknown archive format: missing", unknownFailure.getMessage());
@@ -944,7 +973,7 @@ final class StreamingAggregationTest {
     void closesSourceAfterNamedSetupFailure() throws IOException {
         TrackingInputStream source = new TrackingInputStream(zipArchive());
         assertThrows(
-                IOException.class,
+                IllegalArgumentException.class,
                 () -> ArkivoFormats.openStreamingReader("missing", source)
         );
         assertTrue(source.closed());

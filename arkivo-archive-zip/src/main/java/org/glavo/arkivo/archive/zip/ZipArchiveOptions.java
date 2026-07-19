@@ -31,25 +31,18 @@ public final class ZipArchiveOptions {
             ArchiveMetadataCharsetDetector.fixed(Charset.forName("IBM437"));
 
     /// The default read configuration.
-    public static final Read READ_DEFAULTS = new Read(
-            ArchiveReadOptions.DEFAULT,
-            null,
-            DEFAULT_LEGACY_CHARSET_DETECTOR
-    );
+    public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT);
 
     /// The default creation configuration.
     public static final Create CREATE_DEFAULTS = new Create(
             ArchiveCreateOptions.DEFAULT,
-            null,
             ZipEncryption.NONE
     );
 
     /// The default update configuration.
     public static final Update UPDATE_DEFAULTS = new Update(
             ArchiveUpdateOptions.DEFAULT,
-            null,
-            ZipEncryption.NONE,
-            DEFAULT_LEGACY_CHARSET_DETECTOR
+            ZipEncryption.NONE
     );
 
     /// Creates no instances.
@@ -58,19 +51,15 @@ public final class ZipArchiveOptions {
 
     /// Configures reading ZIP archives.
     ///
-    /// @param common                the format-independent read configuration
-    /// @param passwordProvider      the password provider, or `null` when encrypted entries are not expected
-    /// @param legacyCharsetDetector the detector for non-Unicode names and comments
+    /// Password and metadata-charset services are obtained from `common`. A missing detector selects
+    /// [#DEFAULT_LEGACY_CHARSET_DETECTOR].
+    ///
+    /// @param common the format-independent read configuration
     @NotNullByDefault
-    public record Read(
-            ArchiveReadOptions common,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            ArchiveMetadataCharsetDetector legacyCharsetDetector
-    ) {
+    public record Read(ArchiveReadOptions common) {
         /// Validates the read configuration.
         public Read {
             Objects.requireNonNull(common, "common");
-            Objects.requireNonNull(legacyCharsetDetector, "legacyCharsetDetector");
         }
 
         /// Returns a copy with common read settings.
@@ -79,7 +68,22 @@ public final class ZipArchiveOptions {
         /// @return a new configuration with the replacement common settings and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Read withCommon(ArchiveReadOptions value) {
-            return new Read(value, passwordProvider, legacyCharsetDetector);
+            return new Read(value);
+        }
+
+        /// Returns the password provider inherited from the common options.
+        ///
+        /// @return the provider, or `null` when password lookup is disabled
+        public @Nullable ArkivoPasswordProvider passwordProvider() {
+            return common.passwordProvider();
+        }
+
+        /// Returns the configured legacy charset detector or the ZIP default.
+        ///
+        /// @return the effective detector for non-Unicode names and comments
+        public ArchiveMetadataCharsetDetector legacyCharsetDetector() {
+            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
+            return detector != null ? detector : DEFAULT_LEGACY_CHARSET_DETECTOR;
         }
 
         /// Returns a copy with the password provider.
@@ -87,7 +91,7 @@ public final class ZipArchiveOptions {
         /// @param value the replacement password provider, or `null` to disable password lookup
         /// @return a new configuration with the replacement password provider and all other values unchanged
         public Read withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
-            return new Read(common, value, legacyCharsetDetector);
+            return new Read(common.withPasswordProvider(value));
         }
 
         /// Returns a copy with the legacy charset detector.
@@ -96,19 +100,17 @@ public final class ZipArchiveOptions {
         /// @return a new configuration with the replacement detector and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Read withLegacyCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Read(common, passwordProvider, value);
+            return new Read(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")));
         }
     }
 
     /// Configures creation of ZIP archives.
     ///
     /// @param common            the format-independent creation configuration
-    /// @param passwordProvider  the password provider used for encrypted entries, or `null` when encryption is disabled
     /// @param defaultEncryption the encryption used by new entries without an override
     @NotNullByDefault
     public record Create(
             ArchiveCreateOptions common,
-            @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption
     ) {
         /// Validates the creation configuration.
@@ -123,7 +125,14 @@ public final class ZipArchiveOptions {
         /// @return a new configuration with the replacement common settings and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Create withCommon(ArchiveCreateOptions value) {
-            return new Create(value, passwordProvider, defaultEncryption);
+            return new Create(value, defaultEncryption);
+        }
+
+        /// Returns the password provider inherited from the common options.
+        ///
+        /// @return the provider, or `null` when password lookup is disabled
+        public @Nullable ArkivoPasswordProvider passwordProvider() {
+            return common.passwordProvider();
         }
 
         /// Returns a copy with the password provider.
@@ -131,7 +140,7 @@ public final class ZipArchiveOptions {
         /// @param value the replacement password provider, or `null` to disable password lookup
         /// @return a new configuration with the replacement password provider and all other values unchanged
         public Create withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
-            return new Create(common, value, defaultEncryption);
+            return new Create(common.withPasswordProvider(value), defaultEncryption);
         }
 
         /// Returns a copy with default encryption.
@@ -140,28 +149,23 @@ public final class ZipArchiveOptions {
         /// @return a new configuration with the replacement default encryption and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Create withDefaultEncryption(ZipEncryption value) {
-            return new Create(common, passwordProvider, value);
+            return new Create(common, value);
         }
     }
 
     /// Configures complete-rewrite updates of ZIP archives.
     ///
     /// @param common                the format-independent update configuration
-    /// @param passwordProvider      the password provider, or `null` when encryption is not used
     /// @param defaultEncryption     the encryption used by new entries without an override
-    /// @param legacyCharsetDetector the detector for non-Unicode names and comments
     @NotNullByDefault
     public record Update(
             ArchiveUpdateOptions common,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            ZipEncryption defaultEncryption,
-            ArchiveMetadataCharsetDetector legacyCharsetDetector
+            ZipEncryption defaultEncryption
     ) {
         /// Validates the update configuration.
         public Update {
             Objects.requireNonNull(common, "common");
             Objects.requireNonNull(defaultEncryption, "defaultEncryption");
-            Objects.requireNonNull(legacyCharsetDetector, "legacyCharsetDetector");
         }
 
         /// Returns a copy with common update settings.
@@ -170,7 +174,22 @@ public final class ZipArchiveOptions {
         /// @return a new configuration with the replacement common settings and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Update withCommon(ArchiveUpdateOptions value) {
-            return new Update(value, passwordProvider, defaultEncryption, legacyCharsetDetector);
+            return new Update(value, defaultEncryption);
+        }
+
+        /// Returns the password provider inherited from the common options.
+        ///
+        /// @return the provider, or `null` when password lookup is disabled
+        public @Nullable ArkivoPasswordProvider passwordProvider() {
+            return common.passwordProvider();
+        }
+
+        /// Returns the configured legacy charset detector or the ZIP default.
+        ///
+        /// @return the effective detector for non-Unicode names and comments
+        public ArchiveMetadataCharsetDetector legacyCharsetDetector() {
+            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
+            return detector != null ? detector : DEFAULT_LEGACY_CHARSET_DETECTOR;
         }
 
         /// Returns a copy with the password provider.
@@ -178,7 +197,7 @@ public final class ZipArchiveOptions {
         /// @param value the replacement password provider, or `null` to disable password lookup
         /// @return a new configuration with the replacement password provider and all other values unchanged
         public Update withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
-            return new Update(common, value, defaultEncryption, legacyCharsetDetector);
+            return new Update(common.withPasswordProvider(value), defaultEncryption);
         }
 
         /// Returns a copy with default encryption.
@@ -187,7 +206,7 @@ public final class ZipArchiveOptions {
         /// @return a new configuration with the replacement default encryption and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Update withDefaultEncryption(ZipEncryption value) {
-            return new Update(common, passwordProvider, value, legacyCharsetDetector);
+            return new Update(common, value);
         }
 
         /// Returns a copy with the legacy charset detector.
@@ -196,7 +215,9 @@ public final class ZipArchiveOptions {
         /// @return a new configuration with the replacement detector and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Update withLegacyCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Update(common, passwordProvider, defaultEncryption, value);
+            return new Update(
+                    common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")), defaultEncryption
+            );
         }
     }
 }

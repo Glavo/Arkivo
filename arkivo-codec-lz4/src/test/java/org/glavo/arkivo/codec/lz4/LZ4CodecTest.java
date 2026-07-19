@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests standard-frame and raw-block LZ4 codec behavior.
 @NotNullByDefault
 public final class LZ4CodecTest {
+    /// Verifies that exact operation metadata is emitted in the standard frame descriptor.
+    @Test
+    public void writesDeclaredContentSize() throws IOException {
+        byte[] input = testData(10_003);
+        byte[] compressed;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (CompressionEncoder encoder = LZ4Codec.DEFAULT.newEncoder(
+                EncodingOptions.ofSourceSize(input.length)
+        )) {
+            encode(encoder, ByteBuffer.wrap(input), output, 7);
+            finish(encoder, output, 3);
+            compressed = output.toByteArray();
+        }
+
+        assertTrue((compressed[4] & 0x08) != 0);
+        assertEquals(input.length, ByteArrayAccess.readLongLittleEndian(compressed, 6));
+        assertArrayEquals(input, decompress(LZ4Codec.DEFAULT, compressed));
+    }
+
     /// Verifies every standard block-size descriptor through independent frame round trips.
     @Test
     public void roundTripsEveryFrameBlockSize() throws IOException {

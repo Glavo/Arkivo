@@ -5,7 +5,8 @@ package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.EncodingOptions;
+import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.transform.ByteTransform;
@@ -241,6 +242,17 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
         ensureOpen();
         finishBlock();
         output.flush();
+    }
+
+    /// Explicitly starts another XZ Stream after a completed Stream boundary.
+    @Override
+    public void startFrame(EncodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        ensureOpen();
+        if (streamActive) {
+            throw new IllegalStateException("An XZ Stream is already active");
+        }
+        startStream();
     }
 
     /// Finishes the active XZ Stream while retaining the encoder for another stream.

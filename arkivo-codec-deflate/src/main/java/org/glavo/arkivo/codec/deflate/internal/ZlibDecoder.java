@@ -8,7 +8,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.deflate.ZlibDictionary;
 import org.glavo.arkivo.codec.deflate.ZlibDictionaryRequest;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

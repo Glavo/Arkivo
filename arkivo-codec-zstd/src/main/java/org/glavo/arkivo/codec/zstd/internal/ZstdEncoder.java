@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -21,8 +22,8 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     /// Validated parameters restored by reset for the initial frame.
     private final ZstdEncoderParameters initialParameters;
 
-    /// Parameters used by frames after the initial frame.
-    private final ZstdEncoderParameters subsequentParameters;
+    /// Parameters used by implicitly started frames after the initial frame.
+    private final ZstdEncoderParameters defaultFrameParameters;
 
     /// Parameters used by the active or lazily initialized frame.
     private ZstdEncoderParameters parameters;
@@ -45,10 +46,24 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     /// @param magicless  whether standard frame magic is omitted
     public ZstdEncoder(ZstdEncoderParameters parameters, boolean magicless) {
         this.initialParameters = Objects.requireNonNull(parameters, "parameters");
-        this.subsequentParameters = parameters.withPledgedSourceSize(CompressionCodec.UNKNOWN_SIZE);
+        this.defaultFrameParameters = parameters.withPledgedSourceSize(CompressionCodec.UNKNOWN_SIZE);
         this.parameters = parameters;
         this.magicless = magicless;
         this.encoder = createEncoder();
+    }
+
+    /// Explicitly starts another frame with independent source-size metadata.
+    @Override
+    public void startFrame(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
+        requireOpen();
+        if (state != State.BETWEEN_FRAMES) {
+            throw new IllegalStateException("Cannot start a Zstandard frame while encoder state is " + state);
+        }
+        encoder.abort();
+        parameters = defaultFrameParameters.withPledgedSourceSize(options.sourceSize());
+        encoder = createEncoder();
+        state = State.ACTIVE;
     }
 
     /// Encodes source bytes while applying output backpressure between bounded input chunks.
@@ -161,7 +176,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
         if (output.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
-        parameters = subsequentParameters;
+        parameters = defaultFrameParameters;
         encoder = createEncoder();
         state = State.BETWEEN_FRAMES;
         return CodecOutcome.BOUNDARY_REACHED;

@@ -32,7 +32,7 @@ final class StoredContentSupportTest {
     void storesAndCopiesIndexedContent() throws IOException {
         ArkivoEditStorage storage = ArkivoEditStorage.memory();
         assertSame(storage, StoredContentSupport.selectStorage(
-                ArchiveOptions.of(ArchiveEnvironmentOptions.EDIT_STORAGE, storage)
+                ArchiveOptions.of(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY, () -> storage)
         ));
 
         Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();

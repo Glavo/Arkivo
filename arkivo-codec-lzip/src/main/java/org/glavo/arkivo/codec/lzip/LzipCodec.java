@@ -10,7 +10,7 @@ import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzip.internal.LzipDecoder;
 import org.glavo.arkivo.codec.lzip.internal.LzipEncoder;
 import org.glavo.arkivo.codec.lzip.internal.LzipSupport;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -175,7 +175,7 @@ public final class LzipCodec implements CompressionCodec.Framed<LzipCodec> {
     @Override
     public CompressionEncoder.Framed newEncoder(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
-        return new LzipEncoder(dictionarySize);
+        return new LzipEncoder(dictionarySize, options);
     }
 
     /// Creates a frame-capable lzip member decoder using this codec's configured limits.

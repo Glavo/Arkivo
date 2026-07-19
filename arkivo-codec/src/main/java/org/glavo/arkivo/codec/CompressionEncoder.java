@@ -103,11 +103,33 @@ public interface CompressionEncoder extends AutoCloseable {
 
     /// Incrementally encodes a sequence of independently terminated compression frames.
     ///
-    /// Completing a frame preserves immutable encoder configuration and leaves the encoder ready to accept source bytes
-    /// for a following frame. The following frame may be initialized lazily. Calling terminal `finish` before accepting
-    /// more source bytes must end the complete encoding without emitting an additional empty frame.
+    /// Completing a frame preserves immutable codec configuration and leaves the encoder ready to accept source bytes
+    /// for a following frame. Encoding source directly after a boundary starts that frame with [EncodingOptions#DEFAULT].
+    /// [#startFrame(EncodingOptions)] instead starts it explicitly, including an empty frame, and supplies frame-scoped
+    /// metadata. Calling terminal `finish` while no following frame is active ends the complete encoding without
+    /// emitting an additional empty frame.
     @NotNullByDefault
     interface Framed extends CompressionEncoder {
+        /// Explicitly starts a frame after a completed frame boundary.
+        ///
+        /// This operation does not consume or retain caller buffers. It makes an empty frame active, so a subsequent
+        /// `finishFrame` or terminal `finish` will emit that frame even when no source bytes are encoded. It may
+        /// initialize format state eagerly or defer initialization until the next encoding operation.
+        ///
+        /// @param options the parameters for the new frame
+        /// @throws IOException if frame resources cannot be initialized
+        /// @throws IllegalStateException if the encoder is closed, terminal finalization has started, a frame is
+        ///                               already active, or a previous boundary operation is incomplete
+        void startFrame(EncodingOptions options) throws IOException;
+
+        /// Explicitly starts a frame with default frame-scoped options.
+        ///
+        /// @throws IOException if frame resources cannot be initialized
+        /// @throws IllegalStateException if a frame cannot be started in the current state
+        default void startFrame() throws IOException {
+            startFrame(EncodingOptions.DEFAULT);
+        }
+
         /// Finishes the current frame without finishing the complete encoding session.
         ///
         /// Callers repeat this operation with fresh target space after `CodecOutcome.NEEDS_OUTPUT`. After

@@ -338,7 +338,9 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 source,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                )
         )) {
             assertEquals(0, storage.createdContentCount());
             assertEquals(content.length, Files.size(fileSystem.getPath("/value.txt")));
@@ -380,7 +382,9 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(true);
         RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                )
         );
         try {
             assertEquals(0, storage.createdContentCount());
@@ -419,7 +423,9 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                )
         )) {
             assertEquals(0, storage.createdContentCount());
             assertEquals(first.length, Files.size(fileSystem.getPath("/first.bin")));
@@ -448,7 +454,9 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                )
         );
         SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/value.bin"));
         try {
@@ -480,7 +488,9 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                )
         )) {
             Path entry = fileSystem.getPath("/bad.bin");
             assertEquals(content.length, Files.size(entry));

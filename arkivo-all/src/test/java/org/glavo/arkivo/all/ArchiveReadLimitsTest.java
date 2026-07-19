@@ -24,6 +24,8 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -32,6 +34,7 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.GZIPOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -216,6 +219,60 @@ final class ArchiveReadLimitsTest {
         }
     }
 
+    /// Verifies that automatic outer decompression stops at the configured nesting limit.
+    @Test
+    void outerCompressionLayerLimitStopsNestedDecoding() throws IOException {
+        Fixture fixture = createTarFixture();
+        try {
+            byte[] nestedArchive = gzip(gzip(Files.readAllBytes(fixture.path())));
+            ArchiveReadLimits limits = ArchiveReadLimits.builder()
+                    .maximumOuterCompressionLayers(1L)
+                    .build();
+            ArkivoReadLimitException exception = assertThrows(
+                    ArkivoReadLimitException.class,
+                    () -> ArkivoFormats.openStreamingReader(
+                            new ByteArrayInputStream(nestedArchive),
+                            readOptions(limits)
+                    )
+            );
+            assertLimit(
+                    exception,
+                    ArkivoReadLimitKind.OUTER_COMPRESSION_LAYERS,
+                    1L,
+                    2L,
+                    null
+            );
+        } finally {
+            Files.deleteIfExists(fixture.path());
+        }
+    }
+
+    /// Verifies that file-system staging enforces the complete decoded archive size.
+    @Test
+    void decodedArchiveSizeLimitStopsMaterialization() throws IOException {
+        Fixture fixture = createTarFixture();
+        Path compressed = Files.createTempFile("arkivo-decoded-limit-", ".tar.gz");
+        try {
+            byte[] tar = Files.readAllBytes(fixture.path());
+            Files.write(compressed, gzip(tar));
+            long maximum = tar.length - 1L;
+            ArchiveReadLimits limits = ArchiveReadLimits.builder()
+                    .maximumDecodedArchiveSize(maximum)
+                    .build();
+            ArkivoReadLimitException exception = assertThrows(
+                    ArkivoReadLimitException.class,
+                    () -> ArkivoFormats.openFileSystem(compressed, readOptions(limits))
+            );
+            assertEquals(ArkivoReadLimitKind.DECODED_ARCHIVE_SIZE, exception.kind());
+            assertEquals(maximum, exception.maximum());
+            assertTrue(exception.actual() > maximum);
+            assertNull(exception.entryPath());
+        } finally {
+            Files.deleteIfExists(compressed);
+            Files.deleteIfExists(fixture.path());
+        }
+    }
+
     /// Opens a fixture file system and verifies the expected read-limit failure.
     private static void assertFileSystemLimit(
             Fixture fixture,
@@ -265,6 +322,15 @@ final class ArchiveReadLimitsTest {
         try (InputStream input = reader.openInputStream()) {
             return input.readAllBytes();
         }
+    }
+
+    /// Returns one gzip member containing the supplied bytes.
+    private static byte[] gzip(byte[] content) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (GZIPOutputStream output = new GZIPOutputStream(bytes)) {
+            output.write(content);
+        }
+        return bytes.toByteArray();
     }
 
     /// Creates one independently generated fixture for each writable test format.

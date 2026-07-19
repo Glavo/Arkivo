@@ -109,9 +109,7 @@ final class ZipDecodedEntryStorageTest {
     /// Returns typed ZIP read options using the given decoded-entry storage.
     private static ZipArchiveOptions.Read readOptions(ArkivoEditStorage storage) {
         return new ZipArchiveOptions.Read(
-                ArchiveReadOptions.DEFAULT.withEditStorage(storage),
-                null,
-                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
+                ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
         );
     }
 

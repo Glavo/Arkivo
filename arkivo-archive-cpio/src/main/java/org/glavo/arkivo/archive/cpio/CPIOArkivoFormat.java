@@ -10,6 +10,7 @@ import org.glavo.arkivo.archive.ArkivoFormat.StreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -103,7 +104,7 @@ public final class CPIOArkivoFormat implements StreamingReader, StreamingWriter 
     public CPIOArkivoStreamingReader openStreamingReader(InputStream source, ArchiveReadOptions options) {
         return CPIOArkivoStreamingReader.open(
                 source,
-                new CPIOArchiveOptions.Read(options, CPIOArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR)
+                new CPIOArchiveOptions.Read(options)
         );
     }
 
@@ -121,19 +122,22 @@ public final class CPIOArkivoFormat implements StreamingReader, StreamingWriter 
     ) {
         return CPIOArkivoStreamingReader.open(
                 source,
-                new CPIOArchiveOptions.Read(options, CPIOArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR)
+                new CPIOArchiveOptions.Read(options)
         );
     }
 
     /// Opens a streaming CPIO writer over an output stream.
     @Override
-    public CPIOArkivoStreamingWriter openStreamingWriter(OutputStream target) {
+    public CPIOArkivoStreamingWriter openStreamingWriter(OutputStream target) throws IOException {
         return CPIOArkivoStreamingWriter.open(target);
     }
 
     /// Opens a configured streaming CPIO writer over an output stream.
     @Override
-    public CPIOArkivoStreamingWriter openStreamingWriter(OutputStream target, ArchiveCreateOptions options) {
+    public CPIOArkivoStreamingWriter openStreamingWriter(
+            OutputStream target,
+            ArchiveCreateOptions options
+    ) throws IOException {
         return CPIOArkivoStreamingWriter.open(
                 target,
                 CPIOArchiveOptions.CREATE_DEFAULTS.withCommon(options)
@@ -142,7 +146,7 @@ public final class CPIOArkivoFormat implements StreamingReader, StreamingWriter 
 
     /// Opens a streaming CPIO writer over a writable channel.
     @Override
-    public CPIOArkivoStreamingWriter openStreamingWriter(WritableByteChannel target) {
+    public CPIOArkivoStreamingWriter openStreamingWriter(WritableByteChannel target) throws IOException {
         return CPIOArkivoStreamingWriter.open(target);
     }
 
@@ -151,7 +155,7 @@ public final class CPIOArkivoFormat implements StreamingReader, StreamingWriter 
     public CPIOArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel target,
             ArchiveCreateOptions options
-    ) {
+    ) throws IOException {
         return CPIOArkivoStreamingWriter.open(
                 target,
                 CPIOArchiveOptions.CREATE_DEFAULTS.withCommon(options)

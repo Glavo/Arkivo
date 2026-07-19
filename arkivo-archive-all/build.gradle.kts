@@ -1,5 +1,6 @@
 dependencies {
     api(project(":arkivo-archive"))
+    implementation(project(":arkivo-archive-codec"))
     api(project(":arkivo-archive-7z"))
     api(project(":arkivo-archive-ar"))
     api(project(":arkivo-archive-cpio"))

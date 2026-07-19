@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.sevenzip;
 
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -69,8 +69,8 @@ public final class SevenZipLowHeapUpdateProbe {
     /// Randomly modifies the large entry through temporary-file edit storage and commits a complete rewrite.
     private static void updateArchive(Path archivePath, Path storageDirectory) throws IOException {
         SevenZipArchiveOptions.Update options = new SevenZipArchiveOptions.Update(
-                ArchiveUpdateOptions.DEFAULT.withEditStorage(
-                        ArkivoEditStorage.temporaryFiles(storageDirectory)
+                ArchiveUpdateOptions.DEFAULT.withEditStorageFactory(
+                        ArkivoEditStorageFactory.temporaryFiles(storageDirectory)
                 ),
                 null,
                 SevenZipCompression.copy(),

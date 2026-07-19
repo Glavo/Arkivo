@@ -8,7 +8,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.glavo.arkivo.codec.zstd.ZstdDictionaryRequest;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.ZstdFrameInfo;
 import org.glavo.arkivo.codec.zstd.ZstdSkippableFrameInfo;
 import org.glavo.arkivo.codec.zstd.ZstdStandardFrameInfo;

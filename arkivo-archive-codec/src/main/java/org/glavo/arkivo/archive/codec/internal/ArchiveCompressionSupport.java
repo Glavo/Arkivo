@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.all.internal;
+package org.glavo.arkivo.archive.codec.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
@@ -18,18 +18,17 @@ import java.io.IOException;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
-/// Transparently decodes an installed official compression format before archive detection.
+/// Decodes one recognized outer compression layer for the archive probing pipeline.
 @NotNullByDefault
-@SuppressWarnings("unused")
-public final class CompressionStreamingSourceSupport {
+public final class ArchiveCompressionSupport {
     /// Creates no instances.
-    private CompressionStreamingSourceSupport() {
+    private ArchiveCompressionSupport() {
     }
 
     /// Probes the source and opens an owning decoder when an official compression format matches.
     ///
-    /// @param source  the channel whose ownership is transferred after argument validation
-    /// @param options the archive-wide read limits and lifecycle options
+    /// @param source the channel whose ownership is transferred after argument validation
+    /// @param options the archive-wide decoder limits
     /// @return an owning result containing the replaying or decoded logical source
     /// @throws IOException if compression probing or decoder setup fails
     public static ArkivoStreamingSource probe(
@@ -45,10 +44,10 @@ public final class CompressionStreamingSourceSupport {
             return new ArkivoStreamingSource(false, replay);
         }
         try {
-            ArchiveReadLimits readLimits = options.limits();
+            ArchiveReadLimits limits = options.limits();
             DecompressingReadableByteChannel decoder = format.defaultCodec()
-                    .withMaximumWindowSize(readLimits.maximumCompressionWindowSize())
-                    .withMaximumMemorySize(readLimits.maximumDecoderMemorySize())
+                    .withMaximumWindowSize(limits.maximumCompressionWindowSize())
+                    .withMaximumMemorySize(limits.maximumDecoderMemorySize())
                     .newReadableByteChannel(replay, ResourceOwnership.OWNED);
             return new ArkivoStreamingSource(true, decoder);
         } catch (IOException | RuntimeException | Error failure) {

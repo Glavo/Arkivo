@@ -54,7 +54,7 @@ public abstract sealed class CPIOArkivoStreamingWriter extends ArkivoStreamingWr
         OutputStream target = Files.newOutputStream(checkedPath);
         try {
             return open(target, checkedOptions);
-        } catch (RuntimeException | Error exception) {
+        } catch (IOException | RuntimeException | Error exception) {
             try {
                 target.close();
             } catch (IOException closeException) {
@@ -68,7 +68,8 @@ public abstract sealed class CPIOArkivoStreamingWriter extends ArkivoStreamingWr
     ///
     /// @param target the archive output; ownership transfers to the returned writer
     /// @return a writer using the default creation configuration
-    public static CPIOArkivoStreamingWriter open(OutputStream target) {
+    /// @throws IOException if default body storage cannot be opened
+    public static CPIOArkivoStreamingWriter open(OutputStream target) throws IOException {
         return open(target, CPIOArchiveOptions.CREATE_DEFAULTS);
     }
 
@@ -77,7 +78,11 @@ public abstract sealed class CPIOArkivoStreamingWriter extends ArkivoStreamingWr
     /// @param target the archive output; ownership transfers to the returned writer
     /// @param options the dialect, byte order, metadata, padding, and storage configuration
     /// @return a writer that owns `target` and the selected body storage
-    public static CPIOArkivoStreamingWriter open(OutputStream target, CPIOArchiveOptions.Create options) {
+    /// @throws IOException if selected body storage cannot be opened
+    public static CPIOArkivoStreamingWriter open(
+            OutputStream target,
+            CPIOArchiveOptions.Create options
+    ) throws IOException {
         return new CPIOArkivoStreamingWriterImpl(
                 Objects.requireNonNull(target, "target"),
                 Objects.requireNonNull(options, "options")
@@ -88,7 +93,8 @@ public abstract sealed class CPIOArkivoStreamingWriter extends ArkivoStreamingWr
     ///
     /// @param target the archive output channel; ownership transfers to the returned writer
     /// @return a writer using the default creation configuration
-    public static CPIOArkivoStreamingWriter open(WritableByteChannel target) {
+    /// @throws IOException if default body storage cannot be opened
+    public static CPIOArkivoStreamingWriter open(WritableByteChannel target) throws IOException {
         return open(target, CPIOArchiveOptions.CREATE_DEFAULTS);
     }
 
@@ -97,10 +103,11 @@ public abstract sealed class CPIOArkivoStreamingWriter extends ArkivoStreamingWr
     /// @param target the archive output channel; ownership transfers to the returned writer
     /// @param options the dialect, byte order, metadata, padding, and storage configuration
     /// @return a writer that owns `target` and the selected body storage
+    /// @throws IOException if selected body storage cannot be opened
     public static CPIOArkivoStreamingWriter open(
             WritableByteChannel target,
             CPIOArchiveOptions.Create options
-    ) {
+    ) throws IOException {
         Objects.requireNonNull(target, "target");
         return open(StreamChannelAdapters.outputStream(target), options);
     }

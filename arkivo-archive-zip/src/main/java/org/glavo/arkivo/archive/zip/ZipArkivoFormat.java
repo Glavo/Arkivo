@@ -314,25 +314,16 @@ public final class ZipArkivoFormat implements
 
     /// Applies ZIP defaults to format-independent read options.
     private static ZipArchiveOptions.Read readOptions(ArchiveReadOptions options) {
-        return new ZipArchiveOptions.Read(
-                options,
-                null,
-                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
-        );
+        return new ZipArchiveOptions.Read(options);
     }
 
     /// Applies ZIP defaults to format-independent creation options.
     private static ZipArchiveOptions.Create createOptions(ArchiveCreateOptions options) {
-        return new ZipArchiveOptions.Create(options, null, ZipEncryption.NONE);
+        return new ZipArchiveOptions.Create(options, ZipEncryption.NONE);
     }
 
     /// Applies ZIP defaults to format-independent update options.
     private static ZipArchiveOptions.Update updateOptions(ArchiveUpdateOptions options) {
-        return new ZipArchiveOptions.Update(
-                options,
-                null,
-                ZipEncryption.NONE,
-                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
-        );
+        return new ZipArchiveOptions.Update(options, ZipEncryption.NONE);
     }
 }

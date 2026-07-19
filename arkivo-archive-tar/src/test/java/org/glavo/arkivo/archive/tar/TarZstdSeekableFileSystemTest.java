@@ -52,7 +52,7 @@ public final class TarZstdSeekableFileSystemTest {
             assertTrue(index.frameCount() >= 3);
 
             TarArchiveOptions.Read readOptions = TarArchiveOptions.READ_DEFAULTS.withCommon(
-                    ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                    ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
             );
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archive, readOptions)) {
                 Path entry = fileSystem.getPath("/large.bin");
@@ -102,7 +102,7 @@ public final class TarZstdSeekableFileSystemTest {
             }
             RejectingEditStorage storage = new RejectingEditStorage();
             TarArchiveOptions.Read readOptions = TarArchiveOptions.READ_DEFAULTS.withCommon(
-                    ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                    ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
             );
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archive, readOptions)) {
                 assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/unchanged.bin")));
@@ -141,7 +141,7 @@ public final class TarZstdSeekableFileSystemTest {
             RejectingEditStorage storage = new RejectingEditStorage();
             TarArchiveOptions.Read readOptions = TarArchiveOptions.READ_DEFAULTS
                     .withCompression(ZstdCodec.DEFAULT)
-                    .withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage));
+                    .withCommon(ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage));
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archive, readOptions)) {
                 assertEquals("tail", Files.readString(fileSystem.getPath("/tail.txt")));
                 try (SeekableByteChannel entry = Files.newByteChannel(
@@ -177,7 +177,7 @@ public final class TarZstdSeekableFileSystemTest {
         try {
             Files.write(archive, encodedBytes, StandardOpenOption.TRUNCATE_EXISTING);
             TarArchiveOptions.Read options = TarArchiveOptions.READ_DEFAULTS.withCommon(
-                    ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                    ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
             );
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archive, options)) {
                 assertEquals("ordinary", Files.readString(fileSystem.getPath("/value.txt")));

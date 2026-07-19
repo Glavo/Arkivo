@@ -5,6 +5,8 @@ package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
+import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -45,6 +47,17 @@ final class SeekableCompressedTarSource {
         CompressionCodec<?> configured = TarCompressionStreams.withReadLimits(seekable, readLimits);
         CompressionCodec.Seekable<?> configuredSeekable = (CompressionCodec.Seekable<?>) configured;
         @Nullable CompressionCodec.Seekable.Index index = configuredSeekable.readIndex(channel);
+        if (index != null) {
+            long maximum = readLimits.maximumDecodedArchiveSize();
+            if (maximum >= 0L && index.uncompressedSize() > maximum) {
+                throw new ArkivoReadLimitException(
+                        ArkivoReadLimitKind.DECODED_ARCHIVE_SIZE,
+                        maximum,
+                        index.uncompressedSize(),
+                        null
+                );
+            }
+        }
         return index != null ? new SeekableCompressedTarSource(source, index) : null;
     }
 

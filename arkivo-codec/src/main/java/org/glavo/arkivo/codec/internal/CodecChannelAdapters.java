@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.spi;
+package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
@@ -10,6 +10,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DictionaryRequiredException;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -419,6 +420,11 @@ public final class CodecChannelAdapters {
             frameActive = false;
         }
 
+        /// Records that an explicitly initialized frame must be finalized even if it remains empty.
+        protected final void markFrameStarted() {
+            frameActive = true;
+        }
+
         /// Drains nonterminal flush output from a flushable encoder engine.
         protected final void flushEngine(CompressionEncoder.Flushable flushableEncoder) throws IOException {
             while (true) {
@@ -547,6 +553,18 @@ public final class CodecChannelAdapters {
         ) {
             super(target, targetCloser, encoder);
             this.framedEncoder = encoder;
+        }
+
+        /// Explicitly starts another frame with frame-scoped options.
+        @Override
+        public void startFrame(EncodingOptions options) throws IOException {
+            Objects.requireNonNull(options, "options");
+            ensureOpen();
+            if (frameActive()) {
+                throw new IllegalStateException("A compression frame is already active");
+            }
+            framedEncoder.startFrame(options);
+            markFrameStarted();
         }
 
         /// Finishes the current frame and retains the channel for following source bytes.
@@ -687,6 +705,12 @@ public final class CodecChannelAdapters {
         ) {
             super(target, delegate);
             this.framedDelegate = delegate;
+        }
+
+        /// Starts another frame as one interruptible operation.
+        @Override
+        public void startFrame(EncodingOptions options) throws IOException {
+            execute(() -> framedDelegate.startFrame(options));
         }
 
         /// Finishes the current frame as one interruptible operation.

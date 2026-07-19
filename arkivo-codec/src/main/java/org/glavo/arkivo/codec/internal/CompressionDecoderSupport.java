@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.spi;
+package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionDecoder;

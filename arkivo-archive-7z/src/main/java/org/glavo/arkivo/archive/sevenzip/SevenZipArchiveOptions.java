@@ -28,12 +28,11 @@ public final class SevenZipArchiveOptions {
     public static final int DEFAULT_SOLID_FILE_COUNT = 1;
 
     /// The default read configuration.
-    public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT, null);
+    public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT);
 
     /// The default creation configuration.
     public static final Create CREATE_DEFAULTS = new Create(
             ArchiveCreateOptions.DEFAULT,
-            null,
             SevenZipCompression.copy(),
             SevenZipFilterChain.EMPTY,
             DEFAULT_SOLID_FILE_COUNT,
@@ -43,7 +42,6 @@ public final class SevenZipArchiveOptions {
     /// The default update configuration.
     public static final Update UPDATE_DEFAULTS = new Update(
             ArchiveUpdateOptions.DEFAULT,
-            null,
             SevenZipCompression.copy(),
             SevenZipFilterChain.EMPTY,
             DEFAULT_SOLID_FILE_COUNT,
@@ -57,9 +55,8 @@ public final class SevenZipArchiveOptions {
     /// Configures reading 7z archives.
     ///
     /// @param common           the format-independent read configuration
-    /// @param passwordProvider the password provider, or `null` when encrypted archives are not expected
     @NotNullByDefault
-    public record Read(ArchiveReadOptions common, @Nullable ArkivoPasswordProvider passwordProvider) {
+    public record Read(ArchiveReadOptions common) {
         /// Validates the read configuration.
         public Read {
             Objects.requireNonNull(common, "common");
@@ -70,7 +67,14 @@ public final class SevenZipArchiveOptions {
         /// @param value the replacement format-independent read configuration
         /// @return a copy with `common` replaced by `value`
         public Read withCommon(ArchiveReadOptions value) {
-            return new Read(value, passwordProvider);
+            return new Read(value);
+        }
+
+        /// Returns the password provider inherited from the common options.
+        ///
+        /// @return the provider, or `null` when password lookup is disabled
+        public @Nullable ArkivoPasswordProvider passwordProvider() {
+            return common.passwordProvider();
         }
 
         /// Returns a copy with the password provider.
@@ -78,14 +82,13 @@ public final class SevenZipArchiveOptions {
         /// @param value the replacement provider, or `null` to disable password requests
         /// @return a copy with `passwordProvider` replaced by `value`
         public Read withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
-            return new Read(common, value);
+            return new Read(common.withPasswordProvider(value));
         }
     }
 
     /// Configures creation of 7z archives.
     ///
     /// @param common           the format-independent creation configuration
-    /// @param passwordProvider the password provider, or `null` when encryption is disabled
     /// @param compression      the compression applied to new folders
     /// @param filters          the filters applied before compression
     /// @param solidFileCount   the positive maximum number of non-empty files in one folder
@@ -93,7 +96,6 @@ public final class SevenZipArchiveOptions {
     @NotNullByDefault
     public record Create(
             ArchiveCreateOptions common,
-            @Nullable ArkivoPasswordProvider passwordProvider,
             SevenZipCompression compression,
             SevenZipFilterChain filters,
             int solidFileCount,
@@ -114,7 +116,14 @@ public final class SevenZipArchiveOptions {
         /// @param value the replacement format-independent creation configuration
         /// @return a copy with `common` replaced by `value`
         public Create withCommon(ArchiveCreateOptions value) {
-            return new Create(value, passwordProvider, compression, filters, solidFileCount, encryptHeaders);
+            return new Create(value, compression, filters, solidFileCount, encryptHeaders);
+        }
+
+        /// Returns the password provider inherited from the common options.
+        ///
+        /// @return the provider, or `null` when password lookup is disabled
+        public @Nullable ArkivoPasswordProvider passwordProvider() {
+            return common.passwordProvider();
         }
 
         /// Returns a copy with the password provider.
@@ -122,7 +131,7 @@ public final class SevenZipArchiveOptions {
         /// @param value the replacement provider, or `null` to disable content encryption
         /// @return a copy with `passwordProvider` replaced by `value`
         public Create withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
-            return new Create(common, value, compression, filters, solidFileCount, encryptHeaders);
+            return new Create(common.withPasswordProvider(value), compression, filters, solidFileCount, encryptHeaders);
         }
 
         /// Returns a copy with the compression configuration.
@@ -130,7 +139,7 @@ public final class SevenZipArchiveOptions {
         /// @param value the compression for newly encoded folders
         /// @return a copy with `compression` replaced by `value`
         public Create withCompression(SevenZipCompression value) {
-            return new Create(common, passwordProvider, value, filters, solidFileCount, encryptHeaders);
+            return new Create(common, value, filters, solidFileCount, encryptHeaders);
         }
 
         /// Returns a copy with the filter chain.
@@ -138,7 +147,7 @@ public final class SevenZipArchiveOptions {
         /// @param value the preprocessing filters in execution order
         /// @return a copy with `filters` replaced by `value`
         public Create withFilters(SevenZipFilterChain value) {
-            return new Create(common, passwordProvider, compression, value, solidFileCount, encryptHeaders);
+            return new Create(common, compression, value, solidFileCount, encryptHeaders);
         }
 
         /// Returns a copy with the maximum number of non-empty files in one solid folder.
@@ -147,7 +156,7 @@ public final class SevenZipArchiveOptions {
         /// @return a copy with `solidFileCount` replaced by `value`
         /// @throws IllegalArgumentException if `value` is not positive
         public Create withSolidFileCount(int value) {
-            return new Create(common, passwordProvider, compression, filters, value, encryptHeaders);
+            return new Create(common, compression, filters, value, encryptHeaders);
         }
 
         /// Returns a copy that enables or disables header encryption.
@@ -155,15 +164,13 @@ public final class SevenZipArchiveOptions {
         /// @param value whether to encrypt archive header metadata
         /// @return a copy with `encryptHeaders` replaced by `value`
         public Create withEncryptHeaders(boolean value) {
-            return new Create(common, passwordProvider, compression, filters, solidFileCount, value);
+            return new Create(common, compression, filters, solidFileCount, value);
         }
     }
 
     /// Configures complete-rewrite updates of 7z archives.
     ///
     /// @param common           the format-independent update configuration
-    /// @param passwordProvider the provider used to decrypt source data and encrypt rewritten non-empty entries, or
-    /// `null` when encryption is not used
     /// @param compression      the compression applied to rewritten folders
     /// @param filters          the filters applied before compression
     /// @param solidFileCount   the positive maximum number of non-empty files in one folder
@@ -171,7 +178,6 @@ public final class SevenZipArchiveOptions {
     @NotNullByDefault
     public record Update(
             ArchiveUpdateOptions common,
-            @Nullable ArkivoPasswordProvider passwordProvider,
             SevenZipCompression compression,
             SevenZipFilterChain filters,
             int solidFileCount,
@@ -192,7 +198,14 @@ public final class SevenZipArchiveOptions {
         /// @param value the replacement format-independent update configuration
         /// @return a copy with `common` replaced by `value`
         public Update withCommon(ArchiveUpdateOptions value) {
-            return new Update(value, passwordProvider, compression, filters, solidFileCount, encryptHeaders);
+            return new Update(value, compression, filters, solidFileCount, encryptHeaders);
+        }
+
+        /// Returns the password provider inherited from the common options.
+        ///
+        /// @return the provider, or `null` when password lookup is disabled
+        public @Nullable ArkivoPasswordProvider passwordProvider() {
+            return common.passwordProvider();
         }
 
         /// Returns a copy with the password provider.
@@ -200,7 +213,7 @@ public final class SevenZipArchiveOptions {
         /// @param value the replacement provider, or `null` to disable decryption and output encryption
         /// @return a copy with `passwordProvider` replaced by `value`
         public Update withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
-            return new Update(common, value, compression, filters, solidFileCount, encryptHeaders);
+            return new Update(common.withPasswordProvider(value), compression, filters, solidFileCount, encryptHeaders);
         }
 
         /// Returns a copy with the compression configuration.
@@ -208,7 +221,7 @@ public final class SevenZipArchiveOptions {
         /// @param value the compression for rewritten folders
         /// @return a copy with `compression` replaced by `value`
         public Update withCompression(SevenZipCompression value) {
-            return new Update(common, passwordProvider, value, filters, solidFileCount, encryptHeaders);
+            return new Update(common, value, filters, solidFileCount, encryptHeaders);
         }
 
         /// Returns a copy with the filter chain.
@@ -216,7 +229,7 @@ public final class SevenZipArchiveOptions {
         /// @param value the preprocessing filters in execution order
         /// @return a copy with `filters` replaced by `value`
         public Update withFilters(SevenZipFilterChain value) {
-            return new Update(common, passwordProvider, compression, value, solidFileCount, encryptHeaders);
+            return new Update(common, compression, value, solidFileCount, encryptHeaders);
         }
 
         /// Returns a copy with the maximum number of non-empty files in one solid folder.
@@ -225,7 +238,7 @@ public final class SevenZipArchiveOptions {
         /// @return a copy with `solidFileCount` replaced by `value`
         /// @throws IllegalArgumentException if `value` is not positive
         public Update withSolidFileCount(int value) {
-            return new Update(common, passwordProvider, compression, filters, value, encryptHeaders);
+            return new Update(common, compression, filters, value, encryptHeaders);
         }
 
         /// Returns a copy that enables or disables header encryption.
@@ -233,7 +246,7 @@ public final class SevenZipArchiveOptions {
         /// @param value whether to encrypt rewritten archive header metadata
         /// @return a copy with `encryptHeaders` replaced by `value`
         public Update withEncryptHeaders(boolean value) {
-            return new Update(common, passwordProvider, compression, filters, solidFileCount, value);
+            return new Update(common, compression, filters, solidFileCount, value);
         }
     }
 }

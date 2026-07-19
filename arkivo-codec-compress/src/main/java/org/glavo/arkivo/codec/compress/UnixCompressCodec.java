@@ -10,7 +10,7 @@ import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.compress.internal.UnixCompressDecoder;
 import org.glavo.arkivo.codec.compress.internal.UnixCompressEncoder;
 import org.glavo.arkivo.codec.compress.internal.UnixCompressSupport;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;

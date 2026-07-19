@@ -60,8 +60,7 @@ final class ZipCompressionFormats {
             String formatName,
             OutputStream target
     ) throws IOException {
-        return CompressionFormats.newWritableByteChannel(
-                formatName,
+        return requireDefaultCodec(formatName).newWritableByteChannel(
                 StreamChannelAdapters.writableChannel(target),
                 EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED

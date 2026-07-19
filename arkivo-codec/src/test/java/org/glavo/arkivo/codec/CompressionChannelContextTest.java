@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec;
 
 
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -393,6 +393,12 @@ final class CompressionChannelContextTest {
     /// Copies source bytes directly while exposing flush and frame boundaries.
     @NotNullByDefault
     private static final class IdentityEncoder implements CompressionEncoder.FlushableFramed {
+        /// Starts another identity frame without allocating state.
+        @Override
+        public void startFrame(EncodingOptions options) {
+            Objects.requireNonNull(options, "options");
+        }
+
         /// Copies as many source bytes as the target can accept.
         @Override
         public CodecOutcome encode(ByteBuffer source, ByteBuffer target) {

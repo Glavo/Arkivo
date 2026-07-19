@@ -9,6 +9,7 @@ import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
@@ -42,9 +43,15 @@ final class SevenZipArkivoFileSystemConfigTest {
                 .maximumDecoderMemorySize(7L)
                 .build();
         ArkivoPasswordProvider passwordProvider = request -> new byte[]{1, 2, 3};
+        ArkivoEditStorageFactory storageFactory = () -> storage;
         SevenZipArchiveOptions.Read options = new SevenZipArchiveOptions.Read(
-                new ArchiveReadOptions(ArkivoFileSystemThreadSafety.STRICT, storage, limits),
-                passwordProvider
+                new ArchiveReadOptions(
+                        ArkivoFileSystemThreadSafety.STRICT,
+                        storageFactory,
+                        passwordProvider,
+                        null,
+                        limits
+                )
         );
 
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromReadOptions(options);
@@ -53,7 +60,7 @@ final class SevenZipArkivoFileSystemConfigTest {
         assertFalse(config.archiveUpdate());
         assertEquals(java.util.Set.of(StandardOpenOption.READ), config.openOptions());
         assertSame(passwordProvider, config.passwordProvider());
-        assertSame(storage, config.editStorage());
+        assertSame(storageFactory, config.editStorageFactory());
         assertSame(limits, config.readLimits());
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
         assertNull(config.commitTarget());
@@ -65,9 +72,9 @@ final class SevenZipArkivoFileSystemConfigTest {
         ArkivoEditStorage storage = ArkivoEditStorage.memory();
         SevenZipCompression compression = SevenZipCompression.lzma2(1 << 20);
         SevenZipFilterChain filters = SevenZipFilterChain.of(SevenZipFilter.delta(4));
+        ArkivoEditStorageFactory storageFactory = () -> storage;
         SevenZipArchiveOptions.Create options = new SevenZipArchiveOptions.Create(
-                new ArchiveCreateOptions(ArkivoFileSystemThreadSafety.STRICT, storage),
-                null,
+                new ArchiveCreateOptions(ArkivoFileSystemThreadSafety.STRICT, storageFactory, null, null),
                 compression,
                 filters,
                 4,
@@ -82,7 +89,7 @@ final class SevenZipArkivoFileSystemConfigTest {
         assertSame(filters, config.filters());
         assertEquals(4, config.solidFileCount());
         assertTrue(config.encryptHeaders());
-        assertSame(storage, config.editStorage());
+        assertSame(storageFactory, config.editStorageFactory());
         assertSame(ArchiveReadLimits.UNLIMITED, config.readLimits());
     }
 
@@ -102,7 +109,6 @@ final class SevenZipArkivoFileSystemConfigTest {
                         .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT)
                         .withCommitTarget(commitTarget)
                         .withLimits(limits),
-                null,
                 compression,
                 SevenZipFilterChain.EMPTY,
                 2,

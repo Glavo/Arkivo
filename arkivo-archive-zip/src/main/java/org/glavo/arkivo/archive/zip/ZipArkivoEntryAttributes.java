@@ -31,7 +31,10 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes, ArchiveEn
     /// @return a newly allocated array containing the encoded path bytes
     byte @Unmodifiable [] rawPath();
 
-    /// Returns the decoded ZIP entry path text with archive separators normalized to `/`.
+    /// Returns the decoded ZIP entry path text with separator characters canonicalized to `/`.
+    ///
+    /// Repeated separators and dot components are retained; this value may differ from the normalized file-system path
+    /// used to address the entry.
     String path();
 
     /// Returns the decoded ZIP entry comment text, or `null` when no comment is present.

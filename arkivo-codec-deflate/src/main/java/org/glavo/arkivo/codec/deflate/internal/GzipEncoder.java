@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -55,6 +56,17 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
                 Objects.requireNonNull(strategy, "strategy")
         );
         this.pendingHeader = createHeader();
+    }
+
+    /// Explicitly activates another gzip member after a completed member boundary.
+    @Override
+    public void startFrame(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
+        requireOpen();
+        if (state != State.BETWEEN_FRAMES) {
+            throw new IllegalStateException("Cannot start a gzip member while encoder state is " + state);
+        }
+        state = State.ACTIVE;
     }
 
     /// Encodes source bytes until the source or target is exhausted.

@@ -361,6 +361,16 @@ public interface ArkivoFormat {
                 ArchiveReadOptions options
         ) throws IOException;
 
+        /// Describes a file-system format whose path and repeatable-source factories recognize one outer compression
+        /// layer from Arkivo's installed compression catalog.
+        ///
+        /// Generic format detection may use this capability to delegate the original seekable source after probing its
+        /// decoded prefix. This preserves format-specific indexed access instead of materializing the decoded archive.
+        /// Directly supplied one-shot channels are excluded because probing cannot reopen them.
+        @NotNullByDefault
+        interface OuterCompressed extends FileSystem {
+        }
+
         /// Describes a format that supports path-backed creation and complete-rewrite updates.
         ///
         /// This capability is independent of multi-volume support. Read-only formats implement only the enclosing

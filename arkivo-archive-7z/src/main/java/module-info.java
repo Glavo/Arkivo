@@ -9,6 +9,7 @@
 /// transactional multi-volume publication are described by the exported `sevenzip` package.
 module org.glavo.arkivo.archive.sevenzip {
     requires transitive org.glavo.arkivo.archive;
+    requires org.glavo.arkivo.archive.codec;
     requires org.glavo.arkivo.base;
     requires org.glavo.arkivo.codec;
     requires org.glavo.arkivo.codec.lzma;

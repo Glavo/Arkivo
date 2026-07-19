@@ -17,6 +17,10 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// @param maximumMetadataSize          the maximum cumulative metadata size, or [#UNLIMITED_SIZE]
 /// @param maximumCompressionWindowSize the maximum compression history-window size, or [#UNLIMITED_SIZE]
 /// @param maximumDecoderMemorySize     the maximum decoder working-memory size, or [#UNLIMITED_SIZE]
+/// @param maximumDecodedArchiveSize    the maximum decoded byte size of an outer-compressed archive, or
+///                                     [#UNLIMITED_SIZE]
+/// @param maximumOuterCompressionLayers the maximum number of decoded outer compression layers, or
+///                                      [#UNLIMITED_SIZE]
 @NotNullByDefault
 public record ArchiveReadLimits(
         long maximumEntryCount,
@@ -24,10 +28,15 @@ public record ArchiveReadLimits(
         long maximumTotalEntrySize,
         long maximumMetadataSize,
         long maximumCompressionWindowSize,
-        long maximumDecoderMemorySize
+        long maximumDecoderMemorySize,
+        long maximumDecodedArchiveSize,
+        long maximumOuterCompressionLayers
 ) {
     /// The sentinel used for an unenforced non-negative limit.
     public static final long UNLIMITED_SIZE = -1L;
+
+    /// The default maximum number of nested outer compression layers.
+    public static final long DEFAULT_MAXIMUM_OUTER_COMPRESSION_LAYERS = 4L;
 
     /// An unrestricted limit set for trusted inputs and compatibility-oriented callers.
     public static final ArchiveReadLimits UNLIMITED = new ArchiveReadLimits(
@@ -36,7 +45,24 @@ public record ArchiveReadLimits(
             UNLIMITED_SIZE,
             UNLIMITED_SIZE,
             UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
             UNLIMITED_SIZE
+    );
+
+    /// The default limits for high-level archive operations.
+    ///
+    /// Entry sizes and decoder allocation remain unrestricted unless callers configure them, while nested outer
+    /// compression is bounded to prevent an unbounded transformation chain.
+    public static final ArchiveReadLimits DEFAULT = new ArchiveReadLimits(
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            DEFAULT_MAXIMUM_OUTER_COMPRESSION_LAYERS
     );
 
     /// Validates every configured limit.
@@ -47,6 +73,8 @@ public record ArchiveReadLimits(
         requireLimit(maximumMetadataSize, "maximumMetadataSize");
         requireLimit(maximumCompressionWindowSize, "maximumCompressionWindowSize");
         requireLimit(maximumDecoderMemorySize, "maximumDecoderMemorySize");
+        requireLimit(maximumDecodedArchiveSize, "maximumDecodedArchiveSize");
+        requireLimit(maximumOuterCompressionLayers, "maximumOuterCompressionLayers");
     }
 
     /// Returns a builder initialized with unrestricted limits.
@@ -99,6 +127,12 @@ public record ArchiveReadLimits(
 
         /// The maximum decoder working-memory size.
         private long maximumDecoderMemorySize = UNLIMITED_SIZE;
+
+        /// The maximum decoded byte size of an outer-compressed archive.
+        private long maximumDecodedArchiveSize = UNLIMITED_SIZE;
+
+        /// The maximum number of decoded outer compression layers.
+        private long maximumOuterCompressionLayers = UNLIMITED_SIZE;
 
         /// Creates an unrestricted builder.
         private Builder() {
@@ -170,6 +204,28 @@ public record ArchiveReadLimits(
             return this;
         }
 
+        /// Sets the maximum decoded byte size of an outer-compressed archive.
+        ///
+        /// @param value the non-negative byte limit, or [#UNLIMITED_SIZE]
+        /// @return this builder
+        /// @throws IllegalArgumentException if `value` is less than [#UNLIMITED_SIZE]
+        public Builder maximumDecodedArchiveSize(long value) {
+            requireLimit(value, "maximumDecodedArchiveSize");
+            maximumDecodedArchiveSize = value;
+            return this;
+        }
+
+        /// Sets the maximum number of decoded outer compression layers.
+        ///
+        /// @param value the non-negative layer limit, or [#UNLIMITED_SIZE]
+        /// @return this builder
+        /// @throws IllegalArgumentException if `value` is less than [#UNLIMITED_SIZE]
+        public Builder maximumOuterCompressionLayers(long value) {
+            requireLimit(value, "maximumOuterCompressionLayers");
+            maximumOuterCompressionLayers = value;
+            return this;
+        }
+
         /// Returns the immutable configured limits.
         ///
         /// @return a new immutable limit set containing the current builder values
@@ -180,7 +236,9 @@ public record ArchiveReadLimits(
                     maximumTotalEntrySize,
                     maximumMetadataSize,
                     maximumCompressionWindowSize,
-                    maximumDecoderMemorySize
+                    maximumDecoderMemorySize,
+                    maximumDecodedArchiveSize,
+                    maximumOuterCompressionLayers
             );
         }
     }

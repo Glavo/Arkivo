@@ -10,7 +10,7 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Decoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Encoder;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.util.Objects;

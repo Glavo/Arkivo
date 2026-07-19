@@ -25,7 +25,7 @@ import java.util.Objects;
 /// close failure can be retried by calling [#finish()] or [#close()] again.
 ///
 /// Contexts created by [CompressionCodec]'s default channel factories and
-/// [org.glavo.arkivo.codec.spi.CodecChannelAdapters] implement [InterruptibleChannel] exactly when their backing target
+/// [org.glavo.arkivo.codec.internal.CodecChannelAdapters] implement [InterruptibleChannel] exactly when their backing target
 /// does. For such a context, interrupting a thread during an encoding operation closes the context and target and reports
 /// [ClosedByInterruptException]. Calling `close()` from another thread during an operation similarly closes the target
 /// and makes that operation report [AsynchronousCloseException]. These terminal cancellations release encoder state
@@ -117,6 +117,25 @@ public interface CompressingWritableByteChannel extends WritableByteChannel {
     /// Writes independently terminated frames while retaining the channel between frames.
     @NotNullByDefault
     interface Framed extends CompressingWritableByteChannel {
+        /// Explicitly starts a frame after a completed frame boundary.
+        ///
+        /// The frame becomes active even if no source is subsequently written. A later `finishFrame` or terminal
+        /// `finish` therefore emits an empty frame. Writing directly after a boundary instead starts a frame with
+        /// [EncodingOptions#DEFAULT].
+        ///
+        /// @param options the parameters for the new frame
+        /// @throws IOException if frame resources cannot be initialized or written
+        /// @throws IllegalStateException if a frame is already active or the channel cannot start another frame
+        void startFrame(EncodingOptions options) throws IOException;
+
+        /// Explicitly starts a frame with default frame-scoped options.
+        ///
+        /// @throws IOException if frame resources cannot be initialized or written
+        /// @throws IllegalStateException if a frame cannot be started in the current state
+        default void startFrame() throws IOException {
+            startFrame(EncodingOptions.DEFAULT);
+        }
+
         /// Processes all source bytes and finishes the active frame.
         ///
         /// The returned counts cover only this call. A successful call leaves the channel open for another frame.

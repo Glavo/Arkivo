@@ -10,7 +10,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.ClosedFileSystemException;
@@ -26,12 +28,14 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -161,6 +165,61 @@ public final class ArkivoFileSystemConcurrencyTest {
         assertThrows(IOException.class, input::read);
         assertThrows(IOException.class, () -> output.write(1));
         assertThrows(ClosedFileSystemException.class, iterator::hasNext);
+    }
+
+    /// Verifies that strict close terminates a blocking interruptible read before waiting for its operation lock.
+    @Test
+    public void strictCloseReleasesBlockingInterruptibleRead() throws Exception {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch readEntered = new CountDownLatch(1);
+        CountDownLatch closeReleasedRead = new CountDownLatch(1);
+        BlockingInterruptibleReadableByteChannel delegate =
+                new BlockingInterruptibleReadableByteChannel(readEntered, closeReleasedRead);
+        ReadableByteChannel channel = fileSystem.managedReadableChannel(delegate);
+
+        try {
+            Future<Integer> read = executor.submit(() -> channel.read(ByteBuffer.allocate(1)));
+            assertTrue(readEntered.await(2L, TimeUnit.SECONDS));
+            Future<Void> close = executor.submit(() -> {
+                fileSystem.close();
+                return null;
+            });
+
+            close.get(2L, TimeUnit.SECONDS);
+            ExecutionException readFailure = assertThrows(
+                    ExecutionException.class,
+                    () -> read.get(2L, TimeUnit.SECONDS)
+            );
+            assertInstanceOf(AsynchronousCloseException.class, readFailure.getCause());
+            assertFalse(delegate.isOpen());
+            assertFalse(channel.isOpen());
+        } finally {
+            closeReleasedRead.countDown();
+            channel.close();
+            fileSystem.close();
+            executor.shutdownNow();
+        }
+    }
+
+    /// Verifies that lifecycle wrappers preserve interruptible-channel type information.
+    @Test
+    public void managedChannelsPreserveInterruptibleMarker() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
+        CountDownLatch ignoredEntered = new CountDownLatch(1);
+        CountDownLatch ignoredRelease = new CountDownLatch(1);
+        BlockingInterruptibleReadableByteChannel readable =
+                new BlockingInterruptibleReadableByteChannel(ignoredEntered, ignoredRelease);
+        InterruptibleTrackingSeekableByteChannel seekable = new InterruptibleTrackingSeekableByteChannel();
+
+        try (ReadableByteChannel managedReadable = fileSystem.managedReadableChannel(readable);
+             SeekableByteChannel managedSeekable = fileSystem.managedReadChannel(seekable)) {
+            assertInstanceOf(InterruptibleChannel.class, managedReadable);
+            assertInstanceOf(InterruptibleChannel.class, managedSeekable);
+        } finally {
+            ignoredRelease.countDown();
+            fileSystem.close();
+        }
     }
 
     /// Verifies that the none strategy returns raw resources and adds no close behavior.
@@ -371,6 +430,58 @@ public final class ArkivoFileSystemConcurrencyTest {
         }
     }
 
+    /// Provides an interruptible channel whose active read is released only by close.
+    @NotNullByDefault
+    private static final class BlockingInterruptibleReadableByteChannel
+            implements ReadableByteChannel, InterruptibleChannel {
+        /// Signals when a read operation begins.
+        private final CountDownLatch entered;
+
+        /// Releases the active read after close.
+        private final CountDownLatch release;
+
+        /// Whether this channel remains open.
+        private volatile boolean open = true;
+
+        /// Creates a blocking interruptible test channel.
+        private BlockingInterruptibleReadableByteChannel(CountDownLatch entered, CountDownLatch release) {
+            this.entered = entered;
+            this.release = release;
+        }
+
+        /// Waits for close and reports asynchronous closure.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while reading", exception);
+            }
+            if (!open) {
+                throw new AsynchronousCloseException();
+            }
+            return -1;
+        }
+
+        /// Returns whether this channel remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel and releases its active read.
+        @Override
+        public void close() {
+            open = false;
+            release.countDown();
+        }
+    }
+
     /// Provides a readable channel that records close state.
     @NotNullByDefault
     private static final class TrackingReadableByteChannel implements ReadableByteChannel {
@@ -406,7 +517,7 @@ public final class ArkivoFileSystemConcurrencyTest {
 
     /// Provides a seekable channel that records close state.
     @NotNullByDefault
-    private static final class TrackingSeekableByteChannel implements SeekableByteChannel {
+    private static class TrackingSeekableByteChannel implements SeekableByteChannel {
         /// Whether this channel remains open.
         private boolean open = true;
 
@@ -476,6 +587,15 @@ public final class ArkivoFileSystemConcurrencyTest {
             if (!open) {
                 throw new ClosedChannelException();
             }
+        }
+    }
+
+    /// Provides a seekable channel carrying the interruptible marker.
+    @NotNullByDefault
+    private static final class InterruptibleTrackingSeekableByteChannel
+            extends TrackingSeekableByteChannel implements InterruptibleChannel {
+        /// Creates an open interruptible tracking channel.
+        private InterruptibleTrackingSeekableByteChannel() {
         }
     }
 

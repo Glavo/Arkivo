@@ -9,7 +9,7 @@ import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.lzma.internal.LZMADecoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMAEncoder;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;

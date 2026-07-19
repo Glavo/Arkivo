@@ -23,6 +23,9 @@ public final class LzipEncoder implements CompressionEncoder.Framed {
     /// The exactly representable dictionary size written to every member header.
     private final int dictionarySize;
 
+    /// Frame-scoped options restored for the initial member by reset.
+    private final EncodingOptions initialOptions;
+
     /// The CRC-32 of uncompressed bytes in the active member.
     private final CRC32 checksum = new CRC32();
 
@@ -47,11 +50,24 @@ public final class LzipEncoder implements CompressionEncoder.Framed {
     /// Creates an encoder that writes the requested lzip dictionary size.
     ///
     /// @param dictionarySize the exactly representable dictionary size to write, in bytes
+    /// @param options        frame-scoped options for the initial member
     /// @throws IllegalArgumentException if {@code dictionarySize} has no exact lzip header representation
-    public LzipEncoder(int dictionarySize) {
+    public LzipEncoder(int dictionarySize, EncodingOptions options) {
         LzipSupport.encodeDictionarySize(dictionarySize);
         this.dictionarySize = dictionarySize;
-        initializeMember();
+        this.initialOptions = Objects.requireNonNull(options, "options");
+        initializeMember(options);
+    }
+
+    /// Explicitly starts another lzip member with independent source metadata.
+    @Override
+    public void startFrame(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
+        requireOpen();
+        if (state != State.BETWEEN_MEMBERS) {
+            throw new IllegalStateException("Cannot start a lzip member while encoder state is " + state);
+        }
+        initializeMember(options);
     }
 
     /// Consumes uncompressed bytes and produces the active lzip member.
@@ -64,7 +80,7 @@ public final class LzipEncoder implements CompressionEncoder.Framed {
             if (!source.hasRemaining()) {
                 return CodecOutcome.NEEDS_INPUT;
             }
-            initializeMember();
+            initializeMember(EncodingOptions.DEFAULT);
         }
         requireState(State.ACTIVE, "encode");
 
@@ -101,7 +117,7 @@ public final class LzipEncoder implements CompressionEncoder.Framed {
     public void reset() {
         requireOpen();
         closePayload();
-        initializeMember();
+        initializeMember(initialOptions);
     }
 
     /// Releases the nested LZMA encoder without implicitly finishing the active member.
@@ -177,7 +193,7 @@ public final class LzipEncoder implements CompressionEncoder.Framed {
     }
 
     /// Creates all mutable state for one new lzip member.
-    private void initializeMember() {
+    private void initializeMember(EncodingOptions options) {
         checksum.reset();
         dataSize = 0L;
         memberSize = LzipSupport.HEADER_SIZE;
@@ -190,7 +206,7 @@ public final class LzipEncoder implements CompressionEncoder.Framed {
         payloadEncoder = new RawLZMACodec()
                 .withDictionarySize(dictionarySize)
                 .withEndMarker(true)
-                .newEncoder(EncodingOptions.DEFAULT);
+                .newEncoder(options);
         state = State.ACTIVE;
     }
 

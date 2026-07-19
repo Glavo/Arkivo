@@ -70,8 +70,8 @@ public final class ArchiveOptions {
         Builder builder = builder()
                 .set(ArchiveEnvironmentOptions.THREAD_SAFETY, options.threadSafety())
                 .set(ArchiveEnvironmentOptions.READ_LIMITS, options.limits());
-        if (options.editStorage() != null) {
-            builder.set(ArchiveEnvironmentOptions.EDIT_STORAGE, options.editStorage());
+        if (options.editStorageFactory() != null) {
+            builder.set(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY, options.editStorageFactory());
         }
         return builder.build();
     }
@@ -83,8 +83,8 @@ public final class ArchiveOptions {
     public static ArchiveOptions fromCreateOptions(ArchiveCreateOptions options) {
         Objects.requireNonNull(options, "options");
         Builder builder = builder().set(ArchiveEnvironmentOptions.THREAD_SAFETY, options.threadSafety());
-        if (options.editStorage() != null) {
-            builder.set(ArchiveEnvironmentOptions.EDIT_STORAGE, options.editStorage());
+        if (options.editStorageFactory() != null) {
+            builder.set(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY, options.editStorageFactory());
         }
         return builder.build();
     }
@@ -98,8 +98,8 @@ public final class ArchiveOptions {
         Builder builder = builder()
                 .set(ArchiveEnvironmentOptions.THREAD_SAFETY, options.threadSafety())
                 .set(ArchiveEnvironmentOptions.READ_LIMITS, options.limits());
-        if (options.editStorage() != null) {
-            builder.set(ArchiveEnvironmentOptions.EDIT_STORAGE, options.editStorage());
+        if (options.editStorageFactory() != null) {
+            builder.set(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY, options.editStorageFactory());
         }
         if (options.commitTarget() != null) {
             builder.set(ArchiveEnvironmentOptions.COMMIT_TARGET, options.commitTarget());

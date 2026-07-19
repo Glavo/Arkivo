@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -31,10 +32,7 @@ public final class CPIOArchiveOptions {
     public static final Charset DEFAULT_METADATA_CHARSET = StandardCharsets.UTF_8;
 
     /// The default CPIO read configuration.
-    public static final Read READ_DEFAULTS = new Read(
-            ArchiveReadOptions.DEFAULT,
-            DEFAULT_METADATA_CHARSET_DETECTOR
-    );
+    public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT);
 
     /// The default CPIO creation configuration.
     public static final Create CREATE_DEFAULTS = new Create(
@@ -52,16 +50,11 @@ public final class CPIOArchiveOptions {
     /// Configures reading CPIO archives.
     ///
     /// @param common the format-independent read configuration
-    /// @param metadataCharsetDetector the detector used to decode entry names
     @NotNullByDefault
-    public record Read(
-            ArchiveReadOptions common,
-            ArchiveMetadataCharsetDetector metadataCharsetDetector
-    ) {
+    public record Read(ArchiveReadOptions common) {
         /// Validates the read configuration.
         public Read {
             Objects.requireNonNull(common, "common");
-            Objects.requireNonNull(metadataCharsetDetector, "metadataCharsetDetector");
         }
 
         /// Returns a copy with common read settings.
@@ -69,7 +62,15 @@ public final class CPIOArchiveOptions {
         /// @param value the replacement format-independent read configuration
         /// @return an immutable read configuration containing `value`
         public Read withCommon(ArchiveReadOptions value) {
-            return new Read(value, metadataCharsetDetector);
+            return new Read(value);
+        }
+
+        /// Returns the configured metadata charset detector or the CPIO default.
+        ///
+        /// @return the effective detector used to decode entry names
+        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
+            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
+            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
         }
 
         /// Returns a copy with the metadata charset detector.
@@ -77,7 +78,7 @@ public final class CPIOArchiveOptions {
         /// @param value the replacement detector for entry names
         /// @return an immutable read configuration containing `value`
         public Read withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Read(common, value);
+            return new Read(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")));
         }
     }
 

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -41,15 +42,25 @@ public final class StoredContentSupport {
 
     /// Returns configured edit storage or temporary-file storage in the default system temporary directory.
     ///
-    /// @param options the options containing an optional edit-storage strategy
-    /// @return the configured storage, or a new default temporary-file storage
-    @SuppressWarnings("resource")
-    public static ArkivoEditStorage selectStorage(ArchiveOptions options) {
+    /// @param options the options containing an optional edit-storage factory
+    /// @return new operation-owned configured storage, or new default temporary-file storage
+    /// @throws IOException if configured storage cannot be opened
+    public static ArkivoEditStorage selectStorage(ArchiveOptions options) throws IOException {
         Objects.requireNonNull(options, "options");
-        @Nullable ArkivoEditStorage configured = options.get(ArchiveEnvironmentOptions.EDIT_STORAGE);
+        @Nullable ArkivoEditStorageFactory configured =
+                options.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY);
         return configured != null
-                ? configured
+                ? configured.open()
                 : ArkivoEditStorage.temporaryFiles(defaultStorageDirectory());
+    }
+
+    /// Opens configured edit storage or temporary-file storage in the default system temporary directory.
+    ///
+    /// @param factory the configured factory, or `null` to select default temporary-file storage
+    /// @return new operation-owned storage
+    /// @throws IOException if configured storage cannot be opened
+    public static ArkivoEditStorage openStorage(@Nullable ArkivoEditStorageFactory factory) throws IOException {
+        return factory != null ? factory.open() : ArkivoEditStorage.temporaryFiles(defaultStorageDirectory());
     }
 
     /// Closes content and storage allocated during a failed open and suppresses every cleanup failure.

@@ -16,9 +16,8 @@ import java.util.Objects;
 
 /// Defines immutable TAR configuration for each archive operation lifecycle.
 ///
-/// A `null` read compression requests detection by seekable file systems and streaming-reader factories. A `null`
-/// create compression writes an uncompressed TAR stream; a `null` update compression preserves the source codec
-/// resolved when the archive was opened. The metadata detector handles legacy header text and PAX
+/// Compression policy is explicit: reads detect by default, creation writes an uncompressed TAR by default, and
+/// updates preserve the detected source wrapper by default. The metadata detector handles legacy header text and PAX
 /// binary values and falls back to UTF-8 when it returns `null`.
 /// A seekable-capable compression configuration writes its default indexed representation, allowing a later TAR file
 /// system to read contiguous entry bodies without expanding the complete compressed stream.
@@ -29,20 +28,19 @@ public final class TarArchiveOptions {
             ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
 
     /// The default read configuration.
-    public static final Read READ_DEFAULTS = new Read(
-            ArchiveReadOptions.DEFAULT,
-            null,
-            DEFAULT_METADATA_CHARSET_DETECTOR
-    );
+    public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT, TarCompression.DETECT);
 
     /// The default creation configuration.
-    public static final Create CREATE_DEFAULTS = new Create(ArchiveCreateOptions.DEFAULT, null);
+    public static final Create CREATE_DEFAULTS = new Create(
+            ArchiveCreateOptions.DEFAULT,
+            TarCompression.UNCOMPRESSED
+    );
 
     /// The default update configuration.
     public static final Update UPDATE_DEFAULTS = new Update(
             ArchiveUpdateOptions.DEFAULT,
-            null,
-            DEFAULT_METADATA_CHARSET_DETECTOR
+            TarCompression.DETECT,
+            TarCompression.PRESERVE
     );
 
     /// Creates no instances.
@@ -52,18 +50,16 @@ public final class TarArchiveOptions {
     /// Configures reading TAR archives.
     ///
     /// @param common                  the format-independent read configuration
-    /// @param compression             the explicitly selected outer compression, or `null` for automatic detection
-    /// @param metadataCharsetDetector the detector for legacy header text
+    /// @param compression             the explicit read-time outer-compression policy
     @NotNullByDefault
     public record Read(
             ArchiveReadOptions common,
-            @Nullable CompressionCodec<?> compression,
-            ArchiveMetadataCharsetDetector metadataCharsetDetector
+            TarCompression.Read compression
     ) {
         /// Validates the read configuration.
         public Read {
             Objects.requireNonNull(common, "common");
-            Objects.requireNonNull(metadataCharsetDetector, "metadataCharsetDetector");
+            Objects.requireNonNull(compression, "compression");
         }
 
         /// Returns a copy with common read settings.
@@ -71,15 +67,37 @@ public final class TarArchiveOptions {
         /// @param value the replacement format-independent read configuration
         /// @return a new read configuration retaining this compression and metadata detector
         public Read withCommon(ArchiveReadOptions value) {
-            return new Read(value, compression, metadataCharsetDetector);
+            return new Read(value, compression);
         }
 
-        /// Returns a copy with the outer compression, or automatic detection when `null`.
+        /// Returns a copy with an explicitly configured outer compression codec.
         ///
-        /// @param value the explicitly selected outer compression, or `null` to detect it from the seekable source
+        /// @param value the immutable outer compression codec
         /// @return a new read configuration retaining this common configuration and metadata detector
-        public Read withCompression(@Nullable CompressionCodec<?> value) {
-            return new Read(common, value, metadataCharsetDetector);
+        public Read withCompression(CompressionCodec<?> value) {
+            return new Read(common, TarCompression.using(value));
+        }
+
+        /// Returns a copy that detects a signed outer compression format.
+        ///
+        /// @return a new read configuration using automatic detection
+        public Read withCompressionDetection() {
+            return new Read(common, TarCompression.DETECT);
+        }
+
+        /// Returns a copy that treats the source as a plain TAR stream.
+        ///
+        /// @return a new read configuration that performs no outer decompression
+        public Read withoutCompression() {
+            return new Read(common, TarCompression.UNCOMPRESSED);
+        }
+
+        /// Returns the configured metadata charset detector or the TAR default.
+        ///
+        /// @return the effective detector for legacy header text
+        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
+            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
+            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
         }
 
         /// Returns a copy with the metadata charset detector.
@@ -87,19 +105,20 @@ public final class TarArchiveOptions {
         /// @param value the detector used for ambiguous legacy TAR metadata bytes
         /// @return a new read configuration retaining this common configuration and compression selection
         public Read withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Read(common, compression, value);
+            return new Read(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")), compression);
         }
     }
 
     /// Configures creation of TAR archives.
     ///
     /// @param common      the format-independent creation configuration
-    /// @param compression the outer compression, or `null` for an uncompressed TAR stream
+    /// @param compression the explicit creation-time outer-compression policy
     @NotNullByDefault
-    public record Create(ArchiveCreateOptions common, @Nullable CompressionCodec<?> compression) {
+    public record Create(ArchiveCreateOptions common, TarCompression.Create compression) {
         /// Validates the creation configuration.
         public Create {
             Objects.requireNonNull(common, "common");
+            Objects.requireNonNull(compression, "compression");
         }
 
         /// Returns a copy with common creation settings.
@@ -110,30 +129,38 @@ public final class TarArchiveOptions {
             return new Create(value, compression);
         }
 
-        /// Returns a copy with the outer compression, or no compression when `null`.
+        /// Returns a copy with an explicitly configured outer compression codec.
         ///
-        /// @param value the outer compression codec, or `null` for an uncompressed TAR stream
+        /// @param value the immutable outer compression codec
         /// @return a new creation configuration retaining this common configuration
-        public Create withCompression(@Nullable CompressionCodec<?> value) {
-            return new Create(common, value);
+        public Create withCompression(CompressionCodec<?> value) {
+            return new Create(common, TarCompression.using(value));
+        }
+
+        /// Returns a copy that writes a plain TAR stream.
+        ///
+        /// @return a new creation configuration that performs no outer compression
+        public Create withoutCompression() {
+            return new Create(common, TarCompression.UNCOMPRESSED);
         }
     }
 
     /// Configures complete-rewrite updates of TAR archives.
     ///
-    /// @param common                  the format-independent update configuration
-    /// @param compression             the outer compression, or `null` to preserve the detected source compression
-    /// @param metadataCharsetDetector the detector for legacy source header text
+    /// @param common            the format-independent update configuration
+    /// @param sourceCompression the policy used to decode the existing archive
+    /// @param targetCompression the policy used to encode the replacement archive
     @NotNullByDefault
     public record Update(
             ArchiveUpdateOptions common,
-            @Nullable CompressionCodec<?> compression,
-            ArchiveMetadataCharsetDetector metadataCharsetDetector
+            TarCompression.Read sourceCompression,
+            TarCompression.Update targetCompression
     ) {
         /// Validates the update configuration.
         public Update {
             Objects.requireNonNull(common, "common");
-            Objects.requireNonNull(metadataCharsetDetector, "metadataCharsetDetector");
+            Objects.requireNonNull(sourceCompression, "sourceCompression");
+            Objects.requireNonNull(targetCompression, "targetCompression");
         }
 
         /// Returns a copy with common update settings.
@@ -141,15 +168,59 @@ public final class TarArchiveOptions {
         /// @param value the replacement format-independent complete-rewrite configuration
         /// @return a new update configuration retaining this compression choice and metadata detector
         public Update withCommon(ArchiveUpdateOptions value) {
-            return new Update(value, compression, metadataCharsetDetector);
+            return new Update(value, sourceCompression, targetCompression);
         }
 
-        /// Returns a copy with the outer compression, or source-compression preservation when `null`.
+        /// Returns a copy with an explicitly configured source compression codec.
         ///
-        /// @param value the replacement outer compression, or `null` to preserve the detected source codec
-        /// @return a new update configuration retaining this common configuration and metadata detector
-        public Update withCompression(@Nullable CompressionCodec<?> value) {
-            return new Update(common, value, metadataCharsetDetector);
+        /// @param value the immutable codec used to decode the existing archive
+        /// @return a new update configuration retaining the target compression
+        public Update withSourceCompression(CompressionCodec<?> value) {
+            return new Update(common, TarCompression.using(value), targetCompression);
+        }
+
+        /// Returns a copy that detects the source compression.
+        ///
+        /// @return a new update configuration using automatic source detection
+        public Update withSourceCompressionDetection() {
+            return new Update(common, TarCompression.DETECT, targetCompression);
+        }
+
+        /// Returns a copy that treats the source as a plain TAR stream.
+        ///
+        /// @return a new update configuration that performs no source decompression
+        public Update withUncompressedSource() {
+            return new Update(common, TarCompression.UNCOMPRESSED, targetCompression);
+        }
+
+        /// Returns a copy with an explicitly configured target compression codec.
+        ///
+        /// @param value the immutable codec used to encode the replacement archive
+        /// @return a new update configuration retaining the source decoding policy
+        public Update withTargetCompression(CompressionCodec<?> value) {
+            return new Update(common, sourceCompression, TarCompression.using(value));
+        }
+
+        /// Returns a copy that preserves the resolved source compression on output.
+        ///
+        /// @return a new update configuration preserving the source wrapper
+        public Update withPreservedSourceCompression() {
+            return new Update(common, sourceCompression, TarCompression.PRESERVE);
+        }
+
+        /// Returns a copy that publishes a plain TAR stream.
+        ///
+        /// @return a new update configuration that performs no target compression
+        public Update withUncompressedTarget() {
+            return new Update(common, sourceCompression, TarCompression.UNCOMPRESSED);
+        }
+
+        /// Returns the configured metadata charset detector or the TAR default.
+        ///
+        /// @return the effective detector for legacy source header text
+        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
+            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
+            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
         }
 
         /// Returns a copy with the metadata charset detector.
@@ -157,7 +228,11 @@ public final class TarArchiveOptions {
         /// @param value the detector used for ambiguous legacy source metadata bytes
         /// @return a new update configuration retaining this common configuration and compression choice
         public Update withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Update(common, compression, value);
+            return new Update(
+                    common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")),
+                    sourceCompression,
+                    targetCompression
+            );
         }
     }
 }

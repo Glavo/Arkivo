@@ -461,7 +461,7 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
         requireSplitSize(splitSize);
-        if (options.common().editStorage() != null) {
+        if (options.common().editStorageFactory() != null) {
             throw new IllegalArgumentException("ZIP volume target creation does not use edit storage");
         }
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromCreateOptions(options);

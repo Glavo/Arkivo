@@ -33,6 +33,7 @@ import java.util.List;
 @NotNullByDefault
 public final class TarArkivoFormat implements
         FileSystem.Writable,
+        FileSystem.OuterCompressed,
         StreamingReader,
         StreamingWriter {
     /// The size of one TAR header or padding block.
@@ -146,17 +147,23 @@ public final class TarArkivoFormat implements
     /// Creates a new path-backed TAR archive file system.
     @Override
     public TarArkivoFileSystem create(Path path, ArchiveCreateOptions options) throws IOException {
-        return TarArkivoFileSystem.create(path, new TarArchiveOptions.Create(options, null));
+        return TarArkivoFileSystem.create(
+                path,
+                new TarArchiveOptions.Create(options, TarCompression.UNCOMPRESSED)
+        );
     }
 
     /// Opens a complete-rewrite update of a path-backed TAR archive.
     @Override
     public TarArkivoFileSystem update(Path path, ArchiveUpdateOptions options) throws IOException {
-        return TarArkivoFileSystem.update(path, new TarArchiveOptions.Update(
-                options,
-                null,
-                TarArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR
-        ));
+        return TarArkivoFileSystem.update(
+                path,
+                new TarArchiveOptions.Update(
+                        options,
+                        TarCompression.DETECT,
+                        TarCompression.PRESERVE
+                )
+        );
     }
 
     /// Opens a read-only TAR archive file system directly from one owned seekable channel.
@@ -228,7 +235,10 @@ public final class TarArkivoFormat implements
             OutputStream output,
             ArchiveCreateOptions options
     ) throws IOException {
-        return TarArkivoStreamingWriter.open(output, new TarArchiveOptions.Create(options, null));
+        return TarArkivoStreamingWriter.open(
+                output,
+                new TarArchiveOptions.Create(options, TarCompression.UNCOMPRESSED)
+        );
     }
 
     /// Opens a streaming TAR writer over a writable channel.
@@ -243,7 +253,10 @@ public final class TarArkivoFormat implements
             WritableByteChannel output,
             ArchiveCreateOptions options
     ) throws IOException {
-        return TarArkivoStreamingWriter.open(output, new TarArchiveOptions.Create(options, null));
+        return TarArkivoStreamingWriter.open(
+                output,
+                new TarArchiveOptions.Create(options, TarCompression.UNCOMPRESSED)
+        );
     }
 
     /// Returns whether the given absolute block is filled with zero bytes.
@@ -280,10 +293,6 @@ public final class TarArkivoFormat implements
 
     /// Applies TAR defaults to format-independent read options.
     private static TarArchiveOptions.Read readOptions(ArchiveReadOptions options) {
-        return new TarArchiveOptions.Read(
-                options,
-                null,
-                TarArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR
-        );
+        return new TarArchiveOptions.Read(options, TarCompression.DETECT);
     }
 }

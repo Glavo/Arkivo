@@ -1,5 +1,6 @@
 dependencies {
     api(project(":arkivo-archive"))
+    implementation(project(":arkivo-archive-codec"))
 }
 
 val lowHeapStorageProbe by tasks.registering(JavaExec::class) {

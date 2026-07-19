@@ -4,7 +4,9 @@
 package org.glavo.arkivo.codec.lz4.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lz4.LZ4BlockSize;
 import org.glavo.arkivo.codec.lz4.LZ4Dictionary;
 import org.glavo.arkivo.internal.ByteArrayAccess;
@@ -52,6 +54,9 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     /// Owned decoded bytes collected for the current block.
     private final byte[] block;
 
+    /// Exact source size restored for the initial frame by reset, or the unknown-size sentinel.
+    private final long initialSourceSize;
+
     /// Streaming decoded-content checksum state.
     private final XXHash32 contentHash = new XXHash32();
 
@@ -63,6 +68,12 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
 
     /// Number of decoded bytes collected in the current block.
     private int blockLength;
+
+    /// Exact source size declared for the active frame, or the unknown-size sentinel.
+    private long frameSourceSize;
+
+    /// Number of source bytes accepted for the active frame.
+    private long frameInputSize;
 
     /// Whether the current frame header has been emitted.
     private boolean frameStarted;
@@ -80,12 +91,14 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     /// @param blockChecksum whether to append xxHash-32 to each physical block
     /// @param contentChecksum whether to append decoded-content xxHash-32 to each frame
     /// @param dictionary the external prefix dictionary, or `null`
+    /// @param sourceSize exact decoded size of the initial frame, or the unknown-size sentinel
     public LZ4FrameEncoder(
             LZ4BlockSize blockSize,
             boolean independentBlocks,
             boolean blockChecksum,
             boolean contentChecksum,
-            @Nullable LZ4Dictionary dictionary
+            @Nullable LZ4Dictionary dictionary,
+            long sourceSize
     ) {
         this.blockSize = Objects.requireNonNull(blockSize, "blockSize");
         this.independentBlocks = independentBlocks;
@@ -94,6 +107,24 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         dictionaryHistory = dictionary == null ? EMPTY_HISTORY : dictionary.bytes();
         dictionaryId = dictionary == null ? LZ4Dictionary.NO_DICTIONARY_ID : dictionary.dictionaryId();
         block = new byte[blockSize.byteSize()];
+        if (sourceSize < CompressionCodec.UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("sourceSize must be non-negative or UNKNOWN_SIZE");
+        }
+        initialSourceSize = sourceSize;
+        frameSourceSize = sourceSize;
+    }
+
+    /// Explicitly starts another frame with independent decoded-size metadata.
+    @Override
+    public void startFrame(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
+        requireOpen();
+        if (state != State.BETWEEN_FRAMES) {
+            throw new IllegalStateException("Cannot start an LZ4 frame while encoder state is " + state);
+        }
+        frameSourceSize = options.sourceSize();
+        frameInputSize = 0L;
+        state = State.ACTIVE;
     }
 
     /// Encodes source bytes until source exhaustion or encoded-output backpressure.
@@ -109,6 +140,9 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
             state = State.ACTIVE;
         }
         requireState(State.ACTIVE, "encode");
+        if (frameSourceSize >= 0L && source.remaining() > frameSourceSize - frameInputSize) {
+            throw new IOException("LZ4 frame input exceeds the declared source size");
+        }
 
         while (true) {
             drain(target);
@@ -127,6 +161,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
             int blockOffset = blockLength;
             source.get(block, blockLength, copied);
             blockLength += copied;
+            frameInputSize += copied;
             if (contentChecksum) {
                 contentHash.update(block, blockOffset, copied);
             }
@@ -216,6 +251,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         requireOpen();
         output = EMPTY_OUTPUT;
         clearFrameState();
+        frameSourceSize = initialSourceSize;
         state = State.ACTIVE;
     }
 
@@ -229,6 +265,12 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
 
     /// Drives current-frame finalization through header, final block, and trailer output.
     private CodecOutcome finishCurrentFrame(ByteBuffer target, boolean terminal) throws IOException {
+        if (frameSourceSize >= 0L && frameInputSize != frameSourceSize) {
+            throw new IOException(
+                    "LZ4 frame source size " + frameInputSize
+                            + " does not match declared size " + frameSourceSize
+            );
+        }
         while (true) {
             drain(target);
             if (output.hasRemaining()) {
@@ -266,15 +308,27 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         if (contentChecksum) {
             flags |= 0x04;
         }
+        if (frameSourceSize >= 0L) {
+            flags |= 0x08;
+        }
         if (dictionaryId != LZ4Dictionary.NO_DICTIONARY_ID) {
             flags |= 0x01;
         }
         int blockDescriptor = blockSize.descriptorCode() << 4;
-        byte[] descriptor = new byte[2 + (dictionaryId != LZ4Dictionary.NO_DICTIONARY_ID ? Integer.BYTES : 0)];
+        byte[] descriptor = new byte[
+                2
+                        + (frameSourceSize >= 0L ? Long.BYTES : 0)
+                        + (dictionaryId != LZ4Dictionary.NO_DICTIONARY_ID ? Integer.BYTES : 0)
+        ];
         descriptor[0] = (byte) flags;
         descriptor[1] = (byte) blockDescriptor;
+        int offset = 2;
+        if (frameSourceSize >= 0L) {
+            ByteArrayAccess.writeLongLittleEndian(descriptor, offset, frameSourceSize);
+            offset += Long.BYTES;
+        }
         if (dictionaryId != LZ4Dictionary.NO_DICTIONARY_ID) {
-            ByteArrayAccess.writeIntLittleEndian(descriptor, 2, (int) dictionaryId);
+            ByteArrayAccess.writeIntLittleEndian(descriptor, offset, (int) dictionaryId);
         }
         byte[] header = new byte[FRAME_MAGIC.length + descriptor.length + 1];
         System.arraycopy(FRAME_MAGIC, 0, header, 0, FRAME_MAGIC.length);
@@ -369,6 +423,8 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         trailerQueued = false;
         history = EMPTY_HISTORY;
         contentHash.reset();
+        frameSourceSize = CompressionCodec.UNKNOWN_SIZE;
+        frameInputSize = 0L;
     }
 
     /// Requires the exact encoder lifecycle state.

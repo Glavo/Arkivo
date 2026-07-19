@@ -82,7 +82,7 @@ public final class ArIndexedStorageTest {
 
         try (ArArkivoStreamingWriter writer = ArArkivoFormat.instance().openStreamingWriter(
                 archive,
-                ArchiveCreateOptions.DEFAULT.withEditStorage(storage)
+                ArchiveCreateOptions.DEFAULT.withEditStorageFactory(() -> storage)
         )) {
             var writerEntry88 = writer.beginFile("file.txt");
             try (OutputStream output = writerEntry88.openOutputStream()) {
@@ -103,7 +103,7 @@ public final class ArIndexedStorageTest {
             try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(
                     archivePath,
                     ArArchiveOptions.READ_DEFAULTS.withCommon(
-                            ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                            ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
                     )
             )) {
                 assertArrayEquals(
@@ -127,7 +127,7 @@ public final class ArIndexedStorageTest {
         ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(
                 archivePath,
                 ArArchiveOptions.READ_DEFAULTS.withCommon(
-                        ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
                 )
         );
         try {

@@ -8,6 +8,7 @@ import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
@@ -24,22 +25,13 @@ public final class ArArchiveOptions {
             ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
 
     /// The default read configuration.
-    public static final Read READ_DEFAULTS = new Read(
-            ArchiveReadOptions.DEFAULT,
-            DEFAULT_METADATA_CHARSET_DETECTOR
-    );
+    public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT);
 
     /// The default creation configuration.
-    public static final Create CREATE_DEFAULTS = new Create(
-            ArchiveCreateOptions.DEFAULT,
-            DEFAULT_METADATA_CHARSET_DETECTOR
-    );
+    public static final Create CREATE_DEFAULTS = new Create(ArchiveCreateOptions.DEFAULT);
 
     /// The default update configuration.
-    public static final Update UPDATE_DEFAULTS = new Update(
-            ArchiveUpdateOptions.DEFAULT,
-            DEFAULT_METADATA_CHARSET_DETECTOR
-    );
+    public static final Update UPDATE_DEFAULTS = new Update(ArchiveUpdateOptions.DEFAULT);
 
     /// Creates no instances.
     private ArArchiveOptions() {
@@ -47,14 +39,12 @@ public final class ArArchiveOptions {
 
     /// Configures reading AR archives.
     ///
-    /// @param common                  the format-independent read configuration
-    /// @param metadataCharsetDetector the detector for member names
+    /// @param common the format-independent read configuration
     @NotNullByDefault
-    public record Read(ArchiveReadOptions common, ArchiveMetadataCharsetDetector metadataCharsetDetector) {
+    public record Read(ArchiveReadOptions common) {
         /// Validates the read configuration.
         public Read {
             Objects.requireNonNull(common, "common");
-            Objects.requireNonNull(metadataCharsetDetector, "metadataCharsetDetector");
         }
 
         /// Returns a copy with common read settings.
@@ -62,7 +52,15 @@ public final class ArArchiveOptions {
         /// @param value the replacement format-independent read configuration
         /// @return an immutable read configuration containing `value`
         public Read withCommon(ArchiveReadOptions value) {
-            return new Read(value, metadataCharsetDetector);
+            return new Read(value);
+        }
+
+        /// Returns the configured metadata charset detector or the AR default.
+        ///
+        /// @return the effective detector for member names
+        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
+            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
+            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
         }
 
         /// Returns a copy with the metadata charset detector.
@@ -70,20 +68,18 @@ public final class ArArchiveOptions {
         /// @param value the replacement detector for member names
         /// @return an immutable read configuration containing `value`
         public Read withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Read(common, value);
+            return new Read(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")));
         }
     }
 
     /// Configures creation of AR archives.
     ///
-    /// @param common                  the format-independent creation configuration
-    /// @param metadataCharsetDetector the detector used by file-system metadata views
+    /// @param common the format-independent creation configuration
     @NotNullByDefault
-    public record Create(ArchiveCreateOptions common, ArchiveMetadataCharsetDetector metadataCharsetDetector) {
+    public record Create(ArchiveCreateOptions common) {
         /// Validates the creation configuration.
         public Create {
             Objects.requireNonNull(common, "common");
-            Objects.requireNonNull(metadataCharsetDetector, "metadataCharsetDetector");
         }
 
         /// Returns a copy with common creation settings.
@@ -91,7 +87,15 @@ public final class ArArchiveOptions {
         /// @param value the replacement format-independent creation configuration
         /// @return an immutable creation configuration containing `value`
         public Create withCommon(ArchiveCreateOptions value) {
-            return new Create(value, metadataCharsetDetector);
+            return new Create(value);
+        }
+
+        /// Returns the configured metadata charset detector or the AR default.
+        ///
+        /// @return the effective detector used by file-system metadata views
+        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
+            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
+            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
         }
 
         /// Returns a copy with the metadata charset detector.
@@ -99,20 +103,18 @@ public final class ArArchiveOptions {
         /// @param value the replacement detector used by file-system metadata views
         /// @return an immutable creation configuration containing `value`
         public Create withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Create(common, value);
+            return new Create(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")));
         }
     }
 
     /// Configures complete-rewrite updates of AR archives.
     ///
-    /// @param common                  the format-independent update configuration
-    /// @param metadataCharsetDetector the detector for source member names
+    /// @param common the format-independent update configuration
     @NotNullByDefault
-    public record Update(ArchiveUpdateOptions common, ArchiveMetadataCharsetDetector metadataCharsetDetector) {
+    public record Update(ArchiveUpdateOptions common) {
         /// Validates the update configuration.
         public Update {
             Objects.requireNonNull(common, "common");
-            Objects.requireNonNull(metadataCharsetDetector, "metadataCharsetDetector");
         }
 
         /// Returns a copy with common update settings.
@@ -120,7 +122,15 @@ public final class ArArchiveOptions {
         /// @param value the replacement format-independent update configuration
         /// @return an immutable update configuration containing `value`
         public Update withCommon(ArchiveUpdateOptions value) {
-            return new Update(value, metadataCharsetDetector);
+            return new Update(value);
+        }
+
+        /// Returns the configured metadata charset detector or the AR default.
+        ///
+        /// @return the effective detector for source member names
+        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
+            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
+            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
         }
 
         /// Returns a copy with the metadata charset detector.
@@ -128,7 +138,7 @@ public final class ArArchiveOptions {
         /// @param value the replacement detector for source member names
         /// @return an immutable update configuration containing `value`
         public Update withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Update(common, value);
+            return new Update(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")));
         }
     }
 }

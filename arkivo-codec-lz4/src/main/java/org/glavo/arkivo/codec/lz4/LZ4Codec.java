@@ -9,7 +9,7 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lz4.internal.LZ4FrameDecoder;
 import org.glavo.arkivo.codec.lz4.internal.LZ4FrameEncoder;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -272,7 +272,8 @@ public final class LZ4Codec
                 independentBlocks,
                 blockChecksum,
                 contentChecksum,
-                dictionary
+                dictionary,
+                options.sourceSize()
         );
     }
 

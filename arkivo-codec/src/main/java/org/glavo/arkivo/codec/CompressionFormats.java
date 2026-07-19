@@ -204,7 +204,8 @@ public final class CompressionFormats {
     /// @param formatName the stable name or alias of an installed format
     /// @param target     the channel that receives compressed bytes and remains open after the returned channel closes
     /// @return a new compressing channel using the format's default codec
-    /// @throws IOException if the format is unknown or the encoder cannot be initialized
+    /// @throws IOException if the encoder cannot be initialized
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static CompressingWritableByteChannel newWritableByteChannel(
             String formatName,
             WritableByteChannel target
@@ -226,7 +227,8 @@ public final class CompressionFormats {
     /// @param options    the parameters for this encoding session
     /// @param ownership  whether closing the returned channel also closes `target`
     /// @return a new compressing channel using the format's default codec
-    /// @throws IOException if the format is unknown, the encoder cannot be initialized, or ownership cleanup fails
+    /// @throws IOException if the encoder cannot be initialized or ownership cleanup fails
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static CompressingWritableByteChannel newWritableByteChannel(
             String formatName,
             WritableByteChannel target,
@@ -252,7 +254,8 @@ public final class CompressionFormats {
     /// @param formatName the stable name or alias of an installed format
     /// @param source     the channel supplying compressed bytes and remaining open after the returned channel closes
     /// @return a new decompressing channel using the format's default codec
-    /// @throws IOException if the format is unknown or the decoder cannot be initialized
+    /// @throws IOException if the decoder cannot be initialized
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static DecompressingReadableByteChannel newReadableByteChannel(
             String formatName,
             ReadableByteChannel source
@@ -269,7 +272,8 @@ public final class CompressionFormats {
     /// @param source     the channel supplying compressed bytes
     /// @param ownership  whether closing the returned channel also closes `source`
     /// @return a new decompressing channel using the format's default codec
-    /// @throws IOException if the format is unknown, the decoder cannot be initialized, or ownership cleanup fails
+    /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static DecompressingReadableByteChannel newReadableByteChannel(
             String formatName,
             ReadableByteChannel source,
@@ -336,7 +340,8 @@ public final class CompressionFormats {
     /// @param source     the channel supplying uncompressed bytes until end-of-input
     /// @param target     the channel receiving the complete compressed encoding
     /// @return the uncompressed input and compressed output byte counts
-    /// @throws IOException if the format is unknown or channel I/O, encoding, finalization, or progress fails
+    /// @throws IOException if channel I/O, encoding, finalization, or progress fails
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static CodecTransferResult compress(
             String formatName,
             ReadableByteChannel source,
@@ -352,7 +357,8 @@ public final class CompressionFormats {
     /// @param target     the channel receiving the complete compressed encoding
     /// @param options    the parameters for this encoding operation
     /// @return the uncompressed input and compressed output byte counts
-    /// @throws IOException if the format is unknown or channel I/O, encoding, finalization, or progress fails
+    /// @throws IOException if channel I/O, encoding, finalization, or progress fails
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static CodecTransferResult compress(
             String formatName,
             ReadableByteChannel source,
@@ -372,7 +378,8 @@ public final class CompressionFormats {
     /// @param source     the channel supplying compressed bytes
     /// @param target     the channel receiving decoded bytes
     /// @return the compressed input and decoded output byte counts
-    /// @throws IOException if the format is unknown or channel I/O, decoding, or progress fails
+    /// @throws IOException if channel I/O, decoding, or progress fails
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static CodecTransferResult decompress(
             String formatName,
             ReadableByteChannel source,
@@ -407,7 +414,8 @@ public final class CompressionFormats {
     /// @param formatName the stable name or alias of an installed format
     /// @param target     the stream receiving compressed bytes and remaining open after the returned stream closes
     /// @return a new compressing stream using the format's default codec
-    /// @throws IOException if the format is unknown or the encoder cannot be initialized
+    /// @throws IOException if the encoder cannot be initialized
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static OutputStream newOutputStream(String formatName, OutputStream target) throws IOException {
         return newOutputStream(
                 formatName,
@@ -424,7 +432,8 @@ public final class CompressionFormats {
     /// @param options    the parameters for this encoding session
     /// @param ownership  whether closing the returned stream also closes `target`
     /// @return a new compressing stream using the format's default codec
-    /// @throws IOException if the format is unknown, encoder setup fails, or ownership cleanup fails
+    /// @throws IOException if encoder setup or ownership cleanup fails
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static OutputStream newOutputStream(
             String formatName,
             OutputStream target,
@@ -450,7 +459,8 @@ public final class CompressionFormats {
     /// @param formatName the stable name or alias of an installed format
     /// @param source     the stream supplying compressed bytes and remaining open after the returned stream closes
     /// @return a new decompressing stream using the format's default codec
-    /// @throws IOException if the format is unknown or the decoder cannot be initialized
+    /// @throws IOException if the decoder cannot be initialized
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static InputStream newInputStream(String formatName, InputStream source) throws IOException {
         return newInputStream(formatName, source, ResourceOwnership.BORROWED);
     }
@@ -461,7 +471,8 @@ public final class CompressionFormats {
     /// @param source     the stream supplying compressed bytes
     /// @param ownership  whether closing the returned stream also closes `source`
     /// @return a new decompressing stream using the format's default codec
-    /// @throws IOException if the format is unknown, decoder setup fails, or ownership cleanup fails
+    /// @throws IOException if decoder setup or ownership cleanup fails
+    /// @throws IllegalArgumentException if `formatName` does not name an installed format
     public static InputStream newInputStream(
             String formatName,
             InputStream source,
@@ -506,10 +517,10 @@ public final class CompressionFormats {
     }
 
     /// Returns the named format's installed default codec.
-    private static CompressionCodec<?> requireDefaultCodec(String formatName) throws IOException {
+    private static CompressionCodec<?> requireDefaultCodec(String formatName) {
         @Nullable CompressionFormat format = find(formatName);
         if (format == null) {
-            throw new IOException("Unknown compression format: " + formatName);
+            throw new IllegalArgumentException("Unknown compression format: " + formatName);
         }
         return format.defaultCodec();
     }

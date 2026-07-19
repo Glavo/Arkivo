@@ -12,7 +12,7 @@ module org.glavo.arkivo.codec {
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.codec;
-    exports org.glavo.arkivo.codec.spi to
+    exports org.glavo.arkivo.codec.internal to
             org.glavo.arkivo.codec.bzip2,
             org.glavo.arkivo.codec.compress,
             org.glavo.arkivo.codec.deflate,

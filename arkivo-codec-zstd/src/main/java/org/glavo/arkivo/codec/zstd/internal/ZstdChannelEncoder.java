@@ -5,7 +5,9 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.EncodingOptions;
+import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -34,7 +36,7 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
     private final OwnedChannelCloser targetCloser;
 
     /// Validated encoder parameters.
-    private final ZstdEncoderParameters parameters;
+    private ZstdEncoderParameters parameters;
 
     /// Whether standard frame magic is omitted.
     private final boolean magicless;
@@ -129,7 +131,7 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
         if (!source.hasRemaining()) {
             return 0;
         }
-        startFrame();
+        startFrameIfNeeded();
         requirePledgeCapacity(source.remaining());
 
         int start = source.position();
@@ -166,6 +168,18 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
         drainPendingJobs();
     }
 
+    /// Explicitly starts another frame with independent source-size metadata.
+    @Override
+    public void startFrame(EncodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        ensureOpen();
+        if (frameActive) {
+            throw new IllegalStateException("A Zstandard frame is already active");
+        }
+        parameters = parameters.withPledgedSourceSize(options.sourceSize());
+        initializeFrame();
+    }
+
     /// Finishes the active frame while retaining the encoder for another frame.
     @Override
     public void finishFrame() throws IOException {
@@ -175,6 +189,7 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
         }
         endFrame();
         frameActive = false;
+        parameters = parameters.withPledgedSourceSize(CompressionCodec.UNKNOWN_SIZE);
     }
 
     /// Finishes the active frame and closes an owned target.
@@ -239,10 +254,15 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
     }
 
     /// Starts a fresh frame after an earlier explicit frame boundary.
-    private void startFrame() {
+    private void startFrameIfNeeded() {
         if (frameActive) {
             return;
         }
+        initializeFrame();
+    }
+
+    /// Restores mutable state for one newly active frame.
+    private void initializeFrame() {
         frameActive = true;
         blockEncoder.reset(parameters);
         @Nullable ZstdLongDistanceMatcher matcher = longDistanceMatcher;

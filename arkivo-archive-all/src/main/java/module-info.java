@@ -7,6 +7,7 @@
 /// catalog. Compression codecs used for transparently compressed archive streams are supplied separately by codec
 /// modules.
 module org.glavo.arkivo.archive.all {
+    requires org.glavo.arkivo.archive.codec;
     requires transitive org.glavo.arkivo.archive;
     requires transitive org.glavo.arkivo.archive.sevenzip;
     requires transitive org.glavo.arkivo.archive.ar;

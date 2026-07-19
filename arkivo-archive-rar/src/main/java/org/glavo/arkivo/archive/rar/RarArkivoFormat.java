@@ -212,10 +212,6 @@ public final class RarArkivoFormat implements
 
     /// Applies RAR defaults to format-independent read options.
     private static RarArchiveOptions.Read readOptions(ArchiveReadOptions options) {
-        return new RarArchiveOptions.Read(
-                options,
-                null,
-                RarArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
-        );
+        return new RarArchiveOptions.Read(options);
     }
 }

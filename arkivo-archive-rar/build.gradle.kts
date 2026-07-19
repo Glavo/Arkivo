@@ -7,6 +7,7 @@ import java.util.zip.ZipFile
 
 dependencies {
     api(project(":arkivo-archive"))
+    implementation(project(":arkivo-archive-codec"))
     implementation(project(":arkivo-base"))
     implementation(project(":arkivo-codec-ppmd"))
 }
@@ -95,14 +96,16 @@ val lowHeapStorageProbe by tasks.registering(JavaExec::class) {
 }
 
 val archiveJar = project(":arkivo-archive").tasks.named<Jar>("jar")
+val archiveCodecJar = project(":arkivo-archive-codec").tasks.named<Jar>("jar")
 val internalBaseJar = project(":arkivo-base").tasks.named<Jar>("jar")
 val codecJar = project(":arkivo-codec").tasks.named<Jar>("jar")
 val ppmdJar = project(":arkivo-codec-ppmd").tasks.named<Jar>("jar")
 
 tasks.named<Test>("test") {
-    dependsOn(tasks.jar, archiveJar, internalBaseJar, codecJar, ppmdJar)
+    dependsOn(tasks.jar, archiveJar, archiveCodecJar, internalBaseJar, codecJar, ppmdJar)
     inputs.file(tasks.jar.flatMap { it.archiveFile })
     inputs.file(archiveJar.flatMap { it.archiveFile })
+    inputs.file(archiveCodecJar.flatMap { it.archiveFile })
     inputs.file(internalBaseJar.flatMap { it.archiveFile })
     inputs.file(codecJar.flatMap { it.archiveFile })
     inputs.file(ppmdJar.flatMap { it.archiveFile })
@@ -114,6 +117,10 @@ tasks.named<Test>("test") {
         systemProperty(
             "arkivo.archive.jar",
             archiveJar.get().archiveFile.get().asFile.absolutePath
+        )
+        systemProperty(
+            "arkivo.archive-codec.jar",
+            archiveCodecJar.get().archiveFile.get().asFile.absolutePath
         )
         systemProperty(
             "arkivo.internal-base.jar",

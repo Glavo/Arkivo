@@ -1,5 +1,6 @@
 dependencies {
     api(project(":arkivo-archive"))
+    implementation(project(":arkivo-archive-codec"))
     api(project(":arkivo-codec"))
     testImplementation(project(":arkivo-codec-deflate"))
     testImplementation(project(":arkivo-codec-zstd"))

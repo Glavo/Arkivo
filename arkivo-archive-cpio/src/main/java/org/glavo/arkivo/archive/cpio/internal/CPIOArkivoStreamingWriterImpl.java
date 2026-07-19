@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.cpio.internal;
 
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributeView;
@@ -128,16 +129,17 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
     ///
     /// @param target the owned stream receiving CPIO archive bytes
     /// @param options the creation and body-storage configuration
-    public CPIOArkivoStreamingWriterImpl(OutputStream target, CPIOArchiveOptions.Create options) {
+    /// @throws IOException if configured body storage cannot be opened
+    public CPIOArkivoStreamingWriterImpl(OutputStream target, CPIOArchiveOptions.Create options) throws IOException {
         this.target = Objects.requireNonNull(target, "target");
         CPIOArchiveOptions.Create checkedOptions = Objects.requireNonNull(options, "options");
         this.dialect = checkedOptions.dialect();
         this.binaryByteOrder = checkedOptions.binaryByteOrder();
         this.metadataCharset = checkedOptions.metadataCharset();
         this.blockSize = checkedOptions.blockSize();
-        @Nullable ArkivoEditStorage configuredStorage = checkedOptions.common().editStorage();
-        this.bodyStorage = configuredStorage != null
-                ? configuredStorage
+        @Nullable ArkivoEditStorageFactory storageFactory = checkedOptions.common().editStorageFactory();
+        this.bodyStorage = storageFactory != null
+                ? storageFactory.open()
                 : ArkivoEditStorage.temporaryFiles(defaultBodyStorageDirectory());
     }
 

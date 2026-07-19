@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.lz4.internal;
 
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 

@@ -8,6 +8,7 @@
 /// permit lazy random access to contiguous entry bodies without expanding the complete archive.
 module org.glavo.arkivo.archive.tar {
     requires transitive org.glavo.arkivo.archive;
+    requires org.glavo.arkivo.archive.codec;
     requires transitive org.glavo.arkivo.codec;
     requires static org.jetbrains.annotations;
 

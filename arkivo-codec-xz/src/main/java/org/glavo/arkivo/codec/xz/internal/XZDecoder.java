@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2Decoder;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.glavo.arkivo.codec.xz.internal.filter.BCJTransforms;

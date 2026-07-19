@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec;
 
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -264,6 +264,15 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Whether terminal output has completed.
         private boolean finished;
+
+        /// Starts another test frame after resetting boundary state.
+        @Override
+        public void startFrame(EncodingOptions options) {
+            Objects.requireNonNull(options, "options");
+            if (sourceSize >= 0 || headerWritten || finished) {
+                throw new IllegalStateException("A test frame is already active");
+            }
+        }
 
         /// Copies source bytes after emitting their one-byte length.
         @Override

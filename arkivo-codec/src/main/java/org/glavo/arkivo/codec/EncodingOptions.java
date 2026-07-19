@@ -9,8 +9,10 @@ import org.jetbrains.annotations.NotNullByDefault;
 ///
 /// `sourceSize` is exact operation metadata. Every codec accepts it, but an implementation may ignore it when the
 /// format cannot record it and the algorithm cannot use it. Implementations that use the value may reject an encoding
-/// whose actual input size differs from it. For a framed encoder, the value describes only the first frame; following
-/// frames begin with an unknown source size.
+/// whose actual input size differs from it. When passed to [CompressionCodec#newEncoder(EncodingOptions)], the value
+/// describes the initial frame. Later frames may receive independent options through
+/// [CompressionEncoder.Framed#startFrame(EncodingOptions)]; a frame started implicitly by encoding after a boundary
+/// uses [#DEFAULT].
 ///
 /// @param sourceSize the exact uncompressed input size, or [CompressionCodec#UNKNOWN_SIZE] when unknown
 @NotNullByDefault

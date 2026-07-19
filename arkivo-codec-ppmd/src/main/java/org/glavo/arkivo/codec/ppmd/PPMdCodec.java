@@ -10,7 +10,7 @@ import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Decoder;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Encoder;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;

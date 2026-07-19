@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.xz.internal;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.xz.XZFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -72,11 +73,30 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
         encoder = createWriter();
     }
 
+    /// Explicitly starts another XZ Stream after a completed Stream boundary.
+    @Override
+    public void startFrame(EncodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        requireOpen();
+        if (state != State.BETWEEN_FRAMES) {
+            throw new IllegalStateException("Cannot start an XZ Stream while encoder state is " + state);
+        }
+        requireWriter().startFrame(options);
+        state = State.ACTIVE;
+    }
+
     /// Encodes source bytes until the source is exhausted or compressed output requires target space.
     @Override
     public CodecOutcome encode(ByteBuffer source, ByteBuffer target) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
+        requireOpen();
+        if (state == State.BETWEEN_FRAMES) {
+            if (!source.hasRemaining()) {
+                return CodecOutcome.NEEDS_INPUT;
+            }
+            state = State.ACTIVE;
+        }
         requireState(State.ACTIVE, "encode");
 
         while (true) {
@@ -104,6 +124,9 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
+        if (state == State.BETWEEN_FRAMES) {
+            return CodecOutcome.FLUSHED;
+        }
         if (state == State.ACTIVE) {
             requireWriter().flush();
             state = State.FLUSHING;
@@ -124,6 +147,9 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
     public CodecOutcome finishFrame(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
+        if (state == State.BETWEEN_FRAMES) {
+            return CodecOutcome.BOUNDARY_REACHED;
+        }
         if (state == State.ACTIVE) {
             requireWriter().finishFrame();
             state = State.FRAME_FINISHING;
@@ -135,7 +161,7 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
         if (output.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
-        state = State.ACTIVE;
+        state = State.BETWEEN_FRAMES;
         return CodecOutcome.BOUNDARY_REACHED;
     }
 
@@ -146,6 +172,10 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
         requireOpen();
         if (state == State.FINISHED) {
             return CodecOutcome.FINISHED;
+        }
+        if (state == State.BETWEEN_FRAMES) {
+            requireWriter().finish();
+            state = State.FINISHING;
         }
         if (state == State.ACTIVE) {
             requireWriter().finish();
@@ -224,6 +254,9 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
     private enum State {
         /// Source bytes may be accepted.
         ACTIVE,
+
+        /// A Stream boundary completed and no following Stream is active.
+        BETWEEN_FRAMES,
 
         /// A flush boundary must be drained.
         FLUSHING,

@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.tar.TarArchiveOptions;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
@@ -74,7 +74,9 @@ public final class TarLowHeapStorageProbe {
     /// Randomly modifies the large entry through temporary-file storage and commits a complete rewrite.
     private static void updateArchive(Path archivePath, Path storageDirectory) throws IOException {
         TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS.withCommon(
-                ArchiveUpdateOptions.DEFAULT.withEditStorage(ArkivoEditStorage.temporaryFiles(storageDirectory))
+                ArchiveUpdateOptions.DEFAULT.withEditStorageFactory(
+                        ArkivoEditStorageFactory.temporaryFiles(storageDirectory)
+                )
         );
         try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(archivePath, options);
              SeekableByteChannel channel = Files.newByteChannel(

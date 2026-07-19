@@ -7,6 +7,7 @@
 /// supported legacy and AES encryption. This module does not create or update RAR archives.
 module org.glavo.arkivo.archive.rar {
     requires transitive org.glavo.arkivo.archive;
+    requires org.glavo.arkivo.archive.codec;
     requires org.glavo.arkivo.base;
     requires org.glavo.arkivo.codec.ppmd;
     requires static org.jetbrains.annotations;

@@ -20,8 +20,9 @@
 ///
 /// Encoder `flush` completes the current compressed block without ending the frame. `finishFrame` writes the final
 /// block and optional checksum, then preserves the codec configuration for another frame; terminal `finish` ends the
-/// complete session. A known source size is exact and, when enabled, may be written to the first frame header. Frames
-/// started after `finishFrame` have no declared source size.
+/// complete session. A known source size is exact and, when enabled, is written to that frame's header. The initial
+/// frame receives factory [org.glavo.arkivo.codec.EncodingOptions], and later frames may receive independent options
+/// through [org.glavo.arkivo.codec.CompressionEncoder.Framed#startFrame(org.glavo.arkivo.codec.EncodingOptions)].
 ///
 /// Full dictionaries carry an identifier that a decoder can request from a standard frame; raw-content dictionaries
 /// must be configured out of band. Decoder limits bound output and the declared history window, and checksum verification

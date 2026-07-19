@@ -17,9 +17,9 @@ import java.util.Objects;
 /// Invokes the one official optional bridge between archive and compression modules.
 @NotNullByDefault
 final class OptionalCompressionSupport {
-    /// The bridge class supplied only by the combined `arkivo-all` module.
+    /// The bridge class supplied by the official archive-codec integration module.
     private static final String SUPPORT_CLASS_NAME =
-            "org.glavo.arkivo.all.internal.CompressionStreamingSourceSupport";
+            "org.glavo.arkivo.archive.codec.internal.ArchiveCompressionSupport";
 
     /// The cached bridge method, or `null` when the combined module is absent.
     private static final @Nullable Method PROBE_METHOD = findProbeMethod();
@@ -32,7 +32,7 @@ final class OptionalCompressionSupport {
     ///
     /// @param source  the channel whose ownership is transferred to the bridge
     /// @param options the archive-wide read limits and lifecycle options
-    /// @return an owning bridge result, or `null` when `arkivo-all` is not installed
+    /// @return an owning bridge result, or `null` when archive-codec integration is not installed
     /// @throws IOException if compression probing or decoder setup fails
     static @Nullable ArkivoStreamingSource probe(
             ReadableByteChannel source,
@@ -86,7 +86,7 @@ final class OptionalCompressionSupport {
                 throw new IllegalStateException("Official compression bridge has an incompatible probe method");
             }
             if (!method.trySetAccessible()) {
-                throw new IllegalStateException("Official compression bridge package is not open to Arkivo archive");
+                throw new IllegalStateException("Official archive-codec bridge package is not open to Arkivo archive");
             }
             return method;
         } catch (ClassNotFoundException ignored) {

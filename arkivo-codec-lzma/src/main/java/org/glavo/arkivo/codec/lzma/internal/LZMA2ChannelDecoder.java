@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
 import org.jetbrains.annotations.Nullable;

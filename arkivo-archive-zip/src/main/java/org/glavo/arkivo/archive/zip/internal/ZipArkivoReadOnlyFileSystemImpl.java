@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -207,12 +208,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// @param config the validated read-only configuration
     /// @throws NullPointerException if `provider` or `config` is `null`
     /// @throws IllegalArgumentException if both or neither source arguments are non-null
+    /// @throws IOException if configured decoded-entry storage cannot be opened
     public ZipArkivoReadOnlyFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             @Nullable Path archivePath,
             @Nullable ArkivoVolumeSource volumes,
             ZipArkivoFileSystemConfig config
-    ) {
+    ) throws IOException {
         this(provider, archivePath, volumes, config, null);
     }
 
@@ -228,13 +230,14 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// @param closeAction the callback invoked during close, or `null` when none is needed
     /// @throws NullPointerException if `provider` or `config` is `null`
     /// @throws IllegalArgumentException if both or neither source arguments are non-null
+    /// @throws IOException if configured decoded-entry storage cannot be opened
     public ZipArkivoReadOnlyFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             @Nullable Path archivePath,
             @Nullable ArkivoVolumeSource volumes,
             ZipArkivoFileSystemConfig config,
             @Nullable Runnable closeAction
-    ) {
+    ) throws IOException {
         super(config.threadSafety());
         if (archivePath == null && volumes == null) {
             throw new IllegalArgumentException("archivePath or volumes must be set");
@@ -247,9 +250,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         this.volumes = volumes;
         this.config = Objects.requireNonNull(config, "config");
         this.closeAction = closeAction;
-        ArkivoEditStorage configuredStorage = config.editStorage();
-        this.decodedEntryStorage = configuredStorage != null
-                ? configuredStorage
+        @Nullable ArkivoEditStorageFactory storageFactory = config.editStorageFactory();
+        this.decodedEntryStorage = storageFactory != null
+                ? storageFactory.open()
                 : ArkivoEditStorage.hybrid(
                 DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD,
                 defaultDecodedEntryStorageDirectory(archivePath)
@@ -1095,7 +1098,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             ZipArkivoFileSystemProvider provider,
             Path archivePath,
             ZipArkivoFileSystemConfig config
-    ) {
+    ) throws IOException {
         return new ZipArkivoReadOnlyFileSystemImpl(
                 provider,
                 archivePath,
@@ -1109,7 +1112,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             ZipArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
             ZipArkivoFileSystemConfig config
-    ) {
+    ) throws IOException {
         return openUpdateReader(provider, (ArkivoVolumeSource) source, config);
     }
 
@@ -1118,7 +1121,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             ZipArkivoFileSystemProvider provider,
             ArkivoVolumeSource source,
             ZipArkivoFileSystemConfig config
-    ) {
+    ) throws IOException {
         return new ZipArkivoReadOnlyFileSystemImpl(
                 provider,
                 null,

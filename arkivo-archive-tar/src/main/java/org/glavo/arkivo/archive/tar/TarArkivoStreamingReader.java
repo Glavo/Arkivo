@@ -91,9 +91,12 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
-        @Nullable CompressionCodec<?> compressionCodec = options.compression();
+        TarCompression.Read compression = options.compression();
+        @Nullable CompressionCodec<?> compressionCodec = compression instanceof TarCompression.Codec configured
+                ? configured.codec()
+                : null;
         ReadableByteChannel archiveSource = source;
-        if (compressionCodec == null) {
+        if (compression == TarCompression.DETECT) {
             try (CompressionProbeResult probe = CompressionFormats.probe(
                     source,
                     TarArkivoFormat.instance().probeSize(),

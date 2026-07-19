@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.ar.internal;
 
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ar.ArArchiveOptions;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
@@ -79,8 +79,8 @@ public final class ArLowHeapStorageProbe {
     /// Expands and randomly modifies the large member through temporary-file indexed storage.
     private static void updateArchive(Path archivePath, Path storageDirectory) throws IOException {
         ArArchiveOptions.Update options = ArArchiveOptions.UPDATE_DEFAULTS.withCommon(
-                ArchiveUpdateOptions.DEFAULT.withEditStorage(
-                        ArkivoEditStorage.temporaryFiles(storageDirectory)
+                ArchiveUpdateOptions.DEFAULT.withEditStorageFactory(
+                        ArkivoEditStorageFactory.temporaryFiles(storageDirectory)
                 )
         );
         try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath, options)) {

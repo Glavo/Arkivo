@@ -271,6 +271,38 @@ public final class ZstdBufferEngineTest {
         }
     }
 
+    /// Verifies that a following frame receives independent exact source-size metadata.
+    @Test
+    public void framedEncoderAcceptsOptionsForEachExplicitFrame() throws IOException {
+        byte[] first = testData(1_003);
+        byte[] second = testData(2_009);
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+
+        try (CompressionEncoder.Framed encoder = CODEC.newEncoder(
+                EncodingOptions.ofSourceSize(first.length)
+        )) {
+            encodeSource(encoder, ByteBuffer.wrap(first), encoded, 9);
+            finishFrame(encoder, encoded, 4);
+            int firstEnd = encoded.size();
+
+            encoder.startFrame(EncodingOptions.ofSourceSize(second.length));
+            encodeSource(encoder, ByteBuffer.wrap(second), encoded, 7);
+            finishFrame(encoder, encoded, 3);
+            int secondEnd = encoded.size();
+            finish(encoder, encoded, 5);
+
+            byte[] frames = encoded.toByteArray();
+            ZstdStandardFrameInfo firstInfo = (ZstdStandardFrameInfo) CODEC.frameInfo(
+                    ByteBuffer.wrap(frames, 0, firstEnd)
+            );
+            ZstdStandardFrameInfo secondInfo = (ZstdStandardFrameInfo) CODEC.frameInfo(
+                    ByteBuffer.wrap(frames, firstEnd, secondEnd - firstEnd).slice()
+            );
+            assertEquals(first.length, firstInfo.contentSize());
+            assertEquals(second.length, secondInfo.contentSize());
+        }
+    }
+
     /// Encodes input fragments into one frame.
     private static byte[] encode(
             byte[] input,

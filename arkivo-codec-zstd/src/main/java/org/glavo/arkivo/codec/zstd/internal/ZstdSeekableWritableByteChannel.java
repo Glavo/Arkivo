@@ -7,8 +7,8 @@ import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.SeekableEncodingOptions;
-import org.glavo.arkivo.codec.spi.InterruptibleChannelSupport;
-import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.internal.InterruptibleChannelSupport;
+import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -83,6 +83,9 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
 
     /// Whether this channel accepts more source bytes.
     private boolean open = true;
+
+    /// Whether a data frame is active and must be recorded when finalized.
+    private boolean frameActive = true;
 
     /// Whether terminal processing has already been attempted.
     private boolean finished;
@@ -163,9 +166,11 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         if (expectedSourceSize >= 0L && source.remaining() > expectedSourceSize - inputBytes) {
             throw new IOException("Seekable encoding input exceeds the pledged source size");
         }
-
         int initialPosition = source.position();
         while (source.hasRemaining()) {
+            if (!frameActive) {
+                frameActive = true;
+            }
             int capacity = maximumFrameSize - activeFrameSize;
             int requested = Math.min(source.remaining(), capacity);
             int sourceStart = source.position();
@@ -203,6 +208,18 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         } finally {
             outputBytes = encoder.outputBytes();
         }
+    }
+
+    /// Explicitly starts another seekable data frame with frame-scoped options.
+    @Override
+    public void startFrame(EncodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        ensureOpen();
+        if (frameActive) {
+            throw new IllegalStateException("A seekable Zstandard data frame is already active");
+        }
+        encoder.startFrame(options);
+        frameActive = true;
     }
 
     /// Finishes and records the active frame before it reaches the automatic size boundary.
@@ -282,17 +299,12 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
 
     /// Finishes and records the active frame, or only releases the framed encoder when no frame is active.
     private void finishActiveFrame(boolean terminal) throws IOException {
-        if (activeFrameSize == 0) {
+        if (!frameActive) {
             if (terminal) {
                 try {
                     encoder.finish();
                 } finally {
                     outputBytes = encoder.outputBytes();
-                }
-                long compressedSize = outputBytes - activeFrameCompressedOffset;
-                if (compressedSize > 0L) {
-                    recordFrame(compressedSize, 0, activeChecksumValue());
-                    activeFrameCompressedOffset = outputBytes;
                 }
             }
             return;
@@ -311,6 +323,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         recordFrame(compressedSize, activeFrameSize, activeChecksumValue());
         activeFrameCompressedOffset = outputBytes;
         activeFrameSize = 0;
+        frameActive = false;
         activeChecksum = tableChecksums ? new ZstdXXHash64() : null;
     }
 
@@ -468,6 +481,15 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         private InterruptibleWriter(WritableByteChannel target, ZstdSeekableWritableByteChannel delegate) {
             this.delegate = delegate;
             this.state = new InterruptibleChannelSupport(target);
+        }
+
+        /// Starts another seekable data frame as one interruptible operation.
+        @Override
+        public void startFrame(EncodingOptions options) throws IOException {
+            state.execute(
+                    () -> delegate.startFrame(options),
+                    delegate::abort
+            );
         }
 
         /// Encodes source bytes as one interruptible operation.

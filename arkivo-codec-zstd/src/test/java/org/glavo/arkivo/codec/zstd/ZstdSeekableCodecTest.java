@@ -10,6 +10,7 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.SeekableEncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public final class ZstdSeekableCodecTest {
     /// Verifies a seekable encoding remains sequentially compatible and exposes exact frame mappings.
     @Test
+    @Timeout(10)
     public void writesCompatibleIndexedFrames() throws IOException {
         byte[] source = patternedBytes(3500);
         Path path = Files.createTempFile("arkivo-zstd-seekable-", ".zst");

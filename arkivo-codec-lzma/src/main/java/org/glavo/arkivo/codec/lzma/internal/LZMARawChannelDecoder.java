@@ -8,8 +8,8 @@ import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
 

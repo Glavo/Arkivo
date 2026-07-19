@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormat.FileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -181,13 +182,20 @@ public final class ArArkivoFormat implements
     public ArArkivoStreamingWriter openStreamingWriter(
             OutputStream output,
             ArchiveCreateOptions options
-    ) {
+    ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
-        @Nullable ArkivoEditStorage bodyStorage = options.editStorage();
-        return bodyStorage == null
-                ? ArArkivoStreamingWriter.open(output)
-                : ArArkivoStreamingWriter.open(output, bodyStorage);
+        @Nullable ArkivoEditStorageFactory storageFactory = options.editStorageFactory();
+        if (storageFactory == null) {
+            return ArArkivoStreamingWriter.open(output);
+        }
+        ArkivoEditStorage bodyStorage = storageFactory.open();
+        try {
+            return ArArkivoStreamingWriter.open(output, bodyStorage);
+        } catch (RuntimeException | Error exception) {
+            closeAfterConstructionFailure(bodyStorage, exception);
+            throw exception;
+        }
     }
 
     /// Opens a streaming AR writer over a writable channel.
@@ -201,27 +209,43 @@ public final class ArArkivoFormat implements
     public ArArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel output,
             ArchiveCreateOptions options
-    ) {
+    ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
-        @Nullable ArkivoEditStorage bodyStorage = options.editStorage();
-        return bodyStorage == null
-                ? ArArkivoStreamingWriter.open(output)
-                : ArArkivoStreamingWriter.open(output, bodyStorage);
+        @Nullable ArkivoEditStorageFactory storageFactory = options.editStorageFactory();
+        if (storageFactory == null) {
+            return ArArkivoStreamingWriter.open(output);
+        }
+        ArkivoEditStorage bodyStorage = storageFactory.open();
+        try {
+            return ArArkivoStreamingWriter.open(output, bodyStorage);
+        } catch (RuntimeException | Error exception) {
+            closeAfterConstructionFailure(bodyStorage, exception);
+            throw exception;
+        }
     }
 
     /// Applies AR defaults to format-independent read options.
     private static ArArchiveOptions.Read readOptions(ArchiveReadOptions options) {
-        return new ArArchiveOptions.Read(options, ArArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR);
+        return new ArArchiveOptions.Read(options);
     }
 
     /// Applies AR defaults to format-independent creation options.
     private static ArArchiveOptions.Create createOptions(ArchiveCreateOptions options) {
-        return new ArArchiveOptions.Create(options, ArArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR);
+        return new ArArchiveOptions.Create(options);
     }
 
     /// Applies AR defaults to format-independent update options.
     private static ArArchiveOptions.Update updateOptions(ArchiveUpdateOptions options) {
-        return new ArArchiveOptions.Update(options, ArArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR);
+        return new ArArchiveOptions.Update(options);
+    }
+
+    /// Closes storage allocated for a writer that could not be constructed.
+    private static void closeAfterConstructionFailure(ArkivoEditStorage storage, Throwable failure) {
+        try {
+            storage.close();
+        } catch (IOException | RuntimeException | Error cleanupFailure) {
+            failure.addSuppressed(cleanupFailure);
+        }
     }
 }

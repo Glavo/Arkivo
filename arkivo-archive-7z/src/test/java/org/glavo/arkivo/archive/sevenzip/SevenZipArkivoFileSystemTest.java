@@ -16,6 +16,7 @@ import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
@@ -4875,24 +4876,24 @@ public final class SevenZipArkivoFileSystemTest {
     private static SevenZipArchiveOptions.Read readOptions(Map<TestOption, Object> options) {
         ArchiveReadOptions common = new ArchiveReadOptions(
                 threadSafety(options),
-                (ArkivoEditStorage) options.get(TestOption.EDIT_STORAGE),
+                editStorageFactory(options),
+                (ArkivoPasswordProvider) options.get(TestOption.PASSWORD_PROVIDER),
+                null,
                 readLimits(options)
         );
-        return new SevenZipArchiveOptions.Read(
-                common,
-                (ArkivoPasswordProvider) options.get(TestOption.PASSWORD_PROVIDER)
-        );
+        return new SevenZipArchiveOptions.Read(common);
     }
 
     /// Builds creation options from test-local descriptors.
     private static SevenZipArchiveOptions.Create createOptions(Map<TestOption, Object> options) {
         ArchiveCreateOptions common = new ArchiveCreateOptions(
                 threadSafety(options),
-                (ArkivoEditStorage) options.get(TestOption.EDIT_STORAGE)
+                editStorageFactory(options),
+                (ArkivoPasswordProvider) options.get(TestOption.PASSWORD_PROVIDER),
+                null
         );
         return new SevenZipArchiveOptions.Create(
                 common,
-                (ArkivoPasswordProvider) options.get(TestOption.PASSWORD_PROVIDER),
                 compression(options),
                 filters(options),
                 solidFileCount(options),
@@ -4904,13 +4905,14 @@ public final class SevenZipArkivoFileSystemTest {
     private static SevenZipArchiveOptions.Update updateOptions(Map<TestOption, Object> options) {
         ArchiveUpdateOptions common = new ArchiveUpdateOptions(
                 threadSafety(options),
-                (ArkivoEditStorage) options.get(TestOption.EDIT_STORAGE),
+                editStorageFactory(options),
                 (ArkivoCommitTarget) options.get(TestOption.COMMIT_TARGET),
+                (ArkivoPasswordProvider) options.get(TestOption.PASSWORD_PROVIDER),
+                null,
                 readLimits(options)
         );
         return new SevenZipArchiveOptions.Update(
                 common,
-                (ArkivoPasswordProvider) options.get(TestOption.PASSWORD_PROVIDER),
                 compression(options),
                 filters(options),
                 solidFileCount(options),
@@ -4929,6 +4931,12 @@ public final class SevenZipArkivoFileSystemTest {
     private static ArkivoFileSystemThreadSafety threadSafety(Map<TestOption, Object> options) {
         Object value = options.get(TestOption.THREAD_SAFETY);
         return value == null ? ArkivoFileSystemThreadSafety.CONCURRENT_READ : (ArkivoFileSystemThreadSafety) value;
+    }
+
+    /// Returns a factory for the test storage instance, or `null` when no storage was configured.
+    private static @Nullable ArkivoEditStorageFactory editStorageFactory(Map<TestOption, Object> options) {
+        @Nullable Object value = options.get(TestOption.EDIT_STORAGE);
+        return value == null ? null : () -> (ArkivoEditStorage) value;
     }
 
     /// Returns configured read limits or unrestricted defaults.

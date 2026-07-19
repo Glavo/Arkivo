@@ -23,12 +23,12 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /// Opens RAR archives as read-only NIO file systems.
-/// Opening a file system indexes entry metadata without retaining decoded bodies. A readable body is decoded and cached
-/// through the configured [org.glavo.arkivo.archive.ArchiveReadOptions#editStorage()] on its first content access, and
-/// later accesses share that cache. The file
-/// system owns and closes the selected edit storage, deferring cached-body cleanup while a channel still uses it. An
-/// uncached body requires the owned archive source to remain reopenable; reaching a solid entry may decode preceding
-/// solid members again to reconstruct its dictionary.
+/// Opening a file system indexes entry metadata without retaining decoded bodies. On its first content access, a readable
+/// body is decoded and cached through storage created by
+/// [org.glavo.arkivo.archive.ArchiveReadOptions#editStorageFactory()]; later accesses share that cache. The file system
+/// owns and closes the selected edit storage, deferring cached-body cleanup while a channel still uses it. An uncached
+/// body requires the owned archive source to remain reopenable; reaching a solid entry may decode preceding solid
+/// members again to reconstruct its dictionary.
 ///
 /// RAR4 compression methods 0 through 5 with extraction versions 15, 20, 26, 29, and 36 are readable, including legacy
 /// LZ modes, RAR 2.x adaptive audio, RAR3 PPMd blocks, and RAR3 virtual-machine filters. RAR5 compression methods 0 through

@@ -24,18 +24,15 @@ import java.util.Set;
 /// Provides built-in archive editor storage strategies.
 @NotNullByDefault
 public final class ArkivoEditStorageSupport {
-    /// The shared memory storage strategy.
-    private static final ArkivoEditStorage MEMORY = new MemoryStorage();
-
     /// Creates built-in archive editor storage strategies.
     private ArkivoEditStorageSupport() {
     }
 
     /// Returns an edit storage that keeps staged content in memory.
     ///
-    /// @return the shared memory-backed storage strategy
+    /// @return a new independently closeable memory-backed storage strategy
     public static ArkivoEditStorage memory() {
-        return MEMORY;
+        return new MemoryStorage();
     }
 
     /// Returns an edit storage that keeps staged content in temporary files under the given directory.
@@ -126,6 +123,9 @@ public final class ArkivoEditStorageSupport {
     /// Implements hybrid memory and temporary-file edit storage.
     @NotNullByDefault
     private static final class HybridStorage implements ArkivoEditStorage {
+        /// The operation-local memory storage.
+        private final MemoryStorage memory = new MemoryStorage();
+
         /// The maximum known size stored in memory.
         private final long memoryThreshold;
 
@@ -142,7 +142,7 @@ public final class ArkivoEditStorageSupport {
         @Override
         public ArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
             if (expectedSize >= 0 && expectedSize <= memoryThreshold) {
-                return MEMORY.createContent(path, expectedSize);
+                return memory.createContent(path, expectedSize);
             }
             return temporaryFiles.createContent(path, expectedSize);
         }

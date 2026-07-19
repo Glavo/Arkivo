@@ -1,13 +1,14 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.spi;
+package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.internal.PrefixReplayReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -29,6 +30,7 @@ import java.nio.channels.spi.AbstractInterruptibleChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -1254,6 +1256,12 @@ final class CodecChannelInterruptibilityTest {
     private static final class CapabilityEncoder
             extends TrackingEncoder
             implements CompressionEncoder.FlushableFramed {
+        /// Starts another synthetic frame without allocating state.
+        @Override
+        public void startFrame(EncodingOptions options) {
+            Objects.requireNonNull(options, "options");
+        }
+
         /// Reports a completed nonterminal flush without emitting bytes.
         @Override
         public CodecOutcome flush(ByteBuffer target) {

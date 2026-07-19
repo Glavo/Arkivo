@@ -234,7 +234,7 @@ final class CodecFactoryTest {
 
         TrackingOutputStream unknownTarget = new TrackingOutputStream();
         assertThrows(
-                IOException.class,
+                IllegalArgumentException.class,
                 () -> CompressionFormats.newOutputStream(
                         "missing",
                         unknownTarget,
@@ -246,7 +246,7 @@ final class CodecFactoryTest {
 
         TrackingInputStream unknownSource = new TrackingInputStream(new byte[]{1, 2, 3});
         assertThrows(
-                IOException.class,
+                IllegalArgumentException.class,
                 () -> CompressionFormats.newInputStream(
                         "missing",
                         unknownSource,
@@ -270,8 +270,8 @@ final class CodecFactoryTest {
     @Test
     void appliesOwnershipAfterFactoryFailures() throws IOException {
         TrackingWritableChannel retainedTarget = new TrackingWritableChannel();
-        IOException retainedEncodeFailure = assertThrows(
-                IOException.class,
+        IllegalArgumentException retainedEncodeFailure = assertThrows(
+                IllegalArgumentException.class,
                 () -> CompressionFormats.newWritableByteChannel("missing", retainedTarget)
         );
         assertEquals("Unknown compression format: missing", retainedEncodeFailure.getMessage());
@@ -279,7 +279,7 @@ final class CodecFactoryTest {
 
         TrackingWritableChannel ownedTarget = new TrackingWritableChannel();
         assertThrows(
-                IOException.class,
+                IllegalArgumentException.class,
                 () -> CompressionFormats.newWritableByteChannel(
                         "missing",
                         ownedTarget,
@@ -326,8 +326,8 @@ final class CodecFactoryTest {
         assertFalse(source.isOpen());
 
         FailingCloseWritableChannel failing = new FailingCloseWritableChannel();
-        IOException failure = assertThrows(
-                IOException.class,
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
                 () -> CompressionFormats.newWritableByteChannel(
                         "missing",
                         failing,

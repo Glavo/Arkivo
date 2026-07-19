@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoPathVolumeTarget;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -342,10 +343,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 append ? readAppendSnapshot(archivePath, config) : null;
         if (appendSnapshot != null) {
             requireCommitTargetSourceOptions(archivePath, config.openOptions());
-            ArkivoEditStorage openedEditStorage = config.editStorage();
-            if (openedEditStorage == null) {
-                openedEditStorage = ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory(archivePath));
-            }
+            @Nullable ArkivoEditStorageFactory storageFactory = config.editStorageFactory();
+            ArkivoEditStorage openedEditStorage = storageFactory != null
+                    ? storageFactory.open()
+                    : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory(archivePath));
             @Nullable ArkivoStoredContent openedStagedRecords = null;
             @Nullable SeekableByteChannel outputChannel = null;
             @Nullable OutputStream outputStream = null;
@@ -641,10 +642,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
         ZipArkivoReadOnlyFileSystemImpl.CentralDirectorySnapshot snapshot =
                 ZipArkivoReadOnlyFileSystemImpl.readCentralDirectorySnapshot(source, config);
-        ArkivoEditStorage openedEditStorage = config.editStorage();
-        if (openedEditStorage == null) {
-            openedEditStorage = ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory());
-        }
+        @Nullable ArkivoEditStorageFactory storageFactory = config.editStorageFactory();
+        ArkivoEditStorage openedEditStorage = storageFactory != null
+                ? storageFactory.open()
+                : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory());
         @Nullable ArkivoStoredContent openedStagedRecords = null;
         @Nullable SeekableByteChannel outputChannel = null;
         @Nullable OutputStream outputStream = null;

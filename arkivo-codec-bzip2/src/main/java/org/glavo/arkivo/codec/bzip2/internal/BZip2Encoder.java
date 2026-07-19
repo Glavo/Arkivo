@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.bzip2.internal;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -48,11 +49,30 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
         encoder = createBlockEncoder();
     }
 
+    /// Explicitly starts another BZip2 frame after a completed boundary.
+    @Override
+    public void startFrame(EncodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        requireOpen();
+        if (state != State.BETWEEN_FRAMES) {
+            throw new IllegalStateException("Cannot start a BZip2 frame while encoder state is " + state);
+        }
+        requireEncoder().startFrame(options);
+        state = State.ACTIVE;
+    }
+
     /// Encodes source bytes until the source is exhausted or compressed output requires target space.
     @Override
     public CodecOutcome encode(ByteBuffer source, ByteBuffer target) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
+        requireOpen();
+        if (state == State.BETWEEN_FRAMES) {
+            if (!source.hasRemaining()) {
+                return CodecOutcome.NEEDS_INPUT;
+            }
+            state = State.ACTIVE;
+        }
         requireState(State.ACTIVE, "encode");
 
         while (true) {
@@ -87,6 +107,9 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
+        if (state == State.BETWEEN_FRAMES) {
+            return CodecOutcome.FLUSHED;
+        }
         if (state == State.ACTIVE) {
             requireEncoder().finishFrame();
             state = State.FLUSHING;
@@ -107,6 +130,9 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
     public CodecOutcome finishFrame(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
+        if (state == State.BETWEEN_FRAMES) {
+            return CodecOutcome.BOUNDARY_REACHED;
+        }
         if (state == State.ACTIVE) {
             requireEncoder().finishFrame();
             state = State.FRAME_FINISHING;
@@ -118,7 +144,7 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
         if (output.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
-        state = State.ACTIVE;
+        state = State.BETWEEN_FRAMES;
         return CodecOutcome.BOUNDARY_REACHED;
     }
 
@@ -129,6 +155,10 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
         requireOpen();
         if (state == State.FINISHED) {
             return CodecOutcome.FINISHED;
+        }
+        if (state == State.BETWEEN_FRAMES) {
+            requireEncoder().finish();
+            state = State.FINISHING;
         }
         if (state == State.ACTIVE) {
             requireEncoder().finish();
@@ -200,6 +230,9 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
     private enum State {
         /// Source bytes may be accepted.
         ACTIVE,
+
+        /// A frame boundary completed and no following frame is active.
+        BETWEEN_FRAMES,
 
         /// A flush boundary must be drained.
         FLUSHING,

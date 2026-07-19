@@ -5,7 +5,7 @@ package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -36,9 +36,9 @@ public final class ArchiveEnvironmentOptions {
                     ArchiveEnvironmentOptions::openOptionsValue
             );
 
-    /// The NIO environment key for edit storage.
-    public static final ArchiveOption<ArkivoEditStorage> EDIT_STORAGE =
-            ArchiveOption.of("arkivo", "editStorage", ArkivoEditStorage.class);
+    /// The NIO environment key for the operation-owned edit-storage factory.
+    public static final ArchiveOption<ArkivoEditStorageFactory> EDIT_STORAGE_FACTORY =
+            ArchiveOption.of("arkivo", "editStorageFactory", ArkivoEditStorageFactory.class);
 
     /// The NIO environment key for update publication.
     public static final ArchiveOption<ArkivoCommitTarget> COMMIT_TARGET =

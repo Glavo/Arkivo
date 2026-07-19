@@ -8,6 +8,7 @@ import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
@@ -369,10 +370,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.headerEncryption = null;
             this.headerEncryptionClosed = true;
             this.fileStore = SevenZipFileStore.WRITABLE;
-            ArkivoEditStorage openedEditStorage = config.editStorage();
-            if (openedEditStorage == null) {
-                openedEditStorage = ArkivoEditStorage.temporaryFiles(defaultStagingStorageDirectory(this.archivePath));
-            }
+            @Nullable ArkivoEditStorageFactory storageFactory = config.editStorageFactory();
+            ArkivoEditStorage openedEditStorage = storageFactory != null
+                    ? storageFactory.open()
+                    : ArkivoEditStorage.temporaryFiles(defaultStagingStorageDirectory(this.archivePath));
             boolean newArchive = this.archivePath != null && !Files.exists(this.archivePath);
             SevenZipArchiveMetadata archiveMetadata;
             Map<String, SevenZipEntryMetadata> parsedEntries;
@@ -461,13 +462,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.headerEncryption = null;
             this.headerEncryptionClosed = true;
             this.fileStore = SevenZipFileStore.READ_ONLY;
-            ArkivoEditStorage openedEditStorage = config.editStorage();
-            if (openedEditStorage == null) {
-                openedEditStorage = ArkivoEditStorage.hybrid(
+            @Nullable ArkivoEditStorageFactory storageFactory = config.editStorageFactory();
+            ArkivoEditStorage openedEditStorage = storageFactory != null
+                    ? storageFactory.open()
+                    : ArkivoEditStorage.hybrid(
                         DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD,
                         defaultStagingStorageDirectory(this.archivePath)
                 );
-            }
             SevenZipArchiveMetadata archiveMetadata;
             Map<String, SevenZipEntryMetadata> parsedEntries;
             Map<String, List<Path>> parsedChildren;

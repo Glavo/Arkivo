@@ -54,16 +54,24 @@ import java.util.Set;
 /// channel-source update requires an explicit commit target.
 @NotNullByDefault
 public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permits TarArkivoFileSystemImpl {
-    /// The option for a compression codec wrapping the TAR byte stream.
+    /// The option for the explicit TAR outer-compression policy.
     ///
-    /// Values may be a `CompressionCodec` or stable compression format name. Existing seekable archives auto-detect installed formats
-    /// when this option is absent, while forward-only streaming readers treat an absent option as uncompressed because
-    /// they cannot reliably undo a false compression match. New archives remain uncompressed when it is absent.
-    private static final ArchiveOption<CompressionCodec<?>> COMPRESSION =
+    /// Raw NIO environment values may be a policy, a `CompressionCodec`, or a stable compression format name. A codec or
+    /// format name selects [TarCompression.Codec].
+    private static final ArchiveOption<TarCompression> COMPRESSION =
             ArchiveOption.of(
                     "arkivo.tar",
                     "compression",
-                    compressionCodecType(),
+                    TarCompression.class,
+                    TarArkivoFileSystem::compressionOptionValue
+            );
+
+    /// The option for decoding compression of an existing archive during an update.
+    private static final ArchiveOption<TarCompression> SOURCE_COMPRESSION =
+            ArchiveOption.of(
+                    "arkivo.tar",
+                    "sourceCompression",
+                    TarCompression.class,
                     TarArkivoFileSystem::compressionOptionValue
             );
 
@@ -256,30 +264,31 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
 
     /// Converts strongly typed TAR read settings for internal indexed readers.
     static ArchiveOptions toLegacyOptions(TarArchiveOptions.Read options) {
-        ArchiveOptions result = ArchiveOptions.fromReadOptions(options.common())
-                .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector());
-        return options.compression() == null ? result : result.with(COMPRESSION, options.compression());
+        return ArchiveOptions.fromReadOptions(options.common())
+                .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector())
+                .with(COMPRESSION, options.compression());
     }
 
     /// Converts strongly typed TAR creation settings for the internal writer.
     static ArchiveOptions toLegacyOptions(TarArchiveOptions.Create options) {
-        ArchiveOptions result = ArchiveOptions.fromCreateOptions(options.common())
+        return ArchiveOptions.fromCreateOptions(options.common())
                 .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
                         StandardOpenOption.WRITE,
                         StandardOpenOption.CREATE_NEW
-                ));
-        return options.compression() == null ? result : result.with(COMPRESSION, options.compression());
+                ))
+                .with(COMPRESSION, options.compression());
     }
 
     /// Converts strongly typed TAR update settings for the internal complete-rewrite implementation.
     static ArchiveOptions toLegacyOptions(TarArchiveOptions.Update options) {
-        ArchiveOptions result = ArchiveOptions.fromUpdateOptions(options.common())
+        return ArchiveOptions.fromUpdateOptions(options.common())
                 .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
                         StandardOpenOption.READ,
                         StandardOpenOption.WRITE
                 ))
-                .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector());
-        return options.compression() == null ? result : result.with(COMPRESSION, options.compression());
+                .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector())
+                .with(SOURCE_COMPRESSION, options.sourceCompression())
+                .with(COMPRESSION, options.targetCompression());
     }
 
     /// Converts a raw metadata charset detector option value.
@@ -300,21 +309,18 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Converts a raw compression option value.
-    private static CompressionCodec<?> compressionOptionValue(Object value) {
+    private static TarCompression compressionOptionValue(Object value) {
+        if (value instanceof TarCompression compression) {
+            return compression;
+        }
         if (value instanceof CompressionCodec<?> codec) {
-            return codec;
+            return TarCompression.using(codec);
         }
         if (value instanceof String name) {
-            return CompressionFormats.require(name).defaultCodec();
+            return TarCompression.using(CompressionFormats.require(name).defaultCodec());
         }
         throw new IllegalArgumentException(
-                "Expected CompressionCodec or String for key: " + COMPRESSION.key()
+                "Expected TarCompression, CompressionCodec, or String for key: " + COMPRESSION.key()
         );
-    }
-
-    /// Returns the erased compression codec class token with its public wildcard type restored.
-    @SuppressWarnings("unchecked")
-    private static Class<CompressionCodec<?>> compressionCodecType() {
-        return (Class<CompressionCodec<?>>) (Class<?>) CompressionCodec.class;
     }
 }

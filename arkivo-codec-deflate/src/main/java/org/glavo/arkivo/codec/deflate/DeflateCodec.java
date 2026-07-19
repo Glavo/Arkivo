@@ -10,7 +10,7 @@ import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateDecoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateEncoder;
-import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

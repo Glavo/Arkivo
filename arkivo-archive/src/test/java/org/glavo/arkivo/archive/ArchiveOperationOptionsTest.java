@@ -6,14 +6,26 @@ package org.glavo.arkivo.archive;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies immutable strongly typed archive operation options.
 @NotNullByDefault
 public final class ArchiveOperationOptionsTest {
+    /// Verifies reusable storage factories create independent operation-owned instances.
+    @Test
+    public void editStorageFactoriesAreReusable() throws IOException {
+        ArkivoEditStorageFactory factory = ArkivoEditStorageFactory.memory();
+        try (ArkivoEditStorage first = factory.open(); ArkivoEditStorage second = factory.open()) {
+            assertNotSame(first, second);
+        }
+    }
+
     /// Verifies read defaults and copy methods preserve unrelated settings.
     @Test
     public void readOptionsAreImmutable() {
@@ -24,10 +36,12 @@ public final class ArchiveOperationOptionsTest {
                 .withLimits(limits);
 
         assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, defaults.threadSafety());
-        assertSame(ArchiveReadLimits.UNLIMITED, defaults.limits());
+        assertSame(ArchiveReadLimits.DEFAULT, defaults.limits());
         assertEquals(ArkivoFileSystemThreadSafety.NONE, configured.threadSafety());
         assertSame(limits, configured.limits());
-        assertNull(configured.editStorage());
+        assertNull(configured.editStorageFactory());
+        assertNull(configured.passwordProvider());
+        assertNull(configured.metadataCharsetDetector());
     }
 
     /// Verifies creation options expose explicit common configuration.
@@ -38,7 +52,9 @@ public final class ArchiveOperationOptionsTest {
 
         assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, ArchiveCreateOptions.DEFAULT.threadSafety());
         assertEquals(ArkivoFileSystemThreadSafety.NONE, configured.threadSafety());
-        assertNull(configured.editStorage());
+        assertNull(configured.editStorageFactory());
+        assertNull(configured.passwordProvider());
+        assertNull(configured.metadataCharsetDetector());
     }
 
     /// Verifies update options carry publication and read-limit policy together.
