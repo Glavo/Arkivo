@@ -144,6 +144,8 @@ org.glavo.arkivo.codec.CompressionCodec$Flushable
 org.glavo.arkivo.codec.CompressionCodec$FlushableFramed
 org.glavo.arkivo.codec.CompressionCodec$Framed
 org.glavo.arkivo.codec.CompressionCodec$LevelConfigurable
+org.glavo.arkivo.codec.CompressionCodec$Seekable
+org.glavo.arkivo.codec.CompressionCodec$Seekable$Index
 org.glavo.arkivo.codec.CompressionDecoder
 org.glavo.arkivo.codec.CompressionDecoder$DictionaryAware
 org.glavo.arkivo.codec.CompressionDecoder$Framed
@@ -170,6 +172,7 @@ org.glavo.arkivo.codec.DictionaryRequiredException
 org.glavo.arkivo.codec.EncodingOptions
 org.glavo.arkivo.codec.RawCompressionDictionary
 org.glavo.arkivo.codec.ResourceOwnership
+org.glavo.arkivo.codec.SeekableEncodingOptions
 org.glavo.arkivo.codec.bzip2.BZip2Codec
 org.glavo.arkivo.codec.bzip2.BZip2Format
 org.glavo.arkivo.codec.compress.UnixCompressCodec

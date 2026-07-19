@@ -4,7 +4,8 @@
 /// Provides TAR archive file systems and forward-only readers and writers.
 ///
 /// The exported API indexes TAR entries for NIO access, supports complete-rewrite updates, and reads or writes entries
-/// sequentially. Installed Arkivo codecs can wrap the TAR byte stream in an outer compression format.
+/// sequentially. Installed Arkivo codecs can wrap the TAR byte stream in an outer compression format; indexed codecs
+/// permit lazy random access to contiguous entry bodies without expanding the complete archive.
 module org.glavo.arkivo.archive.tar {
     requires transitive org.glavo.arkivo.archive;
     requires transitive org.glavo.arkivo.codec;

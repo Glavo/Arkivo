@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Defines transport-independent compression engines, blocking channel and stream adapters, decompression safety
-/// limits, and stateful byte transforms.
+/// Defines transport-independent compression engines, blocking channel and stream adapters, indexed random-access
+/// compression, decompression safety limits, and stateful byte transforms.
 ///
 /// Compression formats are discovered as [org.glavo.arkivo.codec.CompressionFormat] services. Applications normally
 /// start with [org.glavo.arkivo.codec.CompressionFormats], an explicitly selected

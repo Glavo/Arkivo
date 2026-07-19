@@ -10,23 +10,27 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.OpenOption;
 import java.util.Set;
 
-/// Provides seekable access to one staged archive entry body.
+/// Provides seekable access to one archive entry body retained by an indexed file system.
+///
+/// A content object may own staged bytes or describe a lazy read-only view over the original archive. Each opened
+/// channel is independently positioned and caller-owned. Closing the content releases only resources retained directly
+/// by that object; channels already returned to callers retain their own lifecycle.
 @NotNullByDefault
 public interface ArkivoStoredContent extends AutoCloseable {
-    /// Opens a channel over the staged content with the given open options.
+    /// Opens a channel over the retained content with the given open options.
     ///
     /// @param options the options for this channel open operation
-    /// @return a new caller-owned channel over the staged content
-    /// @throws IOException if the staged content cannot be opened
+    /// @return a new caller-owned channel over the retained content
+    /// @throws IOException if the retained content cannot be opened
     SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException;
 
-    /// Returns the current size of the staged content.
+    /// Returns the current logical size of the retained content.
     ///
     /// @return the current byte count
     /// @throws IOException if the content size cannot be obtained
     long size() throws IOException;
 
-    /// Releases this staged content and removes any temporary files owned by it.
+    /// Releases resources retained by this content and removes any temporary files it owns.
     ///
     /// @throws IOException if owned backing resources cannot be released
     @Override

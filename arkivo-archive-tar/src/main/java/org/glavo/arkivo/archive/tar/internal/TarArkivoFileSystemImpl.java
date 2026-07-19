@@ -29,7 +29,6 @@ import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoFormat;
-import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -229,15 +228,15 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Opens a TAR file system from an archive path.
     ///
-    /// @param provider the provider exposed by the returned file system and its paths
+    /// @param provider    the provider exposed by the returned file system and its paths
     /// @param archivePath the archive path to read, create, or update according to `options`
-    /// @param archiveUri the corresponding normalized archive URI used to construct entry URIs
-    /// @param options the access, compression, metadata decoding, staging, publication, limits, and thread-safety policy
+    /// @param archiveUri  the corresponding normalized archive URI used to construct entry URIs
+    /// @param options     the access, compression, metadata decoding, staging, publication, limits, and thread-safety policy
     /// @param closeAction the provider-registry action invoked during file-system close
     /// @return a read-only snapshot, forward-only writer, or complete-rewrite update file system selected by the open
     ///         options
-    /// @throws IllegalArgumentException if the access or publication options form an invalid mode
-    /// @throws IOException if the path, codec, archive metadata, output, or staging storage cannot be initialized
+    /// @throws IllegalArgumentException      if the access or publication options form an invalid mode
+    /// @throws IOException                   if the path, codec, archive metadata, output, or staging storage cannot be initialized
     /// @throws UnsupportedOperationException if an access option or publication feature is unsupported in its mode
     public static TarArkivoFileSystemImpl open(
             TarArkivoFileSystemProvider provider,
@@ -266,13 +265,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     if (compressionCodec == null) {
                         compressionCodec = detectCompression(archivePath, readLimits);
                     }
-                    try (InputStream input = openArchiveInput(
-                            Files.newInputStream(archivePath, StandardOpenOption.READ),
+                    nodes = readNodesFromPath(
+                            archivePath,
                             compressionCodec,
-                            readLimits
-                    )) {
-                        nodes = readNodes(input, editStorage, ownedContents, options);
-                    }
+                            readLimits,
+                            editStorage,
+                            ownedContents,
+                            options
+                    );
                 } else if (openOptions.contains(StandardOpenOption.CREATE)) {
                     nodes = rootNodes();
                 } else {
@@ -342,14 +342,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if (compressionCodec == null) {
                 compressionCodec = detectCompression(archivePath, readLimits);
             }
-            Map<String, Node> nodes;
-            try (InputStream input = openArchiveInput(
-                    Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new)),
+            Map<String, Node> nodes = readNodesFromPath(
+                    archivePath,
                     compressionCodec,
-                    readLimits
-            )) {
-                nodes = readNodes(input, editStorage, ownedContents, options);
-            }
+                    readLimits,
+                    editStorage,
+                    ownedContents,
+                    options
+            );
             return new TarArkivoFileSystemImpl(
                     provider,
                     archivePath,
@@ -380,11 +380,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// supplied; complete-rewrite update requires an explicit commit target.
     ///
     /// @param provider the provider exposed by the returned file system and its paths
-    /// @param source the owned repeatable logical archive source
-    /// @param options the read or update compression, metadata, staging, publication, limits, and thread-safety policy
+    /// @param source   the owned repeatable logical archive source
+    /// @param options  the read or update compression, metadata, staging, publication, limits, and thread-safety policy
     /// @return an indexed read-only snapshot or complete-rewrite update file system backed by `source`
-    /// @throws IllegalArgumentException if update mode has no commit target or the access options are invalid
-    /// @throws IOException if a source channel, codec, archive metadata, or staging storage cannot be initialized
+    /// @throws IllegalArgumentException      if update mode has no commit target or the access options are invalid
+    /// @throws IOException                   if a source channel, codec, archive metadata, or staging storage cannot be initialized
     /// @throws UnsupportedOperationException if write-only or another unsupported access mode is requested
     public static TarArkivoFileSystemImpl open(
             TarArkivoFileSystemProvider provider,
@@ -435,29 +435,22 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     compressionCodec = detectCompression(probeChannel, readLimits);
                 }
             }
-            if (updateMode) {
-            }
-            long archiveSize;
-            Map<String, Node> nodes;
-            try (SeekableByteChannel channel = source.openChannel()) {
-                archiveSize = channel.size();
-                channel.position(0L);
-                try (InputStream input = openArchiveInput(
-                        Channels.newInputStream(channel),
-                        compressionCodec,
-                        readLimits
-                )) {
-                    nodes = readNodes(input, editStorage, ownedContents, options);
-                }
-            }
+            SourceNodes sourceNodes = readNodesFromSource(
+                    source,
+                    compressionCodec,
+                    readLimits,
+                    editStorage,
+                    ownedContents,
+                    options
+            );
             return new TarArkivoFileSystemImpl(
                     provider,
                     null,
                     null,
                     source,
-                    archiveSize,
+                    sourceNodes.archiveSize(),
                     threadSafety,
-                    nodes,
+                    sourceNodes.nodes(),
                     editStorage,
                     ownedContents,
                     null,
@@ -674,10 +667,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Opens an input stream for an entry.
     ///
-    /// @param path the existing regular-file entry to read
+    /// @param path    the existing regular-file entry to read
     /// @param options read options; the empty array and `StandardOpenOption.READ` are accepted
-    /// @return a managed stream positioned at the first byte of the staged logical entry snapshot
-    /// @throws IOException if the path is missing, is not a regular file, is being updated, or its staged content cannot
+    /// @return a managed stream positioned at the first byte of the retained logical entry content
+    /// @throws IOException                   if the path is missing, is not a regular file, is being updated, or its retained content cannot
     ///                     be opened
     /// @throws UnsupportedOperationException if an option requests non-read access
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
@@ -694,15 +687,15 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Opens a read-only byte channel for an entry.
     ///
-    /// Read channels begin at position zero and provide random access to staged logical content. Update-mode channels
+    /// Read channels begin at position zero and provide random access to retained logical content. Update-mode channels
     /// stage random-access changes and install the replacement body when closed. Forward-only write channels expose
     /// their increasing position but reject repositioning or truncation to any other value.
     ///
-    /// @param path the regular-file entry to read, create, or replace
-    /// @param options the read, creation, truncation, append, and write options for the selected file-system mode
+    /// @param path       the regular-file entry to read, create, or replace
+    /// @param options    the read, creation, truncation, append, and write options for the selected file-system mode
     /// @param attributes initial attributes for a newly created entry; only supported creation attributes are accepted
     /// @return a caller-owned channel tracked by the file system until it is closed
-    /// @throws IOException if the entry cannot be found, staged, created, or opened
+    /// @throws IOException                   if the entry cannot be found, retained, created, or opened
     /// @throws UnsupportedOperationException if an option, attribute, or access combination is unsupported
     public SeekableByteChannel newByteChannel(
             Path path,
@@ -744,10 +737,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Closing the stream commits the entry body to the forward-only writer or pending update index. The complete TAR
     /// stream or replacement archive is not finalized or published until the file system closes.
     ///
-    /// @param path the regular-file entry to create or replace
+    /// @param path    the regular-file entry to create or replace
     /// @param options creation, truncation, append, and write options; an empty array selects create, truncate, and write
     /// @return a caller-owned output stream tracked by the file system until it is closed
-    /// @throws IOException if the entry cannot be created, staged, or opened for output
+    /// @throws IOException                   if the entry cannot be created, staged, or opened for output
     /// @throws UnsupportedOperationException if the file system is read-only or an option is unsupported in its mode
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
@@ -789,10 +782,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Creates a new forward-only directory entry.
     ///
-    /// @param directory the archive path of the new directory
+    /// @param directory  the archive path of the new directory
     /// @param attributes initial attributes for the directory; currently POSIX permissions are supported
-    /// @throws IOException if the entry exists, its parent is not a directory, or it cannot be staged or encoded
-    /// @throws ReadOnlyFileSystemException if the file system is read-only
+    /// @throws IOException                   if the entry exists, its parent is not a directory, or it cannot be staged or encoded
+    /// @throws ReadOnlyFileSystemException   if the file system is read-only
     /// @throws UnsupportedOperationException if an initial attribute is unsupported
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
@@ -829,11 +822,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     ///
     /// The target path is stored as archive-style text and is neither resolved nor required to exist.
     ///
-    /// @param link the archive path of the new symbolic-link entry
-    /// @param target the target text to record in the entry
+    /// @param link       the archive path of the new symbolic-link entry
+    /// @param target     the target text to record in the entry
     /// @param attributes initial attributes for the link itself; currently POSIX permissions are supported
-    /// @throws IOException if the entry exists, its parent is not a directory, or it cannot be staged or encoded
-    /// @throws ReadOnlyFileSystemException if the file system is read-only
+    /// @throws IOException                   if the entry exists, its parent is not a directory, or it cannot be staged or encoded
+    /// @throws ReadOnlyFileSystemException   if the file system is read-only
     /// @throws UnsupportedOperationException if an initial attribute is unsupported
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
@@ -874,9 +867,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// must be a regular file; the new entry initially shares its staged content and preserves hard-link semantics in
     /// the rewritten archive.
     ///
-    /// @param link the archive path of the new hard-link entry
+    /// @param link     the archive path of the new hard-link entry
     /// @param existing the existing regular-file entry used as the target
-    /// @throws IOException if the target is missing or unacceptable for the current mode, the link exists, or the
+    /// @throws IOException                 if the target is missing or unacceptable for the current mode, the link exists, or the
     ///                     entry cannot be staged or encoded
     /// @throws ReadOnlyFileSystemException if the file system is read-only
     public void createLink(Path link, Path existing) throws IOException {
@@ -922,8 +915,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// until a changed archive is published on file-system close.
     ///
     /// @param path the existing entry to remove
-    /// @throws IOException if the entry is missing, is a non-empty directory, or is currently open for update
-    /// @throws ReadOnlyFileSystemException if this file system is read-only
+    /// @throws IOException                   if the entry is missing, is a non-empty directory, or is currently open for update
+    /// @throws ReadOnlyFileSystemException   if this file system is read-only
     /// @throws UnsupportedOperationException if this is a forward-only write file system
     public void delete(Path path) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
@@ -959,12 +952,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// `StandardCopyOption.REPLACE_EXISTING` permits a compatible target replacement; `ATOMIC_MOVE` is accepted because
     /// publication is already deferred to the archive transaction.
     ///
-    /// @param source the existing entry or directory subtree to move
-    /// @param target the destination archive path
+    /// @param source  the existing entry or directory subtree to move
+    /// @param target  the destination archive path
     /// @param options supported replacement or atomic-move options
-    /// @throws IOException if the source or destination parent is missing, the target conflicts, or an active update
+    /// @throws IOException                   if the source or destination parent is missing, the target conflicts, or an active update
     ///                     channel prevents the move
-    /// @throws ReadOnlyFileSystemException if this file system is read-only
+    /// @throws ReadOnlyFileSystemException   if this file system is read-only
     /// @throws UnsupportedOperationException if this is a forward-only write file system or an option is unsupported
     public void move(Path source, Path target, CopyOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
@@ -1064,13 +1057,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Changes affect the pending complete-rewrite index and are published only when the file system closes. TAR
     /// attributes apply to the named archive entry itself; the link options are retained for the NIO provider signature.
     ///
-    /// @param path the existing entry whose metadata is changed
+    /// @param path      the existing entry whose metadata is changed
     /// @param attribute the `[view:]name` identifying a basic, owner, POSIX, or TAR attribute
-    /// @param value the replacement value, or `null` where the selected TAR attribute supports clearing a field
-    /// @param options link-handling options supplied through the provider entry point
-    /// @throws IOException if the entry is missing or currently open for update
-    /// @throws IllegalArgumentException if the attribute name or value is invalid
-    /// @throws ReadOnlyFileSystemException if this file system is read-only
+    /// @param value     the replacement value, or `null` where the selected TAR attribute supports clearing a field
+    /// @param options   link-handling options supplied through the provider entry point
+    /// @throws IOException                   if the entry is missing or currently open for update
+    /// @throws IllegalArgumentException      if the attribute name or value is invalid
+    /// @throws ReadOnlyFileSystemException   if this file system is read-only
     /// @throws UnsupportedOperationException if this is a forward-only writer or the attribute view is unsupported
     public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
@@ -1110,9 +1103,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// is a fixed snapshot, supports one iterator, and is tracked until the caller or file system closes it.
     ///
     /// @param directory the existing directory whose immediate children are listed
-    /// @param filter the predicate applied eagerly to each child path
+    /// @param filter    the predicate applied eagerly to each child path
     /// @return a managed directory stream containing the accepted child paths
-    /// @throws IOException if `directory` is missing, is not a directory, or cannot be read
+    /// @throws IOException                if `directory` is missing, is not a directory, or cannot be read
     /// @throws DirectoryIteratorException if `filter` throws `IOException`
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
@@ -1153,10 +1146,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// writers accept only write access to already known paths. Update sessions validate existence and permit every
     /// requested mode because their indexed entries are both readable and mutable.
     ///
-    /// @param path the path whose existence and accessibility are checked
+    /// @param path  the path whose existence and accessibility are checked
     /// @param modes the requested access modes, or an empty array to check only existence
-    /// @throws IOException if the path does not exist or is currently hidden by an open update channel
-    /// @throws ReadOnlyFileSystemException if a non-read mode is requested from a read-only session
+    /// @throws IOException                   if the path does not exist or is currently hidden by an open update channel
+    /// @throws ReadOnlyFileSystemException   if a non-read mode is requested from a read-only session
     /// @throws UnsupportedOperationException if read or execute access is requested from a forward-only writer
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
@@ -1232,9 +1225,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Creating a supported view does not access the path; existence, link resolution, and writability are checked when
     /// the returned view performs an operation.
     ///
-    /// @param <V> the requested attribute-view interface
-    /// @param path the path to which the view is bound
-    /// @param type the basic, owner, POSIX, or TAR attribute-view type
+    /// @param <V>     the requested attribute-view interface
+    /// @param path    the path to which the view is bound
+    /// @param type    the basic, owner, POSIX, or TAR attribute-view type
     /// @param options options controlling symbolic-link resolution by the bound view
     /// @return a new view bound to `path`, or `null` when `type` is unsupported
     public <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeView(
@@ -1273,12 +1266,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Reads attributes for a path.
     ///
-    /// @param <A> the requested basic-attribute interface
-    /// @param path the existing path whose indexed metadata is read
-    /// @param type `BasicFileAttributes`, `PosixFileAttributes`, or `TarArkivoEntryAttributes`
+    /// @param <A>     the requested basic-attribute interface
+    /// @param path    the existing path whose indexed metadata is read
+    /// @param type    `BasicFileAttributes`, `PosixFileAttributes`, or `TarArkivoEntryAttributes`
     /// @param options options controlling symbolic-link resolution through the provider entry point
     /// @return the stable indexed attribute snapshot implementing `type`
-    /// @throws IOException if the path is missing, currently unavailable, or cannot be read
+    /// @throws IOException                   if the path is missing, currently unavailable, or cannot be read
     /// @throws UnsupportedOperationException if `type` is unsupported or the file system is forward-only write-only
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
             throws IOException {
@@ -1305,12 +1298,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Reads named attributes for a path.
     ///
-    /// @param path the existing path whose indexed metadata is read
+    /// @param path       the existing path whose indexed metadata is read
     /// @param attributes a comma-separated selection in `[view:]name` form, or `[view:]*` for every attribute
-    /// @param options options controlling symbolic-link resolution through the provider entry point
+    /// @param options    options controlling symbolic-link resolution through the provider entry point
     /// @return an unmodifiable map from requested attribute names to snapshot values
-    /// @throws IOException if the path is missing, currently unavailable, or cannot be read
-    /// @throws IllegalArgumentException if the selection contains no attribute name
+    /// @throws IOException                   if the path is missing, currently unavailable, or cannot be read
+    /// @throws IllegalArgumentException      if the selection contains no attribute name
     /// @throws UnsupportedOperationException if the selected view is unsupported or the file system is forward-only
     ///                                       write-only
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
@@ -1849,6 +1842,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             }
         }
     }
+
     /// Releases uncommitted stored content or retains it for close-time cleanup retry.
     private void releaseStoredContent(ArkivoStoredContent content) {
         try {
@@ -2361,6 +2355,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private static Map<String, Node> rootNodes() {
         return Map.of("", new Node("", syntheticDirectoryAttributes("/"), true, null, true));
     }
+
     /// Returns the indexed-content storage required outside forward-only write mode.
     private ArkivoEditStorage requireEditStorage() {
         return Objects.requireNonNull(editStorage, "editStorage");
@@ -2499,17 +2494,93 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
+    /// Reads indexed nodes from a path through a repeatable channel factory.
+    private static Map<String, Node> readNodesFromPath(
+            Path archivePath,
+            @Nullable CompressionCodec<?> compressionCodec,
+            ArchiveReadLimits readLimits,
+            ArkivoEditStorage editStorage,
+            Set<ArkivoStoredContent> ownedContents,
+            ArchiveOptions options
+    ) throws IOException {
+        ArkivoSeekableChannelSource source =
+                () -> Files.newByteChannel(archivePath, StandardOpenOption.READ);
+        return readNodesFromSource(
+                source,
+                compressionCodec,
+                readLimits,
+                editStorage,
+                ownedContents,
+                options
+        ).nodes();
+    }
+
+    /// Reads indexed nodes from a repeatable source, using its outer compression index when available.
+    private static SourceNodes readNodesFromSource(
+            ArkivoSeekableChannelSource source,
+            @Nullable CompressionCodec<?> compressionCodec,
+            ArchiveReadLimits readLimits,
+            ArkivoEditStorage editStorage,
+            Set<ArkivoStoredContent> ownedContents,
+            ArchiveOptions options
+    ) throws IOException {
+        try (SeekableByteChannel channel = source.openChannel()) {
+            long archiveSize = channel.size();
+            @Nullable SeekableCompressedTarSource seekableSource = SeekableCompressedTarSource.open(
+                    source,
+                    channel,
+                    compressionCodec,
+                    readLimits
+            );
+            if (seekableSource != null) {
+                try (InputStream input = seekableSource.newInputStream()) {
+                    return new SourceNodes(
+                            readNodes(input, editStorage, ownedContents, options, seekableSource),
+                            archiveSize
+                    );
+                }
+            }
+            channel.position(0L);
+            try (InputStream input = openArchiveInput(
+                    Channels.newInputStream(channel),
+                    compressionCodec,
+                    readLimits
+            )) {
+                return new SourceNodes(
+                        readNodes(input, editStorage, ownedContents, options, null),
+                        archiveSize
+                );
+            }
+        }
+    }
+
+    /// Stores nodes parsed from a repeatable source together with its captured encoded size.
+    ///
+    /// @param nodes       the complete logical node index
+    /// @param archiveSize the captured complete encoded source size
+    @NotNullByDefault
+    private record SourceNodes(Map<String, Node> nodes, long archiveSize) {
+        /// Validates a source-read result and its captured encoded size.
+        private SourceNodes {
+            Objects.requireNonNull(nodes, "nodes");
+            if (archiveSize < 0L) {
+                throw new IllegalArgumentException("archiveSize must not be negative");
+            }
+        }
+    }
+
     /// Reads all entry nodes from a TAR stream.
     private static Map<String, Node> readNodes(
             InputStream input,
             ArkivoEditStorage editStorage,
             Set<ArkivoStoredContent> ownedContents,
-            ArchiveOptions options
+            ArchiveOptions options,
+            @Nullable SeekableCompressedTarSource seekableSource
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         nodes.put("", new Node("", syntheticDirectoryAttributes("/"), true, null, true));
 
-        try (TarArkivoStreamingReader reader = new TarArkivoStreamingReaderImpl(input, options)) {
+        try (TarArkivoStreamingReaderImpl reader = new TarArkivoStreamingReaderImpl(input, options)) {
             while (reader.next()) {
                 TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());
@@ -2526,14 +2597,21 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     nodeAttributes = attributesWithSize(attributes, target.contentSize());
                 } else if (attributes instanceof TarEntryAttributes internalAttributes
                         && internalAttributes.bodySize() > 0L) {
-                    try (InputStream entryInput = reader.openInputStream()) {
-                        content = StoredContentSupport.storeInput(
-                                editStorage,
-                                ownedContents,
-                                path,
-                                internalAttributes.bodySize(),
-                                entryInput
+                    if (seekableSource != null && reader.currentBodyIsContiguous()) {
+                        content = seekableSource.newStoredContent(
+                                reader.currentBodyOffset(),
+                                internalAttributes.bodySize()
                         );
+                    } else {
+                        try (InputStream entryInput = reader.openInputStream()) {
+                            content = StoredContentSupport.storeInput(
+                                    editStorage,
+                                    ownedContents,
+                                    path,
+                                    internalAttributes.bodySize(),
+                                    entryInput
+                            );
+                        }
                     }
                 }
                 long contentSize = content != null ? content.size() : 0L;
@@ -3081,6 +3159,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return ArkivoFileStoreAttributes.get(this, attribute);
         }
     }
+
     /// Records a written entry when its body stream is closed successfully.
     @NotNullByDefault
     private final class WrittenEntryOutputStream extends OutputStream {

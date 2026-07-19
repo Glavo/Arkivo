@@ -20,6 +20,8 @@ import java.util.Objects;
 /// create compression writes an uncompressed TAR stream; a `null` update compression preserves the source codec
 /// resolved when the archive was opened. The metadata detector handles legacy header text and PAX
 /// binary values and falls back to UTF-8 when it returns `null`.
+/// A seekable-capable compression configuration writes its default indexed representation, allowing a later TAR file
+/// system to read contiguous entry bodies without expanding the complete compressed stream.
 @NotNullByDefault
 public final class TarArchiveOptions {
     /// The default detector for TAR header text.

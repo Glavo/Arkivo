@@ -17,7 +17,7 @@ import java.util.Objects;
 
 /// Coordinates interrupt and concurrent-close semantics around one interruptible endpoint.
 @NotNullByDefault
-final class InterruptibleChannelSupport {
+public final class InterruptibleChannelSupport {
     /// Identifies why this adapter became terminal.
     @NotNullByDefault
     private enum Termination {
@@ -54,9 +54,11 @@ final class InterruptibleChannelSupport {
     }
 
     /// Executes one non-null-returning I/O operation.
+    ///
+    /// @param <T> the operation result type
     @FunctionalInterface
     @NotNullByDefault
-    interface IOOperation<T> {
+    public interface IOOperation<T> {
         /// Executes the operation.
         ///
         /// @return the non-null operation result
@@ -67,7 +69,7 @@ final class InterruptibleChannelSupport {
     /// Executes one void I/O action.
     @FunctionalInterface
     @NotNullByDefault
-    interface IOAction {
+    public interface IOAction {
         /// Executes the action.
         ///
         /// @throws IOException if the action fails
@@ -98,7 +100,7 @@ final class InterruptibleChannelSupport {
     /// Creates lifecycle state for an interruptible backing endpoint.
     ///
     /// @param endpoint the endpoint whose close unblocks active operations
-    InterruptibleChannelSupport(Channel endpoint) {
+    public InterruptibleChannelSupport(Channel endpoint) {
         this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
         if (!(endpoint instanceof InterruptibleChannel)) {
             throw new IllegalArgumentException("endpoint does not implement InterruptibleChannel");
@@ -112,7 +114,7 @@ final class InterruptibleChannelSupport {
     /// @param <T>         the operation result type
     /// @return the non-null operation result
     /// @throws IOException if the operation, cancellation, endpoint close, or cleanup fails
-    <T> T execute(IOOperation<T> operation, IOAction abortAction) throws IOException {
+    public <T> T execute(IOOperation<T> operation, IOAction abortAction) throws IOException {
         Objects.requireNonNull(operation, "operation");
         Objects.requireNonNull(abortAction, "abortAction");
         boolean preInterrupted;
@@ -148,7 +150,7 @@ final class InterruptibleChannelSupport {
     /// @param operation   the operation to execute
     /// @param abortAction the codec cleanup performed after terminal cancellation
     /// @throws IOException if the operation, cancellation, endpoint close, or cleanup fails
-    void execute(IOAction operation, IOAction abortAction) throws IOException {
+    public void execute(IOAction operation, IOAction abortAction) throws IOException {
         execute(() -> {
             operation.run();
             return Boolean.TRUE;
@@ -160,7 +162,7 @@ final class InterruptibleChannelSupport {
     /// @param normalCloseAction the ordinary codec finalization or release action
     /// @param abortAction       the codec cleanup performed after terminal cancellation
     /// @throws IOException if terminal processing, endpoint close, or cleanup fails
-    void close(IOAction normalCloseAction, IOAction abortAction) throws IOException {
+    public void close(IOAction normalCloseAction, IOAction abortAction) throws IOException {
         Objects.requireNonNull(normalCloseAction, "normalCloseAction");
         Objects.requireNonNull(abortAction, "abortAction");
         CloseMode mode;
@@ -216,7 +218,7 @@ final class InterruptibleChannelSupport {
     /// Returns whether another adapter operation may begin.
     ///
     /// @return whether the adapter is open for another operation
-    boolean isOpen() {
+    public boolean isOpen() {
         return open && endpoint.isOpen();
     }
 

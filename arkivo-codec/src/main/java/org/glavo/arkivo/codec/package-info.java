@@ -10,6 +10,9 @@
 /// Every codec accepts exact source-size metadata through [EncodingOptions]; implementations may use or ignore it
 /// according to their format and algorithm. [DecodingOptions] supplies decoded-output, history-window, and decoder
 /// working-memory limits without changing the reusable codec configuration.
+/// [CompressionCodec.Seekable] describes formats that append a terminal frame index and can expose the decoded byte
+/// sequence as a read-only [java.nio.channels.SeekableByteChannel]. [SeekableEncodingOptions] controls the independent
+/// frame size for one such encoding operation.
 /// The default [CompressionCodec] channel factories preserve [java.nio.channels.InterruptibleChannel] when their backing
 /// channel implements it, including terminal interruption and asynchronous-close behavior.
 @NotNullByDefault

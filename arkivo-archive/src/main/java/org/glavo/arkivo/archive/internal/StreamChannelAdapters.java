@@ -11,6 +11,7 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
@@ -43,7 +44,7 @@ public final class StreamChannelAdapters {
     /// Returns an input stream that owns the readable channel.
     ///
     /// @param source the channel whose ownership is transferred to the stream
-    /// @return an input stream that rejects zero-progress channel reads
+    /// @return an input stream that rejects zero-progress channel reads and uses positioning for seekable-channel skips
     public static InputStream inputStream(ReadableByteChannel source) {
         return new ChannelInputStream(Objects.requireNonNull(source, "source"));
     }
@@ -165,6 +166,23 @@ public final class StreamChannelAdapters {
                 throw new IOException("Readable channel made no progress");
             }
             return read;
+        }
+
+        /// Skips by repositioning a seekable source or by using the ordinary bounded input-stream fallback.
+        @Override
+        public long skip(long count) throws IOException {
+            ensureOpen();
+            if (count <= 0L) {
+                return 0L;
+            }
+            if (source instanceof SeekableByteChannel seekableSource) {
+                long position = seekableSource.position();
+                long available = Math.max(0L, seekableSource.size() - position);
+                long skipped = Math.min(count, available);
+                seekableSource.position(position + skipped);
+                return skipped;
+            }
+            return super.skip(count);
         }
 
         /// Closes the channel and commits closure only after success.

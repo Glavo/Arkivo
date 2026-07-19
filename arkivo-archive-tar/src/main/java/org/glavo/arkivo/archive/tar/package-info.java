@@ -8,6 +8,9 @@
 /// [org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter] process entries in archive order. Readers apply GNU and PAX
 /// metadata and expose supported sparse entries as expanded logical files; a rewrite preserves expanded content rather
 /// than the original sparse record layout.
+/// Seekable-capable outer codecs are written with their indexed representation. Indexed file systems reuse that index
+/// to read contiguous entry bodies lazily; formats without an index and sparse logical bodies use configured edit
+/// storage instead.
 @NotNullByDefault
 package org.glavo.arkivo.archive.tar;
 

@@ -7,6 +7,11 @@
 /// parallel workers, long-distance matching, and standard or magicless physical framing. Standard framing is
 /// self-identifying and permits skippable frames. Magicless framing omits the magic value and therefore requires the
 /// caller to select [ZstdFrameFormat#MAGICLESS] out of band.
+/// Standard-frame configurations can write the Zstandard seekable representation: independently decodable frames are
+/// followed by a skippable seek table, so ordinary sequential decoders remain compatible while indexed readers decode
+/// only frames intersecting the requested logical range. Decoder memory limits account for index parsing, the retained
+/// primitive index, the cached decoded frame, and the remaining codec window budget. Magicless framing does not support
+/// this representation.
 ///
 /// Builders and codec engines are mutable and not safe for concurrent use. Each engine owns independent history and
 /// pending output, advances caller [java.nio.ByteBuffer] positions by actual progress, and retains no caller buffer after

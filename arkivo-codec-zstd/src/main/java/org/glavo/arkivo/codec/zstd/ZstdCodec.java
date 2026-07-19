@@ -4,19 +4,26 @@
 package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
+import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.codec.SeekableEncodingOptions;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoderParameters;
+import org.glavo.arkivo.codec.zstd.internal.ZstdSeekableIndex;
+import org.glavo.arkivo.codec.zstd.internal.ZstdSeekableWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Provides an immutable Zstandard configuration and transport-independent frame engines.
@@ -28,12 +35,15 @@ import java.util.Objects;
 ///
 /// Standard framing carries a magic value and may carry content size and a full-dictionary identifier. Magicless
 /// framing omits only the magic value and must be selected out of band. A known source size is exact even when header
-/// content-size emission is disabled.
+/// content-size emission is disabled. Standard-frame configurations also write and parse the interoperable Zstandard
+/// seekable representation; its independently decodable frames remain sequentially decodable, while the terminal
+/// skippable seek table enables logical random access. Enabling frame checksums also emits seek-table checksums.
 @NotNullByDefault
 public final class ZstdCodec
         implements CompressionCodec.LevelConfigurable<ZstdCodec>,
         CompressionCodec.DictionaryConfigurable<ZstdCodec, ZstdDictionary>,
-        CompressionCodec.FlushableFramed<ZstdCodec> {
+        CompressionCodec.FlushableFramed<ZstdCodec>,
+        CompressionCodec.Seekable<ZstdCodec> {
     /// The minimum compression level accepted by Zstandard 1.x.
     public static final int MINIMUM_COMPRESSION_LEVEL = -131_072;
 
@@ -493,6 +503,67 @@ public final class ZstdCodec
         return frameFormat.frameCompressedSize(source);
     }
 
+    /// Returns whether this configuration uses the standard frames required by the seekable representation.
+    @Override
+    public boolean supportsSeekableEncoding() {
+        return frameFormat == ZstdFrameFormat.STANDARD;
+    }
+
+    /// Creates a writer for the standard Zstandard seekable format.
+    ///
+    /// @param target    the channel receiving independent frames and the terminal seek table
+    /// @param options   the complete source metadata and maximum uncompressed frame size
+    /// @param ownership whether closing the returned writer also closes `target`
+    /// @return a new seekable Zstandard writer
+    /// @throws IOException                   if encoder setup or owned-target cleanup fails
+    /// @throws UnsupportedOperationException if this codec is configured for magicless frames
+    @Override
+    public CompressingWritableByteChannel.FlushableFramed newSeekableWritableByteChannel(
+            WritableByteChannel target,
+            SeekableEncodingOptions options,
+            ResourceOwnership ownership
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(options, "options");
+        Objects.requireNonNull(ownership, "ownership");
+        requireStandardSeekableFrames();
+        return ZstdSeekableWritableByteChannel.open(this, target, options, ownership);
+    }
+
+    /// Creates a flushable framed seekable writer using default options and borrowing the target.
+    ///
+    /// @param target the channel receiving independent frames and the terminal seek table
+    /// @return a new flushable framed Zstandard seekable writer
+    /// @throws IOException if encoder setup fails
+    @Override
+    public CompressingWritableByteChannel.FlushableFramed newSeekableWritableByteChannel(
+            WritableByteChannel target
+    ) throws IOException {
+        return newSeekableWritableByteChannel(
+                target,
+                SeekableEncodingOptions.DEFAULT,
+                ResourceOwnership.BORROWED
+        );
+    }
+
+    /// Reads and validates a terminal standard Zstandard seek table.
+    ///
+    /// @param source  the encoded source at its current logical origin
+    /// @param options the logical output and decoder resource limits
+    /// @return the immutable seek table, or `null` when the terminal seekable magic is absent
+    /// @throws IOException                   if source I/O fails or a recognized table is malformed or exceeds a configured limit
+    /// @throws UnsupportedOperationException if this codec is configured for magicless frames
+    @Override
+    public @Nullable CompressionCodec.Seekable.Index readIndex(
+            SeekableByteChannel source,
+            DecodingOptions options
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(options, "options");
+        requireStandardSeekableFrames();
+        return ZstdSeekableIndex.read(this, source, options);
+    }
+
     /// Creates a framed encoder using operation-scoped options for its first frame.
     @Override
     public CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) throws IOException {
@@ -501,6 +572,15 @@ public final class ZstdCodec
                 createEncoderParameters(options.sourceSize()),
                 frameFormat == ZstdFrameFormat.MAGICLESS
         );
+    }
+
+    /// Requires standard frames for the interoperable seekable representation.
+    private void requireStandardSeekableFrames() {
+        if (frameFormat != ZstdFrameFormat.STANDARD) {
+            throw new UnsupportedOperationException(
+                    "The Zstandard seekable format requires standard frames"
+            );
+        }
     }
 
     /// Creates an unrestricted dictionary-aware framed decoder.

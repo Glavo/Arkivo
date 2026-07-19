@@ -4,10 +4,12 @@
 package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
-import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
+import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.codec.SeekableEncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -28,10 +30,10 @@ public final class TarCompressionStreams {
 
     /// Opens a decoded TAR input stream and closes the source if decoder setup fails.
     ///
-    /// @param source the stream positioned at the first compressed or decoded TAR byte; ownership transfers after
+    /// @param source           the stream positioned at the first compressed or decoded TAR byte; ownership transfers after
     ///               argument validation
     /// @param compressionCodec the codec used to decode `source`, or `null` to return `source` unchanged
-    /// @param readLimits the archive policy supplying compression-window and decoder-memory limits
+    /// @param readLimits       the archive policy supplying compression-window and decoder-memory limits
     /// @return the owned decoded TAR stream; closing it closes `source`
     /// @throws IOException if decoder setup fails; the validated source is closed before the failure is propagated
     public static InputStream openArchiveInput(
@@ -58,10 +60,10 @@ public final class TarCompressionStreams {
 
     /// Opens a decoded TAR channel and closes the source if decoder setup fails.
     ///
-    /// @param source the channel positioned at the first compressed or decoded TAR byte; ownership transfers after
+    /// @param source           the channel positioned at the first compressed or decoded TAR byte; ownership transfers after
     ///               argument validation
     /// @param compressionCodec the codec used to decode `source`, or `null` to return `source` unchanged
-    /// @param readLimits the archive policy supplying compression-window and decoder-memory limits
+    /// @param readLimits       the archive policy supplying compression-window and decoder-memory limits
     /// @return the owned decoded TAR channel; closing it closes `source`
     /// @throws IOException if decoder setup fails; the validated source is closed before the failure is propagated
     public static ReadableByteChannel openArchiveInput(
@@ -88,7 +90,10 @@ public final class TarCompressionStreams {
 
     /// Opens an encoded TAR output stream and closes the target if encoder setup fails.
     ///
-    /// @param target the stream at whose current position encoded or plain TAR bytes are written; ownership transfers
+    /// Seekable-capable codec configurations use their default indexed representation; other codecs use ordinary
+    /// operation defaults.
+    ///
+    /// @param target           the stream at whose current position encoded or plain TAR bytes are written; ownership transfers
     ///               after argument validation
     /// @param compressionCodec the codec used to encode TAR bytes, or `null` to return `target` unchanged
     /// @return the owned archive output stream; closing it finishes the codec and closes `target`
@@ -102,6 +107,14 @@ public final class TarCompressionStreams {
             return target;
         }
         try {
+            if (compressionCodec instanceof CompressionCodec.Seekable<?> seekable
+                    && seekable.supportsSeekableEncoding()) {
+                return StreamChannelAdapters.outputStream(seekable.newSeekableWritableByteChannel(
+                        StreamChannelAdapters.writableChannel(target),
+                        SeekableEncodingOptions.DEFAULT,
+                        ResourceOwnership.OWNED
+                ));
+            }
             return compressionCodec.newOutputStream(
                     target,
                     EncodingOptions.DEFAULT,
@@ -115,7 +128,10 @@ public final class TarCompressionStreams {
 
     /// Opens an encoded TAR channel and closes the target if encoder setup fails.
     ///
-    /// @param target the channel at whose current position encoded or plain TAR bytes are written; ownership transfers
+    /// Seekable-capable codec configurations use their default indexed representation; other codecs use ordinary
+    /// operation defaults.
+    ///
+    /// @param target           the channel at whose current position encoded or plain TAR bytes are written; ownership transfers
     ///               after argument validation
     /// @param compressionCodec the codec used to encode TAR bytes, or `null` to return `target` unchanged
     /// @return the owned archive output channel; closing it finishes the codec and closes `target`
@@ -129,6 +145,14 @@ public final class TarCompressionStreams {
             return target;
         }
         try {
+            if (compressionCodec instanceof CompressionCodec.Seekable<?> seekable
+                    && seekable.supportsSeekableEncoding()) {
+                return seekable.newSeekableWritableByteChannel(
+                        target,
+                        SeekableEncodingOptions.DEFAULT,
+                        ResourceOwnership.OWNED
+                );
+            }
             return compressionCodec.newWritableByteChannel(
                     target,
                     EncodingOptions.DEFAULT,
@@ -141,7 +165,7 @@ public final class TarCompressionStreams {
     }
 
     /// Converts archive resource limits to the limits understood by compression codecs.
-    private static DecodingOptions decodingOptions(ArchiveReadLimits readLimits) {
+    static DecodingOptions decodingOptions(ArchiveReadLimits readLimits) {
         return new DecodingOptions(
                 DecodingOptions.UNLIMITED_SIZE,
                 readLimits.maximumCompressionWindowSize(),

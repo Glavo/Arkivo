@@ -17,6 +17,7 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
@@ -591,6 +592,151 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
                 DecodingOptions options
         ) throws IOException {
             ByteBufferCodecSupport.decompressFrame(this, source, target, options);
+        }
+    }
+
+    /// Describes a framed format with a terminal index that maps compressed frames to logical offsets.
+    ///
+    /// Seekable encodings remain valid concatenated-frame streams for sequential decoders. Random access requires the
+    /// terminal index returned by [#readIndex(SeekableByteChannel, DecodingOptions)]. An absent index is distinct from a
+    /// malformed recognized index: absence returns `null`, while malformed index data fails with `IOException`.
+    ///
+    /// @param <C> the concrete immutable codec type represented by this configuration
+    @NotNullByDefault
+    interface Seekable<C extends CompressionCodec<C>> extends Framed<C> {
+        /// Returns whether this concrete codec configuration can produce and consume its seekable representation.
+        ///
+        /// A format may expose nonstandard physical configurations that cannot carry its interoperable index. Such a
+        /// configuration returns `false` and rejects the seekable factories while retaining ordinary framed operation.
+        ///
+        /// @return whether seekable operations are available for this configuration
+        default boolean supportsSeekableEncoding() {
+            return true;
+        }
+
+        /// Creates a channel that writes independently decodable frames followed by a random-access index.
+        ///
+        /// Closing or finishing the returned channel writes the index after the final frame. A source with no bytes
+        /// still produces a complete indexed encoding. The result implements [InterruptibleChannel] when `target`
+        /// does. Calling `finishFrame` may end the active frame before the configured maximum size; it does not finish
+        /// the complete indexed encoding.
+        ///
+        /// @param target    the channel that receives the complete seekable encoding
+        /// @param options   the logical source metadata and frame-size policy
+        /// @param ownership whether closing the returned channel also closes `target`
+        /// @return a new indexed compressing channel
+        /// @throws IOException if encoder initialization or owned-target cleanup fails
+        CompressingWritableByteChannel.Framed newSeekableWritableByteChannel(
+                WritableByteChannel target,
+                SeekableEncodingOptions options,
+                ResourceOwnership ownership
+        ) throws IOException;
+
+        /// Creates a seekable compressing channel using default options and borrowing the target.
+        ///
+        /// @param target the channel that receives the complete seekable encoding and remains open after closure
+        /// @return a new indexed compressing channel
+        /// @throws IOException if encoder initialization fails
+        default CompressingWritableByteChannel.Framed newSeekableWritableByteChannel(
+                WritableByteChannel target
+        ) throws IOException {
+            return newSeekableWritableByteChannel(
+                    target,
+                    SeekableEncodingOptions.DEFAULT,
+                    ResourceOwnership.BORROWED
+            );
+        }
+
+        /// Reads and validates the terminal random-access index at the source's current logical origin.
+        ///
+        /// The source position is restored before this method returns or throws. The returned immutable index does not
+        /// retain `source`; it can be shared safely by channels created for independent copies or views of the same
+        /// encoded byte sequence.
+        ///
+        /// @param source  the seekable encoded source from its current origin through its current size
+        /// @param options the logical output and decoder resource limits
+        /// @return the immutable index, or `null` when no recognized terminal index is present
+        /// @throws IOException if source I/O fails or a recognized index is malformed or exceeds a configured limit
+        @Nullable Index readIndex(SeekableByteChannel source, DecodingOptions options) throws IOException;
+
+        /// Reads a terminal random-access index without operation-scoped limits.
+        ///
+        /// @param source the seekable encoded source from its current origin through its current size
+        /// @return the immutable index, or `null` when no recognized terminal index is present
+        /// @throws IOException if source I/O fails or a recognized index is malformed
+        default @Nullable Index readIndex(SeekableByteChannel source) throws IOException {
+            return readIndex(source, DecodingOptions.DEFAULT);
+        }
+
+        /// Describes one validated immutable mapping between compressed frames and logical offsets.
+        @NotNullByDefault
+        interface Index {
+            /// Returns the encoded byte count covered by this index, including the terminal index representation.
+            ///
+            /// @return the complete indexed encoding size
+            long compressedSize();
+
+            /// Returns the complete logical uncompressed size.
+            ///
+            /// @return the logical decoded byte count
+            long uncompressedSize();
+
+            /// Returns the number of independently decodable frames.
+            ///
+            /// @return the non-negative frame count
+            int frameCount();
+
+            /// Returns one frame's compressed offset relative to the indexed encoding origin.
+            ///
+            /// @param frameIndex the zero-based frame index
+            /// @return the frame's relative compressed offset
+            /// @throws IndexOutOfBoundsException if `frameIndex` is outside the frame sequence
+            long frameCompressedOffset(int frameIndex);
+
+            /// Returns one frame's compressed byte count.
+            ///
+            /// @param frameIndex the zero-based frame index
+            /// @return the frame's compressed size
+            /// @throws IndexOutOfBoundsException if `frameIndex` is outside the frame sequence
+            long frameCompressedSize(int frameIndex);
+
+            /// Returns one frame's logical uncompressed offset.
+            ///
+            /// @param frameIndex the zero-based frame index
+            /// @return the frame's relative uncompressed offset
+            /// @throws IndexOutOfBoundsException if `frameIndex` is outside the frame sequence
+            long frameUncompressedOffset(int frameIndex);
+
+            /// Returns one frame's uncompressed byte count.
+            ///
+            /// @param frameIndex the zero-based frame index
+            /// @return the frame's uncompressed size
+            /// @throws IndexOutOfBoundsException if `frameIndex` is outside the frame sequence
+            long frameUncompressedSize(int frameIndex);
+
+            /// Creates a read-only logical channel over the encoded source at its current origin.
+            ///
+            /// The bytes from the source's current position through its size must be the same complete encoding from
+            /// which this index was read. The returned channel has an independent logical position, decodes frames on
+            /// demand, and implements [InterruptibleChannel] when `source` does.
+            ///
+            /// @param source    the complete seekable encoding at its current logical origin
+            /// @param ownership whether closing the returned channel also closes `source`
+            /// @return a new read-only logical seekable channel
+            /// @throws IOException if source validation or decoder initialization fails
+            SeekableByteChannel newReadableByteChannel(
+                    SeekableByteChannel source,
+                    ResourceOwnership ownership
+            ) throws IOException;
+
+            /// Creates a read-only logical channel that borrows the encoded source.
+            ///
+            /// @param source the complete seekable encoding at its current logical origin
+            /// @return a new read-only logical seekable channel
+            /// @throws IOException if source validation or decoder initialization fails
+            default SeekableByteChannel newReadableByteChannel(SeekableByteChannel source) throws IOException {
+                return newReadableByteChannel(source, ResourceOwnership.BORROWED);
+            }
         }
     }
 

@@ -8,8 +8,6 @@ import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
-import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
-import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
 import org.glavo.arkivo.archive.tar.TarMetadataCharsetDetector;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -29,7 +27,6 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
-import java.nio.file.attribute.PosixFileAttributes;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -321,6 +318,37 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         return StreamChannelAdapters.readableChannel(sparseMap != null
                 ? new SparseEntryInputStream(sparseMap)
                 : new EntryInputStream());
+    }
+
+    /// Returns whether the current logical body is stored as one contiguous decoded TAR range.
+    ///
+    /// GNU sparse bodies return `false` because their logical bytes include holes or body-resident mapping metadata.
+    ///
+    /// @return whether a decoded source slice can represent the current logical body directly
+    /// @throws IOException if this reader is closed or is not positioned at an entry
+    boolean currentBodyIsContiguous() throws IOException {
+        requireUnopenedCurrentBody();
+        return currentSparseMap == null;
+    }
+
+    /// Returns the decoded TAR offset at which the current stored body bytes begin.
+    ///
+    /// @return the current decoded source position before any body byte is consumed
+    /// @throws IOException if this reader is closed, is not positioned at an entry, or its body has been opened
+    long currentBodyOffset() throws IOException {
+        requireUnopenedCurrentBody();
+        return source.bytesConsumed();
+    }
+
+    /// Requires a current entry whose body has not been opened or consumed explicitly.
+    private void requireUnopenedCurrentBody() throws IOException {
+        ensureOpen();
+        if (currentAttributes == null) {
+            throw new IOException("TAR streaming reader is not positioned at an entry");
+        }
+        if (currentBodyOpened) {
+            throw new IOException("TAR entry body has already been opened");
+        }
     }
 
     /// Closes this streaming reader.
