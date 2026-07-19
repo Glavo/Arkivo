@@ -4,8 +4,8 @@
 /// Defines transport-independent compression engines, blocking channel and stream adapters, indexed random-access
 /// compression, decompression safety limits, and stateful byte transforms.
 ///
-/// Compression formats are discovered as [org.glavo.arkivo.codec.CompressionFormat] services. Applications normally
-/// start with [org.glavo.arkivo.codec.CompressionFormats], an explicitly selected
+/// [org.glavo.arkivo.codec.CompressionFormats] discovers the fixed set of official format implementations present in
+/// the runtime image. Applications may instead use an explicitly selected
 /// [org.glavo.arkivo.codec.CompressionFormat], or an immutable [org.glavo.arkivo.codec.CompressionCodec].
 @SuppressWarnings("module")
 module org.glavo.arkivo.codec {
@@ -23,6 +23,4 @@ module org.glavo.arkivo.codec {
             org.glavo.arkivo.codec.xz,
             org.glavo.arkivo.codec.zstd;
     exports org.glavo.arkivo.codec.transform;
-
-    uses org.glavo.arkivo.codec.CompressionFormat;
 }

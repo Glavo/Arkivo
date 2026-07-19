@@ -50,9 +50,9 @@ transferred and retain the primary failure, adding cleanup failures as suppresse
 
 ### Formats and codecs
 
-`CompressionFormat` is the service-discovered identity of a compression format. It provides stable names, file
-extensions, signature probing, and the default codec configuration. `CompressionFormats` and
-`CompressionFormatRegistry` discover, find, and detect installed formats.
+`CompressionFormat` is the immutable identity of a compression format. It provides stable names, file extensions,
+signature probing, and the default codec configuration. `CompressionFormats` finds and detects the installed members
+of Arkivo's fixed official format catalog.
 
 `CompressionCodec<C>` describes one immutable algorithm and container configuration. Its optional configuration
 subinterfaces expose parameters only where they have a meaningful common contract. Format-specific codec types expose
@@ -171,13 +171,24 @@ Implementation dependencies use ordinary JPMS requirements. Public API dependenc
 consumer can resolve every type appearing in an exported signature. Internal packages are either unexported or
 qualified to the specific implementation modules that consume them.
 
-## Service discovery
+## Built-in format discovery
 
-Archive and compression implementations register their format classes through both JPMS `provides` declarations and
-classpath `META-INF/services` resources. Each format has a public no-argument constructor for service loading and an
-`instance()` method for direct access to its shared descriptor.
+Archive and compression discovery is deliberately closed to third-party providers. The core modules contain ordered
+lists of official format singleton class names. On first use they load the classes present to their defining class
+loader, invoke each public `instance()` accessor, validate stable names, aliases, canonical identities, and probe sizes,
+and cache immutable indexes. A missing class means that its official optional module is not installed; incompatible
+classes, linkage failures, and initialization failures are reported rather than silently skipped.
 
-Registries validate stable names, aliases, probe sizes, and duplicate registrations before exposing an immutable view.
+`arkivo-archive-all` and `arkivo-codec-all` resolve every official implementation on the module path. Individual format
+modules remain usable independently and are discovered when explicitly required or placed on the classpath. Thread
+context class loaders, custom module layers, arbitrary `ArkivoFormat` implementations, and arbitrary
+`CompressionFormat` implementations do not extend the catalogs.
+
+The combined `arkivo-all` module supplies the one optional internal bridge that decodes an outer compression stream
+before streaming archive detection. The archive core loads only that known bridge class. Java NIO
+`FileSystemProvider` declarations remain because URI-based integration with `FileSystems` is a JDK-defined SPI rather
+than Arkivo's format-extension mechanism.
+
 Buffer-based signature matching inspects only the required prefix and does not alter caller buffer state. Channel-based
 probing follows the replay and ownership contract of its probe result. Operations that require more than a format
 identity select the corresponding capability interface before opening resources.

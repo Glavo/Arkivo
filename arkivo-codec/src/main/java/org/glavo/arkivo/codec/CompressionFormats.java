@@ -25,22 +25,28 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Objects;
 
-/// Discovers compression formats and uses their default immutable codecs for convenience operations.
+/// Discovers installed official compression formats and uses their default immutable codecs for convenience operations.
 ///
 /// A forward-only probe's replay channel preserves [InterruptibleChannel] exactly when the supplied source implements
 /// it. An automatically detected decoder retains that capability when the selected codec's channel factory does, as the
 /// [CompressionCodec] default implementation does.
 @NotNullByDefault
 public final class CompressionFormats {
+    /// Immutable index of official format modules present when this class is initialized.
+    private static final CompressionFormatIndex INSTALLED_FORMATS = CompressionFormatIndex.loadBuiltins();
+
     /// Creates no instances.
     private CompressionFormats() {
     }
 
-    /// Returns all compression formats visible to the current thread's context class loader.
+    /// Returns all installed official compression formats.
     ///
-    /// @return an immutable list of the visible installed formats
+    /// The result is fixed when this class is initialized. Implementations not listed by Arkivo are ignored even if they
+    /// implement [CompressionFormat].
+    ///
+    /// @return an immutable list in deterministic official order
     public static @Unmodifiable List<CompressionFormat> installed() {
-        return CompressionFormatRegistry.load().formats();
+        return INSTALLED_FORMATS.formats();
     }
 
     /// Returns the first format with the given stable name or alias, ignoring case.
@@ -48,7 +54,7 @@ public final class CompressionFormats {
     /// @param name the stable format name or alias to find
     /// @return the matching installed format, or `null` when none is installed
     public static @Nullable CompressionFormat find(String name) {
-        return CompressionFormatRegistry.load().find(name);
+        return INSTALLED_FORMATS.find(name);
     }
 
     /// Returns the installed format with the given stable name or alias, ignoring case.
@@ -57,7 +63,7 @@ public final class CompressionFormats {
     /// @return the matching installed format
     /// @throws IllegalArgumentException when no matching format is installed
     public static CompressionFormat require(String name) {
-        return CompressionFormatRegistry.load().require(name);
+        return INSTALLED_FORMATS.require(name);
     }
 
     /// Returns the matching installed format with the largest preferred probe size.
@@ -67,7 +73,7 @@ public final class CompressionFormats {
     /// @param prefix the buffer whose remaining bytes contain the candidate prefix
     /// @return the best matching installed format, or `null` when no signature matches
     public static @Nullable CompressionFormat detect(ByteBuffer prefix) {
-        return CompressionFormatRegistry.load().detect(prefix);
+        return INSTALLED_FORMATS.detect(prefix);
     }
 
     /// Detects an installed format from a forward-only channel while preserving every source byte for later reads.
@@ -122,8 +128,7 @@ public final class CompressionFormats {
             );
         }
         try {
-            CompressionFormatRegistry registry = CompressionFormatRegistry.load();
-            int probeSize = Math.max(Math.toIntExact(minimumPrefixSize), registry.probeSize());
+            int probeSize = Math.max(Math.toIntExact(minimumPrefixSize), INSTALLED_FORMATS.probeSize());
             ByteBuffer prefix = ByteBuffer.allocate(probeSize);
             while (prefix.hasRemaining()) {
                 int read = source.read(prefix);
@@ -135,7 +140,7 @@ public final class CompressionFormats {
                 }
             }
             prefix.flip();
-            @Nullable CompressionFormat format = registry.detect(prefix);
+            @Nullable CompressionFormat format = INSTALLED_FORMATS.detect(prefix);
             return new CompressionProbeResult(
                     format,
                     prefix.asReadOnlyBuffer(),
@@ -158,8 +163,7 @@ public final class CompressionFormats {
     /// @throws IOException if reading fails, the channel makes no progress, or its position cannot be restored
     public static @Nullable CompressionFormat detect(SeekableByteChannel channel) throws IOException {
         Objects.requireNonNull(channel, "channel");
-        CompressionFormatRegistry registry = CompressionFormatRegistry.load();
-        int probeSize = registry.probeSize();
+        int probeSize = INSTALLED_FORMATS.probeSize();
         long originalPosition = channel.position();
         @Nullable Throwable failure = null;
         try {
@@ -174,7 +178,7 @@ public final class CompressionFormats {
                 }
             }
             prefix.flip();
-            return registry.detect(prefix);
+            return INSTALLED_FORMATS.detect(prefix);
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;

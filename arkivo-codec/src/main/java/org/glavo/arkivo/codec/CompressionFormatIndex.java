@@ -7,6 +7,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -16,16 +18,34 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.ServiceLoader;
 import java.util.Set;
 
-/// Stores an immutable, validated set of discovered compression formats.
+/// Indexes the official compression formats present in the runtime image.
 ///
-/// A registry contains canonical format identities. Each format exposes one immutable default codec from which callers
-/// derive immutable configured codec values.
+/// The implementation list is intentionally closed. Classes that are absent represent official optional modules that
+/// were not installed; arbitrary implementations of [CompressionFormat] are never discovered.
 @NotNullByDefault
-public final class CompressionFormatRegistry {
-    /// Formats in discovery or caller-supplied order, with repeated identities included once.
+final class CompressionFormatIndex {
+    /// Official format singleton classes in deterministic detection order.
+    private static final @Unmodifiable List<String> FORMAT_CLASS_NAMES = List.of(
+            "org.glavo.arkivo.codec.bzip2.BZip2Format",
+            "org.glavo.arkivo.codec.compress.UnixCompressFormat",
+            "org.glavo.arkivo.codec.deflate.DeflateFormat",
+            "org.glavo.arkivo.codec.deflate.Deflate64Format",
+            "org.glavo.arkivo.codec.deflate.GzipFormat",
+            "org.glavo.arkivo.codec.deflate.ZlibFormat",
+            "org.glavo.arkivo.codec.lz4.LZ4Format",
+            "org.glavo.arkivo.codec.lz4.LZ4BlockFormat",
+            "org.glavo.arkivo.codec.lzip.LzipFormat",
+            "org.glavo.arkivo.codec.lzma.LZMAFormat",
+            "org.glavo.arkivo.codec.lzma.RawLZMAFormat",
+            "org.glavo.arkivo.codec.lzma.LZMA2Format",
+            "org.glavo.arkivo.codec.ppmd.PPMdFormat",
+            "org.glavo.arkivo.codec.xz.XZFormat",
+            "org.glavo.arkivo.codec.zstd.ZstdFormat"
+    );
+
+    /// Canonical formats in deterministic official order.
     private final @Unmodifiable List<CompressionFormat> formats;
 
     /// Formats indexed by normalized stable names and aliases.
@@ -34,12 +54,12 @@ public final class CompressionFormatRegistry {
     /// The largest preferred signature prefix requested by any format.
     private final int probeSize;
 
-    /// Creates and validates a registry by normalizing supplied descriptors to canonical format identities.
-    private CompressionFormatRegistry(List<CompressionFormat> formats) {
+    /// Creates and validates an index by normalizing supplied descriptors to canonical format identities.
+    private CompressionFormatIndex(List<CompressionFormat> formats) {
         ArrayList<CompressionFormat> copiedFormats = new ArrayList<>(formats.size());
         Set<CompressionFormat> seenFormats = Collections.newSetFromMap(new IdentityHashMap<>());
         LinkedHashMap<String, CompressionFormat> formatsByName = new LinkedHashMap<>();
-        int probeSize = 0;
+        int maximumProbeSize = 0;
         for (CompressionFormat format : formats) {
             CompressionFormat checkedFormat = canonicalizeFormat(format);
             if (!seenFormats.add(checkedFormat)) {
@@ -57,68 +77,54 @@ public final class CompressionFormatRegistry {
                         "Compression format probe size must not be negative: " + checkedFormat.name()
                 );
             }
-            probeSize = Math.max(probeSize, formatProbeSize);
+            maximumProbeSize = Math.max(maximumProbeSize, formatProbeSize);
             copiedFormats.add(checkedFormat);
         }
 
         this.formats = List.copyOf(copiedFormats);
         this.formatsByName = Map.copyOf(formatsByName);
-        this.probeSize = probeSize;
+        this.probeSize = maximumProbeSize;
     }
 
-    /// Loads formats visible to the current thread's context class loader.
+    /// Loads every present official format through its immutable singleton accessor.
     ///
-    /// @return an immutable registry containing the discovered formats
-    public static CompressionFormatRegistry load() {
-        return fromFormats(ServiceLoader.load(CompressionFormat.class));
+    /// @return an immutable index of the official format modules present to this module's class loader
+    static CompressionFormatIndex loadBuiltins() {
+        ArrayList<CompressionFormat> formats = new ArrayList<>(FORMAT_CLASS_NAMES.size());
+        for (String className : FORMAT_CLASS_NAMES) {
+            @Nullable CompressionFormat format = loadFormat(className);
+            if (format != null) {
+                formats.add(format);
+            }
+        }
+        return new CompressionFormatIndex(formats);
     }
 
-    /// Loads formats visible to the given class loader.
-    ///
-    /// @param loader the class loader from which providers are discovered
-    /// @return an immutable registry containing the discovered formats
-    public static CompressionFormatRegistry load(ClassLoader loader) {
-        Objects.requireNonNull(loader, "loader");
-        return fromFormats(ServiceLoader.load(CompressionFormat.class, loader));
-    }
-
-    /// Loads formats visible to the given module layer.
-    ///
-    /// @param layer the module layer from which providers are discovered
-    /// @return an immutable registry containing the discovered formats
-    public static CompressionFormatRegistry load(ModuleLayer layer) {
-        Objects.requireNonNull(layer, "layer");
-        return fromFormats(ServiceLoader.load(layer, CompressionFormat.class));
-    }
-
-    /// Creates a registry from explicit format descriptors.
+    /// Creates an index from explicit descriptors for internal validation and tests.
     ///
     /// @param formats the descriptors to canonicalize and index in preferred order
-    /// @return an immutable registry containing each canonical format identity once
-    /// @throws IllegalStateException if a descriptor is inconsistent or names are ambiguous
-    public static CompressionFormatRegistry fromFormats(
-            Iterable<? extends CompressionFormat> formats
-    ) {
+    /// @return an immutable index containing each canonical identity at most once
+    static CompressionFormatIndex of(Iterable<? extends CompressionFormat> formats) {
         Objects.requireNonNull(formats, "formats");
         ArrayList<CompressionFormat> copiedFormats = new ArrayList<>();
         for (CompressionFormat format : formats) {
             copiedFormats.add(Objects.requireNonNull(format, "compression format"));
         }
-        return new CompressionFormatRegistry(copiedFormats);
+        return new CompressionFormatIndex(copiedFormats);
     }
 
-    /// Returns formats in discovery or caller-supplied order, with repeated identities included once.
+    /// Returns canonical formats in deterministic official order.
     ///
     /// @return the immutable ordered canonical format list
-    public @Unmodifiable List<CompressionFormat> formats() {
+    @Unmodifiable List<CompressionFormat> formats() {
         return formats;
     }
 
     /// Returns the format with the given stable name or alias, ignoring case.
     ///
     /// @param name the stable format name or alias
-    /// @return the matching format, or {@code null} if none matches
-    public @Nullable CompressionFormat find(String name) {
+    /// @return the matching format, or `null` if none matches
+    @Nullable CompressionFormat find(String name) {
         Objects.requireNonNull(name, "name");
         return formatsByName.get(normalizeName(name));
     }
@@ -127,8 +133,8 @@ public final class CompressionFormatRegistry {
     ///
     /// @param name the stable format name or alias
     /// @return the matching format
-    /// @throws IllegalArgumentException when no matching format is installed
-    public CompressionFormat require(String name) {
+    /// @throws IllegalArgumentException when no matching official format is installed
+    CompressionFormat require(String name) {
         @Nullable CompressionFormat format = find(name);
         if (format == null) {
             throw new IllegalArgumentException("Unknown compression format: " + name);
@@ -141,8 +147,8 @@ public final class CompressionFormatRegistry {
     /// The supplied buffer is not modified.
     ///
     /// @param prefix the stream prefix to inspect, from its current position to its limit
-    /// @return the best matching format, or {@code null} if no format recognizes the prefix
-    public @Nullable CompressionFormat detect(ByteBuffer prefix) {
+    /// @return the best matching format, or `null` if no format recognizes the prefix
+    @Nullable CompressionFormat detect(ByteBuffer prefix) {
         Objects.requireNonNull(prefix, "prefix");
         @Nullable CompressionFormat detected = null;
         int detectedProbeSize = -1;
@@ -155,14 +161,36 @@ public final class CompressionFormatRegistry {
         return detected;
     }
 
-    /// Returns the largest preferred signature prefix requested by any format.
+    /// Returns the largest preferred signature prefix requested by an installed official format.
     ///
-    /// @return the maximum registered {@link CompressionFormat#probeSize()} value
-    public int probeSize() {
+    /// @return the maximum indexed [CompressionFormat#probeSize()] value
+    int probeSize() {
         return probeSize;
     }
 
-    /// Resolves a service-created descriptor to the canonical identity exposed by its default codec.
+    /// Loads one known singleton class, or returns null when its optional module is absent.
+    private static @Nullable CompressionFormat loadFormat(String className) {
+        try {
+            Class<?> formatClass = Class.forName(className);
+            Method instanceMethod = formatClass.getMethod("instance");
+            if (!Modifier.isStatic(instanceMethod.getModifiers())) {
+                throw new IllegalStateException("Built-in compression format instance() is not static: " + className);
+            }
+            Object value = instanceMethod.invoke(null);
+            if (!(value instanceof CompressionFormat format)) {
+                throw new IllegalStateException(
+                        "Built-in compression format has an incompatible instance: " + className
+                );
+            }
+            return format;
+        } catch (ClassNotFoundException ignored) {
+            return null;
+        } catch (ReflectiveOperationException | LinkageError | SecurityException exception) {
+            throw new IllegalStateException("Failed to load built-in compression format: " + className, exception);
+        }
+    }
+
+    /// Resolves a descriptor to the canonical identity exposed by its default codec.
     private static CompressionFormat canonicalizeFormat(CompressionFormat format) {
         CompressionFormat suppliedFormat = Objects.requireNonNull(format, "compression format");
         CompressionCodec<?> defaultCodec = Objects.requireNonNull(

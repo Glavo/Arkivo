@@ -5,13 +5,12 @@ package org.glavo.arkivo.all.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
-import org.glavo.arkivo.archive.spi.ArkivoStreamingSource;
-import org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider;
-import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.archive.internal.ArkivoStreamingSource;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionProbeResult;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -19,16 +18,21 @@ import java.io.IOException;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
-/// Transparently decodes installed compression formats before archive detection.
+/// Transparently decodes an installed official compression format before archive detection.
 @NotNullByDefault
-public final class CompressionStreamingSourceProvider implements ArkivoStreamingSourceProvider {
-    /// Creates a compression source provider for service loading.
-    public CompressionStreamingSourceProvider() {
+@SuppressWarnings("unused")
+public final class CompressionStreamingSourceSupport {
+    /// Creates no instances.
+    private CompressionStreamingSourceSupport() {
     }
 
-    /// Probes the source and opens an owning decoder when an installed format matches.
-    @Override
-    public ArkivoStreamingSource probe(
+    /// Probes the source and opens an owning decoder when an official compression format matches.
+    ///
+    /// @param source  the channel whose ownership is transferred after argument validation
+    /// @param options the archive-wide read limits and lifecycle options
+    /// @return an owning result containing the replaying or decoded logical source
+    /// @throws IOException if compression probing or decoder setup fails
+    public static ArkivoStreamingSource probe(
             ReadableByteChannel source,
             ArchiveReadOptions options
     ) throws IOException {

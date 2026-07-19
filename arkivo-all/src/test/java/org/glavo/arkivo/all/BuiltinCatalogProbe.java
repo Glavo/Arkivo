@@ -10,29 +10,32 @@ import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/// Verifies Arkivo service-provider discovery in an isolated JVM.
+/// Verifies Arkivo's closed built-in catalogs and required JDK file-system providers in an isolated JVM.
 @NotNullByDefault
-public final class ServiceProviderDiscoveryProbe {
+public final class BuiltinCatalogProbe {
     /// Expected Arkivo file system provider schemes.
     private static final @Unmodifiable Set<String> EXPECTED_SCHEMES =
             Set.of("arkivo+7z", "arkivo+ar", "arkivo+rar", "arkivo+tar", "arkivo+zip");
 
     /// Expected archive format names, including formats without an NIO file-system provider.
-    private static final @Unmodifiable Set<String> EXPECTED_ARCHIVE_FORMAT_NAMES =
-            Set.of("7z", "ar", "cpio", "rar", "tar", "zip");
+    private static final @Unmodifiable List<String> EXPECTED_ARCHIVE_FORMAT_NAMES =
+            List.of("7z", "ar", "cpio", "rar", "tar", "zip");
 
-    /// Expected compression format names.
-    private static final @Unmodifiable Set<String> EXPECTED_FORMAT_NAMES = Set.of(
+    /// Expected compression format names in deterministic detection order.
+    private static final @Unmodifiable List<String> EXPECTED_FORMAT_NAMES = List.of(
             "bzip2",
             "compress",
             "deflate",
             "deflate64",
             "gzip",
+            "zlib",
             "lz4",
             "lz4-block",
             "lzip",
@@ -41,15 +44,14 @@ public final class ServiceProviderDiscoveryProbe {
             "lzma2",
             "ppmd",
             "xz",
-            "zlib",
             "zstd"
     );
 
     /// Prevents instantiation.
-    private ServiceProviderDiscoveryProbe() {
+    private BuiltinCatalogProbe() {
     }
 
-    /// Verifies the providers visible to the current runtime configuration.
+    /// Verifies the official formats and NIO providers visible to the current runtime configuration.
     public static void main(String[] arguments) {
         Set<String> actualSchemes = FileSystemProvider.installedProviders()
                 .stream()
@@ -64,9 +66,9 @@ public final class ServiceProviderDiscoveryProbe {
         }
 
         @Unmodifiable List<ArkivoFormat> archiveFormats = ArkivoFormats.installed();
-        Set<String> actualArchiveFormatNames = archiveFormats.stream()
+        @Unmodifiable List<String> actualArchiveFormatNames = archiveFormats.stream()
                 .map(ArkivoFormat::name)
-                .collect(Collectors.toUnmodifiableSet());
+                .toList();
         if (!EXPECTED_ARCHIVE_FORMAT_NAMES.equals(actualArchiveFormatNames)) {
             throw new AssertionError(
                     "Installed Arkivo archive formats " + actualArchiveFormatNames
@@ -82,14 +84,29 @@ public final class ServiceProviderDiscoveryProbe {
                 );
             }
         }
-        Set<String> actualFormatNames = formats.stream()
+        @Unmodifiable List<String> actualFormatNames = formats.stream()
                 .map(CompressionFormat::name)
-                .collect(Collectors.toUnmodifiableSet());
+                .toList();
         if (!EXPECTED_FORMAT_NAMES.equals(actualFormatNames)) {
             throw new AssertionError(
                     "Installed Arkivo compression formats " + actualFormatNames
                             + " differ from " + EXPECTED_FORMAT_NAMES
             );
+        }
+
+        verifyCompressionBridge();
+    }
+
+    /// Verifies archive core can invoke the known optional compression bridge in this runtime configuration.
+    private static void verifyCompressionBridge() {
+        try (var ignored = ArkivoFormats.openStreamingReader(
+                new ByteArrayInputStream(new byte[]{0x1f, (byte) 0x8b, 0x08, 0x00})
+        )) {
+            throw new AssertionError("Truncated gzip input was unexpectedly accepted as an archive");
+        } catch (IOException exception) {
+            if ("Unrecognized archive format".equals(exception.getMessage())) {
+                throw new AssertionError("The official compression bridge was not invoked", exception);
+            }
         }
     }
 }

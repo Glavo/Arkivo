@@ -1,6 +1,7 @@
 import java.lang.module.ModuleDescriptor
 import java.lang.module.ModuleFinder
 import java.util.Properties
+import java.util.jar.JarFile
 import org.glavo.arkivo.gradle.DownloadVerifiedFile
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.bundling.Jar
@@ -247,22 +248,22 @@ val moduleJarFiles = moduleJarTasks.map { jarTask ->
     jarTask.flatMap { it.archiveFile }
 }
 
-val serviceProviderDiscoveryProbe = "org.glavo.arkivo.all.ServiceProviderDiscoveryProbe"
+val builtinCatalogProbe = "org.glavo.arkivo.all.BuiltinCatalogProbe"
 
-val verifyServiceProvidersOnClasspath by tasks.registering(JavaExec::class) {
+val verifyBuiltinCatalogOnClasspath by tasks.registering(JavaExec::class) {
     group = "verification"
-    description = "Verifies Arkivo service discovery from the published JARs on the classpath."
+    description = "Verifies Arkivo's built-in catalogs from the published JARs on the classpath."
     dependsOn(tasks.named("testClasses"), moduleJarTasks)
     classpath = files(sourceSets.test.get().output, moduleJarFiles)
-    mainClass.set(serviceProviderDiscoveryProbe)
+    mainClass.set(builtinCatalogProbe)
 }
 
-val verifyServiceProvidersOnModulePath by tasks.registering(JavaExec::class) {
+val verifyBuiltinCatalogOnModulePath by tasks.registering(JavaExec::class) {
     group = "verification"
-    description = "Verifies Arkivo service discovery from the published modules."
+    description = "Verifies Arkivo's built-in catalogs from the published modules."
     dependsOn(tasks.named("testClasses"), moduleJarTasks)
     classpath = sourceSets.test.get().output
-    mainClass.set(serviceProviderDiscoveryProbe)
+    mainClass.set(builtinCatalogProbe)
     doFirst {
         jvmArgs(
             "--module-path",
@@ -310,6 +311,20 @@ val verifyModuleDescriptors by tasks.registering {
         }
         check(descriptors.keys == expectedModules) {
             "Packaged Arkivo modules differ from the expected set: " + descriptors.keys
+        }
+        val forbiddenServiceEntries = setOf(
+            "META-INF/services/org.glavo.arkivo.archive.ArkivoFormat",
+            "META-INF/services/org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider",
+            "META-INF/services/org.glavo.arkivo.codec.CompressionFormat"
+        )
+        moduleJarFiles.forEach { jarFile ->
+            val file = jarFile.get().asFile
+            JarFile(file).use { jar ->
+                val presentEntries = forbiddenServiceEntries.filter { jar.getJarEntry(it) != null }
+                check(presentEntries.isEmpty()) {
+                    "${file.name} contains removed Arkivo service descriptors: $presentEntries"
+                }
+            }
         }
         descriptors.values.forEach { descriptor ->
             check(!descriptor.isAutomatic) {
@@ -380,10 +395,7 @@ val verifyModuleDescriptors by tasks.registering {
         }
 
         val expectedPublicExports = mapOf(
-            archiveModule to setOf(
-                "org.glavo.arkivo.archive",
-                "org.glavo.arkivo.archive.spi"
-            ),
+            archiveModule to setOf("org.glavo.arkivo.archive"),
             "org.glavo.arkivo.archive.ar" to setOf("org.glavo.arkivo.archive.ar"),
             "org.glavo.arkivo.archive.cpio" to setOf("org.glavo.arkivo.archive.cpio"),
             "org.glavo.arkivo.archive.rar" to setOf("org.glavo.arkivo.archive.rar"),
@@ -443,6 +455,7 @@ val verifyModuleDescriptors by tasks.registering {
             ),
             archiveModule to mapOf(
                 "org.glavo.arkivo.archive.internal" to setOf(
+                    "org.glavo.arkivo.all",
                     "org.glavo.arkivo.archive.ar",
                     "org.glavo.arkivo.archive.cpio",
                     "org.glavo.arkivo.archive.rar",
@@ -478,105 +491,53 @@ val verifyModuleDescriptors by tasks.registering {
             }
         }
 
-        val archiveFormatService = "org.glavo.arkivo.archive.ArkivoFormat"
-        val compressionFormatService = "org.glavo.arkivo.codec.CompressionFormat"
-        val streamingSourceService = "org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider"
-        val fileSystemProviderService = "java.nio.file.spi.FileSystemProvider"
-        val expectedUses = mapOf(
-            archiveModule to setOf(archiveFormatService, streamingSourceService),
-            codecModule to setOf(compressionFormatService)
+        val expectedQualifiedOpens = mapOf(
+            "org.glavo.arkivo.all" to mapOf(
+                "org.glavo.arkivo.all.internal" to setOf(archiveModule)
+            )
         )
         descriptors.forEach { (moduleName, descriptor) ->
-            val expected = expectedUses[moduleName].orEmpty()
-            check(descriptor.uses() == expected) {
-                "$moduleName uses " + descriptor.uses() + " instead of $expected"
+            val actual = descriptor.opens()
+                .filter { it.isQualified }
+                .associate { it.source() to it.targets() }
+            val expected = expectedQualifiedOpens[moduleName].orEmpty()
+            check(actual == expected) {
+                "$moduleName has qualified opens $actual instead of $expected"
+            }
+        }
+
+        val fileSystemProviderService = "java.nio.file.spi.FileSystemProvider"
+        descriptors.forEach { (moduleName, descriptor) ->
+            check(descriptor.uses().isEmpty()) {
+                "$moduleName unexpectedly uses services " + descriptor.uses()
             }
         }
 
         val expectedProviders = mapOf(
-            "org.glavo.arkivo.all" to mapOf(
-                streamingSourceService to setOf(
-                    "org.glavo.arkivo.all.internal.CompressionStreamingSourceProvider"
-                )
-            ),
             "org.glavo.arkivo.archive.ar" to mapOf(
-                archiveFormatService to setOf("org.glavo.arkivo.archive.ar.ArArkivoFormat"),
                 fileSystemProviderService to setOf(
                     "org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider"
                 )
             ),
-            "org.glavo.arkivo.archive.cpio" to mapOf(
-                archiveFormatService to setOf("org.glavo.arkivo.archive.cpio.CPIOArkivoFormat")
-            ),
             "org.glavo.arkivo.archive.rar" to mapOf(
-                archiveFormatService to setOf("org.glavo.arkivo.archive.rar.RarArkivoFormat"),
                 fileSystemProviderService to setOf(
                     "org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.archive.sevenzip" to mapOf(
-                archiveFormatService to setOf(
-                    "org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat"
-                ),
                 fileSystemProviderService to setOf(
                     "org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.archive.tar" to mapOf(
-                archiveFormatService to setOf("org.glavo.arkivo.archive.tar.TarArkivoFormat"),
                 fileSystemProviderService to setOf(
                     "org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.archive.zip" to mapOf(
-                archiveFormatService to setOf("org.glavo.arkivo.archive.zip.ZipArkivoFormat"),
                 fileSystemProviderService to setOf(
                     "org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider"
                 )
-            ),
-            "org.glavo.arkivo.codec.bzip2" to mapOf(
-                compressionFormatService to setOf("org.glavo.arkivo.codec.bzip2.BZip2Format")
-            ),
-            "org.glavo.arkivo.codec.compress" to mapOf(
-                compressionFormatService to setOf(
-                    "org.glavo.arkivo.codec.compress.UnixCompressFormat"
-                )
-            ),
-            "org.glavo.arkivo.codec.deflate" to mapOf(
-                compressionFormatService to setOf(
-                    "org.glavo.arkivo.codec.deflate.DeflateFormat",
-                    "org.glavo.arkivo.codec.deflate.Deflate64Format",
-                    "org.glavo.arkivo.codec.deflate.GzipFormat",
-                    "org.glavo.arkivo.codec.deflate.ZlibFormat"
-                )
-            ),
-
-            "org.glavo.arkivo.codec.lz4" to mapOf(
-                compressionFormatService to setOf(
-                    "org.glavo.arkivo.codec.lz4.LZ4BlockFormat",
-                    "org.glavo.arkivo.codec.lz4.LZ4Format"
-                )
-            ),
-            "org.glavo.arkivo.codec.lzip" to mapOf(
-                compressionFormatService to setOf("org.glavo.arkivo.codec.lzip.LzipFormat")
-            ),
-
-            "org.glavo.arkivo.codec.lzma" to mapOf(
-                compressionFormatService to setOf(
-                    "org.glavo.arkivo.codec.lzma.LZMAFormat",
-                    "org.glavo.arkivo.codec.lzma.RawLZMAFormat",
-                    "org.glavo.arkivo.codec.lzma.LZMA2Format"
-                )
-            ),
-            "org.glavo.arkivo.codec.ppmd" to mapOf(
-                compressionFormatService to setOf("org.glavo.arkivo.codec.ppmd.PPMdFormat")
-            ),
-            "org.glavo.arkivo.codec.xz" to mapOf(
-                compressionFormatService to setOf("org.glavo.arkivo.codec.xz.XZFormat")
-            ),
-
-            "org.glavo.arkivo.codec.zstd" to mapOf(
-                compressionFormatService to setOf("org.glavo.arkivo.codec.zstd.ZstdFormat")
             )
         )
         descriptors.forEach { (moduleName, descriptor) ->
@@ -594,8 +555,8 @@ val verifyModuleDescriptors by tasks.registering {
 tasks.named("check") {
     dependsOn(
         verifyModuleDescriptors,
-        verifyServiceProvidersOnClasspath,
-        verifyServiceProvidersOnModulePath,
+        verifyBuiltinCatalogOnClasspath,
+        verifyBuiltinCatalogOnModulePath,
         benchmarkSourceSet.classesTaskName
     )
 }

@@ -10,21 +10,21 @@ import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Objects;
 
-/// Describes one discoverable compression format independently of a configured codec.
+/// Describes one compression format independently of a configured codec.
 ///
-/// Implementations are immutable identities safe for concurrent use and may be supplied through service discovery.
-/// Encoding and decoding policy belongs to immutable `CompressionCodec` values derived from the format's default
-/// codec.
+/// Implementations are immutable identities safe for concurrent use. [CompressionFormats] recognizes only Arkivo's
+/// fixed official implementation list; implementing this interface does not register another format. Encoding and
+/// decoding policy belongs to immutable [CompressionCodec] values derived from the format's default codec.
 @NotNullByDefault
 public interface CompressionFormat {
     /// Returns the stable format name.
     ///
-    /// @return the non-blank stable registry name
+    /// @return the non-blank stable catalog name
     String name();
 
     /// Returns alternative stable names accepted for this format.
     ///
-    /// @return immutable non-blank registry aliases
+    /// @return immutable non-blank catalog aliases
     default @Unmodifiable List<String> aliases() {
         return List.of();
     }

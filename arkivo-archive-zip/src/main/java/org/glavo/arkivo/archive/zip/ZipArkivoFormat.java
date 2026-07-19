@@ -50,8 +50,8 @@ public final class ZipArkivoFormat implements
     /// The shared ZIP format instance.
     private static final ZipArkivoFormat INSTANCE = new ZipArkivoFormat();
 
-    /// Creates a service-discoverable ZIP format descriptor.
-    public ZipArkivoFormat() {
+    /// Creates the canonical ZIP format descriptor.
+    private ZipArkivoFormat() {
     }
 
     /// Returns the shared ZIP format descriptor.

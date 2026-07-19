@@ -15,27 +15,27 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies immutable archive format registry lookup, detection, and validation.
+/// Verifies immutable archive format index lookup, detection, and validation.
 @NotNullByDefault
-public final class ArchiveFormatRegistryTest {
+public final class ArchiveFormatIndexTest {
     /// Verifies names, aliases, stable order, and required lookup.
     @Test
     void indexesFormats() {
         TestFormat alpha = new TestFormat("alpha", List.of("a"), 1, 0x11);
         TestFormat beta = new TestFormat("beta", List.of("b"), 2, 0x2233);
-        ArchiveFormatRegistry registry = ArchiveFormatRegistry.fromFormats(List.of(
+        ArchiveFormatIndex index = ArchiveFormatIndex.of(List.of(
                 alpha,
                 alpha,
                 new TestFormat("alpha", List.of("a"), 1, 0x11),
                 beta
         ));
 
-        assertEquals(List.of(alpha, beta), registry.formats());
-        assertSame(alpha, registry.find("ALPHA"));
-        assertSame(alpha, registry.find("A"));
-        assertSame(beta, registry.require("beta"));
-        assertEquals(2, registry.probeSize());
-        assertThrows(IllegalArgumentException.class, () -> registry.require("missing"));
+        assertEquals(List.of(alpha, beta), index.formats());
+        assertSame(alpha, index.find("ALPHA"));
+        assertSame(alpha, index.find("A"));
+        assertSame(beta, index.require("beta"));
+        assertEquals(2, index.probeSize());
+        assertThrows(IllegalArgumentException.class, () -> index.require("missing"));
     }
 
     /// Verifies detection prefers the matching format with the most specific requested prefix.
@@ -43,18 +43,17 @@ public final class ArchiveFormatRegistryTest {
     void detectsMostSpecificFormatWithoutModifyingPrefix() {
         TestFormat shortFormat = new TestFormat("short", List.of(), 1, 0x22);
         TestFormat longFormat = new TestFormat("long", List.of(), 2, 0x2233);
-        ArchiveFormatRegistry registry =
-                ArchiveFormatRegistry.fromFormats(List.of(shortFormat, longFormat));
+        ArchiveFormatIndex index = ArchiveFormatIndex.of(List.of(shortFormat, longFormat));
         ByteBuffer prefix = ByteBuffer.wrap(new byte[]{0x22, 0x33, 0x44});
         int position = prefix.position();
         int limit = prefix.limit();
 
-        assertSame(longFormat, registry.detect(prefix));
+        assertSame(longFormat, index.detect(prefix));
         assertEquals(position, prefix.position());
         assertEquals(limit, prefix.limit());
     }
 
-    /// Verifies ambiguous names and aliases fail during registry construction.
+    /// Verifies ambiguous names and aliases fail during index construction.
     @Test
     void rejectsAmbiguousNames() {
         TestFormat first = new TestFormat("first", List.of("shared"), 0, 0);
@@ -62,12 +61,12 @@ public final class ArchiveFormatRegistryTest {
 
         IllegalStateException exception = assertThrows(
                 IllegalStateException.class,
-                () -> ArchiveFormatRegistry.fromFormats(List.of(first, second))
+                () -> ArchiveFormatIndex.of(List.of(first, second))
         );
         assertTrue(exception.getMessage().contains("Ambiguous archive format"));
     }
 
-    /// Verifies malformed format metadata fails during registry construction.
+    /// Verifies malformed format metadata fails during index construction.
     @Test
     void rejectsInvalidMetadata() {
         TestFormat blank = new TestFormat(" ", List.of(), 0, 0);
@@ -75,15 +74,15 @@ public final class ArchiveFormatRegistryTest {
 
         assertThrows(
                 IllegalStateException.class,
-                () -> ArchiveFormatRegistry.fromFormats(List.of(blank))
+                () -> ArchiveFormatIndex.of(List.of(blank))
         );
         assertThrows(
                 IllegalStateException.class,
-                () -> ArchiveFormatRegistry.fromFormats(List.of(negativeProbe))
+                () -> ArchiveFormatIndex.of(List.of(negativeProbe))
         );
     }
 
-    /// Supplies immutable archive format metadata for registry tests.
+    /// Supplies immutable archive format metadata for index tests.
     @NotNullByDefault
     private static final class TestFormat implements ArkivoFormat {
         /// The stable format name.

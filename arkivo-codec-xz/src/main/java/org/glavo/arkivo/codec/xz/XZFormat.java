@@ -26,8 +26,8 @@ public final class XZFormat implements CompressionFormat {
             (byte) 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00
     };
 
-    /// Creates a service-discoverable XZ format descriptor.
-    public XZFormat() {
+    /// Creates the canonical XZ format descriptor.
+    private XZFormat() {
     }
 
     /// Returns the canonical XZ format instance.

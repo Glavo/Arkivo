@@ -33,8 +33,8 @@ public final class CPIOArkivoFormat implements StreamingReader, StreamingWriter 
     /// The shared CPIO format instance.
     private static final CPIOArkivoFormat INSTANCE = new CPIOArkivoFormat();
 
-    /// Creates a service-discoverable CPIO format descriptor.
-    public CPIOArkivoFormat() {
+    /// Creates the canonical CPIO format descriptor.
+    private CPIOArkivoFormat() {
     }
 
     /// Returns the shared CPIO format descriptor.

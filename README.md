@@ -2,15 +2,15 @@
 
 Arkivo is a modular, pure Java archive and compression toolkit for Java 17 and later. It combines archive-backed NIO
 file systems, forward-only archive readers and writers, caller-owned `ByteBuffer` codec engines, channel and stream
-adapters, and `ServiceLoader`-based format discovery. The [architecture guide](ARCHITECTURE.md) describes the common
-programming model, lifecycle rules, and module boundaries.
+adapters, and deterministic discovery of installed official formats. The [architecture guide](ARCHITECTURE.md)
+describes the common programming model, lifecycle rules, and module boundaries.
 
 The current build version is `1.0-SNAPSHOT`. Published artifacts use the group `org.glavo`.
 
 ## Highlights
 
 - Access archive entries with the standard `java.nio.file.Files` API.
-- Detect installed archive and compression formats without coupling callers to implementations.
+- Detect installed official archive and compression formats without compile-time coupling to implementations.
 - Drive compression incrementally through `CompressionEncoder` and `CompressionDecoder`; implementations do not retain
   caller buffers after an operation returns.
 - Use blocking `ReadableByteChannel`, `WritableByteChannel`, `InputStream`, and `OutputStream` adapters over the same

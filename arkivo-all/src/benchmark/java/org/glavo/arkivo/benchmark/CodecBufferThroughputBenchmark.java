@@ -105,6 +105,7 @@ public class CodecBufferThroughputBenchmark {
             compressionConfiguration = configured;
             decompressionConfiguration = configured;
         }
+        decompressionConfiguration = decompressionConfiguration.withMaximumOutputSize(SOURCE_SIZE);
         compressionCodec = compressionConfiguration;
         decompressionCodec = decompressionConfiguration;
         encoder = compressionConfiguration.newEncoder();
@@ -164,7 +165,7 @@ public class CodecBufferThroughputBenchmark {
     @OperationsPerInvocation(SOURCE_SIZE)
     public ByteBuffer decompressOneShot() throws IOException {
         compressedInput.clear();
-        ByteBuffer restored = requireDecompressionCodec().decompress(compressedInput, SOURCE_SIZE);
+        ByteBuffer restored = requireDecompressionCodec().decompress(compressedInput);
         if (restored.remaining() != SOURCE_SIZE) {
             throw new AssertionError("Unexpected one-shot decoded size: " + restored.remaining());
         }

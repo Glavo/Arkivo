@@ -48,8 +48,8 @@ public final class SevenZipArkivoFormat implements
     /// The shared 7z format instance.
     private static final SevenZipArkivoFormat INSTANCE = new SevenZipArkivoFormat();
 
-    /// Creates a service-discoverable 7z format descriptor.
-    public SevenZipArkivoFormat() {
+    /// Creates the canonical 7z format descriptor.
+    private SevenZipArkivoFormat() {
     }
 
     /// Returns the shared 7z format descriptor.

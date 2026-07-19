@@ -11,6 +11,4 @@ module org.glavo.arkivo.archive.cpio {
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.archive.cpio;
-
-    provides org.glavo.arkivo.archive.ArkivoFormat with org.glavo.arkivo.archive.cpio.CPIOArkivoFormat;
 }

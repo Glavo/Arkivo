@@ -3,8 +3,8 @@
 
 /// Aggregates all official Arkivo compression codec modules.
 ///
-/// Requiring this module makes each codec implementation visible to `CompressionFormat` service discovery while
-/// exposing the shared codec API transitively.
+/// Requiring this module resolves each codec implementation for the built-in
+/// [org.glavo.arkivo.codec.CompressionFormat] catalog while exposing the shared codec API transitively.
 module org.glavo.arkivo.codec.all {
     requires transitive org.glavo.arkivo.codec;
     requires transitive org.glavo.arkivo.codec.bzip2;

@@ -18,7 +18,6 @@ module org.glavo.arkivo.archive.sevenzip {
 
     exports org.glavo.arkivo.archive.sevenzip;
 
-    provides org.glavo.arkivo.archive.ArkivoFormat with org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat;
     provides java.nio.file.spi.FileSystemProvider with
             org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemProvider;
 }

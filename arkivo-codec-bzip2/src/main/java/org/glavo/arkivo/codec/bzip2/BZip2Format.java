@@ -22,8 +22,8 @@ public final class BZip2Format implements CompressionFormat {
     /// The canonical BZip2 format instance.
     private static final BZip2Format INSTANCE = new BZip2Format();
 
-    /// Creates a service-discoverable BZip2 format descriptor.
-    public BZip2Format() {
+    /// Creates the canonical BZip2 format descriptor.
+    private BZip2Format() {
     }
 
     /// Returns the canonical BZip2 format instance.

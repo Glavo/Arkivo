@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the public raw PPMd7 codec contract.
 @NotNullByDefault
 final class PPMdCodecTest {
-    /// Verifies service discovery and immutable PPMd configuration.
+    /// Verifies official format discovery and immutable PPMd configuration.
     @Test
     void exposesImmutableConfiguration() {
         PPMdCodec codec = new PPMdCodec();

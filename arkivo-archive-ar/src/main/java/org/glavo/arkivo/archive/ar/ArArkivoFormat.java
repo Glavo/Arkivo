@@ -43,8 +43,8 @@ public final class ArArkivoFormat implements
     /// The shared AR format instance.
     private static final ArArkivoFormat INSTANCE = new ArArkivoFormat();
 
-    /// Creates a service-discoverable AR format descriptor.
-    public ArArkivoFormat() {
+    /// Creates the canonical AR format descriptor.
+    private ArArkivoFormat() {
     }
 
     /// Returns the shared AR format descriptor.

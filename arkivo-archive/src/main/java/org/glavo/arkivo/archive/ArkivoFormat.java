@@ -24,17 +24,18 @@ import java.util.Objects;
 /// Describes an archive format supported by Arkivo.
 ///
 /// Implementations are immutable identities safe for concurrent use. Operational capabilities are exposed through
-/// nested subinterfaces such as [FileSystem] and [StreamingReader].
+/// nested subinterfaces such as [FileSystem] and [StreamingReader]. [ArkivoFormats] recognizes only Arkivo's fixed
+/// official implementation list; implementing this interface does not register another format.
 @NotNullByDefault
 public interface ArkivoFormat {
     /// Returns the stable format name.
     ///
-    /// @return the non-blank stable name used for registry lookup
+    /// @return the non-blank stable name used for catalog lookup
     String name();
 
     /// Returns alternative stable names accepted for this format.
     ///
-    /// @return immutable non-blank aliases used for registry lookup
+    /// @return immutable non-blank aliases used for catalog lookup
     default @Unmodifiable List<String> aliases() {
         return List.of();
     }

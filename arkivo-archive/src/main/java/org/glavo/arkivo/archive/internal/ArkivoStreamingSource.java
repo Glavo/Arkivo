@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.archive.spi;
+package org.glavo.arkivo.archive.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -10,35 +10,35 @@ import java.io.IOException;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
-/// Represents a forward-only source after one optional outer transformation probe.
+/// Represents a forward-only source after the optional official compression probe.
 ///
-/// Instances have resource identity rather than value identity. A result owns its logical channel until `takeChannel()`
-/// transfers ownership or `close()` closes it.
+/// Instances have resource identity rather than value identity. A result owns its logical channel until [#takeChannel()]
+/// transfers ownership or [#close()] closes it.
 @NotNullByDefault
 public final class ArkivoStreamingSource implements AutoCloseable {
-    /// Whether the provider recognized and transformed the source.
+    /// Whether the official bridge recognized and transformed the source.
     private final boolean transformed;
 
-    /// The logical source that owns and replaces the provider input, or `null` after transfer or closure.
+    /// The logical source that owns and replaces the bridge input, or `null` after transfer or closure.
     private @Nullable ReadableByteChannel channel;
 
     /// Creates a streaming source result and takes ownership of its logical channel.
     ///
-    /// @param transformed whether a provider recognized and transformed its input
-    /// @param channel the logical channel whose ownership is transferred to this result
+    /// @param transformed whether the compression bridge recognized and transformed its input
+    /// @param channel     the logical channel whose ownership is transferred to this result
     public ArkivoStreamingSource(boolean transformed, ReadableByteChannel channel) {
         this.transformed = transformed;
         this.channel = Objects.requireNonNull(channel, "channel");
     }
 
-    /// Returns whether the provider recognized and transformed the source.
+    /// Returns whether the compression bridge recognized and transformed the source.
     ///
-    /// @return {@code true} if an outer wrapper was recognized and transformed
+    /// @return `true` if an outer compression format was recognized and decoded
     public boolean transformed() {
         return transformed;
     }
 
-    /// Transfers and returns the logical source that replaces the provider input.
+    /// Transfers and returns the logical source that replaces the bridge input.
     ///
     /// @return the logical channel, whose ownership is transferred to the caller
     /// @throws IllegalStateException when the channel was already transferred or closed

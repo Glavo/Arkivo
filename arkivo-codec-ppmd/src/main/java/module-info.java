@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Provides raw PPMd7 compression-model support and format discovery.
+/// Provides raw PPMd7 compression-model support.
 ///
 /// The exported [org.glavo.arkivo.codec.ppmd] package models PPMd7 payloads whose order, model memory, and decoded size
 /// are supplied by an embedding container.
@@ -12,7 +12,4 @@ module org.glavo.arkivo.codec.ppmd {
 
     exports org.glavo.arkivo.codec.ppmd;
     exports org.glavo.arkivo.codec.ppmd.internal to org.glavo.arkivo.archive.rar;
-
-    provides org.glavo.arkivo.codec.CompressionFormat with
-            org.glavo.arkivo.codec.ppmd.PPMdFormat;
 }

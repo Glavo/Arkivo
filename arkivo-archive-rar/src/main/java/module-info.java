@@ -13,6 +13,5 @@ module org.glavo.arkivo.archive.rar {
 
     exports org.glavo.arkivo.archive.rar;
 
-    provides org.glavo.arkivo.archive.ArkivoFormat with org.glavo.arkivo.archive.rar.RarArkivoFormat;
     provides java.nio.file.spi.FileSystemProvider with org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider;
 }

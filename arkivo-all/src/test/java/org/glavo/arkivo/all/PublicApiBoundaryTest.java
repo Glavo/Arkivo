@@ -54,7 +54,6 @@ public final class PublicApiBoundaryTest {
     /// Maps every unqualified JPMS export to its owning module.
     private static final @Unmodifiable Map<String, String> PUBLIC_PACKAGE_MODULES = Map.ofEntries(
             Map.entry("org.glavo.arkivo.archive", "org.glavo.arkivo.archive"),
-            Map.entry("org.glavo.arkivo.archive.spi", "org.glavo.arkivo.archive"),
             Map.entry("org.glavo.arkivo.archive.ar", "org.glavo.arkivo.archive.ar"),
             Map.entry("org.glavo.arkivo.archive.cpio", "org.glavo.arkivo.archive.cpio"),
             Map.entry("org.glavo.arkivo.archive.rar", "org.glavo.arkivo.archive.rar"),

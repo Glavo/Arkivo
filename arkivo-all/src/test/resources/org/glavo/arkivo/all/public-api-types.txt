@@ -1,6 +1,5 @@
 org.glavo.arkivo.archive.ArchiveCreateOptions
 org.glavo.arkivo.archive.ArchiveEntryAttributes
-org.glavo.arkivo.archive.ArchiveFormatRegistry
 org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector
 org.glavo.arkivo.archive.ArchiveReadLimits
 org.glavo.arkivo.archive.ArchiveReadLimits$Builder
@@ -97,8 +96,6 @@ org.glavo.arkivo.archive.sevenzip.SevenZipFilter
 org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain
 org.glavo.arkivo.archive.sevenzip.SevenZipFilterMethod
 org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream
-org.glavo.arkivo.archive.spi.ArkivoStreamingSource
-org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider
 org.glavo.arkivo.archive.tar.TarArchiveOptions
 org.glavo.arkivo.archive.tar.TarArchiveOptions$Create
 org.glavo.arkivo.archive.tar.TarArchiveOptions$Read
@@ -156,7 +153,6 @@ org.glavo.arkivo.codec.CompressionEncoder$Flushable
 org.glavo.arkivo.codec.CompressionEncoder$FlushableFramed
 org.glavo.arkivo.codec.CompressionEncoder$Framed
 org.glavo.arkivo.codec.CompressionFormat
-org.glavo.arkivo.codec.CompressionFormatRegistry
 org.glavo.arkivo.codec.CompressionFormats
 org.glavo.arkivo.codec.CompressionProbeResult
 org.glavo.arkivo.codec.DecompressingReadableByteChannel

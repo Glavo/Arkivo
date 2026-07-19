@@ -21,8 +21,8 @@ public final class LZ4BlockFormat implements CompressionFormat {
     /// Canonical raw LZ4 block format instance.
     private static final LZ4BlockFormat INSTANCE = new LZ4BlockFormat();
 
-    /// Creates a service-discoverable raw LZ4 block format descriptor.
-    public LZ4BlockFormat() {
+    /// Creates the canonical raw LZ4 block format descriptor.
+    private LZ4BlockFormat() {
     }
 
     /// Returns the canonical raw LZ4 block format instance.

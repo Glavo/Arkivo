@@ -53,8 +53,8 @@ public final class TarArkivoFormat implements
     /// The shared TAR format instance.
     private static final TarArkivoFormat INSTANCE = new TarArkivoFormat();
 
-    /// Creates a service-discoverable TAR format descriptor.
-    public TarArkivoFormat() {
+    /// Creates the canonical TAR format descriptor.
+    private TarArkivoFormat() {
     }
 
     /// Returns the shared TAR format descriptor.

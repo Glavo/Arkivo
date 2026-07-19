@@ -16,25 +16,25 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies immutable compression format registry discovery and validation.
+/// Verifies immutable compression format index lookup and validation.
 @NotNullByDefault
-public final class CompressionFormatRegistryTest {
+public final class CompressionFormatIndexTest {
     /// Verifies names, aliases, format order, default codecs, and required lookup.
     @Test
     void indexesFormats() {
         TestFormat alpha = new TestFormat("alpha", List.of("a"), 1, 0x11);
         TestFormat beta = new TestFormat("beta", List.of("b"), 2, 0x2233);
-        CompressionFormatRegistry registry = CompressionFormatRegistry.fromFormats(List.of(alpha, alpha, beta));
+        CompressionFormatIndex index = CompressionFormatIndex.of(List.of(alpha, alpha, beta));
 
-        assertEquals(List.of(alpha, beta), registry.formats());
-        assertSame(alpha, registry.find("ALPHA"));
-        assertSame(alpha, registry.find("A"));
-        assertSame(beta, registry.require("beta"));
+        assertEquals(List.of(alpha, beta), index.formats());
+        assertSame(alpha, index.find("ALPHA"));
+        assertSame(alpha, index.find("A"));
+        assertSame(beta, index.require("beta"));
         assertSame(alpha, alpha.defaultCodec().format());
-        assertEquals(2, registry.probeSize());
+        assertEquals(2, index.probeSize());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> registry.require("missing")
+                () -> index.require("missing")
         );
 
     }
@@ -44,12 +44,12 @@ public final class CompressionFormatRegistryTest {
     void detectsWithoutModifyingPrefix() {
         TestFormat first = new TestFormat("first", List.of(), 1, 0x11);
         TestFormat second = new TestFormat("second", List.of(), 2, 0x2233);
-        CompressionFormatRegistry registry = CompressionFormatRegistry.fromFormats(List.of(first, second));
+        CompressionFormatIndex index = CompressionFormatIndex.of(List.of(first, second));
         ByteBuffer prefix = ByteBuffer.wrap(new byte[]{0x22, 0x33, 0x44});
         int position = prefix.position();
         int limit = prefix.limit();
 
-        assertSame(second, registry.detect(prefix));
+        assertSame(second, index.detect(prefix));
         assertEquals(position, prefix.position());
         assertEquals(limit, prefix.limit());
     }
@@ -62,12 +62,12 @@ public final class CompressionFormatRegistryTest {
 
         IllegalStateException exception = assertThrows(
                 IllegalStateException.class,
-                () -> CompressionFormatRegistry.fromFormats(List.of(first, second))
+                () -> CompressionFormatIndex.of(List.of(first, second))
         );
         assertTrue(exception.getMessage().contains("Ambiguous compression format"));
     }
 
-    /// Verifies invalid format metadata is rejected while the registry is built.
+    /// Verifies invalid format metadata is rejected while the index is built.
     @Test
     void rejectsInvalidMetadata() {
         TestFormat blank = new TestFormat(" ", List.of(), 0, 0);
@@ -75,15 +75,15 @@ public final class CompressionFormatRegistryTest {
 
         assertThrows(
                 IllegalStateException.class,
-                () -> CompressionFormatRegistry.fromFormats(List.of(blank))
+                () -> CompressionFormatIndex.of(List.of(blank))
         );
         assertThrows(
                 IllegalStateException.class,
-                () -> CompressionFormatRegistry.fromFormats(List.of(negativeProbe))
+                () -> CompressionFormatIndex.of(List.of(negativeProbe))
         );
     }
 
-    /// A small immutable format used to exercise registry metadata.
+    /// A small immutable format used to exercise indexed metadata.
     @NotNullByDefault
     private static class TestFormat implements CompressionFormat {
         /// The stable test format name.
@@ -238,13 +238,13 @@ public final class CompressionFormatRegistryTest {
             return format;
         }
 
-        /// Rejects encoder creation because registry tests only exercise metadata.
+        /// Rejects encoder creation because index tests only exercise metadata.
         @Override
         public CompressionEncoder newEncoder(EncodingOptions options) {
             throw new UnsupportedOperationException("Test codec has no encoder");
         }
 
-        /// Rejects decoder creation because registry tests only exercise metadata.
+        /// Rejects decoder creation because index tests only exercise metadata.
         @Override
         public CompressionDecoder newDecoder() {
             throw new UnsupportedOperationException("Test codec has no decoder");

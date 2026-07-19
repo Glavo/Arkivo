@@ -3,10 +3,9 @@
 
 package org.glavo.arkivo.archive;
 
+import org.glavo.arkivo.archive.internal.ArkivoStreamingSource;
 import org.glavo.arkivo.archive.internal.PrefixReplayReadableByteChannel;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
-import org.glavo.arkivo.archive.spi.ArkivoStreamingSource;
-import org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -25,9 +24,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Objects;
-import java.util.ServiceLoader;
 
-/// Discovers archive formats and opens their unified file-system and streaming APIs.
+/// Discovers installed official archive formats and opens their unified file-system and streaming APIs.
 ///
 /// Detection methods borrow caller-supplied sources and restore seekable positions before returning. Factory overloads
 /// that accept a closeable source or target validate their arguments before taking ownership. A successful factory
@@ -38,15 +36,21 @@ import java.util.ServiceLoader;
 /// only the output transaction it opens from an ArkivoVolumeTarget.
 @NotNullByDefault
 public final class ArkivoFormats {
+    /// Immutable index of official format modules present when this class is initialized.
+    private static final ArchiveFormatIndex INSTALLED_FORMATS = ArchiveFormatIndex.loadBuiltins();
+
     /// Creates no instances.
     private ArkivoFormats() {
     }
 
-    /// Returns all archive formats visible to the current thread context class loader.
+    /// Returns all installed official archive formats.
     ///
-    /// @return the immutable discovered format list in service-provider order
+    /// The result is fixed when this class is initialized. Implementations not listed by Arkivo are ignored even if they
+    /// implement [ArkivoFormat].
+    ///
+    /// @return the immutable format list in deterministic official order
     public static @Unmodifiable List<ArkivoFormat> installed() {
-        return ArchiveFormatRegistry.load().formats();
+        return INSTALLED_FORMATS.formats();
     }
 
     /// Returns the archive format with the given stable name or alias, ignoring case.
@@ -54,7 +58,7 @@ public final class ArkivoFormats {
     /// @param name the stable format name or alias
     /// @return the matching installed format, or {@code null} if none matches
     public static @Nullable ArkivoFormat find(String name) {
-        return ArchiveFormatRegistry.load().find(name);
+        return INSTALLED_FORMATS.find(name);
     }
 
     /// Returns the archive format with the given stable name or alias, ignoring case.
@@ -63,7 +67,7 @@ public final class ArkivoFormats {
     /// @return the matching installed format
     /// @throws IllegalArgumentException when no matching format is installed
     public static ArkivoFormat require(String name) {
-        return ArchiveFormatRegistry.load().require(name);
+        return INSTALLED_FORMATS.require(name);
     }
 
     /// Returns the matching installed archive format with the largest requested probe size.
@@ -73,7 +77,7 @@ public final class ArkivoFormats {
     /// @param prefix the archive prefix to inspect, from its current position to its limit
     /// @return the best matching installed format, or {@code null} if none matches
     public static @Nullable ArkivoFormat detect(ByteBuffer prefix) {
-        return ArchiveFormatRegistry.load().detect(prefix);
+        return INSTALLED_FORMATS.detect(prefix);
     }
 
     /// Detects an installed archive format from bytes at the channel's current position.
@@ -85,8 +89,7 @@ public final class ArkivoFormats {
     /// @throws IOException if prefix bytes cannot be read or the original channel position cannot be restored
     public static @Nullable ArkivoFormat detect(SeekableByteChannel channel) throws IOException {
         Objects.requireNonNull(channel, "channel");
-        @Unmodifiable List<ArkivoFormat> formats = installed();
-        int probeSize = maxProbeSize(formats);
+        int probeSize = INSTALLED_FORMATS.probeSize();
         long originalPosition = channel.position();
         @Nullable Throwable failure = null;
         try {
@@ -101,7 +104,7 @@ public final class ArkivoFormats {
                 }
             }
             prefix.flip();
-            return detect(prefix, formats);
+            return INSTALLED_FORMATS.detect(prefix);
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
@@ -782,8 +785,8 @@ public final class ArkivoFormats {
 
     /// Opens a configured streaming reader for the named format from a path.
     ///
-    /// Signature detection and outer source providers are bypassed. The selected format controls path-specific volume
-    /// discovery.
+    /// Signature detection and the optional compression bridge are bypassed. The selected format controls
+    /// path-specific volume discovery.
     ///
     /// @param formatName the installed format name or alias
     /// @param path       the archive path or one member of a format-specific volume set
@@ -933,8 +936,9 @@ public final class ArkivoFormats {
 
     /// Detects and opens an archive from a forward-only readable channel with options.
     ///
-    /// Raw archive recognition runs before optional source providers, so a valid archive always wins over a coincidental
-    /// outer-wrapper signature. After argument validation, this method owns and closes the source on setup failure.
+    /// Raw archive recognition runs before the optional official compression bridge, so a valid archive always wins over
+    /// a coincidental outer-wrapper signature. After argument validation, this method owns and closes the source on
+    /// setup failure.
     ///
     /// @param source  the channel whose ownership is transferred after argument validation
     /// @param options the read and lifecycle options propagated through outer transformations
@@ -949,28 +953,23 @@ public final class ArkivoFormats {
         Objects.requireNonNull(options, "options");
         ReadableByteChannel current = source;
         try {
-            @Unmodifiable List<ArkivoFormat> formats = installed();
-            ArchiveProbe rawProbe = probeArchive(current, formats);
+            ArchiveProbe rawProbe = probeArchive(current);
             current = rawProbe.channel();
             @Nullable ArkivoFormat format = rawProbe.format();
             if (format != null) {
                 return openDetectedArchive(format, current, options);
             }
 
-            for (ArkivoStreamingSourceProvider provider : ServiceLoader.load(
-                    ArkivoStreamingSourceProvider.class
-            )) {
-                ArkivoStreamingSource transformed = provider.probe(current, options);
+            @Nullable ArkivoStreamingSource transformed = OptionalCompressionSupport.probe(current, options);
+            if (transformed != null) {
                 current = transformed.takeChannel();
-                if (!transformed.transformed()) {
-                    continue;
-                }
-
-                ArchiveProbe transformedProbe = probeArchive(current, formats);
-                current = transformedProbe.channel();
-                format = transformedProbe.format();
-                if (format != null) {
-                    return openDetectedArchive(format, current, options);
+                if (transformed.transformed()) {
+                    ArchiveProbe transformedProbe = probeArchive(current);
+                    current = transformedProbe.channel();
+                    format = transformedProbe.format();
+                    if (format != null) {
+                        return openDetectedArchive(format, current, options);
+                    }
                 }
             }
             throw new IOException("Unrecognized archive format");
@@ -997,7 +996,7 @@ public final class ArkivoFormats {
 
     /// Opens an owning streaming reader with options for the named installed archive format.
     ///
-    /// This method bypasses signature detection and outer source providers. After argument validation, it owns the
+    /// This method bypasses signature detection and the optional compression bridge. After argument validation, it owns the
     /// source and closes it when format lookup or reader setup fails.
     ///
     /// @param formatName the installed format name or alias
@@ -1382,11 +1381,8 @@ public final class ArkivoFormats {
     }
 
     /// Reads and replays the archive-format detection prefix from a logical source.
-    private static ArchiveProbe probeArchive(
-            ReadableByteChannel source,
-            @Unmodifiable List<ArkivoFormat> formats
-    ) throws IOException {
-        ByteBuffer prefix = ByteBuffer.allocate(maxProbeSize(formats));
+    private static ArchiveProbe probeArchive(ReadableByteChannel source) throws IOException {
+        ByteBuffer prefix = ByteBuffer.allocate(INSTALLED_FORMATS.probeSize());
         while (prefix.hasRemaining()) {
             int read = source.read(prefix);
             if (read < 0) {
@@ -1398,7 +1394,7 @@ public final class ArkivoFormats {
         }
         prefix.flip();
         return new ArchiveProbe(
-                detect(prefix, formats),
+                INSTALLED_FORMATS.detect(prefix),
                 new PrefixReplayReadableByteChannel(prefix, source)
         );
     }
@@ -1415,41 +1411,6 @@ public final class ArkivoFormats {
         private ArchiveProbe {
             Objects.requireNonNull(channel, "channel");
         }
-    }
-
-    /// Returns the matching format with the largest requested probe size.
-    private static @Nullable ArkivoFormat detect(
-            ByteBuffer prefix,
-            @Unmodifiable List<ArkivoFormat> formats
-    ) {
-        @Nullable ArkivoFormat detected = null;
-        int detectedProbeSize = -1;
-        for (ArkivoFormat format : formats) {
-            int probeSize = format.probeSize();
-            if (probeSize < 0) {
-                throw new IllegalStateException("Archive format probe size must not be negative: " + format.name());
-            }
-            if (format.matches(prefix.asReadOnlyBuffer())) {
-                if (detected == null || probeSize > detectedProbeSize) {
-                    detected = format;
-                    detectedProbeSize = probeSize;
-                }
-            }
-        }
-        return detected;
-    }
-
-    /// Returns the largest preferred probe size declared by the installed formats.
-    private static int maxProbeSize(@Unmodifiable List<ArkivoFormat> formats) {
-        int maximum = 0;
-        for (ArkivoFormat format : formats) {
-            int size = format.probeSize();
-            if (size < 0) {
-                throw new IllegalStateException("Archive format probe size must not be negative: " + format.name());
-            }
-            maximum = Math.max(maximum, size);
-        }
-        return maximum;
     }
 
     /// Closes a consumed endpoint after setup fails without hiding the primary failure.

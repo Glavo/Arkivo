@@ -9,7 +9,7 @@ import java.util.Objects;
 
 /// Describes the encryption scheme associated with a password request.
 ///
-/// The stable scheme name is format-defined so third-party archive formats can expose encryption methods without
+/// The stable scheme name is format-defined so archive format modules can expose encryption methods without
 /// requiring changes to this module.
 ///
 /// @param scheme        the stable, non-empty encryption scheme name

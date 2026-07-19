@@ -18,8 +18,8 @@ public final class LZMA2Format implements CompressionFormat {
     /// The canonical raw LZMA2 format instance.
     private static final LZMA2Format INSTANCE = new LZMA2Format();
 
-    /// Creates a service-discoverable LZMA2 format descriptor.
-    public LZMA2Format() {
+    /// Creates the canonical LZMA2 format descriptor.
+    private LZMA2Format() {
     }
 
     /// Returns the canonical raw LZMA2 format instance.

@@ -21,8 +21,8 @@ public final class PPMdFormat implements CompressionFormat {
     /// The canonical raw PPMd7 format instance.
     private static final PPMdFormat INSTANCE = new PPMdFormat();
 
-    /// Creates a service-discoverable PPMd format descriptor.
-    public PPMdFormat() {
+    /// Creates the canonical PPMd format descriptor.
+    private PPMdFormat() {
     }
 
     /// Returns the canonical raw PPMd7 format instance.

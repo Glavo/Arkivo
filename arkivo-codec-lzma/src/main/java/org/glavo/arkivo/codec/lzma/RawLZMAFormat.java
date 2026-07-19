@@ -21,8 +21,8 @@ public final class RawLZMAFormat implements CompressionFormat {
     /// The canonical raw LZMA format instance.
     private static final RawLZMAFormat INSTANCE = new RawLZMAFormat();
 
-    /// Creates a service-discoverable raw LZMA format descriptor.
-    public RawLZMAFormat() {
+    /// Creates the canonical raw LZMA format descriptor.
+    private RawLZMAFormat() {
     }
 
     /// Returns the canonical raw LZMA format instance.

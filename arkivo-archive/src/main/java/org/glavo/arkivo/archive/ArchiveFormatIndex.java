@@ -7,6 +7,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -15,13 +17,25 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.ServiceLoader;
 import java.util.Set;
 
-/// Stores an immutable validated set of discoverable archive formats.
+/// Indexes the official archive formats present in the runtime image.
+///
+/// The implementation list is intentionally closed. Classes that are absent represent official optional modules that
+/// were not installed; arbitrary implementations of [ArkivoFormat] are never discovered.
 @NotNullByDefault
-public final class ArchiveFormatRegistry {
-    /// Formats in discovery or caller-supplied order, with repeated logical providers included once.
+final class ArchiveFormatIndex {
+    /// Official format singleton classes in deterministic detection order.
+    private static final @Unmodifiable List<String> FORMAT_CLASS_NAMES = List.of(
+            "org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat",
+            "org.glavo.arkivo.archive.ar.ArArkivoFormat",
+            "org.glavo.arkivo.archive.cpio.CPIOArkivoFormat",
+            "org.glavo.arkivo.archive.rar.RarArkivoFormat",
+            "org.glavo.arkivo.archive.tar.TarArkivoFormat",
+            "org.glavo.arkivo.archive.zip.ZipArkivoFormat"
+    );
+
+    /// Formats in deterministic official order, with repeated logical identities included once.
     private final @Unmodifiable List<ArkivoFormat> formats;
 
     /// Formats indexed by normalized stable names and aliases.
@@ -31,7 +45,7 @@ public final class ArchiveFormatRegistry {
     private final int probeSize;
 
     /// Validates and indexes supplied format descriptors.
-    private ArchiveFormatRegistry(List<ArkivoFormat> formats) {
+    private ArchiveFormatIndex(List<ArkivoFormat> formats) {
         ArrayList<ArkivoFormat> copiedFormats = new ArrayList<>(formats.size());
         Set<FormatIdentity> seenFormats = new HashSet<>();
         LinkedHashMap<String, ArkivoFormat> formatsByName = new LinkedHashMap<>();
@@ -64,57 +78,45 @@ public final class ArchiveFormatRegistry {
         this.probeSize = maximumProbeSize;
     }
 
-    /// Loads formats visible to the current thread context class loader.
+    /// Loads every present official format through its immutable singleton accessor.
     ///
-    /// @return an immutable registry containing the discovered formats
-    public static ArchiveFormatRegistry load() {
-        return fromFormats(ServiceLoader.load(ArkivoFormat.class));
+    /// @return an immutable index of the official format modules present to this module's class loader
+    static ArchiveFormatIndex loadBuiltins() {
+        ArrayList<ArkivoFormat> formats = new ArrayList<>(FORMAT_CLASS_NAMES.size());
+        for (String className : FORMAT_CLASS_NAMES) {
+            @Nullable ArkivoFormat format = loadFormat(className);
+            if (format != null) {
+                formats.add(format);
+            }
+        }
+        return new ArchiveFormatIndex(formats);
     }
 
-    /// Loads formats visible to the given class loader.
+    /// Creates an index from explicit descriptors for internal validation and tests.
     ///
-    /// @param loader the class loader from which providers are discovered
-    /// @return an immutable registry containing the discovered formats
-    public static ArchiveFormatRegistry load(ClassLoader loader) {
-        Objects.requireNonNull(loader, "loader");
-        return fromFormats(ServiceLoader.load(ArkivoFormat.class, loader));
-    }
-
-    /// Loads formats visible to the given module layer.
-    ///
-    /// @param layer the module layer from which providers are discovered
-    /// @return an immutable registry containing the discovered formats
-    public static ArchiveFormatRegistry load(ModuleLayer layer) {
-        Objects.requireNonNull(layer, "layer");
-        return fromFormats(ServiceLoader.load(layer, ArkivoFormat.class));
-    }
-
-    /// Creates a registry from explicit format descriptors.
-    ///
-    /// @param formats the descriptors to validate and index, in preferred discovery order
-    /// @return an immutable registry containing each logical provider at most once
-    /// @throws IllegalStateException if a descriptor has an invalid probe size or formats claim the same name
-    public static ArchiveFormatRegistry fromFormats(Iterable<? extends ArkivoFormat> formats) {
+    /// @param formats the descriptors to validate and index in preferred order
+    /// @return an immutable index containing each logical identity at most once
+    static ArchiveFormatIndex of(Iterable<? extends ArkivoFormat> formats) {
         Objects.requireNonNull(formats, "formats");
         ArrayList<ArkivoFormat> copiedFormats = new ArrayList<>();
         for (ArkivoFormat format : formats) {
             copiedFormats.add(Objects.requireNonNull(format, "archive format"));
         }
-        return new ArchiveFormatRegistry(copiedFormats);
+        return new ArchiveFormatIndex(copiedFormats);
     }
 
-    /// Returns formats in discovery or caller-supplied order, with repeated logical providers included once.
+    /// Returns formats in deterministic official order.
     ///
     /// @return the immutable ordered format list
-    public @Unmodifiable List<ArkivoFormat> formats() {
+    @Unmodifiable List<ArkivoFormat> formats() {
         return formats;
     }
 
     /// Returns the named format or null when no stable name or alias matches.
     ///
     /// @param name the case-insensitive stable name or alias to look up
-    /// @return the matching format, or {@code null} if no format matches
-    public @Nullable ArkivoFormat find(String name) {
+    /// @return the matching format, or `null` if no format matches
+    @Nullable ArkivoFormat find(String name) {
         Objects.requireNonNull(name, "name");
         return formatsByName.get(normalizeName(name));
     }
@@ -124,7 +126,7 @@ public final class ArchiveFormatRegistry {
     /// @param name the case-insensitive stable name or alias to look up
     /// @return the matching format
     /// @throws IllegalArgumentException when no stable name or alias matches
-    public ArkivoFormat require(String name) {
+    ArkivoFormat require(String name) {
         @Nullable ArkivoFormat format = find(name);
         if (format == null) {
             throw new IllegalArgumentException("Unknown archive format: " + name);
@@ -137,8 +139,8 @@ public final class ArchiveFormatRegistry {
     /// The supplied buffer is not modified.
     ///
     /// @param prefix the archive prefix to test, from its current position to its limit
-    /// @return the best matching format, or {@code null} if no format recognizes the prefix
-    public @Nullable ArkivoFormat detect(ByteBuffer prefix) {
+    /// @return the best matching format, or `null` if no format recognizes the prefix
+    @Nullable ArkivoFormat detect(ByteBuffer prefix) {
         Objects.requireNonNull(prefix, "prefix");
         @Nullable ArkivoFormat detected = null;
         int detectedProbeSize = -1;
@@ -151,11 +153,31 @@ public final class ArchiveFormatRegistry {
         return detected;
     }
 
-    /// Returns the largest preferred signature prefix requested by any format.
+    /// Returns the largest preferred signature prefix requested by an installed official format.
     ///
-    /// @return the maximum value returned by a registered format's {@link ArkivoFormat#probeSize()} method
-    public int probeSize() {
+    /// @return the maximum indexed [ArkivoFormat#probeSize()] value
+    int probeSize() {
         return probeSize;
+    }
+
+    /// Loads one known singleton class, or returns null when its optional module is absent.
+    private static @Nullable ArkivoFormat loadFormat(String className) {
+        try {
+            Class<?> formatClass = Class.forName(className);
+            Method instanceMethod = formatClass.getMethod("instance");
+            if (!Modifier.isStatic(instanceMethod.getModifiers())) {
+                throw new IllegalStateException("Built-in archive format instance() is not static: " + className);
+            }
+            Object value = instanceMethod.invoke(null);
+            if (!(value instanceof ArkivoFormat format)) {
+                throw new IllegalStateException("Built-in archive format has an incompatible instance: " + className);
+            }
+            return format;
+        } catch (ClassNotFoundException ignored) {
+            return null;
+        } catch (ReflectiveOperationException | LinkageError | SecurityException exception) {
+            throw new IllegalStateException("Failed to load built-in archive format: " + className, exception);
+        }
     }
 
     /// Registers one stable name or alias after validating it for unambiguous lookup.
@@ -188,15 +210,16 @@ public final class ArchiveFormatRegistry {
         return normalizeName(name);
     }
 
-    /// Identifies one logical provider across module-path and classpath service discovery.
+    /// Identifies one logical official format.
     ///
-    /// @param implementation the concrete provider implementation class
-    /// @param name the normalized stable format name
+    /// @param implementation the concrete format implementation class
+    /// @param name           the normalized stable format name
+    @NotNullByDefault
     private record FormatIdentity(
             Class<? extends ArkivoFormat> implementation,
             String name
     ) {
-        /// Validates one logical provider identity.
+        /// Validates one logical format identity.
         private FormatIdentity {
             Objects.requireNonNull(implementation, "implementation");
             Objects.requireNonNull(name, "name");

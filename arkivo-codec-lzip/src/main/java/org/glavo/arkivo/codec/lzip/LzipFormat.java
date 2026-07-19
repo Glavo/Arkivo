@@ -23,8 +23,8 @@ public final class LzipFormat implements CompressionFormat {
     /// The canonical lzip format instance.
     private static final LzipFormat INSTANCE = new LzipFormat();
 
-    /// Creates a service-discoverable lzip format descriptor.
-    public LzipFormat() {
+    /// Creates the canonical lzip format descriptor.
+    private LzipFormat() {
     }
 
     /// Returns the canonical lzip format instance.
