@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -123,7 +122,7 @@ public final class DeflateBufferEngineTest {
         byte[] expected = new byte[first.length + second.length];
         System.arraycopy(first, 0, expected, 0, first.length);
         System.arraycopy(second, 0, expected, first.length, second.length);
-        assertArrayEquals(expected, decode(encoded.toByteArray(), 2, DecodingOptions.DEFAULT));
+        assertArrayEquals(expected, decode(encoded.toByteArray(), 2, CODEC));
     }
 
     /// Verifies finalization drains a completed block before reusing engine-owned output storage.
@@ -151,7 +150,7 @@ public final class DeflateBufferEngineTest {
             assertEquals(CodecOutcome.FINISHED, outcome);
         }
 
-        assertArrayEquals(input, decode(encoded.toByteArray(), 13, DecodingOptions.DEFAULT));
+        assertArrayEquals(input, decode(encoded.toByteArray(), 13, CODEC));
     }
 
     /// Verifies reset, idempotent completed-stream observation, and close-abort behavior.
@@ -182,13 +181,11 @@ public final class DeflateBufferEngineTest {
     public void maximumOutputSizeAppliesToBufferDecoder() throws IOException {
         byte[] input = testData();
         byte[] encoded = encodeInFragments(input, 13, 5, false);
-        DecodingOptions exactLimits =
-                DecodingOptions.ofMaximumOutputSize(input.length);
-        DecodingOptions shortLimits =
-                DecodingOptions.ofMaximumOutputSize(input.length - 1L);
+        DeflateCodec exactCodec = CODEC.withMaximumOutputSize(input.length);
+        DeflateCodec shortCodec = CODEC.withMaximumOutputSize(input.length - 1L);
 
-        assertArrayEquals(input, decode(encoded, 1, exactLimits));
-        assertThrows(DecompressionLimitException.class, () -> decode(encoded, 1, shortLimits));
+        assertArrayEquals(input, decode(encoded, 1, exactCodec));
+        assertThrows(DecompressionLimitException.class, () -> decode(encoded, 1, shortCodec));
     }
 
     /// Encodes source fragments into one raw Deflate stream.
@@ -254,11 +251,11 @@ public final class DeflateBufferEngineTest {
     private static byte[] decode(
             byte[] encoded,
             int targetSize,
-            DecodingOptions limits
+            DeflateCodec codec
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         ByteBuffer source = ByteBuffer.wrap(encoded);
-        try (CompressionDecoder decoder = CODEC.newDecoder(limits)) {
+        try (CompressionDecoder decoder = codec.newDecoder()) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(targetSize);

@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -122,7 +121,6 @@ public final class ZstdPureJavaDecoderTest {
         ByteBuffer output = ByteBuffer.allocate(8);
         try (DecompressingReadableByteChannel.Framed decoder = codec.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(frames)),
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             CodecResult first = decoder.decodeFrame(output);
@@ -175,7 +173,6 @@ public final class ZstdPureJavaDecoderTest {
         ByteBuffer output = ByteBuffer.allocate(16);
         try (DecompressingReadableByteChannel.Framed decoder = new ZstdCodec().newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             CodecResult skipped = decoder.decodeFrame(output);
@@ -206,7 +203,6 @@ public final class ZstdPureJavaDecoderTest {
         ByteBuffer output = ByteBuffer.allocate(16);
         try (DecompressingReadableByteChannel.Framed decoder = new ZstdCodec().newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             CodecResult result = decoder.decodeFrame(output);

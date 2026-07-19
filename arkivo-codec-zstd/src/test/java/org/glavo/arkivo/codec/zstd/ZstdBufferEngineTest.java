@@ -9,7 +9,6 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -117,7 +116,7 @@ public final class ZstdBufferEngineTest {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
         try (CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> decoder =
-                     CODEC.newDecoder(DecodingOptions.ofMaximumOutputSize(input.length))) {
+                     CODEC.withMaximumOutputSize(input.length).newDecoder()) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(7);
@@ -157,13 +156,12 @@ public final class ZstdBufferEngineTest {
 
         byte[] input = testData(4097);
         byte[] encoded = encode(input, CODEC.newEncoder(), 101, 5, false);
-        DecodingOptions exact = DecodingOptions.ofMaximumOutputSize(input.length);
-        DecodingOptions shortLimit =
-                DecodingOptions.ofMaximumOutputSize((long) input.length - 1L);
-        assertArrayEquals(input, decode(encoded, CODEC, exact, 1));
+        ZstdCodec exactCodec = CODEC.withMaximumOutputSize(input.length);
+        ZstdCodec shortCodec = CODEC.withMaximumOutputSize((long) input.length - 1L);
+        assertArrayEquals(input, decode(encoded, exactCodec, 1));
         assertThrows(
                 DecompressionLimitException.class,
-                () -> decode(encoded, CODEC, shortLimit, 1)
+                () -> decode(encoded, shortCodec, 1)
         );
     }
 
@@ -180,8 +178,7 @@ public final class ZstdBufferEngineTest {
         corrupt[corrupt.length - 1] ^= 1;
         assertThrows(IOException.class, () -> decode(corrupt, codec, 17));
 
-        DecodingOptions smallWindow = DecodingOptions.ofMaximumWindowSize(1024L);
-        assertThrows(IOException.class, () -> decode(encoded, codec, smallWindow, 17));
+        assertThrows(IOException.class, () -> decode(encoded, codec.withMaximumWindowSize(1024L), 17));
     }
 
     /// Verifies Channel adaptation exposes one exact frame boundary before physical EOF.
@@ -352,21 +349,11 @@ public final class ZstdBufferEngineTest {
         assertEquals(CodecOutcome.FINISHED, outcome);
     }
 
-    /// Decodes one frame from one complete source buffer.
+    /// Decodes one frame from one complete source buffer using the codec's limits.
     private static byte[] decode(byte[] encoded, ZstdCodec codec, int targetSize) throws IOException {
-        return decode(encoded, codec, DecodingOptions.DEFAULT, targetSize);
-    }
-
-    /// Decodes one frame from one complete source buffer with operation-scoped limits.
-    private static byte[] decode(
-            byte[] encoded,
-            ZstdCodec codec,
-            DecodingOptions limits,
-            int targetSize
-    ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         ByteBuffer source = ByteBuffer.wrap(encoded);
-        try (CompressionDecoder decoder = codec.newDecoder(limits)) {
+        try (CompressionDecoder decoder = codec.newDecoder()) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(targetSize);

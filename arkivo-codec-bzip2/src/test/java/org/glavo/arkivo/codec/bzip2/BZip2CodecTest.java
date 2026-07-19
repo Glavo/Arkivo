@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.bzip2;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
@@ -101,7 +100,6 @@ public final class BZip2CodecTest {
         );
         DecompressingReadableByteChannel decoder = new BZip2Codec().newReadableByteChannel(
                 compressedSource,
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(input.length);

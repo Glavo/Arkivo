@@ -8,7 +8,6 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
@@ -142,21 +141,21 @@ public final class UnixCompressCodecTest {
         byte[] encoded = encode(codec, randomBytes(4096));
         assertThrows(
                 DecompressionOutputLimitException.class,
-                () -> codec.decompress(ByteBuffer.wrap(encoded), DecodingOptions.ofMaximumOutputSize(1024))
+                () -> codec.withMaximumOutputSize(1024).decompress(ByteBuffer.wrap(encoded))
         );
         assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> codec.decompress(
-                        ByteBuffer.wrap(encoded),
-                        new DecodingOptions(8192, 65_535, DecodingOptions.UNLIMITED_SIZE)
-                )
+                () -> codec
+                        .withMaximumOutputSize(8192)
+                        .withMaximumWindowSize(65_535)
+                        .decompress(ByteBuffer.wrap(encoded))
         );
         assertThrows(
                 DecompressionMemoryLimitException.class,
-                () -> codec.decompress(
-                        ByteBuffer.wrap(encoded),
-                        new DecodingOptions(8192, DecodingOptions.UNLIMITED_SIZE, 393_215)
-                )
+                () -> codec
+                        .withMaximumOutputSize(8192)
+                        .withMaximumMemorySize(393_215)
+                        .decompress(ByteBuffer.wrap(encoded))
         );
     }
 
@@ -167,7 +166,7 @@ public final class UnixCompressCodecTest {
 
     /// Decodes all input with an explicit finite output bound.
     private static byte[] decode(UnixCompressCodec codec, byte[] input, int maximumOutputSize) throws IOException {
-        return bytes(codec.decompress(ByteBuffer.wrap(input), maximumOutputSize));
+        return bytes(codec.withMaximumOutputSize(maximumOutputSize).decompress(ByteBuffer.wrap(input)));
     }
 
     /// Encodes with a one-byte direct target for every engine call.

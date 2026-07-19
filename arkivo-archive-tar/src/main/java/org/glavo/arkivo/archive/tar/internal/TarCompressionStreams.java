@@ -6,7 +6,6 @@ package org.glavo.arkivo.archive.tar.internal;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.SeekableEncodingOptions;
@@ -47,11 +46,8 @@ public final class TarCompressionStreams {
             return source;
         }
         try {
-            return compressionCodec.newInputStream(
-                    source,
-                    decodingOptions(readLimits),
-                    ResourceOwnership.OWNED
-            );
+            return withReadLimits(compressionCodec, readLimits)
+                    .newInputStream(source, ResourceOwnership.OWNED);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(source, exception);
             throw exception;
@@ -77,11 +73,8 @@ public final class TarCompressionStreams {
             return source;
         }
         try {
-            return compressionCodec.newReadableByteChannel(
-                    source,
-                    decodingOptions(readLimits),
-                    ResourceOwnership.OWNED
-            );
+            return withReadLimits(compressionCodec, readLimits)
+                    .newReadableByteChannel(source, ResourceOwnership.OWNED);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(source, exception);
             throw exception;
@@ -164,13 +157,33 @@ public final class TarCompressionStreams {
         }
     }
 
-    /// Converts archive resource limits to the limits understood by compression codecs.
-    static DecodingOptions decodingOptions(ArchiveReadLimits readLimits) {
-        return new DecodingOptions(
-                DecodingOptions.UNLIMITED_SIZE,
-                readLimits.maximumCompressionWindowSize(),
-                readLimits.maximumDecoderMemorySize()
-        );
+    /// Returns a codec constrained by both its existing limits and the archive read policy.
+    static CompressionCodec<?> withReadLimits(
+            CompressionCodec<?> codec,
+            ArchiveReadLimits readLimits
+    ) {
+        Objects.requireNonNull(codec, "codec");
+        Objects.requireNonNull(readLimits, "readLimits");
+        return codec
+                .withMaximumWindowSize(moreRestrictive(
+                        codec.maximumWindowSize(),
+                        readLimits.maximumCompressionWindowSize()
+                ))
+                .withMaximumMemorySize(moreRestrictive(
+                        codec.maximumMemorySize(),
+                        readLimits.maximumDecoderMemorySize()
+                ));
+    }
+
+    /// Returns the smaller finite limit, or the available finite limit when the other is unrestricted.
+    private static long moreRestrictive(long first, long second) {
+        if (first < 0L) {
+            return second;
+        }
+        if (second < 0L) {
+            return first;
+        }
+        return Math.min(first, second);
     }
 
     /// Closes a stream after wrapper setup fails without hiding the primary failure.

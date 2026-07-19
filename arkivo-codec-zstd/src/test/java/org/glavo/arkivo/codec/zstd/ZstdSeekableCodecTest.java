@@ -4,7 +4,6 @@
 package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.ResourceOwnership;
@@ -54,7 +53,10 @@ public final class ZstdSeekableCodecTest {
             }
 
             byte[] encoded = Files.readAllBytes(path);
-            assertArrayEquals(source, codec.decompress(ByteBuffer.wrap(encoded), source.length).array());
+            assertArrayEquals(
+                    source,
+                    codec.withMaximumOutputSize(source.length).decompress(ByteBuffer.wrap(encoded)).array()
+            );
 
             CompressionCodec.Seekable.Index index;
             try (SeekableByteChannel encodedSource = Files.newByteChannel(path, StandardOpenOption.READ)) {
@@ -128,7 +130,9 @@ public final class ZstdSeekableCodecTest {
             assertEquals(350L, index.frameUncompressedSize(1));
             assertArrayEquals(
                     source,
-                    ZstdCodec.DEFAULT.decompress(ByteBuffer.wrap(Files.readAllBytes(path)), source.length).array()
+                    ZstdCodec.DEFAULT.withMaximumOutputSize(source.length)
+                            .decompress(ByteBuffer.wrap(Files.readAllBytes(path)))
+                            .array()
             );
         } finally {
             Files.deleteIfExists(path);
@@ -263,10 +267,7 @@ public final class ZstdSeekableCodecTest {
                         DecompressionOutputLimitException.class,
                         assertThrows(
                                 IOException.class,
-                                () -> ZstdCodec.DEFAULT.readIndex(
-                                        source,
-                                        DecodingOptions.ofMaximumOutputSize(1023)
-                                )
+                                () -> ZstdCodec.DEFAULT.withMaximumOutputSize(1023).readIndex(source)
                         )
                 );
             }
@@ -292,10 +293,7 @@ public final class ZstdSeekableCodecTest {
                         DecompressionMemoryLimitException.class,
                         assertThrows(
                                 IOException.class,
-                                () -> ZstdCodec.DEFAULT.readIndex(
-                                        source,
-                                        DecodingOptions.ofMaximumMemorySize(1L)
-                                )
+                                () -> ZstdCodec.DEFAULT.withMaximumMemorySize(1L).readIndex(source)
                         )
                 );
                 assertEquals(0L, source.position());
@@ -319,10 +317,7 @@ public final class ZstdSeekableCodecTest {
             }
             CompressionCodec.Seekable.Index index;
             try (SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ)) {
-                index = ZstdCodec.DEFAULT.readIndex(
-                        source,
-                        DecodingOptions.ofMaximumMemorySize(65_568L)
-                );
+                index = ZstdCodec.DEFAULT.withMaximumMemorySize(65_568L).readIndex(source);
                 assertNotNull(index);
             }
             try (SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ);

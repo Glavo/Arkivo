@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.lzma;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2Decoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2Encoder;
@@ -36,6 +35,15 @@ public final class LZMA2Codec implements CompressionCodec<LZMA2Codec> {
     /// The configured externally declared LZMA properties.
     private final LZMAProperties properties;
 
+    /// The configured decoded-output limit.
+    private final long maximumOutputSize;
+
+    /// The configured decoder history-window limit.
+    private final long maximumWindowSize;
+
+    /// The configured decoder working-memory limit.
+    private final long maximumMemorySize;
+
     /// Creates the default LZMA2 codec configuration.
     public LZMA2Codec() {
         this(LZMAProperties.defaults(DEFAULT_DICTIONARY_SIZE));
@@ -46,7 +54,65 @@ public final class LZMA2Codec implements CompressionCodec<LZMA2Codec> {
     /// @param properties the model properties; the dictionary size is supplied out of band to the decoder
     /// @throws NullPointerException if {@code properties} is {@code null}
     public LZMA2Codec(LZMAProperties properties) {
+        this(properties, UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
+    }
+
+    /// Creates a validated LZMA2 codec configuration.
+    private LZMA2Codec(
+            LZMAProperties properties,
+            long maximumOutputSize,
+            long maximumWindowSize,
+            long maximumMemorySize
+    ) {
         this.properties = Objects.requireNonNull(properties, "properties");
+        CompressionDecoderSupport.validateLimit(maximumOutputSize, "maximumOutputSize");
+        CompressionDecoderSupport.validateLimit(maximumWindowSize, "maximumWindowSize");
+        CompressionDecoderSupport.validateLimit(maximumMemorySize, "maximumMemorySize");
+        this.maximumOutputSize = maximumOutputSize;
+        this.maximumWindowSize = maximumWindowSize;
+        this.maximumMemorySize = maximumMemorySize;
+    }
+
+    /// Returns the configured decoded-output limit.
+    @Override
+    public long maximumOutputSize() {
+        return maximumOutputSize;
+    }
+
+    /// Returns the configured decoder history-window limit.
+    @Override
+    public long maximumWindowSize() {
+        return maximumWindowSize;
+    }
+
+    /// Returns the configured decoder working-memory limit.
+    @Override
+    public long maximumMemorySize() {
+        return maximumMemorySize;
+    }
+
+    /// Returns an immutable codec with the requested decoded-output limit.
+    @Override
+    public LZMA2Codec withMaximumOutputSize(long maximumOutputSize) {
+        return maximumOutputSize == this.maximumOutputSize
+                ? this
+                : new LZMA2Codec(properties, maximumOutputSize, maximumWindowSize, maximumMemorySize);
+    }
+
+    /// Returns an immutable codec with the requested decoder history-window limit.
+    @Override
+    public LZMA2Codec withMaximumWindowSize(long maximumWindowSize) {
+        return maximumWindowSize == this.maximumWindowSize
+                ? this
+                : new LZMA2Codec(properties, maximumOutputSize, maximumWindowSize, maximumMemorySize);
+    }
+
+    /// Returns an immutable codec with the requested decoder working-memory limit.
+    @Override
+    public LZMA2Codec withMaximumMemorySize(long maximumMemorySize) {
+        return maximumMemorySize == this.maximumMemorySize
+                ? this
+                : new LZMA2Codec(properties, maximumOutputSize, maximumWindowSize, maximumMemorySize);
     }
 
     /// Returns the canonical raw LZMA2 format.
@@ -70,7 +136,9 @@ public final class LZMA2Codec implements CompressionCodec<LZMA2Codec> {
     /// @throws NullPointerException if {@code properties} is {@code null}
     public LZMA2Codec withProperties(LZMAProperties properties) {
         Objects.requireNonNull(properties, "properties");
-        return properties.equals(this.properties) ? this : new LZMA2Codec(properties);
+        return properties.equals(this.properties)
+                ? this
+                : new LZMA2Codec(properties, maximumOutputSize, maximumWindowSize, maximumMemorySize);
     }
 
     /// Returns an immutable LZMA2 codec with the requested dictionary size.
@@ -89,14 +157,16 @@ public final class LZMA2Codec implements CompressionCodec<LZMA2Codec> {
         return new LZMA2Encoder(properties);
     }
 
-    /// Creates a raw LZMA2 decoder with operation-scoped safety limits.
+    /// Creates a raw LZMA2 decoder using this codec's configured limits.
     @Override
-    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
-        Objects.requireNonNull(options, "options");
-        options.requireWindowSize(properties.dictionarySize());
+    public CompressionDecoder newDecoder() throws IOException {
+        CompressionDecoderSupport.requireWindowSize(
+                CompressionDecoderSupport.effectiveMaximumWindowSize(maximumWindowSize, maximumMemorySize),
+                properties.dictionarySize()
+        );
         return CompressionDecoderSupport.limitEngineOutput(
                 new LZMA2Decoder(properties.dictionarySize()),
-                options.maximumOutputSize()
+                maximumOutputSize
         );
     }
 }

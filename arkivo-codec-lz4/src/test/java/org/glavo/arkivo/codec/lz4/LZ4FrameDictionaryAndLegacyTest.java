@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.lz4;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -147,8 +146,7 @@ public final class LZ4FrameDictionaryAndLegacyTest {
         LZ4Dictionary dictionary = LZ4Dictionary.rawContent(dictionaryBytes());
         LZ4Codec codec = new LZ4Codec().withDictionary(dictionary);
         byte[] frame = compress(codec, new byte[]{1});
-        DecodingOptions limits = DecodingOptions.ofMaximumMemorySize(dictionary.size());
-        try (CompressionDecoder decoder = codec.newDecoder(limits)) {
+        try (CompressionDecoder decoder = codec.withMaximumMemorySize(dictionary.size()).newDecoder()) {
             assertThrows(
                     DecompressionMemoryLimitException.class,
                     () -> decoder.finish(ByteBuffer.wrap(frame), ByteBuffer.allocate(1))
@@ -158,11 +156,11 @@ public final class LZ4FrameDictionaryAndLegacyTest {
         LZ4Dictionary required = LZ4Dictionary.identified(17L, dictionaryBytes());
         LZ4Dictionary initial = LZ4Dictionary.identified(18L, dictionaryBytes());
         byte[] identifiedFrame = compress(new LZ4Codec().withDictionary(required), new byte[]{1});
-        DecodingOptions twoDictionaryLimit = DecodingOptions.ofMaximumMemorySize(
-                2L * dictionary.size() - 1L
-        );
         try (CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> decoder =
-                     new LZ4Codec().withDictionary(initial).newDecoder(twoDictionaryLimit)) {
+                     new LZ4Codec()
+                             .withDictionary(initial)
+                             .withMaximumMemorySize(2L * dictionary.size() - 1L)
+                             .newDecoder()) {
             assertEquals(
                     CodecOutcome.NEEDS_DICTIONARY,
                     decoder.decode(ByteBuffer.wrap(identifiedFrame), ByteBuffer.allocate(1))
@@ -232,7 +230,7 @@ public final class LZ4FrameDictionaryAndLegacyTest {
 
     /// Decompresses all concatenated frames into one owned byte array.
     private static byte[] decompress(LZ4Codec codec, byte[] input) throws IOException {
-        return bytes(codec.decompress(ByteBuffer.wrap(input), Integer.MAX_VALUE));
+        return bytes(codec.withMaximumOutputSize(Integer.MAX_VALUE).decompress(ByteBuffer.wrap(input)));
     }
 
     /// Creates one legacy frame whose only block is independently compressed by the raw-block codec.

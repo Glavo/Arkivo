@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
@@ -76,7 +75,7 @@ public final class LzipCodecTest {
         for (byte[] content : new byte[][]{new byte[0], patternedContent(180_321)}) {
             ByteBuffer compressed = codec.compress(ByteBuffer.wrap(content));
             assertTrue(compressed.remaining() >= LzipSupport.HEADER_SIZE + LzipSupport.TRAILER_SIZE);
-            ByteBuffer decoded = codec.decompress(compressed, content.length);
+            ByteBuffer decoded = codec.withMaximumOutputSize(content.length).decompress(compressed);
             byte[] result = new byte[decoded.remaining()];
             decoded.get(result);
             assertArrayEquals(content, result);
@@ -90,7 +89,7 @@ public final class LzipCodecTest {
         byte[] content = patternedContent(130_777);
         byte[] encoded = independentMember(content, TEST_DICTIONARY_SIZE);
         ByteBuffer source = ByteBuffer.wrap(encoded);
-        ByteBuffer decoded = new LzipCodec().decompress(source, content.length);
+        ByteBuffer decoded = new LzipCodec().withMaximumOutputSize(content.length).decompress(source);
         byte[] result = new byte[decoded.remaining()];
         decoded.get(result);
         assertArrayEquals(content, result);
@@ -176,7 +175,6 @@ public final class LzipCodecTest {
 
         try (DecompressingReadableByteChannel.Framed input = new LzipCodec().newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(stream)),
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             ByteBuffer target = ByteBuffer.allocate(16);
@@ -212,18 +210,15 @@ public final class LzipCodecTest {
 
         assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> new LzipCodec().decompress(
+                () -> new LzipCodec().withMaximumWindowSize(TEST_DICTIONARY_SIZE / 2L).decompress(
                         ByteBuffer.wrap(encoded),
-                        ByteBuffer.allocate(content.length),
-                        DecodingOptions.ofMaximumWindowSize(TEST_DICTIONARY_SIZE / 2L)
+                        ByteBuffer.allocate(content.length)
                 )
         );
         assertThrows(
                 DecompressionOutputLimitException.class,
-                () -> new LzipCodec().decompress(
-                        ByteBuffer.wrap(encoded),
-                        DecodingOptions.ofMaximumOutputSize(content.length - 1L)
-                )
+                () -> new LzipCodec().withMaximumOutputSize(content.length - 1L)
+                        .decompress(ByteBuffer.wrap(encoded))
         );
     }
 

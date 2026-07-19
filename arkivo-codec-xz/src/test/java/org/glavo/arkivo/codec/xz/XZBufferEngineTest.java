@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -133,10 +132,8 @@ public final class XZBufferEngineTest {
             finish(encoder, encoded, 1);
         }
 
-        ByteBuffer restored = CODEC.decompress(
-                ByteBuffer.wrap(encoded.toByteArray()),
-                first.length + second.length
-        );
+        ByteBuffer restored = CODEC.withMaximumOutputSize(first.length + second.length)
+                .decompress(ByteBuffer.wrap(encoded.toByteArray()));
         assertArrayEquals(concatenate(first, second), readBytes(restored));
     }
 
@@ -164,11 +161,10 @@ public final class XZBufferEngineTest {
             assertArrayEquals(content, input.readAllBytes());
         }
 
-        DecodingOptions limited =
-                DecodingOptions.ofMaximumOutputSize((long) content.length - 1L);
         assertThrows(
                 DecompressionLimitException.class,
-                () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), limited)
+                () -> CODEC.withMaximumOutputSize((long) content.length - 1L)
+                        .decompress(ByteBuffer.wrap(first.toByteArray()))
         );
         assertInstanceOf(CompressionEncoder.FlushableFramed.class, CODEC.newEncoder()).close();
     }

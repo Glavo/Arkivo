@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.lz4;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lz4.internal.LZ4FrameDecoder;
 import org.glavo.arkivo.codec.lz4.internal.LZ4FrameEncoder;
@@ -50,6 +49,15 @@ public final class LZ4Codec
     /// Configured external prefix dictionary, or null.
     private final @Nullable LZ4Dictionary dictionary;
 
+    /// The configured decoded-output limit.
+    private final long maximumOutputSize;
+
+    /// The configured decoder history-window limit.
+    private final long maximumWindowSize;
+
+    /// The configured decoder working-memory limit.
+    private final long maximumMemorySize;
+
     /// Creates the default LZ4 frame configuration.
     public LZ4Codec() {
         this(new Builder());
@@ -63,6 +71,9 @@ public final class LZ4Codec
         contentChecksum = builder.contentChecksum;
         verifyChecksums = builder.verifyChecksums;
         dictionary = builder.dictionary;
+        maximumOutputSize = builder.maximumOutputSize;
+        maximumWindowSize = builder.maximumWindowSize;
+        maximumMemorySize = builder.maximumMemorySize;
     }
 
     /// Returns a builder initialized to interoperable LZ4 frame defaults.
@@ -83,6 +94,48 @@ public final class LZ4Codec
     @Override
     public LZ4Format format() {
         return LZ4Format.instance();
+    }
+
+    /// Returns the configured decoded-output limit.
+    @Override
+    public long maximumOutputSize() {
+        return maximumOutputSize;
+    }
+
+    /// Returns the configured decoder history-window limit.
+    @Override
+    public long maximumWindowSize() {
+        return maximumWindowSize;
+    }
+
+    /// Returns the configured decoder working-memory limit.
+    @Override
+    public long maximumMemorySize() {
+        return maximumMemorySize;
+    }
+
+    /// Returns an immutable codec with the requested decoded-output limit.
+    @Override
+    public LZ4Codec withMaximumOutputSize(long maximumOutputSize) {
+        return maximumOutputSize == this.maximumOutputSize
+                ? this
+                : toBuilder().maximumOutputSize(maximumOutputSize).build();
+    }
+
+    /// Returns an immutable codec with the requested decoder history-window limit.
+    @Override
+    public LZ4Codec withMaximumWindowSize(long maximumWindowSize) {
+        return maximumWindowSize == this.maximumWindowSize
+                ? this
+                : toBuilder().maximumWindowSize(maximumWindowSize).build();
+    }
+
+    /// Returns an immutable codec with the requested decoder working-memory limit.
+    @Override
+    public LZ4Codec withMaximumMemorySize(long maximumMemorySize) {
+        return maximumMemorySize == this.maximumMemorySize
+                ? this
+                : toBuilder().maximumMemorySize(maximumMemorySize).build();
     }
 
     /// Returns the configured maximum decoded block size.
@@ -223,27 +276,21 @@ public final class LZ4Codec
         );
     }
 
-    /// Creates a transport-independent LZ4 frame decoder with operation-scoped limits.
+    /// Creates a transport-independent LZ4 frame decoder using this codec's configured limits.
     @Override
-    public CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> newDecoder(
-            DecodingOptions options
-    ) {
-        Objects.requireNonNull(options, "options");
+    public CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> newDecoder() {
         return CompressionDecoderSupport.limitEngineOutput(
                 new LZ4FrameDecoder(
                         dictionary,
-                        options.effectiveMaximumWindowSize(),
-                        options.maximumMemorySize(),
+                        CompressionDecoderSupport.effectiveMaximumWindowSize(
+                                maximumWindowSize,
+                                maximumMemorySize
+                        ),
+                        maximumMemorySize,
                         verifyChecksums
                 ),
-                options.maximumOutputSize()
+                maximumOutputSize
         );
-    }
-
-    /// Creates a dictionary-aware decoder without operation-scoped safety limits.
-    @Override
-    public CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> newDecoder() {
-        return newDecoder(DecodingOptions.DEFAULT);
     }
 
     /// Builds immutable standard LZ4 frame configurations.
@@ -270,6 +317,15 @@ public final class LZ4Codec
         /// Selected external prefix dictionary, or null.
         private @Nullable LZ4Dictionary dictionary;
 
+        /// Selected decoded-output limit.
+        private long maximumOutputSize = UNLIMITED_SIZE;
+
+        /// Selected decoder history-window limit.
+        private long maximumWindowSize = UNLIMITED_SIZE;
+
+        /// Selected decoder working-memory limit.
+        private long maximumMemorySize = UNLIMITED_SIZE;
+
         /// Creates a builder initialized to standard defaults.
         public Builder() {
         }
@@ -282,6 +338,9 @@ public final class LZ4Codec
             contentChecksum = codec.contentChecksum;
             verifyChecksums = codec.verifyChecksums;
             dictionary = codec.dictionary;
+            maximumOutputSize = codec.maximumOutputSize;
+            maximumWindowSize = codec.maximumWindowSize;
+            maximumMemorySize = codec.maximumMemorySize;
         }
 
         /// Selects the maximum decoded block size.
@@ -343,6 +402,39 @@ public final class LZ4Codec
         /// @return this builder
         public Builder withoutDictionary() {
             dictionary = null;
+            return this;
+        }
+
+        /// Selects the maximum decoded-output size.
+        ///
+        /// @param maximumOutputSize the nonnegative decoded-output limit, or [CompressionCodec#UNLIMITED_SIZE]
+        /// @return this builder
+        /// @throws IllegalArgumentException if `maximumOutputSize` is less than [CompressionCodec#UNLIMITED_SIZE]
+        public Builder maximumOutputSize(long maximumOutputSize) {
+            CompressionDecoderSupport.validateLimit(maximumOutputSize, "maximumOutputSize");
+            this.maximumOutputSize = maximumOutputSize;
+            return this;
+        }
+
+        /// Selects the maximum decoder history-window size.
+        ///
+        /// @param maximumWindowSize the nonnegative history-window limit, or [CompressionCodec#UNLIMITED_SIZE]
+        /// @return this builder
+        /// @throws IllegalArgumentException if `maximumWindowSize` is less than [CompressionCodec#UNLIMITED_SIZE]
+        public Builder maximumWindowSize(long maximumWindowSize) {
+            CompressionDecoderSupport.validateLimit(maximumWindowSize, "maximumWindowSize");
+            this.maximumWindowSize = maximumWindowSize;
+            return this;
+        }
+
+        /// Selects the maximum decoder working-memory size.
+        ///
+        /// @param maximumMemorySize the nonnegative decoder-memory limit, or [CompressionCodec#UNLIMITED_SIZE]
+        /// @return this builder
+        /// @throws IllegalArgumentException if `maximumMemorySize` is less than [CompressionCodec#UNLIMITED_SIZE]
+        public Builder maximumMemorySize(long maximumMemorySize) {
+            CompressionDecoderSupport.validateLimit(maximumMemorySize, "maximumMemorySize");
+            this.maximumMemorySize = maximumMemorySize;
             return this;
         }
 

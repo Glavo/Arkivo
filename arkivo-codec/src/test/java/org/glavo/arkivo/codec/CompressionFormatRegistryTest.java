@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec;
 
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -159,9 +160,76 @@ public final class CompressionFormatRegistryTest {
         /// The owning format identity.
         private final CompressionFormat format;
 
+        /// The maximum decoded output size.
+        private final long maximumOutputSize;
+
+        /// The maximum decoder history-window size.
+        private final long maximumWindowSize;
+
+        /// The maximum decoder working-memory size.
+        private final long maximumMemorySize;
+
         /// Creates a codec for the given format.
         private TestCodec(CompressionFormat format) {
+            this(format, UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
+        }
+
+        /// Creates a fully configured codec for the given format.
+        private TestCodec(
+                CompressionFormat format,
+                long maximumOutputSize,
+                long maximumWindowSize,
+                long maximumMemorySize
+        ) {
             this.format = format;
+            this.maximumOutputSize = maximumOutputSize;
+            this.maximumWindowSize = maximumWindowSize;
+            this.maximumMemorySize = maximumMemorySize;
+        }
+
+        /// Returns the maximum decoded output size.
+        @Override
+        public long maximumOutputSize() {
+            return maximumOutputSize;
+        }
+
+        /// Returns the maximum decoder history-window size.
+        @Override
+        public long maximumWindowSize() {
+            return maximumWindowSize;
+        }
+
+        /// Returns the maximum decoder working-memory size.
+        @Override
+        public long maximumMemorySize() {
+            return maximumMemorySize;
+        }
+
+        /// Returns a codec with the requested decoded output limit.
+        @Override
+        public TestCodec withMaximumOutputSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumOutputSize");
+            return value == maximumOutputSize
+                    ? this
+                    : new TestCodec(format, value, maximumWindowSize, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder history-window limit.
+        @Override
+        public TestCodec withMaximumWindowSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumWindowSize");
+            return value == maximumWindowSize
+                    ? this
+                    : new TestCodec(format, maximumOutputSize, value, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder working-memory limit.
+        @Override
+        public TestCodec withMaximumMemorySize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumMemorySize");
+            return value == maximumMemorySize
+                    ? this
+                    : new TestCodec(format, maximumOutputSize, maximumWindowSize, value);
         }
 
         /// Returns the owning format identity.
@@ -178,7 +246,7 @@ public final class CompressionFormatRegistryTest {
 
         /// Rejects decoder creation because registry tests only exercise metadata.
         @Override
-        public CompressionDecoder newDecoder(DecodingOptions options) {
+        public CompressionDecoder newDecoder() {
             throw new UnsupportedOperationException("Test codec has no decoder");
         }
     }

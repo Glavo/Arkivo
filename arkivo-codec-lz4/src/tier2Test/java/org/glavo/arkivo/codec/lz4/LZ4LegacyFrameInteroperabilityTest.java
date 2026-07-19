@@ -34,10 +34,9 @@ public final class LZ4LegacyFrameInteroperabilityTest {
         appendBlock(frame, Arrays.copyOfRange(expected, 0, LEGACY_BLOCK_SIZE));
         appendBlock(frame, Arrays.copyOfRange(expected, LEGACY_BLOCK_SIZE, expected.length));
 
-        ByteBuffer decoded = new LZ4Codec().decompress(
-                ByteBuffer.wrap(frame.toByteArray()),
-                expected.length
-        );
+        ByteBuffer decoded = new LZ4Codec()
+                .withMaximumOutputSize(expected.length)
+                .decompress(ByteBuffer.wrap(frame.toByteArray()));
         byte[] actual = new byte[decoded.remaining()];
         decoded.get(actual);
         assertArrayEquals(expected, actual);

@@ -42,10 +42,9 @@ final class SeekableCompressedTarSource {
             ArchiveReadLimits readLimits
     ) throws IOException {
         channel.position(0L);
-        @Nullable CompressionCodec.Seekable.Index index = seekable.readIndex(
-                channel,
-                TarCompressionStreams.decodingOptions(readLimits)
-        );
+        CompressionCodec<?> configured = TarCompressionStreams.withReadLimits(seekable, readLimits);
+        CompressionCodec.Seekable<?> configuredSeekable = (CompressionCodec.Seekable<?>) configured;
+        @Nullable CompressionCodec.Seekable.Index index = configuredSeekable.readIndex(channel);
         return index != null ? new SeekableCompressedTarSource(source, index) : null;
     }
 

@@ -12,7 +12,6 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.lzma.RawLZMACodec;
@@ -76,10 +75,13 @@ final class ZipCompressionFormats {
             long decodedSize,
             ArchiveReadLimits readLimits
     ) throws IOException {
-        return CompressionFormats.newReadableByteChannel(
-                formatName,
+        CompressionCodec<?> configured = withDecodingLimits(
+                requireDefaultCodec(formatName),
+                decodedSize,
+                readLimits
+        );
+        return configured.newReadableByteChannel(
                 StreamChannelAdapters.readableChannel(source),
-                decodingOptions(decodedSize, readLimits),
                 ResourceOwnership.OWNED
         );
     }
@@ -160,24 +162,44 @@ final class ZipCompressionFormats {
         if (expectedDecodedSize >= 0L) {
             configured = configured.withDecodedSize(expectedDecodedSize);
         }
-        return configured.newReadableByteChannel(
+        return withDecodingLimits(configured, entryDecodedSize, readLimits).newReadableByteChannel(
                 StreamChannelAdapters.readableChannel(source),
-                decodingOptions(entryDecodedSize, readLimits),
                 ResourceOwnership.OWNED
         );
     }
 
-    /// Maps archive read limits to one codec decoder operation.
-    static DecodingOptions decodingOptions(long decodedSize, ArchiveReadLimits readLimits) {
+    /// Returns a codec constrained by its existing limits, the entry size, and the archive read policy.
+    static CompressionCodec<?> withDecodingLimits(
+            CompressionCodec<?> codec,
+            long decodedSize,
+            ArchiveReadLimits readLimits
+    ) {
+        Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(readLimits, "readLimits");
-        if (decodedSize < DecodingOptions.UNLIMITED_SIZE) {
+        if (decodedSize < CompressionCodec.UNLIMITED_SIZE) {
             throw new IllegalArgumentException("decodedSize must be non-negative or UNLIMITED_SIZE");
         }
-        return new DecodingOptions(
-                decodedSize,
-                readLimits.effectiveCompressionWindowSize(),
-                readLimits.maximumDecoderMemorySize()
-        );
+        return codec
+                .withMaximumOutputSize(moreRestrictive(codec.maximumOutputSize(), decodedSize))
+                .withMaximumWindowSize(moreRestrictive(
+                        codec.maximumWindowSize(),
+                        readLimits.effectiveCompressionWindowSize()
+                ))
+                .withMaximumMemorySize(moreRestrictive(
+                        codec.maximumMemorySize(),
+                        readLimits.maximumDecoderMemorySize()
+                ));
+    }
+
+    /// Returns the smaller finite limit, or the available finite limit when the other is unrestricted.
+    private static long moreRestrictive(long first, long second) {
+        if (first < 0L) {
+            return second;
+        }
+        if (second < 0L) {
+            return first;
+        }
+        return Math.min(first, second);
     }
 
     /// Returns the default codec for an installed optional format or reports the stable missing-format diagnostic.

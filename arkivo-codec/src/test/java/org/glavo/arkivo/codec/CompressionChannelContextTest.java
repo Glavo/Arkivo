@@ -84,7 +84,6 @@ final class CompressionChannelContextTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}));
         try (DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(
                 source,
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         )) {
             decoder.decode(ByteBuffer.allocate(1));
@@ -113,7 +112,6 @@ final class CompressionChannelContextTest {
         FailingCloseReadableChannel source = new FailingCloseReadableChannel(new byte[]{4, 5, 6});
         DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(
                 source,
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         );
         assertThrows(IOException.class, decoder::close);
@@ -291,8 +289,70 @@ final class CompressionChannelContextTest {
     @NotNullByDefault
     private static final class IdentityCodec
             implements CompressionCodec.FlushableFramed<IdentityCodec>, CompressionFormat {
+        /// The maximum decoded output size.
+        private final long maximumOutputSize;
+
+        /// The maximum decoder history-window size.
+        private final long maximumWindowSize;
+
+        /// The maximum decoder working-memory size.
+        private final long maximumMemorySize;
+
         /// Creates an identity codec.
         private IdentityCodec() {
+            this(UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
+        }
+
+        /// Creates a fully configured identity codec.
+        private IdentityCodec(long maximumOutputSize, long maximumWindowSize, long maximumMemorySize) {
+            this.maximumOutputSize = maximumOutputSize;
+            this.maximumWindowSize = maximumWindowSize;
+            this.maximumMemorySize = maximumMemorySize;
+        }
+
+        /// Returns the maximum decoded output size.
+        @Override
+        public long maximumOutputSize() {
+            return maximumOutputSize;
+        }
+
+        /// Returns the maximum decoder history-window size.
+        @Override
+        public long maximumWindowSize() {
+            return maximumWindowSize;
+        }
+
+        /// Returns the maximum decoder working-memory size.
+        @Override
+        public long maximumMemorySize() {
+            return maximumMemorySize;
+        }
+
+        /// Returns a codec with the requested decoded output limit.
+        @Override
+        public IdentityCodec withMaximumOutputSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumOutputSize");
+            return value == maximumOutputSize
+                    ? this
+                    : new IdentityCodec(value, maximumWindowSize, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder history-window limit.
+        @Override
+        public IdentityCodec withMaximumWindowSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumWindowSize");
+            return value == maximumWindowSize
+                    ? this
+                    : new IdentityCodec(maximumOutputSize, value, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder working-memory limit.
+        @Override
+        public IdentityCodec withMaximumMemorySize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumMemorySize");
+            return value == maximumMemorySize
+                    ? this
+                    : new IdentityCodec(maximumOutputSize, maximumWindowSize, value);
         }
 
         /// Returns the identity compression format name.
@@ -322,10 +382,10 @@ final class CompressionChannelContextTest {
 
         /// Creates a fresh identity decoder with the requested output limit.
         @Override
-        public CompressionDecoder.Framed newDecoder(DecodingOptions options) {
+        public CompressionDecoder.Framed newDecoder() {
             return CompressionDecoderSupport.limitEngineOutput(
                     new IdentityDecoder(),
-                    options.maximumOutputSize()
+                    maximumOutputSize
             );
         }
     }

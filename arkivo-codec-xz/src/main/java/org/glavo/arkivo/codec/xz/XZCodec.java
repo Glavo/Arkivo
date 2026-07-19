@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.xz;
 
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
@@ -51,6 +50,15 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
     /// Whether decoders verify block integrity checks.
     private final boolean verifyChecksums;
 
+    /// The configured decoded-output limit.
+    private final long maximumOutputSize;
+
+    /// The configured decoder history-window limit.
+    private final long maximumWindowSize;
+
+    /// The configured decoder working-memory limit.
+    private final long maximumMemorySize;
+
     /// Creates the default XZ codec configuration.
     public XZCodec() {
         this(new Builder());
@@ -63,6 +71,9 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
         this.filterChain = Objects.requireNonNull(builder.filterChain, "filterChain");
         this.blockSize = builder.blockSize;
         this.verifyChecksums = builder.verifyChecksums;
+        this.maximumOutputSize = builder.maximumOutputSize;
+        this.maximumWindowSize = builder.maximumWindowSize;
+        this.maximumMemorySize = builder.maximumMemorySize;
     }
 
     /// Returns a new builder initialized to XZ defaults.
@@ -83,6 +94,48 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
     @Override
     public XZFormat format() {
         return XZFormat.instance();
+    }
+
+    /// Returns the configured decoded-output limit.
+    @Override
+    public long maximumOutputSize() {
+        return maximumOutputSize;
+    }
+
+    /// Returns the configured decoder history-window limit.
+    @Override
+    public long maximumWindowSize() {
+        return maximumWindowSize;
+    }
+
+    /// Returns the configured decoder working-memory limit.
+    @Override
+    public long maximumMemorySize() {
+        return maximumMemorySize;
+    }
+
+    /// Returns an immutable codec with the requested decoded-output limit.
+    @Override
+    public XZCodec withMaximumOutputSize(long maximumOutputSize) {
+        return maximumOutputSize == this.maximumOutputSize
+                ? this
+                : toBuilder().maximumOutputSize(maximumOutputSize).build();
+    }
+
+    /// Returns an immutable codec with the requested decoder history-window limit.
+    @Override
+    public XZCodec withMaximumWindowSize(long maximumWindowSize) {
+        return maximumWindowSize == this.maximumWindowSize
+                ? this
+                : toBuilder().maximumWindowSize(maximumWindowSize).build();
+    }
+
+    /// Returns an immutable codec with the requested decoder working-memory limit.
+    @Override
+    public XZCodec withMaximumMemorySize(long maximumMemorySize) {
+        return maximumMemorySize == this.maximumMemorySize
+                ? this
+                : toBuilder().maximumMemorySize(maximumMemorySize).build();
     }
 
     /// Returns the configured LZMA2 model properties.
@@ -194,13 +247,18 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
         return new XZEncoder(properties, checkType.flag(), filterChain, blockSize);
     }
 
-    /// Creates a transport-independent XZ stream decoder with operation-scoped limits.
+    /// Creates a transport-independent XZ stream decoder using this codec's configured limits.
     @Override
-    public CompressionDecoder.Framed newDecoder(DecodingOptions options) throws IOException {
-        Objects.requireNonNull(options, "options");
+    public CompressionDecoder.Framed newDecoder() throws IOException {
         return CompressionDecoderSupport.limitEngineOutput(
-                new XZDecoder(options.effectiveMaximumWindowSize(), verifyChecksums),
-                options.maximumOutputSize()
+                new XZDecoder(
+                        CompressionDecoderSupport.effectiveMaximumWindowSize(
+                                maximumWindowSize,
+                                maximumMemorySize
+                        ),
+                        verifyChecksums
+                ),
+                maximumOutputSize
         );
     }
 
@@ -225,6 +283,15 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
         /// Whether decoders verify block integrity checks.
         private boolean verifyChecksums = true;
 
+        /// The selected decoded-output limit.
+        private long maximumOutputSize = UNLIMITED_SIZE;
+
+        /// The selected decoder history-window limit.
+        private long maximumWindowSize = UNLIMITED_SIZE;
+
+        /// The selected decoder working-memory limit.
+        private long maximumMemorySize = UNLIMITED_SIZE;
+
         /// Creates a builder initialized to XZ defaults.
         private Builder() {
         }
@@ -236,6 +303,9 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
             filterChain = codec.filterChain;
             blockSize = codec.blockSize;
             verifyChecksums = codec.verifyChecksums;
+            maximumOutputSize = codec.maximumOutputSize;
+            maximumWindowSize = codec.maximumWindowSize;
+            maximumMemorySize = codec.maximumMemorySize;
         }
 
         /// Selects all LZMA2 model properties.
@@ -327,6 +397,39 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
         /// @return this builder
         public Builder verifyChecksums(boolean verifyChecksums) {
             this.verifyChecksums = verifyChecksums;
+            return this;
+        }
+
+        /// Selects the maximum decoded-output size.
+        ///
+        /// @param maximumOutputSize the nonnegative decoded-output limit, or [CompressionCodec#UNLIMITED_SIZE]
+        /// @return this builder
+        /// @throws IllegalArgumentException if `maximumOutputSize` is less than [CompressionCodec#UNLIMITED_SIZE]
+        public Builder maximumOutputSize(long maximumOutputSize) {
+            CompressionDecoderSupport.validateLimit(maximumOutputSize, "maximumOutputSize");
+            this.maximumOutputSize = maximumOutputSize;
+            return this;
+        }
+
+        /// Selects the maximum decoder history-window size.
+        ///
+        /// @param maximumWindowSize the nonnegative history-window limit, or [CompressionCodec#UNLIMITED_SIZE]
+        /// @return this builder
+        /// @throws IllegalArgumentException if `maximumWindowSize` is less than [CompressionCodec#UNLIMITED_SIZE]
+        public Builder maximumWindowSize(long maximumWindowSize) {
+            CompressionDecoderSupport.validateLimit(maximumWindowSize, "maximumWindowSize");
+            this.maximumWindowSize = maximumWindowSize;
+            return this;
+        }
+
+        /// Selects the maximum decoder working-memory size.
+        ///
+        /// @param maximumMemorySize the nonnegative decoder-memory limit, or [CompressionCodec#UNLIMITED_SIZE]
+        /// @return this builder
+        /// @throws IllegalArgumentException if `maximumMemorySize` is less than [CompressionCodec#UNLIMITED_SIZE]
+        public Builder maximumMemorySize(long maximumMemorySize) {
+            CompressionDecoderSupport.validateLimit(maximumMemorySize, "maximumMemorySize");
+            this.maximumMemorySize = maximumMemorySize;
             return this;
         }
 

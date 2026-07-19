@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DictionaryRequest;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -17,11 +18,39 @@ import java.nio.ByteBuffer;
 import java.nio.channels.InterruptibleChannel;
 import java.util.Objects;
 
-/// Applies operation-scoped safety behavior around decoder engines and channel contexts.
+/// Validates decoding limits and applies safety behavior around decoder engines and channel contexts.
 @NotNullByDefault
 public final class CompressionDecoderSupport {
     /// Creates no instances.
     private CompressionDecoderSupport() {
+    }
+
+    /// Validates a decoding size limit.
+    ///
+    /// @param value the nonnegative size limit, or [org.glavo.arkivo.codec.CompressionCodec#UNLIMITED_SIZE]
+    /// @param name  the parameter name used in a validation failure
+    /// @throws IllegalArgumentException if `value` is less than
+    /// [org.glavo.arkivo.codec.CompressionCodec#UNLIMITED_SIZE]
+    public static void validateLimit(long value, String name) {
+        Objects.requireNonNull(name, "name");
+        if (value < org.glavo.arkivo.codec.CompressionCodec.UNLIMITED_SIZE) {
+            throw new IllegalArgumentException(name + " must be non-negative or UNLIMITED_SIZE");
+        }
+    }
+
+    /// Returns the effective history-window limit after applying the decoder-memory ceiling.
+    ///
+    /// @param maximumWindowSize the configured history-window limit, or a negative value when unrestricted
+    /// @param maximumMemorySize the configured decoder-memory limit, or a negative value when unrestricted
+    /// @return the smaller finite limit, or a negative value when both limits are unrestricted
+    public static long effectiveMaximumWindowSize(long maximumWindowSize, long maximumMemorySize) {
+        if (maximumWindowSize < 0L) {
+            return maximumMemorySize;
+        }
+        if (maximumMemorySize < 0L) {
+            return maximumWindowSize;
+        }
+        return Math.min(maximumWindowSize, maximumMemorySize);
     }
 
     /// Rejects a required history window that exceeds a configured maximum.
@@ -45,6 +74,26 @@ public final class CompressionDecoderSupport {
                     maximumWindowSize,
                     requiredWindowSize
             );
+        }
+    }
+
+    /// Rejects a decoder working-memory requirement larger than a configured maximum.
+    ///
+    /// A negative maximum leaves decoder memory unrestricted.
+    ///
+    /// @param maximumMemorySize the maximum permitted working-memory size, or a negative value for no limit
+    /// @param requiredMemorySize the nonnegative working-memory size required by the decoder
+    /// @throws IllegalArgumentException       if `requiredMemorySize` is negative
+    /// @throws DecompressionMemoryLimitException if the requirement exceeds a nonnegative maximum
+    public static void requireMemorySize(
+            long maximumMemorySize,
+            long requiredMemorySize
+    ) throws DecompressionMemoryLimitException {
+        if (requiredMemorySize < 0L) {
+            throw new IllegalArgumentException("requiredMemorySize must not be negative");
+        }
+        if (maximumMemorySize >= 0L && requiredMemorySize > maximumMemorySize) {
+            throw new DecompressionMemoryLimitException(maximumMemorySize, requiredMemorySize);
         }
     }
 

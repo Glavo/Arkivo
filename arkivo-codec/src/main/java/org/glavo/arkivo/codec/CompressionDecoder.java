@@ -25,7 +25,7 @@ import java.nio.ByteBuffer;
 /// A buffer-driven decoding loop can switch to `finish` only after a blocking source reports physical end-of-input:
 ///
 /// ```java
-/// try (CompressionDecoder decoder = codec.newDecoder(limits)) {
+/// try (CompressionDecoder decoder = codec.newDecoder()) {
 ///     ByteBuffer input = ByteBuffer.allocate(8192);
 ///     ByteBuffer output = ByteBuffer.allocate(8192);
 ///     input.limit(0);

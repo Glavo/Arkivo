@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -74,19 +73,17 @@ public final class ZlibCodecTest {
         byte[] compressed = withMinimumWindowHeader(compressedBytes.toByteArray());
 
         ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-        codec.decompress(
+        codec.withMaximumWindowSize(256L).decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
-                Channels.newChannel(decodedBytes),
-                DecodingOptions.ofMaximumWindowSize(256L)
+                Channels.newChannel(decodedBytes)
         );
         assertArrayEquals(content, decodedBytes.toByteArray());
 
         DecompressionWindowLimitException exception = assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> codec.decompress(
+                () -> codec.withMaximumWindowSize(255L).decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressed)),
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        DecodingOptions.ofMaximumWindowSize(255L)
+                        Channels.newChannel(new ByteArrayOutputStream())
                 )
         );
         assertEquals(255L, exception.maximumWindowSize());
@@ -94,10 +91,9 @@ public final class ZlibCodecTest {
 
         IOException malformed = assertThrows(
                 IOException.class,
-                () -> codec.decompress(
+                () -> codec.withMaximumWindowSize(0L).decompress(
                         Channels.newChannel(new ByteArrayInputStream(new byte[]{0x78, 0x00})),
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        DecodingOptions.ofMaximumWindowSize(0L)
+                        Channels.newChannel(new ByteArrayOutputStream())
                 )
         );
         assertFalse(malformed instanceof DecompressionWindowLimitException);

@@ -12,8 +12,9 @@ import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.zip.ZipMethod;
-import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.lzma.RawLZMACodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -30,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies ZIP entry decoders receive operation-scoped archive resource limits.
+/// Verifies ZIP entry codecs receive reusable archive resource limits.
 @NotNullByDefault
 public final class ZipDecoderLimitsTest {
     /// A window ceiling smaller than every supported raw LZMA dictionary.
@@ -41,17 +42,21 @@ public final class ZipDecoderLimitsTest {
 
     /// Verifies ZIP maps decoded size, effective window size, and decoder memory independently.
     @Test
-    void mapsArchiveLimitsToDecodingOptions() {
+    void mapsArchiveLimitsToCodecConfiguration() {
         ArchiveReadLimits archiveLimits = ArchiveReadLimits.builder()
                 .maximumCompressionWindowSize(8192L)
                 .maximumDecoderMemorySize(4096L)
                 .build();
 
-        DecodingOptions options = ZipCompressionFormats.decodingOptions(123L, archiveLimits);
+        CompressionCodec<?> codec = ZipCompressionFormats.withDecodingLimits(
+                new RawLZMACodec(),
+                123L,
+                archiveLimits
+        );
 
-        assertEquals(123L, options.maximumOutputSize());
-        assertEquals(4096L, options.maximumWindowSize());
-        assertEquals(4096L, options.maximumMemorySize());
+        assertEquals(123L, codec.maximumOutputSize());
+        assertEquals(4096L, codec.maximumWindowSize());
+        assertEquals(4096L, codec.maximumMemorySize());
     }
 
     /// Verifies strongly typed ZIP read and update options retain their archive read limits.

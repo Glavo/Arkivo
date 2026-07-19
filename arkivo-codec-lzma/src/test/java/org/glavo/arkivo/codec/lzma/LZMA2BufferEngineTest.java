@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -99,11 +98,10 @@ public final class LZMA2BufferEngineTest {
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
 
-        DecodingOptions limits =
-                DecodingOptions.ofMaximumOutputSize(content.length - 1L);
         assertThrows(
                 DecompressionLimitException.class,
-                () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), limits)
+                () -> CODEC.withMaximumOutputSize(content.length - 1L)
+                        .decompress(ByteBuffer.wrap(first.toByteArray()))
         );
     }
 

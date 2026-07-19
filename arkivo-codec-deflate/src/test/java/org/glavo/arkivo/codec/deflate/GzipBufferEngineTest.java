@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -141,10 +140,10 @@ public final class GzipBufferEngineTest {
         byte[] encoded = encodeInFragments(input, 11, 3, false);
         byte[] corrupted = encoded.clone();
         corrupted[corrupted.length - 8] ^= 1;
-        assertThrows(IOException.class, () -> decode(corrupted, 2, DecodingOptions.DEFAULT));
+        assertThrows(IOException.class, () -> decode(corrupted, 2, CODEC));
         assertThrows(
                 IOException.class,
-                () -> decode(Arrays.copyOf(encoded, encoded.length - 1), 2, DecodingOptions.DEFAULT)
+                () -> decode(Arrays.copyOf(encoded, encoded.length - 1), 2, CODEC)
         );
 
         CompressionEncoder.FlushableFramed encoder = CODEC.newEncoder();
@@ -166,13 +165,11 @@ public final class GzipBufferEngineTest {
     public void framedEncoderAndOutputLimit() throws IOException {
         byte[] input = testData();
         byte[] encoded = encodeInFragments(input, 13, 5, false);
-        DecodingOptions exactLimits =
-                DecodingOptions.ofMaximumOutputSize(input.length);
-        DecodingOptions shortLimits =
-                DecodingOptions.ofMaximumOutputSize(input.length - 1L);
+        GzipCodec exactCodec = CODEC.withMaximumOutputSize(input.length);
+        GzipCodec shortCodec = CODEC.withMaximumOutputSize(input.length - 1L);
 
-        assertArrayEquals(input, decode(encoded, 1, exactLimits));
-        assertThrows(DecompressionLimitException.class, () -> decode(encoded, 1, shortLimits));
+        assertArrayEquals(input, decode(encoded, 1, exactCodec));
+        assertThrows(DecompressionLimitException.class, () -> decode(encoded, 1, shortCodec));
         try (CompressionEncoder.FlushableFramed encoder = CODEC.newEncoder()) {
             assertEquals(CodecOutcome.BOUNDARY_REACHED, encoder.finishFrame(ByteBuffer.allocate(32)));
             ByteBuffer terminal = ByteBuffer.allocate(32);
@@ -246,11 +243,11 @@ public final class GzipBufferEngineTest {
     private static byte[] decode(
             byte[] encoded,
             int targetSize,
-            DecodingOptions limits
+            GzipCodec codec
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         ByteBuffer source = ByteBuffer.wrap(encoded);
-        try (CompressionDecoder decoder = CODEC.newDecoder(limits)) {
+        try (CompressionDecoder decoder = codec.newDecoder()) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(targetSize);

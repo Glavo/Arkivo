@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.Deflate64Decoder;
@@ -35,7 +34,12 @@ public final class Deflate64Codec
     public static final int DEFAULT_COMPRESSION_LEVEL = 6;
 
     /// The default immutable Deflate64 codec configuration.
-    public static final Deflate64Codec DEFAULT = new Deflate64Codec(DEFAULT_COMPRESSION_LEVEL);
+    public static final Deflate64Codec DEFAULT = new Deflate64Codec(
+            DEFAULT_COMPRESSION_LEVEL,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE
+    );
 
     /// The fixed Deflate64 history-window size.
     private static final long DECODING_WINDOW_SIZE = 1L << 16;
@@ -43,13 +47,27 @@ public final class Deflate64Codec
     /// The configured match-search level.
     private final int compressionLevel;
 
+    /// The configured decoded-output limit.
+    private final long maximumOutputSize;
+
+    /// The configured decoder history-window limit.
+    private final long maximumWindowSize;
+
+    /// The configured decoder working-memory limit.
+    private final long maximumMemorySize;
+
     /// Creates the default Deflate64 codec configuration.
     public Deflate64Codec() {
-        this(DEFAULT_COMPRESSION_LEVEL);
+        this(DEFAULT_COMPRESSION_LEVEL, UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
     }
 
     /// Creates a validated Deflate64 codec configuration.
-    private Deflate64Codec(long compressionLevel) {
+    private Deflate64Codec(
+            long compressionLevel,
+            long maximumOutputSize,
+            long maximumWindowSize,
+            long maximumMemorySize
+    ) {
         if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
                 || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
             throw new IllegalArgumentException(
@@ -57,6 +75,69 @@ public final class Deflate64Codec
             );
         }
         this.compressionLevel = Math.toIntExact(compressionLevel);
+        CompressionDecoderSupport.validateLimit(maximumOutputSize, "maximumOutputSize");
+        CompressionDecoderSupport.validateLimit(maximumWindowSize, "maximumWindowSize");
+        CompressionDecoderSupport.validateLimit(maximumMemorySize, "maximumMemorySize");
+        this.maximumOutputSize = maximumOutputSize;
+        this.maximumWindowSize = maximumWindowSize;
+        this.maximumMemorySize = maximumMemorySize;
+    }
+
+    /// Returns the configured decoded-output limit.
+    @Override
+    public long maximumOutputSize() {
+        return maximumOutputSize;
+    }
+
+    /// Returns the configured decoder history-window limit.
+    @Override
+    public long maximumWindowSize() {
+        return maximumWindowSize;
+    }
+
+    /// Returns the configured decoder working-memory limit.
+    @Override
+    public long maximumMemorySize() {
+        return maximumMemorySize;
+    }
+
+    /// Returns an immutable codec with the requested decoded-output limit.
+    @Override
+    public Deflate64Codec withMaximumOutputSize(long maximumOutputSize) {
+        return maximumOutputSize == this.maximumOutputSize
+                ? this
+                : new Deflate64Codec(
+                        compressionLevel,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder history-window limit.
+    @Override
+    public Deflate64Codec withMaximumWindowSize(long maximumWindowSize) {
+        return maximumWindowSize == this.maximumWindowSize
+                ? this
+                : new Deflate64Codec(
+                        compressionLevel,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder working-memory limit.
+    @Override
+    public Deflate64Codec withMaximumMemorySize(long maximumMemorySize) {
+        return maximumMemorySize == this.maximumMemorySize
+                ? this
+                : new Deflate64Codec(
+                        compressionLevel,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns the canonical raw Deflate64 format.
@@ -95,7 +176,12 @@ public final class Deflate64Codec
     public Deflate64Codec withCompressionLevel(long compressionLevel) {
         return compressionLevel == this.compressionLevel
                 ? this
-                : new Deflate64Codec(compressionLevel);
+                : new Deflate64Codec(
+                        compressionLevel,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Creates a transport-independent raw Deflate64 encoder.
@@ -105,14 +191,16 @@ public final class Deflate64Codec
         return new Deflate64Encoder(compressionLevel);
     }
 
-    /// Creates a transport-independent raw Deflate64 decoder with operation-scoped limits.
+    /// Creates a transport-independent raw Deflate64 decoder using this codec's configured limits.
     @Override
-    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
-        Objects.requireNonNull(options, "options");
-        options.requireWindowSize(DECODING_WINDOW_SIZE);
+    public CompressionDecoder newDecoder() throws IOException {
+        CompressionDecoderSupport.requireWindowSize(
+                CompressionDecoderSupport.effectiveMaximumWindowSize(maximumWindowSize, maximumMemorySize),
+                DECODING_WINDOW_SIZE
+        );
         return CompressionDecoderSupport.limitEngineOutput(
                 new Deflate64Decoder(),
-                options.maximumOutputSize()
+                maximumOutputSize
         );
     }
 }

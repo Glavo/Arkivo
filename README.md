@@ -82,9 +82,9 @@ requires a caller-selected output limit.
 byte[] input = "Arkivo buffer example".getBytes(StandardCharsets.UTF_8);
 
 CompressionFormat format = CompressionFormats.require("zstd");
-CompressionCodec<?> codec = format.defaultCodec();
+CompressionCodec<?> codec = format.defaultCodec().withMaximumOutputSize(input.length);
 ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
-ByteBuffer decoded = codec.decompress(compressed, input.length);
+ByteBuffer decoded = codec.decompress(compressed);
 
 byte[] output = new byte[decoded.remaining()];
 decoded.get(output);

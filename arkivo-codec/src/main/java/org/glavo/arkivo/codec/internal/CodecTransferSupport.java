@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -57,25 +56,22 @@ public final class CodecTransferSupport {
 
     /// Decompresses bytes between channels without taking ownership of either channel.
     ///
-    /// @param codec   the immutable codec configuration
-    /// @param source  the borrowed compressed source read through the encoding boundary
-    /// @param target  the borrowed channel receiving every decoded byte
-    /// @param options the parameters for this decoding operation
+    /// @param codec  the immutable codec configuration
+    /// @param source the borrowed compressed source read through the encoding boundary
+    /// @param target the borrowed channel receiving every decoded byte
     /// @return the logically consumed compressed input and decoded output byte counts
     /// @throws IOException if reading, decoding, or output fails or makes no progress
     public static CodecTransferResult decompress(
             CompressionCodec<?> codec,
             ReadableByteChannel source,
-            WritableByteChannel target,
-            DecodingOptions options
+            WritableByteChannel target
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(options, "options");
 
         try (DecompressingReadableByteChannel decoder =
-                     codec.newReadableByteChannel(source, options, ResourceOwnership.BORROWED)) {
+                     codec.newReadableByteChannel(source, ResourceOwnership.BORROWED)) {
             return decompress(decoder, target);
         }
     }

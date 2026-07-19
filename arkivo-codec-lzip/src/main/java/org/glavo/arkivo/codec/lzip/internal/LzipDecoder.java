@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.lzip.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.lzma.RawLZMACodec;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -21,8 +20,11 @@ import java.util.zip.CRC32;
 /// Incrementally decodes one checksummed lzip member while preserving following member bytes.
 @NotNullByDefault
 public final class LzipDecoder implements CompressionDecoder.Framed {
-    /// Operation-scoped limits applied when a member declares its LZMA dictionary.
-    private final DecodingOptions payloadLimits;
+    /// The effective LZMA history-window limit.
+    private final long maximumWindowSize;
+
+    /// The LZMA decoder working-memory limit.
+    private final long maximumMemorySize;
 
     /// Collected fixed member header.
     private final byte[] header = new byte[LzipSupport.HEADER_SIZE];
@@ -53,10 +55,11 @@ public final class LzipDecoder implements CompressionDecoder.Framed {
 
     /// Creates a lzip member decoder with limits for dynamically declared dictionaries.
     ///
-    /// @param payloadLimits the limits to enforce on each member's LZMA payload
-    /// @throws NullPointerException if {@code payloadLimits} is {@code null}
-    public LzipDecoder(DecodingOptions payloadLimits) {
-        this.payloadLimits = Objects.requireNonNull(payloadLimits, "payloadLimits");
+    /// @param maximumWindowSize the effective LZMA history-window limit, or a negative value when unrestricted
+    /// @param maximumMemorySize the LZMA decoder working-memory limit, or a negative value when unrestricted
+    public LzipDecoder(long maximumWindowSize, long maximumMemorySize) {
+        this.maximumWindowSize = maximumWindowSize;
+        this.maximumMemorySize = maximumMemorySize;
     }
 
     /// Decodes a lzip member while allowing additional compressed bytes later.
@@ -181,7 +184,9 @@ public final class LzipDecoder implements CompressionDecoder.Framed {
         payloadDecoder = new RawLZMACodec()
                 .withDictionarySize(dictionarySize)
                 .withDecodedSize(CompressionCodec.UNKNOWN_SIZE)
-                .newDecoder(payloadLimits);
+                .withMaximumWindowSize(maximumWindowSize)
+                .withMaximumMemorySize(maximumMemorySize)
+                .newDecoder();
     }
 
     /// Validates CRC-32, uncompressed size, and exact member size from the trailer.

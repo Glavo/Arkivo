@@ -4,7 +4,6 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -36,49 +35,43 @@ public final class ByteBufferCodecSupport {
 
     /// Decompresses remaining source bytes into a dynamically growing bounded heap buffer.
     ///
-    /// @param codec   the immutable codec configuration
-    /// @param source  the source buffer consumed from its current position to its limit
-    /// @param options the parameters for this decoding operation
+    /// @param codec  the immutable codec configuration
+    /// @param source the source buffer consumed from its current position to its limit
     /// @return a new heap buffer positioned at zero with its limit at the decoded size
     /// @throws IOException              if the complete encoding cannot be decoded within the configured limits
     /// @throws IllegalArgumentException if the output limit is not finite or exceeds {@link Integer#MAX_VALUE}
     public static ByteBuffer decompressAllocating(
             CompressionCodec<?> codec,
-            ByteBuffer source,
-            DecodingOptions options
+            ByteBuffer source
     ) throws IOException {
-        int maximumOutputSize = allocatingMaximumOutputSize(options);
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
+        int maximumOutputSize = allocatingMaximumOutputSize(codec);
         return DirectByteBufferCodecSupport.decompressAllocating(
                 codec,
                 source,
-                maximumOutputSize,
-                options
+                maximumOutputSize
         );
     }
 
     /// Decompresses one frame into a dynamically growing bounded heap buffer.
     ///
-    /// @param codec   the immutable codec configuration
-    /// @param source  the source buffer beginning with one frame
-    /// @param options the parameters for this decoding operation
+    /// @param codec  the immutable codec configuration
+    /// @param source the source buffer beginning with one frame
     /// @return a new heap buffer positioned at zero with its limit at the decoded frame size
     /// @throws IOException              if the frame cannot be decoded within the limits
     /// @throws IllegalArgumentException if the output limit is not finite or exceeds {@link Integer#MAX_VALUE}
     public static ByteBuffer decompressFrameAllocating(
             CompressionCodec<?> codec,
-            ByteBuffer source,
-            DecodingOptions options
+            ByteBuffer source
     ) throws IOException {
-        int maximumOutputSize = allocatingMaximumOutputSize(options);
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
+        int maximumOutputSize = allocatingMaximumOutputSize(codec);
         return DirectByteBufferCodecSupport.decompressFrameAllocating(
                 codec,
                 source,
-                maximumOutputSize,
-                options
+                maximumOutputSize
         );
     }
 
@@ -100,46 +93,39 @@ public final class ByteBufferCodecSupport {
 
     /// Decompresses all remaining source bytes into a fixed caller-owned target.
     ///
-    /// @param codec   the immutable codec configuration
-    /// @param source  the source buffer advanced by consumed compressed bytes
-    /// @param target  the distinct writable target advanced by produced decoded bytes
-    /// @param options the parameters for this decoding operation
+    /// @param codec  the immutable codec configuration
+    /// @param source the source buffer advanced by consumed compressed bytes
+    /// @param target the distinct writable target advanced by produced decoded bytes
     /// @throws IOException if the complete encoding cannot be decoded within the configured limits
     public static void decompress(
             CompressionCodec<?> codec,
             ByteBuffer source,
-            ByteBuffer target,
-            DecodingOptions options
+            ByteBuffer target
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
-        Objects.requireNonNull(options, "options");
         validateBuffers(source, target);
-        DirectByteBufferCodecSupport.decompress(codec, source, target, options);
+        DirectByteBufferCodecSupport.decompress(codec, source, target);
     }
 
     /// Decompresses one complete frame into a fixed caller-owned target.
     ///
-    /// @param codec   the immutable codec configuration
-    /// @param source  the source buffer beginning with one frame and advanced only through that frame
-    /// @param target  the distinct writable target advanced by produced decoded bytes
-    /// @param options the parameters for this decoding operation
+    /// @param codec  the immutable codec configuration
+    /// @param source the source buffer beginning with one frame and advanced only through that frame
+    /// @param target the distinct writable target advanced by produced decoded bytes
     /// @throws IOException if the frame cannot be decoded within the configured limits
     public static void decompressFrame(
             CompressionCodec<?> codec,
             ByteBuffer source,
-            ByteBuffer target,
-            DecodingOptions options
+            ByteBuffer target
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
-        Objects.requireNonNull(options, "options");
         validateBuffers(source, target);
-        DirectByteBufferCodecSupport.decompressFrame(codec, source, target, options);
+        DirectByteBufferCodecSupport.decompressFrame(codec, source, target);
     }
 
     /// Returns the finite output bound required by allocating decompression.
-    private static int allocatingMaximumOutputSize(DecodingOptions options) {
-        Objects.requireNonNull(options, "options");
-        long maximumOutputSize = options.maximumOutputSize();
+    private static int allocatingMaximumOutputSize(CompressionCodec<?> codec) {
+        long maximumOutputSize = codec.maximumOutputSize();
         if (maximumOutputSize < 0L || maximumOutputSize > Integer.MAX_VALUE) {
             throw new IllegalArgumentException(
                     "Allocating decompression requires maximumOutputSize between zero and "

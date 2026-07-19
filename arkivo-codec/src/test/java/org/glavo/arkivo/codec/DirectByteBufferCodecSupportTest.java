@@ -39,7 +39,7 @@ final class DirectByteBufferCodecSupportTest {
         assertEquals(source.limit(), source.position());
         assertEquals(content.length + 1, compressed.remaining());
 
-        ByteBuffer decoded = codec.decompress(compressed, content.length);
+        ByteBuffer decoded = codec.withMaximumOutputSize(content.length).decompress(compressed);
         assertEquals(compressed.limit(), compressed.position());
         assertArrayEquals(content, bufferBytes(decoded));
 
@@ -73,9 +73,8 @@ final class DirectByteBufferCodecSupportTest {
         );
         DecompressionLimitException limit = assertThrows(
                 DecompressionLimitException.class,
-                () -> codec.decompress(
-                        ByteBuffer.wrap(bufferBytes(codec.compress(ByteBuffer.wrap(content)))),
-                        content.length - 1L
+                () -> codec.withMaximumOutputSize(content.length - 1L).decompress(
+                        ByteBuffer.wrap(bufferBytes(codec.compress(ByteBuffer.wrap(content))))
                 )
         );
         assertEquals(content.length - 1L, limit.maximum());
@@ -92,13 +91,13 @@ final class DirectByteBufferCodecSupportTest {
 
         ByteBuffer concatenated = ByteBuffer.allocate(firstEncoded.length + secondEncoded.length);
         concatenated.put(firstEncoded).put(secondEncoded).flip();
-        ByteBuffer decoded = codec.decompress(concatenated, first.length + second.length);
+        ByteBuffer decoded = codec.withMaximumOutputSize(first.length + second.length).decompress(concatenated);
         assertArrayEquals(new byte[]{1, 2, 3, 4, 5}, bufferBytes(decoded));
         assertEquals(concatenated.limit(), concatenated.position());
 
         ByteBuffer framed = ByteBuffer.allocate(firstEncoded.length + secondEncoded.length);
         framed.put(firstEncoded).put(secondEncoded).flip();
-        ByteBuffer firstDecoded = codec.decompressFrame(framed, first.length);
+        ByteBuffer firstDecoded = codec.withMaximumOutputSize(first.length).decompressFrame(framed);
         assertArrayEquals(first, bufferBytes(firstDecoded));
         assertEquals(firstEncoded.length, framed.position());
 
@@ -111,7 +110,7 @@ final class DirectByteBufferCodecSupportTest {
         byte[] emptyEncoded = bufferBytes(codec.compress(ByteBuffer.allocate(0)));
         ByteBuffer emptyThenFirst = ByteBuffer.allocate(emptyEncoded.length + firstEncoded.length);
         emptyThenFirst.put(emptyEncoded).put(firstEncoded).flip();
-        assertEquals(0, codec.decompressFrame(emptyThenFirst, 0L).remaining());
+        assertEquals(0, codec.withMaximumOutputSize(0L).decompressFrame(emptyThenFirst).remaining());
         assertEquals(emptyEncoded.length, emptyThenFirst.position());
     }
 
@@ -134,6 +133,72 @@ final class DirectByteBufferCodecSupportTest {
     @NotNullByDefault
     private static final class LengthPrefixedCodec
             implements CompressionCodec.FlushableFramed<LengthPrefixedCodec>, CompressionFormat {
+        /// The maximum decoded output size.
+        private final long maximumOutputSize;
+
+        /// The maximum decoder history-window size.
+        private final long maximumWindowSize;
+
+        /// The maximum decoder working-memory size.
+        private final long maximumMemorySize;
+
+        /// Creates an unrestricted length-prefixed codec.
+        private LengthPrefixedCodec() {
+            this(UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
+        }
+
+        /// Creates a fully configured length-prefixed codec.
+        private LengthPrefixedCodec(long maximumOutputSize, long maximumWindowSize, long maximumMemorySize) {
+            this.maximumOutputSize = maximumOutputSize;
+            this.maximumWindowSize = maximumWindowSize;
+            this.maximumMemorySize = maximumMemorySize;
+        }
+
+        /// Returns the maximum decoded output size.
+        @Override
+        public long maximumOutputSize() {
+            return maximumOutputSize;
+        }
+
+        /// Returns the maximum decoder history-window size.
+        @Override
+        public long maximumWindowSize() {
+            return maximumWindowSize;
+        }
+
+        /// Returns the maximum decoder working-memory size.
+        @Override
+        public long maximumMemorySize() {
+            return maximumMemorySize;
+        }
+
+        /// Returns a codec with the requested decoded output limit.
+        @Override
+        public LengthPrefixedCodec withMaximumOutputSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumOutputSize");
+            return value == maximumOutputSize
+                    ? this
+                    : new LengthPrefixedCodec(value, maximumWindowSize, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder history-window limit.
+        @Override
+        public LengthPrefixedCodec withMaximumWindowSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumWindowSize");
+            return value == maximumWindowSize
+                    ? this
+                    : new LengthPrefixedCodec(maximumOutputSize, value, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder working-memory limit.
+        @Override
+        public LengthPrefixedCodec withMaximumMemorySize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumMemorySize");
+            return value == maximumMemorySize
+                    ? this
+                    : new LengthPrefixedCodec(maximumOutputSize, maximumWindowSize, value);
+        }
+
         /// Returns the test compression format name.
         @Override
         public String name() {
@@ -161,10 +226,10 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Creates a length-prefixed identity decoder.
         @Override
-        public CompressionDecoder.Framed newDecoder(DecodingOptions options) {
+        public CompressionDecoder.Framed newDecoder() {
             return CompressionDecoderSupport.limitEngineOutput(
                     new LengthPrefixedDecoder(),
-                    options.maximumOutputSize()
+                    maximumOutputSize
             );
         }
 
@@ -182,7 +247,6 @@ final class DirectByteBufferCodecSupportTest {
         @Override
         public DecompressingReadableByteChannel.Framed newReadableByteChannel(
                 ReadableByteChannel source,
-                DecodingOptions options,
                 ResourceOwnership ownership
         ) {
             throw new AssertionError("Channel decoder path must not be used");

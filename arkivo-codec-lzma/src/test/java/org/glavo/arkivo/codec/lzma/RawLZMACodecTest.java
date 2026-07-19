@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -113,7 +112,6 @@ public final class RawLZMACodecTest {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         try (DecompressingReadableByteChannel decoder = decodingCodec.newReadableByteChannel(
                 Channels.newChannel(source),
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             ByteBuffer buffer = ByteBuffer.allocate(4096);
@@ -175,9 +173,8 @@ public final class RawLZMACodecTest {
         );
         assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> LZMA2_CODEC.newReadableByteChannel(
+                () -> LZMA2_CODEC.withMaximumWindowSize(DICTIONARY_SIZE - 1L).newReadableByteChannel(
                         Channels.newChannel(new ByteArrayInputStream(new byte[0])),
-                        DecodingOptions.ofMaximumWindowSize(DICTIONARY_SIZE - 1L),
                         ResourceOwnership.BORROWED
                 )
         );

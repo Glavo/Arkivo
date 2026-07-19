@@ -9,7 +9,6 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -250,7 +249,7 @@ public final class XZCodecTest {
 
         ByteBuffer allocatingSource = ByteBuffer.allocateDirect(content.length).put(content).flip();
         ByteBuffer allocatingEncoded = configured.compress(allocatingSource);
-        ByteBuffer allocatingDecoded = codec.decompress(allocatingEncoded, content.length);
+        ByteBuffer allocatingDecoded = codec.withMaximumOutputSize(content.length).decompress(allocatingEncoded);
         byte[] allocatingActual = new byte[allocatingDecoded.remaining()];
         allocatingDecoded.get(allocatingActual);
         assertArrayEquals(content, allocatingActual);
@@ -333,7 +332,6 @@ public final class XZCodecTest {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         try (DecompressingReadableByteChannel.Framed decoder = new XZCodec().newReadableByteChannel(
                 source,
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             ByteBuffer target = ByteBuffer.allocate(4096);
@@ -465,7 +463,6 @@ public final class XZCodecTest {
         ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
         DecompressingReadableByteChannel decoder = new XZCodec().newReadableByteChannel(
                 compressedSource,
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
@@ -554,19 +551,17 @@ public final class XZCodecTest {
         );
 
         ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-        codec.decompress(
+        codec.withMaximumWindowSize(dictionarySize).decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                Channels.newChannel(decodedBytes),
-                DecodingOptions.ofMaximumWindowSize(dictionarySize)
+                Channels.newChannel(decodedBytes)
         );
         assertArrayEquals(content, decodedBytes.toByteArray());
 
         DecompressionWindowLimitException exception = assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> codec.decompress(
+                () -> codec.withMaximumWindowSize(dictionarySize - 1L).decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        DecodingOptions.ofMaximumWindowSize(dictionarySize - 1L)
+                        Channels.newChannel(new ByteArrayOutputStream())
                 )
         );
         assertEquals(dictionarySize - 1L, exception.maximumWindowSize());

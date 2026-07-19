@@ -8,7 +8,6 @@ import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.compress.compressors.lz4.BlockLZ4CompressorInputStream;
 import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.bzip2.BZip2Codec;
@@ -130,12 +129,11 @@ final class CommonsCompressCodecCorpusTest {
         long maximumMemorySize = 100L * 1024L;
         DecompressionWindowLimitException exception = assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> new LZMACodec().decompress(
+                () -> new LZMACodec().withMaximumMemorySize(maximumMemorySize).decompress(
                         Channels.newChannel(new ByteArrayInputStream(
                                 CommonsCompressTestResources.read("COMPRESS-382")
                         )),
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        DecodingOptions.ofMaximumMemorySize(maximumMemorySize)
+                        Channels.newChannel(new ByteArrayOutputStream())
                 )
         );
         assertEquals(maximumMemorySize, exception.maximumWindowSize());
@@ -580,10 +578,9 @@ final class CommonsCompressCodecCorpusTest {
             CompressionCodec<?> codec,
             byte @Unmodifiable [] compressed
     ) throws IOException {
-        codec.decompress(
+        codec.withMaximumOutputSize(EXPANSION_FIXTURE_OUTPUT_LIMIT).decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
-                Channels.newChannel(new ByteArrayOutputStream()),
-                DecodingOptions.ofMaximumOutputSize(EXPANSION_FIXTURE_OUTPUT_LIMIT)
+                Channels.newChannel(new ByteArrayOutputStream())
         );
     }
 

@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -159,10 +158,10 @@ public final class LZ4CodecTest {
     @Test
     public void enforcesMemoryLimitsBeforeRetainingPayloads() throws IOException {
         int maximumMemorySize = 65_535;
-        DecodingOptions limits = DecodingOptions.ofMaximumMemorySize(maximumMemorySize);
         try (CompressionDecoder decoder = new LZ4BlockCodec()
                 .withMaximumBlockSize(128 * 1024L)
-                .newDecoder(limits)) {
+                .withMaximumMemorySize(maximumMemorySize)
+                .newDecoder()) {
             ByteBuffer source = ByteBuffer.allocate(maximumMemorySize + 1);
             assertThrows(
                     DecompressionMemoryLimitException.class,
@@ -173,7 +172,9 @@ public final class LZ4CodecTest {
 
         byte[] framePrefix = Arrays.copyOf(compress(new LZ4Codec(), new byte[0]), 11);
         ByteArrayAccess.writeIntLittleEndian(framePrefix, 7, maximumMemorySize + 1);
-        try (CompressionDecoder decoder = new LZ4Codec().newDecoder(limits)) {
+        try (CompressionDecoder decoder = new LZ4Codec()
+                .withMaximumMemorySize(maximumMemorySize)
+                .newDecoder()) {
             assertThrows(
                     DecompressionMemoryLimitException.class,
                     () -> decoder.decode(ByteBuffer.wrap(framePrefix), ByteBuffer.allocate(1))

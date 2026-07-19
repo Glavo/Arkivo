@@ -500,7 +500,7 @@ public final class ZstdCodecTest {
         ByteBuffer directSource = ByteBuffer.allocateDirect(first.length);
         directSource.put(first).flip();
         ByteBuffer compressedBuffer = codec.compress(directSource);
-        ByteBuffer decompressedBuffer = codec.decompress(compressedBuffer, first.length);
+        ByteBuffer decompressedBuffer = codec.withMaximumOutputSize(first.length).decompress(compressedBuffer);
         byte[] oneShotOutput = new byte[decompressedBuffer.remaining()];
         decompressedBuffer.get(oneShotOutput);
         assertArrayEquals(first, oneShotOutput);

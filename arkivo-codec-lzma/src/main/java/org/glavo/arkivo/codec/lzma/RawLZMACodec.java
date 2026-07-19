@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.lzma.internal.LZMARawDecoder;
@@ -33,7 +32,10 @@ public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
     public static final RawLZMACodec DEFAULT = new RawLZMACodec(
             LZMAProperties.defaults(DEFAULT_DICTIONARY_SIZE),
             true,
-            UNKNOWN_SIZE
+            UNKNOWN_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE
     );
 
     /// The configured externally declared LZMA properties.
@@ -45,16 +47,35 @@ public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
     /// The externally declared decoded size, or UNKNOWN_SIZE.
     private final long decodedSize;
 
+    /// The configured decoded-output limit.
+    private final long maximumOutputSize;
+
+    /// The configured decoder history-window limit.
+    private final long maximumWindowSize;
+
+    /// The configured decoder working-memory limit.
+    private final long maximumMemorySize;
+
     /// Creates the default raw LZMA codec configuration.
     public RawLZMACodec() {
-        this(LZMAProperties.defaults(DEFAULT_DICTIONARY_SIZE), true, UNKNOWN_SIZE);
+        this(
+                LZMAProperties.defaults(DEFAULT_DICTIONARY_SIZE),
+                true,
+                UNKNOWN_SIZE,
+                UNLIMITED_SIZE,
+                UNLIMITED_SIZE,
+                UNLIMITED_SIZE
+        );
     }
 
     /// Creates a validated raw LZMA codec configuration.
     private RawLZMACodec(
             LZMAProperties properties,
             boolean endMarker,
-            long decodedSize
+            long decodedSize,
+            long maximumOutputSize,
+            long maximumWindowSize,
+            long maximumMemorySize
     ) {
         this.properties = Objects.requireNonNull(properties, "properties");
         if (decodedSize < UNKNOWN_SIZE) {
@@ -64,6 +85,75 @@ public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
         }
         this.endMarker = endMarker;
         this.decodedSize = decodedSize;
+        CompressionDecoderSupport.validateLimit(maximumOutputSize, "maximumOutputSize");
+        CompressionDecoderSupport.validateLimit(maximumWindowSize, "maximumWindowSize");
+        CompressionDecoderSupport.validateLimit(maximumMemorySize, "maximumMemorySize");
+        this.maximumOutputSize = maximumOutputSize;
+        this.maximumWindowSize = maximumWindowSize;
+        this.maximumMemorySize = maximumMemorySize;
+    }
+
+    /// Returns the configured decoded-output limit.
+    @Override
+    public long maximumOutputSize() {
+        return maximumOutputSize;
+    }
+
+    /// Returns the configured decoder history-window limit.
+    @Override
+    public long maximumWindowSize() {
+        return maximumWindowSize;
+    }
+
+    /// Returns the configured decoder working-memory limit.
+    @Override
+    public long maximumMemorySize() {
+        return maximumMemorySize;
+    }
+
+    /// Returns an immutable codec with the requested decoded-output limit.
+    @Override
+    public RawLZMACodec withMaximumOutputSize(long maximumOutputSize) {
+        return maximumOutputSize == this.maximumOutputSize
+                ? this
+                : new RawLZMACodec(
+                        properties,
+                        endMarker,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder history-window limit.
+    @Override
+    public RawLZMACodec withMaximumWindowSize(long maximumWindowSize) {
+        return maximumWindowSize == this.maximumWindowSize
+                ? this
+                : new RawLZMACodec(
+                        properties,
+                        endMarker,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder working-memory limit.
+    @Override
+    public RawLZMACodec withMaximumMemorySize(long maximumMemorySize) {
+        return maximumMemorySize == this.maximumMemorySize
+                ? this
+                : new RawLZMACodec(
+                        properties,
+                        endMarker,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns the canonical raw LZMA format.
@@ -103,7 +193,14 @@ public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
         Objects.requireNonNull(properties, "properties");
         return properties.equals(this.properties)
                 ? this
-                : new RawLZMACodec(properties, endMarker, decodedSize);
+                : new RawLZMACodec(
+                        properties,
+                        endMarker,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns an immutable raw LZMA codec with the requested dictionary size.
@@ -122,7 +219,14 @@ public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
     public RawLZMACodec withEndMarker(boolean endMarker) {
         return endMarker == this.endMarker
                 ? this
-                : new RawLZMACodec(properties, endMarker, decodedSize);
+                : new RawLZMACodec(
+                        properties,
+                        endMarker,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns an immutable raw LZMA codec with the externally declared decoded size.
@@ -133,7 +237,14 @@ public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
     public RawLZMACodec withDecodedSize(long decodedSize) {
         return decodedSize == this.decodedSize
                 ? this
-                : new RawLZMACodec(properties, endMarker, decodedSize);
+                : new RawLZMACodec(
+                        properties,
+                        endMarker,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Creates a raw LZMA encoder using operation-scoped options.
@@ -143,14 +254,20 @@ public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
         return new LZMARawEncoder(properties, options.sourceSize(), endMarker);
     }
 
-    /// Creates a raw LZMA decoder with operation-scoped safety limits.
+    /// Creates a raw LZMA decoder using this codec's configured limits.
     @Override
-    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
-        Objects.requireNonNull(options, "options");
-        options.requireWindowSize(properties.dictionarySize());
+    public CompressionDecoder newDecoder() throws IOException {
+        long effectiveMaximumWindowSize = CompressionDecoderSupport.effectiveMaximumWindowSize(
+                maximumWindowSize,
+                maximumMemorySize
+        );
+        CompressionDecoderSupport.requireWindowSize(
+                effectiveMaximumWindowSize,
+                properties.dictionarySize()
+        );
         return CompressionDecoderSupport.limitEngineOutput(
-                new LZMARawDecoder(properties, decodedSize, options.effectiveMaximumWindowSize()),
-                options.maximumOutputSize()
+                new LZMARawDecoder(properties, decodedSize, effectiveMaximumWindowSize),
+                maximumOutputSize
         );
     }
 

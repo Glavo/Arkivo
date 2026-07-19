@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.compress;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.compress.internal.UnixCompressDecoder;
 import org.glavo.arkivo.codec.compress.internal.UnixCompressEncoder;
@@ -21,7 +20,7 @@ import java.util.Objects;
 ///
 /// The maximum code width and block-mode flag are written to new `.Z` headers and govern encoding. Decoders instead
 /// read these parameters from each input header, then check the resulting LZW table and working-memory requirements
-/// against the supplied [DecodingOptions].
+/// against this codec's configured limits.
 ///
 /// Codec instances are safe for concurrent use and contain no stream state. Each created engine represents one mutable
 /// `.Z` stream session and is not safe for concurrent use.
@@ -41,7 +40,13 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
 
     /// The default immutable Unix compress codec configuration.
     public static final UnixCompressCodec DEFAULT =
-            new UnixCompressCodec(DEFAULT_MAXIMUM_CODE_WIDTH, DEFAULT_BLOCK_MODE);
+            new UnixCompressCodec(
+                    DEFAULT_MAXIMUM_CODE_WIDTH,
+                    DEFAULT_BLOCK_MODE,
+                    UNLIMITED_SIZE,
+                    UNLIMITED_SIZE,
+                    UNLIMITED_SIZE
+            );
 
     /// The largest LZW code width written to the stream header.
     private final int maximumCodeWidth;
@@ -49,9 +54,24 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
     /// Whether the stream header enables dictionary clear codes.
     private final boolean blockMode;
 
+    /// The configured decoded-output limit.
+    private final long maximumOutputSize;
+
+    /// The configured decoder history-window limit.
+    private final long maximumWindowSize;
+
+    /// The configured decoder working-memory limit.
+    private final long maximumMemorySize;
+
     /// Creates the default Unix compress codec configuration.
     public UnixCompressCodec() {
-        this(DEFAULT_MAXIMUM_CODE_WIDTH, DEFAULT_BLOCK_MODE);
+        this(
+                DEFAULT_MAXIMUM_CODE_WIDTH,
+                DEFAULT_BLOCK_MODE,
+                UNLIMITED_SIZE,
+                UNLIMITED_SIZE,
+                UNLIMITED_SIZE
+        );
     }
 
     /// Creates a Unix compress codec with explicit header parameters.
@@ -61,9 +81,86 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
     /// @param blockMode whether encoded streams permit dictionary clear codes
     /// @throws IllegalArgumentException if `maximumCodeWidth` is outside the supported range
     public UnixCompressCodec(int maximumCodeWidth, boolean blockMode) {
+        this(maximumCodeWidth, blockMode, UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
+    }
+
+    /// Creates a validated Unix compress codec configuration.
+    private UnixCompressCodec(
+            int maximumCodeWidth,
+            boolean blockMode,
+            long maximumOutputSize,
+            long maximumWindowSize,
+            long maximumMemorySize
+    ) {
         UnixCompressSupport.requireMaximumCodeWidth(maximumCodeWidth);
         this.maximumCodeWidth = maximumCodeWidth;
         this.blockMode = blockMode;
+        CompressionDecoderSupport.validateLimit(maximumOutputSize, "maximumOutputSize");
+        CompressionDecoderSupport.validateLimit(maximumWindowSize, "maximumWindowSize");
+        CompressionDecoderSupport.validateLimit(maximumMemorySize, "maximumMemorySize");
+        this.maximumOutputSize = maximumOutputSize;
+        this.maximumWindowSize = maximumWindowSize;
+        this.maximumMemorySize = maximumMemorySize;
+    }
+
+    /// Returns the configured decoded-output limit.
+    @Override
+    public long maximumOutputSize() {
+        return maximumOutputSize;
+    }
+
+    /// Returns the configured decoder history-window limit.
+    @Override
+    public long maximumWindowSize() {
+        return maximumWindowSize;
+    }
+
+    /// Returns the configured decoder working-memory limit.
+    @Override
+    public long maximumMemorySize() {
+        return maximumMemorySize;
+    }
+
+    /// Returns an immutable codec with the requested decoded-output limit.
+    @Override
+    public UnixCompressCodec withMaximumOutputSize(long maximumOutputSize) {
+        return maximumOutputSize == this.maximumOutputSize
+                ? this
+                : new UnixCompressCodec(
+                        maximumCodeWidth,
+                        blockMode,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder history-window limit.
+    @Override
+    public UnixCompressCodec withMaximumWindowSize(long maximumWindowSize) {
+        return maximumWindowSize == this.maximumWindowSize
+                ? this
+                : new UnixCompressCodec(
+                        maximumCodeWidth,
+                        blockMode,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder working-memory limit.
+    @Override
+    public UnixCompressCodec withMaximumMemorySize(long maximumMemorySize) {
+        return maximumMemorySize == this.maximumMemorySize
+                ? this
+                : new UnixCompressCodec(
+                        maximumCodeWidth,
+                        blockMode,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns the canonical Unix compress format.
@@ -94,7 +191,13 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
     public UnixCompressCodec withMaximumCodeWidth(int maximumCodeWidth) {
         return maximumCodeWidth == this.maximumCodeWidth
                 ? this
-                : new UnixCompressCodec(maximumCodeWidth, blockMode);
+                : new UnixCompressCodec(
+                        maximumCodeWidth,
+                        blockMode,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns an immutable codec with the requested block-mode header policy.
@@ -104,7 +207,13 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
     public UnixCompressCodec withBlockMode(boolean blockMode) {
         return blockMode == this.blockMode
                 ? this
-                : new UnixCompressCodec(maximumCodeWidth, blockMode);
+                : new UnixCompressCodec(
+                        maximumCodeWidth,
+                        blockMode,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns a safe upper bound for one encoded Unix compress stream.
@@ -138,13 +247,18 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
         return new UnixCompressEncoder(maximumCodeWidth, blockMode);
     }
 
-    /// Creates a transport-independent Unix compress decoder with operation-scoped limits.
+    /// Creates a transport-independent Unix compress decoder using this codec's configured limits.
     @Override
-    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
-        Objects.requireNonNull(options, "options");
+    public CompressionDecoder newDecoder() throws IOException {
         return CompressionDecoderSupport.limitEngineOutput(
-                new UnixCompressDecoder(options),
-                options.maximumOutputSize()
+                new UnixCompressDecoder(
+                        CompressionDecoderSupport.effectiveMaximumWindowSize(
+                                maximumWindowSize,
+                                maximumMemorySize
+                        ),
+                        maximumMemorySize
+                ),
+                maximumOutputSize
         );
     }
 }

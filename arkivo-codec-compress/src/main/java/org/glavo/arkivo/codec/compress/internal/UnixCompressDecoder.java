@@ -5,8 +5,8 @@ package org.glavo.arkivo.codec.compress.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.compress.UnixCompressFormat;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -19,8 +19,11 @@ import java.util.Objects;
 /// Incrementally decodes a Unix compress stream without retaining caller-owned buffers.
 @NotNullByDefault
 public final class UnixCompressDecoder implements CompressionDecoder {
-    /// Operation-scoped output, history, and working-memory limits.
-    private final DecodingOptions options;
+    /// The effective LZW table-size limit.
+    private final long maximumWindowSize;
+
+    /// The decoder working-memory limit.
+    private final long maximumMemorySize;
 
     /// Incrementally collected fixed stream header.
     private final byte[] header = new byte[UnixCompressSupport.HEADER_SIZE];
@@ -76,11 +79,13 @@ public final class UnixCompressDecoder implements CompressionDecoder {
     /// Current decoder lifecycle phase.
     private State state = State.HEADER;
 
-    /// Creates a decoder that enforces the supplied operation-scoped limits after reading the header.
+    /// Creates a decoder that enforces the supplied limits after reading the header.
     ///
-    /// @param options the output, LZW-table, and working-memory limits for this session
-    public UnixCompressDecoder(DecodingOptions options) {
-        this.options = Objects.requireNonNull(options, "options");
+    /// @param maximumWindowSize the effective LZW table-size limit, or a negative value when unrestricted
+    /// @param maximumMemorySize the working-memory limit, or a negative value when unrestricted
+    public UnixCompressDecoder(long maximumWindowSize, long maximumMemorySize) {
+        this.maximumWindowSize = maximumWindowSize;
+        this.maximumMemorySize = maximumMemorySize;
         initializeBitState();
     }
 
@@ -214,8 +219,11 @@ public final class UnixCompressDecoder implements CompressionDecoder {
         }
         blockMode = (flags & UnixCompressSupport.BLOCK_MODE_MASK) != 0;
         tableLimit = UnixCompressSupport.tableCapacity(maximumCodeWidth);
-        options.requireWindowSize(tableLimit);
-        options.requireMemorySize(UnixCompressSupport.decoderMemorySize(maximumCodeWidth));
+        CompressionDecoderSupport.requireWindowSize(maximumWindowSize, tableLimit);
+        CompressionDecoderSupport.requireMemorySize(
+                maximumMemorySize,
+                UnixCompressSupport.decoderMemorySize(maximumCodeWidth)
+        );
 
         prefixes = new int[tableLimit];
         Arrays.fill(prefixes, -1);

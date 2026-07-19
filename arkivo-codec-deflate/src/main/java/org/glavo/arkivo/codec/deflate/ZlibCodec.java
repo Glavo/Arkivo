@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibDecoder;
@@ -42,7 +41,14 @@ public final class ZlibCodec
 
     /// The default immutable zlib codec configuration.
     public static final ZlibCodec DEFAULT =
-            new ZlibCodec(DEFAULT_COMPRESSION_LEVEL, DeflateStrategy.DEFAULT, null);
+            new ZlibCodec(
+                    DEFAULT_COMPRESSION_LEVEL,
+                    DeflateStrategy.DEFAULT,
+                    null,
+                    UNLIMITED_SIZE,
+                    UNLIMITED_SIZE,
+                    UNLIMITED_SIZE
+            );
 
     /// The configured Deflate match-search level.
     private final int compressionLevel;
@@ -53,16 +59,35 @@ public final class ZlibCodec
     /// The configured preset dictionary, or null.
     private final @Nullable ZlibDictionary dictionary;
 
+    /// The configured decoded-output limit.
+    private final long maximumOutputSize;
+
+    /// The configured decoder history-window limit.
+    private final long maximumWindowSize;
+
+    /// The configured decoder working-memory limit.
+    private final long maximumMemorySize;
+
     /// Creates the default zlib codec configuration.
     public ZlibCodec() {
-        this(DEFAULT_COMPRESSION_LEVEL, DeflateStrategy.DEFAULT, null);
+        this(
+                DEFAULT_COMPRESSION_LEVEL,
+                DeflateStrategy.DEFAULT,
+                null,
+                UNLIMITED_SIZE,
+                UNLIMITED_SIZE,
+                UNLIMITED_SIZE
+        );
     }
 
     /// Creates a validated zlib codec configuration.
     private ZlibCodec(
             long compressionLevel,
             DeflateStrategy strategy,
-            @Nullable ZlibDictionary dictionary
+            @Nullable ZlibDictionary dictionary,
+            long maximumOutputSize,
+            long maximumWindowSize,
+            long maximumMemorySize
     ) {
         if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
                 || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
@@ -73,6 +98,75 @@ public final class ZlibCodec
         this.compressionLevel = Math.toIntExact(compressionLevel);
         this.strategy = Objects.requireNonNull(strategy, "strategy");
         this.dictionary = dictionary;
+        CompressionDecoderSupport.validateLimit(maximumOutputSize, "maximumOutputSize");
+        CompressionDecoderSupport.validateLimit(maximumWindowSize, "maximumWindowSize");
+        CompressionDecoderSupport.validateLimit(maximumMemorySize, "maximumMemorySize");
+        this.maximumOutputSize = maximumOutputSize;
+        this.maximumWindowSize = maximumWindowSize;
+        this.maximumMemorySize = maximumMemorySize;
+    }
+
+    /// Returns the configured decoded-output limit.
+    @Override
+    public long maximumOutputSize() {
+        return maximumOutputSize;
+    }
+
+    /// Returns the configured decoder history-window limit.
+    @Override
+    public long maximumWindowSize() {
+        return maximumWindowSize;
+    }
+
+    /// Returns the configured decoder working-memory limit.
+    @Override
+    public long maximumMemorySize() {
+        return maximumMemorySize;
+    }
+
+    /// Returns an immutable codec with the requested decoded-output limit.
+    @Override
+    public ZlibCodec withMaximumOutputSize(long maximumOutputSize) {
+        return maximumOutputSize == this.maximumOutputSize
+                ? this
+                : new ZlibCodec(
+                        compressionLevel,
+                        strategy,
+                        dictionary,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder history-window limit.
+    @Override
+    public ZlibCodec withMaximumWindowSize(long maximumWindowSize) {
+        return maximumWindowSize == this.maximumWindowSize
+                ? this
+                : new ZlibCodec(
+                        compressionLevel,
+                        strategy,
+                        dictionary,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder working-memory limit.
+    @Override
+    public ZlibCodec withMaximumMemorySize(long maximumMemorySize) {
+        return maximumMemorySize == this.maximumMemorySize
+                ? this
+                : new ZlibCodec(
+                        compressionLevel,
+                        strategy,
+                        dictionary,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns the canonical zlib format.
@@ -111,7 +205,14 @@ public final class ZlibCodec
     public ZlibCodec withCompressionLevel(long compressionLevel) {
         return compressionLevel == this.compressionLevel
                 ? this
-                : new ZlibCodec(compressionLevel, strategy, dictionary);
+                : new ZlibCodec(
+                        compressionLevel,
+                        strategy,
+                        dictionary,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns the configured Deflate strategy.
@@ -130,7 +231,14 @@ public final class ZlibCodec
         Objects.requireNonNull(strategy, "strategy");
         return strategy == this.strategy
                 ? this
-                : new ZlibCodec(compressionLevel, strategy, dictionary);
+                : new ZlibCodec(
+                        compressionLevel,
+                        strategy,
+                        dictionary,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns the configured preset dictionary, or null.
@@ -145,7 +253,14 @@ public final class ZlibCodec
         Objects.requireNonNull(dictionary, "dictionary");
         return dictionary == this.dictionary
                 ? this
-                : new ZlibCodec(compressionLevel, strategy, dictionary);
+                : new ZlibCodec(
+                        compressionLevel,
+                        strategy,
+                        dictionary,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns an immutable zlib codec without a preset dictionary.
@@ -153,7 +268,14 @@ public final class ZlibCodec
     public ZlibCodec withoutDictionary() {
         return dictionary == null
                 ? this
-                : new ZlibCodec(compressionLevel, strategy, null);
+                : new ZlibCodec(
+                        compressionLevel,
+                        strategy,
+                        null,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
 
@@ -164,21 +286,18 @@ public final class ZlibCodec
         return new ZlibEncoder(compressionLevel, dictionary, strategy);
     }
 
-    /// Creates an unrestricted dictionary-aware zlib stream decoder.
+    /// Creates a dictionary-aware zlib stream decoder using this codec's configured limits.
     @Override
     public CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> newDecoder() {
-        return newDecoder(DecodingOptions.DEFAULT);
-    }
-
-    /// Creates a dictionary-aware zlib stream decoder with operation-scoped limits.
-    @Override
-    public CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> newDecoder(
-            DecodingOptions options
-    ) {
-        Objects.requireNonNull(options, "options");
         return CompressionDecoderSupport.limitEngineOutput(
-                new ZlibDecoder(options.effectiveMaximumWindowSize(), dictionary),
-                options.maximumOutputSize()
+                new ZlibDecoder(
+                        CompressionDecoderSupport.effectiveMaximumWindowSize(
+                                maximumWindowSize,
+                                maximumMemorySize
+                        ),
+                        dictionary
+                ),
+                maximumOutputSize
         );
     }
 }

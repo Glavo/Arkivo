@@ -64,7 +64,7 @@ final class ZstdDictionaryTrainerTest {
         ByteBuffer compressed = dictionaryCodec.compress(source);
         assertEquals(3, firstLiteralType(codec, compressed.duplicate()));
         assertEquals(0xfc, firstSequenceModes(codec, compressed.duplicate()));
-        ByteBuffer decoded = dictionaryCodec.decompress(compressed, payload.length);
+        ByteBuffer decoded = dictionaryCodec.withMaximumOutputSize(payload.length).decompress(compressed);
         byte[] bufferOutput = new byte[decoded.remaining()];
         decoded.get(bufferOutput);
         assertArrayEquals(payload, bufferOutput);

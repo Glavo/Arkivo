@@ -8,7 +8,6 @@ import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
@@ -64,7 +63,6 @@ final class CodecFactoryTest {
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             try (DecompressingReadableByteChannel decoder = decoderCodec.newReadableByteChannel(
                     source,
-                    DecodingOptions.DEFAULT,
                     ResourceOwnership.OWNED
             )) {
                 assertArrayEquals(CONTENT, readAll(decoder), codec.format().name());
@@ -130,7 +128,6 @@ final class CodecFactoryTest {
             TrackingReadableChannel source = new TrackingReadableChannel(encoded);
             try (DecompressingReadableByteChannel decoder = CompressionFormats.newReadableByteChannel(
                     source,
-                    DecodingOptions.DEFAULT,
                     ResourceOwnership.OWNED
             )) {
                 assertArrayEquals(CONTENT, readAll(decoder), codec.format().name());
@@ -217,7 +214,6 @@ final class CodecFactoryTest {
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             try (InputStream input = decoderCodec.newInputStream(
                     encoded,
-                    DecodingOptions.DEFAULT,
                     ResourceOwnership.OWNED
             )) {
                 assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());
@@ -228,7 +224,6 @@ final class CodecFactoryTest {
                 TrackingInputStream detectedSource = new TrackingInputStream(compressed.bytes());
                 try (InputStream input = CompressionFormats.newInputStream(
                         detectedSource,
-                        DecodingOptions.DEFAULT,
                         ResourceOwnership.OWNED
                 )) {
                     assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());
@@ -255,7 +250,6 @@ final class CodecFactoryTest {
                 () -> CompressionFormats.newInputStream(
                         "missing",
                         unknownSource,
-                        DecodingOptions.DEFAULT,
                         ResourceOwnership.OWNED
                 )
         );
@@ -266,7 +260,6 @@ final class CodecFactoryTest {
                 IOException.class,
                 () -> CompressionFormats.newInputStream(
                         unrecognizedSource,
-                        DecodingOptions.DEFAULT,
                         ResourceOwnership.OWNED
                 )
         );
@@ -309,7 +302,6 @@ final class CodecFactoryTest {
                 IOException.class,
                 () -> CompressionFormats.newReadableByteChannel(
                         ownedSource,
-                        DecodingOptions.DEFAULT,
                         ResourceOwnership.OWNED
                 )
         );
@@ -328,7 +320,6 @@ final class CodecFactoryTest {
                 () -> CompressionFormats.newReadableByteChannel(
                         "ppmd",
                         source,
-                        DecodingOptions.DEFAULT,
                         ResourceOwnership.OWNED
                 )
         );

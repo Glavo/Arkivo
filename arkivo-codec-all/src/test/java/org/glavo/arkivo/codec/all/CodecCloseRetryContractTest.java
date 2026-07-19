@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
@@ -79,7 +78,6 @@ final class CodecCloseRetryContractTest {
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             DecompressingReadableByteChannel decoder = decoderCodec.newReadableByteChannel(
                     source,
-                    DecodingOptions.DEFAULT,
                     ResourceOwnership.OWNED
             );
 
@@ -128,7 +126,6 @@ final class CodecCloseRetryContractTest {
                 try {
                     decoder = decoderCodec(codec, 0L).newReadableByteChannel(
                             source,
-                            DecodingOptions.DEFAULT,
                             ResourceOwnership.OWNED
                     );
                 } catch (IOException exception) {
@@ -177,7 +174,6 @@ final class CodecCloseRetryContractTest {
                 try {
                     decoder = decoderCodec(codec, 0L).newReadableByteChannel(
                             source,
-                            DecodingOptions.DEFAULT,
                             ResourceOwnership.BORROWED
                     );
                 } catch (IOException exception) {
@@ -232,7 +228,6 @@ final class CodecCloseRetryContractTest {
             FailingCloseInputStream source = new FailingCloseInputStream(compress(codec, CONTENT));
             InputStream input = decoderCodec(codec, CONTENT.length).newInputStream(
                     source,
-                    DecodingOptions.DEFAULT,
                     ResourceOwnership.OWNED
             );
             assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());

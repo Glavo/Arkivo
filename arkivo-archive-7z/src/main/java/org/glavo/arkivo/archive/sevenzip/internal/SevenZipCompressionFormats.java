@@ -8,7 +8,6 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.LZMA2Codec;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
@@ -109,11 +108,9 @@ final class SevenZipCompressionFormats {
             long maximumOutputSize,
             ArchiveReadLimits readLimits
     ) throws IOException {
-        return CompressionFormats.newInputStream(
-                formatName,
-                source,
-                decodingOptions(maximumOutputSize, readLimits),
-                ResourceOwnership.OWNED
+        return newOwningInputStream(
+                withDecodingLimits(requireDefaultCodec(formatName), maximumOutputSize, readLimits),
+                source
         );
     }
 
@@ -133,11 +130,7 @@ final class SevenZipCompressionFormats {
                 .withMaximumOrder(maximumOrder)
                 .withMemorySize(memorySize)
                 .withDecodedSize(decodedSize);
-        return newOwningInputStream(
-                configured,
-                source,
-                decodingOptions(decodedSize, readLimits)
-        );
+        return newOwningInputStream(withDecodingLimits(configured, decodedSize, readLimits), source);
     }
 
     /// Opens an exactly sized raw LZMA decoder with packed coder properties.
@@ -159,11 +152,7 @@ final class SevenZipCompressionFormats {
         RawLZMACodec configured = rawCodec
                 .withProperties(properties)
                 .withDecodedSize(decodedSize);
-        return newOwningInputStream(
-                configured,
-                source,
-                decodingOptions(decodedSize, readLimits)
-        );
+        return newOwningInputStream(withDecodingLimits(configured, decodedSize, readLimits), source);
     }
 
     /// Opens a size-limited raw LZMA2 decoder.
@@ -178,23 +167,47 @@ final class SevenZipCompressionFormats {
             throw incompatibleCodec(LZMA2_NAME);
         }
         return newOwningInputStream(
-                lzma2Codec.withDictionarySize(Math.toIntExact(dictionarySize)),
-                source,
-                decodingOptions(maximumOutputSize, readLimits)
+                withDecodingLimits(
+                        lzma2Codec.withDictionarySize(Math.toIntExact(dictionarySize)),
+                        maximumOutputSize,
+                        readLimits
+                ),
+                source
         );
     }
 
-    /// Combines one coder output bound with archive-wide decoder resource limits.
-    static DecodingOptions decodingOptions(
+    /// Returns a codec constrained by its existing limits, one coder output bound, and archive read policy.
+    static CompressionCodec<?> withDecodingLimits(
+            CompressionCodec<?> codec,
             long maximumOutputSize,
             ArchiveReadLimits readLimits
     ) {
+        Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(readLimits, "readLimits");
-        return new DecodingOptions(
-                maximumOutputSize,
-                readLimits.maximumCompressionWindowSize(),
-                readLimits.maximumDecoderMemorySize()
-        );
+        if (maximumOutputSize < CompressionCodec.UNLIMITED_SIZE) {
+            throw new IllegalArgumentException("maximumOutputSize must be non-negative or UNLIMITED_SIZE");
+        }
+        return codec
+                .withMaximumOutputSize(moreRestrictive(codec.maximumOutputSize(), maximumOutputSize))
+                .withMaximumWindowSize(moreRestrictive(
+                        codec.maximumWindowSize(),
+                        readLimits.maximumCompressionWindowSize()
+                ))
+                .withMaximumMemorySize(moreRestrictive(
+                        codec.maximumMemorySize(),
+                        readLimits.maximumDecoderMemorySize()
+                ));
+    }
+
+    /// Returns the smaller finite limit, or the available finite limit when the other is unrestricted.
+    private static long moreRestrictive(long first, long second) {
+        if (first < 0L) {
+            return second;
+        }
+        if (second < 0L) {
+            return first;
+        }
+        return Math.min(first, second);
     }
 
     /// Creates an owning output-stream view over a configured codec.
@@ -210,17 +223,11 @@ final class SevenZipCompressionFormats {
     /// Creates an owning input-stream view over a configured codec.
     private static InputStream newOwningInputStream(
             CompressionCodec<?> codec,
-            InputStream source,
-            DecodingOptions options
+            InputStream source
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(options, "options");
-        return codec.newInputStream(
-                source,
-                options,
-                ResourceOwnership.OWNED
-        );
+        return codec.newInputStream(source, ResourceOwnership.OWNED);
     }
 
     /// Returns the default codec for an installed optional format or reports the stable missing-format diagnostic.

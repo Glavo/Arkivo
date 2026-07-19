@@ -6,11 +6,11 @@ package org.glavo.arkivo.codec.ppmd;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Decoder;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Encoder;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -35,7 +35,14 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
 
     /// The default immutable PPMd7 codec configuration.
     public static final PPMdCodec DEFAULT =
-            new PPMdCodec(DEFAULT_MAXIMUM_ORDER, DEFAULT_MEMORY_SIZE, UNKNOWN_SIZE);
+            new PPMdCodec(
+                    DEFAULT_MAXIMUM_ORDER,
+                    DEFAULT_MEMORY_SIZE,
+                    UNKNOWN_SIZE,
+                    UNLIMITED_SIZE,
+                    UNLIMITED_SIZE,
+                    UNLIMITED_SIZE
+            );
 
     /// The configured maximum context order.
     private final int maximumOrder;
@@ -46,13 +53,36 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     /// The externally declared decoded size, or UNKNOWN_SIZE.
     private final long decodedSize;
 
+    /// The configured decoded-output limit.
+    private final long maximumOutputSize;
+
+    /// The configured decoder history-window limit.
+    private final long maximumWindowSize;
+
+    /// The configured decoder working-memory limit.
+    private final long maximumMemorySize;
+
     /// Creates the default raw PPMd7 codec configuration.
     public PPMdCodec() {
-        this(DEFAULT_MAXIMUM_ORDER, DEFAULT_MEMORY_SIZE, UNKNOWN_SIZE);
+        this(
+                DEFAULT_MAXIMUM_ORDER,
+                DEFAULT_MEMORY_SIZE,
+                UNKNOWN_SIZE,
+                UNLIMITED_SIZE,
+                UNLIMITED_SIZE,
+                UNLIMITED_SIZE
+        );
     }
 
     /// Creates a validated raw PPMd7 codec configuration.
-    private PPMdCodec(int maximumOrder, long memorySize, long decodedSize) {
+    private PPMdCodec(
+            int maximumOrder,
+            long memorySize,
+            long decodedSize,
+            long maximumOutputSize,
+            long maximumWindowSize,
+            long maximumMemorySize
+    ) {
         validateMaximumOrder(maximumOrder);
         validateMemorySize(memorySize);
         if (decodedSize < UNKNOWN_SIZE) {
@@ -63,6 +93,75 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
         this.maximumOrder = maximumOrder;
         this.memorySize = memorySize;
         this.decodedSize = decodedSize;
+        CompressionDecoderSupport.validateLimit(maximumOutputSize, "maximumOutputSize");
+        CompressionDecoderSupport.validateLimit(maximumWindowSize, "maximumWindowSize");
+        CompressionDecoderSupport.validateLimit(maximumMemorySize, "maximumMemorySize");
+        this.maximumOutputSize = maximumOutputSize;
+        this.maximumWindowSize = maximumWindowSize;
+        this.maximumMemorySize = maximumMemorySize;
+    }
+
+    /// Returns the configured decoded-output limit.
+    @Override
+    public long maximumOutputSize() {
+        return maximumOutputSize;
+    }
+
+    /// Returns the configured decoder history-window limit.
+    @Override
+    public long maximumWindowSize() {
+        return maximumWindowSize;
+    }
+
+    /// Returns the configured decoder working-memory limit.
+    @Override
+    public long maximumMemorySize() {
+        return maximumMemorySize;
+    }
+
+    /// Returns an immutable codec with the requested decoded-output limit.
+    @Override
+    public PPMdCodec withMaximumOutputSize(long maximumOutputSize) {
+        return maximumOutputSize == this.maximumOutputSize
+                ? this
+                : new PPMdCodec(
+                        maximumOrder,
+                        memorySize,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder history-window limit.
+    @Override
+    public PPMdCodec withMaximumWindowSize(long maximumWindowSize) {
+        return maximumWindowSize == this.maximumWindowSize
+                ? this
+                : new PPMdCodec(
+                        maximumOrder,
+                        memorySize,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder working-memory limit.
+    @Override
+    public PPMdCodec withMaximumMemorySize(long maximumMemorySize) {
+        return maximumMemorySize == this.maximumMemorySize
+                ? this
+                : new PPMdCodec(
+                        maximumOrder,
+                        memorySize,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns the canonical raw PPMd7 format.
@@ -100,7 +199,14 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     public PPMdCodec withMaximumOrder(int maximumOrder) {
         return maximumOrder == this.maximumOrder
                 ? this
-                : new PPMdCodec(maximumOrder, memorySize, decodedSize);
+                : new PPMdCodec(
+                        maximumOrder,
+                        memorySize,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns an immutable PPMd codec with the requested model arena size.
@@ -111,7 +217,14 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     public PPMdCodec withMemorySize(long memorySize) {
         return memorySize == this.memorySize
                 ? this
-                : new PPMdCodec(maximumOrder, memorySize, decodedSize);
+                : new PPMdCodec(
+                        maximumOrder,
+                        memorySize,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns an immutable PPMd codec with the externally declared decoded size.
@@ -122,7 +235,14 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     public PPMdCodec withDecodedSize(long decodedSize) {
         return decodedSize == this.decodedSize
                 ? this
-                : new PPMdCodec(maximumOrder, memorySize, decodedSize);
+                : new PPMdCodec(
+                        maximumOrder,
+                        memorySize,
+                        decodedSize,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Creates a raw PPMd7 encoder.
@@ -132,17 +252,15 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
         return new PPMd7Encoder(maximumOrder, memorySize);
     }
 
-    /// Creates an exactly sized raw PPMd7 decoder with operation-scoped limits.
+    /// Creates an exactly sized raw PPMd7 decoder using this codec's configured limits.
     @Override
-    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
-        Objects.requireNonNull(options, "options");
+    public CompressionDecoder newDecoder() throws IOException {
         if (decodedSize == UNKNOWN_SIZE) {
             throw new IllegalStateException(
                     "Raw PPMd decompression requires an externally declared decoded size"
             );
         }
-        options.requireMemorySize(memorySize);
-        long maximumOutputSize = options.maximumOutputSize();
+        CompressionDecoderSupport.requireMemorySize(maximumMemorySize, memorySize);
         if (maximumOutputSize >= 0L && decodedSize > maximumOutputSize) {
             throw new DecompressionOutputLimitException(maximumOutputSize);
         }

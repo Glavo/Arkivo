@@ -13,7 +13,6 @@ import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
@@ -43,12 +42,43 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies the first-class channel contract across default codecs for all installed formats.
 @NotNullByDefault
 final class CodecChannelContractTest {
+    /// Verifies every installed codec exposes immutable, reusable decoding resource configuration.
+    @Test
+    void configuresReusableDecodingLimitsAcrossEveryCodec() {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec<?> codec = format.defaultCodec();
+            long originalOutputSize = codec.maximumOutputSize();
+            long originalWindowSize = codec.maximumWindowSize();
+            long originalMemorySize = codec.maximumMemorySize();
+
+            CompressionCodec<?> configured = codec
+                    .withMaximumOutputSize(123L)
+                    .withMaximumWindowSize(456L)
+                    .withMaximumMemorySize(789L);
+
+            assertEquals(123L, configured.maximumOutputSize(), format.name());
+            assertEquals(456L, configured.maximumWindowSize(), format.name());
+            assertEquals(789L, configured.maximumMemorySize(), format.name());
+            assertSame(configured, configured.withMaximumOutputSize(123L), format.name());
+            assertSame(configured, configured.withMaximumWindowSize(456L), format.name());
+            assertSame(configured, configured.withMaximumMemorySize(789L), format.name());
+            assertEquals(originalOutputSize, codec.maximumOutputSize(), format.name());
+            assertEquals(originalWindowSize, codec.maximumWindowSize(), format.name());
+            assertEquals(originalMemorySize, codec.maximumMemorySize(), format.name());
+
+            assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOutputSize(-2L), format.name());
+            assertThrows(IllegalArgumentException.class, () -> codec.withMaximumWindowSize(-2L), format.name());
+            assertThrows(IllegalArgumentException.class, () -> codec.withMaximumMemorySize(-2L), format.name());
+        }
+    }
+
     /// Verifies channel transfer, counters, endpoint ownership, and interface consistency.
     @Test
     void roundTripsEveryBidirectionalCodecThroughChannels() throws IOException {
@@ -101,7 +131,6 @@ final class CodecChannelContractTest {
                     CodecContractConfigurations.decoderCodec(codec, content.length);
             try (DecompressingReadableByteChannel decoder = decoderCodec.newReadableByteChannel(
                     Channels.newChannel(new ByteArrayInputStream(compressed)),
-                    DecodingOptions.DEFAULT,
                     ResourceOwnership.BORROWED
             )) {
                 assertUnconsumedInput(decoder, compressed, codec.format().name());
@@ -365,14 +394,12 @@ final class CodecChannelContractTest {
                 encodedFrames[index] = compressFrame(codec, frames[index]);
                 compressed.writeBytes(encodedFrames[index]);
             }
-            DecodingOptions limits =
-                    DecodingOptions.ofMaximumOutputSize(totalOutputSize);
             byte[] compressedStream = compressed.toByteArray();
 
             try (DecompressingReadableByteChannel.Framed decoder =
-                         ((CompressionCodec.Framed<?>) codec).newReadableByteChannel(
+                         ((CompressionCodec.Framed<?>) codec.withMaximumOutputSize(totalOutputSize))
+                                 .newReadableByteChannel(
                                  Channels.newChannel(new ByteArrayInputStream(compressedStream)),
-                                 limits,
                                  ResourceOwnership.BORROWED
                          )) {
                 long completedInputBytes = 0L;
@@ -435,7 +462,7 @@ final class CodecChannelContractTest {
 
             CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, input.length);
-            ByteBuffer decoded = decoderCodec.decompress(compressed, input.length);
+            ByteBuffer decoded = decoderCodec.withMaximumOutputSize(input.length).decompress(compressed);
             if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
                 assertTrue(compressed.position() <= compressed.limit(), codec.format().name());
             } else {
@@ -449,14 +476,14 @@ final class CodecChannelContractTest {
             ByteBuffer overflowSource = codec.compress(ByteBuffer.wrap(input));
             assertThrows(
                     DecompressionLimitException.class,
-                    () -> decoderCodec.decompress(overflowSource, input.length - 1L),
+                    () -> decoderCodec.withMaximumOutputSize(input.length - 1L).decompress(overflowSource),
                     codec.format().name()
             );
 
             ByteBuffer emptyCompressed = codec.compress(ByteBuffer.allocate(0));
             CompressionCodec<?> emptyDecoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, 0L);
-            ByteBuffer emptyDecoded = emptyDecoderCodec.decompress(emptyCompressed, 0L);
+            ByteBuffer emptyDecoded = emptyDecoderCodec.withMaximumOutputSize(0L).decompress(emptyCompressed);
             assertEquals(0, emptyDecoded.remaining(), codec.format().name());
         }
     }
@@ -484,7 +511,8 @@ final class CodecChannelContractTest {
 
             ByteBuffer emptySource = ByteBuffer.allocate(emptyEncoded.length + firstEncoded.length);
             emptySource.put(emptyEncoded).put(firstEncoded).flip();
-            ByteBuffer emptyDecoded = framedCodec.decompressFrame(emptySource, 0L);
+            ByteBuffer emptyDecoded = ((CompressionCodec.Framed<?>)
+                    framedCodec.withMaximumOutputSize(0L)).decompressFrame(emptySource);
             assertEquals(0, emptyDecoded.remaining(), codec.format().name());
             assertEquals(emptyEncoded.length, emptySource.position(), codec.format().name());
 
@@ -500,10 +528,9 @@ final class CodecChannelContractTest {
             source.flip();
             source.position(2);
             source.limit(2 + firstEncoded.length + secondEncoded.length);
-            DecodingOptions firstLimits =
-                    DecodingOptions.ofMaximumOutputSize(first.length);
-
-            ByteBuffer firstDecoded = framedCodec.decompressFrame(source, firstLimits);
+            CompressionCodec.Framed<?> firstCodec = (CompressionCodec.Framed<?>)
+                    framedCodec.withMaximumOutputSize(first.length);
+            ByteBuffer firstDecoded = firstCodec.decompressFrame(source);
             assertArrayEquals(first, bufferBytes(firstDecoded), codec.format().name());
             assertEquals(2 + firstEncoded.length, source.position(), codec.format().name());
 
@@ -516,7 +543,9 @@ final class CodecChannelContractTest {
             ByteBuffer limitedSource = ByteBuffer.wrap(firstEncoded);
             assertThrows(
                     DecompressionLimitException.class,
-                    () -> framedCodec.decompressFrame(limitedSource, first.length - 1L),
+                    () -> ((CompressionCodec.Framed<?>)
+                            framedCodec.withMaximumOutputSize(first.length - 1L))
+                            .decompressFrame(limitedSource),
                     codec.format().name()
             );
 
@@ -824,12 +853,10 @@ final class CodecChannelContractTest {
 
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec<?> codec = format.defaultCodec();
-            DecodingOptions exactLimits =
-                    DecodingOptions.ofMaximumOutputSize(input.length);
-            DecodingOptions smallerLimits =
-                    DecodingOptions.ofMaximumOutputSize(smallerLimit);
             CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, input.length);
+            CompressionCodec<?> exactCodec = decoderCodec.withMaximumOutputSize(input.length);
+            CompressionCodec<?> smallerCodec = decoderCodec.withMaximumOutputSize(smallerLimit);
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             codec.compress(
@@ -838,10 +865,9 @@ final class CodecChannelContractTest {
             );
 
             ByteArrayOutputStream exactBytes = new ByteArrayOutputStream();
-            CodecTransferResult exactResult = decoderCodec.decompress(
+            CodecTransferResult exactResult = exactCodec.decompress(
                     Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                    Channels.newChannel(exactBytes),
-                    exactLimits
+                    Channels.newChannel(exactBytes)
             );
             assertEquals(input.length, exactResult.outputBytes(), codec.format().name());
             assertArrayEquals(input, exactBytes.toByteArray(), codec.format().name());
@@ -853,7 +879,7 @@ final class CodecChannelContractTest {
             WritableByteChannel limitedTarget = Channels.newChannel(limitedBytes);
             DecompressionLimitException exception = assertThrows(
                     DecompressionLimitException.class,
-                    () -> decoderCodec.decompress(limitedSource, limitedTarget, smallerLimits),
+                    () -> smallerCodec.decompress(limitedSource, limitedTarget),
                     codec.format().name()
             );
             assertEquals(smallerLimit, exception.maximum(), codec.format().name());
@@ -867,9 +893,8 @@ final class CodecChannelContractTest {
             );
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> decoderCodec.newReadableByteChannel(
+                    () -> decoderCodec.withMaximumOutputSize(-2L).newReadableByteChannel(
                             invalidSource,
-                            DecodingOptions.ofMaximumOutputSize(-2L),
                             ResourceOwnership.BORROWED
                     ),
                     codec.format().name()
@@ -998,26 +1023,22 @@ final class CodecChannelContractTest {
                     Channels.newChannel(new ByteArrayInputStream(input)),
                     Channels.newChannel(compressedBytes)
             );
-            DecodingOptions unlimitedLimits =
-                    DecodingOptions.ofMaximumWindowSize(Long.MAX_VALUE);
-            DecodingOptions zeroLimits =
-                    DecodingOptions.ofMaximumWindowSize(0L);
+            CompressionCodec<?> unlimitedWindowCodec = decoderCodec.withMaximumWindowSize(Long.MAX_VALUE);
+            CompressionCodec<?> zeroWindowCodec = decoderCodec.withMaximumWindowSize(0L);
             if (!expected) {
                 ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-                decoderCodec.decompress(
+                zeroWindowCodec.decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                        Channels.newChannel(decodedBytes),
-                        zeroLimits
+                        Channels.newChannel(decodedBytes)
                 );
                 assertArrayEquals(input, decodedBytes.toByteArray(), codec.format().name());
                 continue;
             }
 
             ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-            decoderCodec.decompress(
+            unlimitedWindowCodec.decompress(
                     Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                    Channels.newChannel(decodedBytes),
-                    unlimitedLimits
+                    Channels.newChannel(decodedBytes)
             );
             assertArrayEquals(input, decodedBytes.toByteArray(), codec.format().name());
 
@@ -1027,10 +1048,9 @@ final class CodecChannelContractTest {
             ByteArrayOutputStream limitedBytes = new ByteArrayOutputStream();
             DecompressionWindowLimitException exception = assertThrows(
                     DecompressionWindowLimitException.class,
-                    () -> decoderCodec.decompress(
+                    () -> zeroWindowCodec.decompress(
                             limitedSource,
-                            Channels.newChannel(limitedBytes),
-                            zeroLimits
+                            Channels.newChannel(limitedBytes)
                     ),
                     codec.format().name()
             );
@@ -1045,10 +1065,9 @@ final class CodecChannelContractTest {
             ByteArrayOutputStream memoryLimitedBytes = new ByteArrayOutputStream();
             DecompressionWindowLimitException memoryBoundException = assertThrows(
                     DecompressionWindowLimitException.class,
-                    () -> decoderCodec.decompress(
+                    () -> decoderCodec.withMaximumMemorySize(0L).decompress(
                             memoryLimitedSource,
-                            Channels.newChannel(memoryLimitedBytes),
-                            DecodingOptions.ofMaximumMemorySize(0L)
+                            Channels.newChannel(memoryLimitedBytes)
                     ),
                     codec.format().name()
             );
@@ -1062,9 +1081,8 @@ final class CodecChannelContractTest {
             );
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> decoderCodec.newReadableByteChannel(
+                    () -> decoderCodec.withMaximumWindowSize(-2L).newReadableByteChannel(
                             invalidSource,
-                            DecodingOptions.ofMaximumWindowSize(-2L),
                             ResourceOwnership.BORROWED
                     ),
                     codec.format().name()

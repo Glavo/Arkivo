@@ -72,35 +72,36 @@ final class CompressionCodecBufferTest {
         assertTrue(compressed.hasArray());
         assertArrayEquals(content, bufferBytes(compressed, 0, compressed.limit()));
 
-        ByteBuffer decoded = codec.decompress(compressed, content.length);
+        ByteBuffer decoded = codec.withMaximumOutputSize(content.length).decompress(compressed);
         assertEquals(compressed.limit(), compressed.position());
         assertEquals(0, decoded.position());
         assertEquals(content.length, decoded.limit());
         assertArrayEquals(content, bufferBytes(decoded, 0, decoded.limit()));
 
-        ByteBuffer exact = codec.decompress(ByteBuffer.wrap(new byte[]{1, 2, 3}), 3L);
+        ByteBuffer exact = codec.withMaximumOutputSize(3L).decompress(ByteBuffer.wrap(new byte[]{1, 2, 3}));
         assertArrayEquals(new byte[]{1, 2, 3}, bufferBytes(exact, 0, exact.limit()));
 
         ByteBuffer exceededSource = ByteBuffer.wrap(new byte[]{1, 2, 3, 4});
         DecompressionLimitException exception = assertThrows(
                 DecompressionLimitException.class,
-                () -> codec.decompress(exceededSource, 3L)
+                () -> codec.withMaximumOutputSize(3L).decompress(exceededSource)
         );
         assertEquals(3L, exception.maximum());
         assertEquals(4, exceededSource.position());
 
-        assertEquals(0, codec.decompress(ByteBuffer.allocate(0), 0L).remaining());
+        assertEquals(0, codec.withMaximumOutputSize(0L).decompress(ByteBuffer.allocate(0)).remaining());
         assertThrows(
                 DecompressionLimitException.class,
-                () -> codec.decompress(ByteBuffer.wrap(new byte[]{1}), 0L)
+                () -> codec.withMaximumOutputSize(0L).decompress(ByteBuffer.wrap(new byte[]{1}))
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> codec.decompress(ByteBuffer.allocate(0), -1L)
+                () -> codec.withMaximumOutputSize(-1L).decompress(ByteBuffer.allocate(0))
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> codec.decompress(ByteBuffer.allocate(0), (long) Integer.MAX_VALUE + 1L)
+                () -> codec.withMaximumOutputSize((long) Integer.MAX_VALUE + 1L)
+                        .decompress(ByteBuffer.allocate(0))
         );
     }
 
@@ -116,7 +117,7 @@ final class CompressionCodecBufferTest {
         assertArrayEquals(new byte[]{1, 2, 3}, bufferBytes(fixedTarget, 0, fixedTarget.position()));
 
         ByteBuffer allocatingSource = ByteBuffer.wrap(new byte[]{4, 5, 6, 9});
-        ByteBuffer allocated = codec.decompress(allocatingSource, 3L);
+        ByteBuffer allocated = codec.withMaximumOutputSize(3L).decompress(allocatingSource);
         assertEquals(3, allocatingSource.position());
         assertArrayEquals(new byte[]{4, 5, 6}, bufferBytes(allocated, 0, allocated.limit()));
 
@@ -171,10 +172,78 @@ final class CompressionCodecBufferTest {
         /// Whether decoder construction fails.
         private final boolean failOpen;
 
+        /// The maximum decoded output size.
+        private final long maximumOutputSize;
+
+        /// The maximum decoder history-window size.
+        private final long maximumWindowSize;
+
+        /// The maximum decoder working-memory size.
+        private final long maximumMemorySize;
+
         /// Creates a configurable logical-prefix codec.
         private ReadAheadCodec(int decodedSize, boolean failOpen) {
+            this(decodedSize, failOpen, UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
+        }
+
+        /// Creates a fully configured logical-prefix codec.
+        private ReadAheadCodec(
+                int decodedSize,
+                boolean failOpen,
+                long maximumOutputSize,
+                long maximumWindowSize,
+                long maximumMemorySize
+        ) {
             this.decodedSize = decodedSize;
             this.failOpen = failOpen;
+            this.maximumOutputSize = maximumOutputSize;
+            this.maximumWindowSize = maximumWindowSize;
+            this.maximumMemorySize = maximumMemorySize;
+        }
+
+        /// Returns the maximum decoded output size.
+        @Override
+        public long maximumOutputSize() {
+            return maximumOutputSize;
+        }
+
+        /// Returns the maximum decoder history-window size.
+        @Override
+        public long maximumWindowSize() {
+            return maximumWindowSize;
+        }
+
+        /// Returns the maximum decoder working-memory size.
+        @Override
+        public long maximumMemorySize() {
+            return maximumMemorySize;
+        }
+
+        /// Returns a codec with the requested decoded output limit.
+        @Override
+        public ReadAheadCodec withMaximumOutputSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumOutputSize");
+            return value == maximumOutputSize
+                    ? this
+                    : new ReadAheadCodec(decodedSize, failOpen, value, maximumWindowSize, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder history-window limit.
+        @Override
+        public ReadAheadCodec withMaximumWindowSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumWindowSize");
+            return value == maximumWindowSize
+                    ? this
+                    : new ReadAheadCodec(decodedSize, failOpen, maximumOutputSize, value, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder working-memory limit.
+        @Override
+        public ReadAheadCodec withMaximumMemorySize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumMemorySize");
+            return value == maximumMemorySize
+                    ? this
+                    : new ReadAheadCodec(decodedSize, failOpen, maximumOutputSize, maximumWindowSize, value);
         }
 
         /// Returns the test compression format name.
@@ -204,14 +273,13 @@ final class CompressionCodecBufferTest {
 
         /// Creates a prefix decoder or fails before consuming caller input.
         @Override
-        public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
-            Objects.requireNonNull(options, "options");
+        public CompressionDecoder newDecoder() throws IOException {
             if (failOpen) {
                 throw new IOException("Read-ahead decoder construction failed");
             }
             return CompressionDecoderSupport.limitEngineOutput(
                     new PrefixDecoder(decodedSize),
-                    options.maximumOutputSize()
+                    maximumOutputSize
             );
         }
     }
@@ -219,8 +287,70 @@ final class CompressionCodecBufferTest {
     /// Implements an identity transformation through buffer engines.
     @NotNullByDefault
     private static final class IdentityCodec implements CompressionCodec<IdentityCodec>, CompressionFormat {
+        /// The maximum decoded output size.
+        private final long maximumOutputSize;
+
+        /// The maximum decoder history-window size.
+        private final long maximumWindowSize;
+
+        /// The maximum decoder working-memory size.
+        private final long maximumMemorySize;
+
         /// Creates an identity codec.
         private IdentityCodec() {
+            this(UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
+        }
+
+        /// Creates a fully configured identity codec.
+        private IdentityCodec(long maximumOutputSize, long maximumWindowSize, long maximumMemorySize) {
+            this.maximumOutputSize = maximumOutputSize;
+            this.maximumWindowSize = maximumWindowSize;
+            this.maximumMemorySize = maximumMemorySize;
+        }
+
+        /// Returns the maximum decoded output size.
+        @Override
+        public long maximumOutputSize() {
+            return maximumOutputSize;
+        }
+
+        /// Returns the maximum decoder history-window size.
+        @Override
+        public long maximumWindowSize() {
+            return maximumWindowSize;
+        }
+
+        /// Returns the maximum decoder working-memory size.
+        @Override
+        public long maximumMemorySize() {
+            return maximumMemorySize;
+        }
+
+        /// Returns a codec with the requested decoded output limit.
+        @Override
+        public IdentityCodec withMaximumOutputSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumOutputSize");
+            return value == maximumOutputSize
+                    ? this
+                    : new IdentityCodec(value, maximumWindowSize, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder history-window limit.
+        @Override
+        public IdentityCodec withMaximumWindowSize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumWindowSize");
+            return value == maximumWindowSize
+                    ? this
+                    : new IdentityCodec(maximumOutputSize, value, maximumMemorySize);
+        }
+
+        /// Returns a codec with the requested decoder working-memory limit.
+        @Override
+        public IdentityCodec withMaximumMemorySize(long value) {
+            CompressionDecoderSupport.validateLimit(value, "maximumMemorySize");
+            return value == maximumMemorySize
+                    ? this
+                    : new IdentityCodec(maximumOutputSize, maximumWindowSize, value);
         }
 
         /// Returns the identity compression format name.
@@ -250,10 +380,10 @@ final class CompressionCodecBufferTest {
 
         /// Creates a fresh identity decoder with the requested output limit.
         @Override
-        public CompressionDecoder newDecoder(DecodingOptions options) {
+        public CompressionDecoder newDecoder() {
             return CompressionDecoderSupport.limitEngineOutput(
                     new IdentityDecoder(),
-                    options.maximumOutputSize()
+                    maximumOutputSize
             );
         }
     }

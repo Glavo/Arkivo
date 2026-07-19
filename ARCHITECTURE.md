@@ -85,18 +85,18 @@ one complete frame, leaving following frames or trailing bytes in the source buf
 `reset` abandons current progress and restores the engine to its original codec configuration. `close` releases engine
 resources without implicitly finishing or consuming more data.
 
-### Adapters and operation options
+### Adapters and operation metadata
 
 Codec channel and stream adapters run the same engines through blocking I/O contracts. Transfer methods process a
 complete input without closing caller-owned endpoints. Allocating buffer methods are intended for results that fit in a
 single Java `ByteBuffer`; allocating decompression therefore requires a finite output bound.
 
 `EncodingOptions` carries exact source-size metadata for one encoding operation. A framed encoder applies that metadata
-to its first frame; following frames begin without a declared source size. `DecodingOptions` carries operation-scoped
-bounds for decoded output, history windows, and decoder working memory. The output bound is enforced around every
-decoder; format implementations apply window and memory bounds to the structures and allocations they can account for.
-The memory value is not a JVM heap limit. Enforced-limit violations use dedicated checked exception types so callers
-can distinguish resource policy from malformed input.
+to its first frame; following frames begin without a declared source size. Immutable codec values carry reusable bounds
+for decoded output, history windows, and decoder working memory. The output bound is enforced around every decoder;
+format implementations apply window and memory bounds to the structures and allocations they can account for. The
+memory value is not a JVM heap limit. Enforced-limit violations use dedicated checked exception types so callers can
+distinguish resource policy from malformed input.
 Dictionary-capable formats use format-specific `CompressionDictionary` and `DictionaryRequest` types because
 dictionary identity and representation differ between algorithms.
 

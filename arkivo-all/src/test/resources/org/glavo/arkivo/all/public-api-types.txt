@@ -159,7 +159,6 @@ org.glavo.arkivo.codec.CompressionFormat
 org.glavo.arkivo.codec.CompressionFormatRegistry
 org.glavo.arkivo.codec.CompressionFormats
 org.glavo.arkivo.codec.CompressionProbeResult
-org.glavo.arkivo.codec.DecodingOptions
 org.glavo.arkivo.codec.DecompressingReadableByteChannel
 org.glavo.arkivo.codec.DecompressingReadableByteChannel$Framed
 org.glavo.arkivo.codec.DecompressionLimitException

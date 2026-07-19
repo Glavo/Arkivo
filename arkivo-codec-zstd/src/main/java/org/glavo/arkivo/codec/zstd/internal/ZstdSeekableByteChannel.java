@@ -3,9 +3,11 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.codec.spi.InterruptibleChannelSupport;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -193,9 +195,9 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
         }
         cachedFrame = new byte[0];
         cachedFrameIndex = -1;
-        DecodingOptions options = index.options();
+        ZstdCodec codec = index.codec();
         long retainedMemorySize = Math.addExact(index.retainedMemorySize(), uncompressedSize);
-        options.requireMemorySize(retainedMemorySize);
+        CompressionDecoderSupport.requireMemorySize(codec.maximumMemorySize(), retainedMemorySize);
         byte[] decoded = new byte[(int) uncompressedSize];
 
         source.position(sourceOrigin + index.frameCompressedOffset(frameIndex));
@@ -203,15 +205,14 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
                 source,
                 index.frameCompressedSize(frameIndex)
         );
-        DecodingOptions frameOptions = options.withMaximumOutputSize(uncompressedSize);
-        if (options.maximumMemorySize() != DecodingOptions.UNLIMITED_SIZE) {
-            frameOptions = frameOptions.withMaximumMemorySize(
-                    options.maximumMemorySize() - retainedMemorySize
+        ZstdCodec frameCodec = codec.withMaximumOutputSize(uncompressedSize);
+        if (codec.maximumMemorySize() != CompressionCodec.UNLIMITED_SIZE) {
+            frameCodec = frameCodec.withMaximumMemorySize(
+                    codec.maximumMemorySize() - retainedMemorySize
             );
         }
-        try (DecompressingReadableByteChannel decoder = index.codec().newReadableByteChannel(
+        try (DecompressingReadableByteChannel decoder = frameCodec.newReadableByteChannel(
                 bounded,
-                frameOptions,
                 ResourceOwnership.BORROWED
         )) {
             ByteBuffer output = ByteBuffer.wrap(decoded);

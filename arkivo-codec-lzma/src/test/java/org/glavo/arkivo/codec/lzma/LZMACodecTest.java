@@ -8,7 +8,6 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelDecoder;
@@ -443,7 +442,6 @@ public final class LZMACodecTest {
         ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
         DecompressingReadableByteChannel decoder = new LZMACodec().newReadableByteChannel(
                 compressedSource,
-                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
@@ -480,19 +478,17 @@ public final class LZMACodecTest {
         );
 
         ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-        codec.decompress(
+        codec.withMaximumWindowSize(dictionarySize).decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                Channels.newChannel(decodedBytes),
-                DecodingOptions.ofMaximumWindowSize(dictionarySize)
+                Channels.newChannel(decodedBytes)
         );
         assertArrayEquals(content, decodedBytes.toByteArray());
 
         DecompressionWindowLimitException exception = assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> codec.decompress(
+                () -> codec.withMaximumWindowSize(dictionarySize - 1L).decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        DecodingOptions.ofMaximumWindowSize(dictionarySize - 1L)
+                        Channels.newChannel(new ByteArrayOutputStream())
                 )
         );
         assertEquals(dictionarySize - 1L, exception.maximumWindowSize());

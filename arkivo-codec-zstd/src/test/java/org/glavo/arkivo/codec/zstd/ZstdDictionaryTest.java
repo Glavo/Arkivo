@@ -49,7 +49,7 @@ final class ZstdDictionaryTest {
         byte[] input = Arrays.copyOfRange(bytes, 32, 224);
 
         ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
-        ByteBuffer decoded = codec.decompress(compressed, input.length);
+        ByteBuffer decoded = codec.withMaximumOutputSize(input.length).decompress(compressed);
         byte[] output = new byte[decoded.remaining()];
         decoded.get(output);
 

@@ -66,7 +66,7 @@ public final class ZstdPureJavaEncoderTest {
         byte[] compressed = compress(codec, expected);
 
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+        assertArrayEquals(expected, decompress(codec, compressed, expected.length));
         assertTrue(firstBlockSequenceCount(codec, compressed) >= 128);
         assertTrue(compressed.length < expected.length * 3 / 4);
     }
@@ -83,7 +83,7 @@ public final class ZstdPureJavaEncoderTest {
         assertEquals(1, literals.streamCount());
         assertTrue(literals.regeneratedSize() > 0 && literals.regeneratedSize() <= 1023);
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+        assertArrayEquals(expected, decompress(codec, compressed, expected.length));
     }
 
     /// Verifies a large Huffman literal section uses four independently sized streams.
@@ -98,7 +98,7 @@ public final class ZstdPureJavaEncoderTest {
         assertEquals(4, literals.streamCount());
         assertTrue(literals.regeneratedSize() > 1023);
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+        assertArrayEquals(expected, decompress(codec, compressed, expected.length));
         assertTrue(compressed.length < expected.length * 3 / 4);
     }
 
@@ -115,7 +115,7 @@ public final class ZstdPureJavaEncoderTest {
         assertTrue(literals.regeneratedSize() > 1023);
         assertTrue(firstHuffmanTableHeader(codec, compressed) < 128);
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+        assertArrayEquals(expected, decompress(codec, compressed, expected.length));
         assertTrue(compressed.length < expected.length);
     }
 
@@ -128,7 +128,7 @@ public final class ZstdPureJavaEncoderTest {
 
         assertArrayEquals(new int[]{2, 3}, compressedBlockLiteralTypes(codec, compressed));
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+        assertArrayEquals(expected, decompress(codec, compressed, expected.length));
         assertTrue(compressed.length < expected.length * 3 / 4);
     }
 
@@ -144,7 +144,7 @@ public final class ZstdPureJavaEncoderTest {
         assertTrue(hasSequenceMode(modes[0], 2));
         assertTrue(hasSequenceMode(modes[1], 3));
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+        assertArrayEquals(expected, decompress(codec, compressed, expected.length));
         assertTrue(compressed.length < expected.length * 3 / 4);
     }
 
@@ -172,7 +172,7 @@ public final class ZstdPureJavaEncoderTest {
             assertArrayEquals(expected, Zstd.decompress(compressed, expected.length), "iteration=" + iteration);
             assertArrayEquals(
                     expected,
-                    codec.decompress(ByteBuffer.wrap(compressed), expected.length).array(),
+                    decompress(codec, compressed, expected.length),
                     "iteration=" + iteration
             );
         }
@@ -251,7 +251,7 @@ public final class ZstdPureJavaEncoderTest {
 
         assertArrayEquals(new int[]{0, 2}, standardBlockTypes(codec, compressed));
         assertArrayEquals(input, Zstd.decompress(compressed, input.length));
-        assertArrayEquals(input, codec.decompress(ByteBuffer.wrap(compressed), input.length).array());
+        assertArrayEquals(input, decompress(codec, compressed, input.length));
         assertTrue(compressed.length < input.length * 3 / 5);
     }
 
@@ -280,8 +280,8 @@ public final class ZstdPureJavaEncoderTest {
         );
         assertArrayEquals(input, Zstd.decompress(noOverlap, input.length));
         assertArrayEquals(input, Zstd.decompress(fullOverlap, input.length));
-        assertArrayEquals(input, codec.decompress(ByteBuffer.wrap(noOverlap), input.length).array());
-        assertArrayEquals(input, codec.decompress(ByteBuffer.wrap(fullOverlap), input.length).array());
+        assertArrayEquals(input, decompress(codec, noOverlap, input.length));
+        assertArrayEquals(input, decompress(codec, fullOverlap, input.length));
         assertTrue(fullOverlap.length < noOverlap.length * 3 / 4);
     }
 
@@ -346,7 +346,7 @@ public final class ZstdPureJavaEncoderTest {
             );
             assertArrayEquals(
                     input,
-                    codec.decompress(ByteBuffer.wrap(compressed), input.length).array(),
+                    decompress(codec, compressed, input.length),
                     "iteration=" + iteration
             );
         }
@@ -445,7 +445,7 @@ public final class ZstdPureJavaEncoderTest {
         System.arraycopy(second, 0, expected, first.length, second.length);
         byte[] compressed = encoded.toByteArray();
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+        assertArrayEquals(expected, decompress(codec, compressed, expected.length));
     }
 
     /// Verifies frame-wide matching compresses data beyond the ordinary hash-chain distance.
@@ -460,7 +460,7 @@ public final class ZstdPureJavaEncoderTest {
         assertArrayEquals(new int[]{0, 0, 0, 0, 0, 0}, standardBlockTypes(codec, disabled));
         assertArrayEquals(new int[]{0, 0, 0, 0, 0, 2}, standardBlockTypes(codec, enabled));
         assertArrayEquals(input, Zstd.decompress(enabled, input.length));
-        assertArrayEquals(input, codec.decompress(ByteBuffer.wrap(enabled), input.length).array());
+        assertArrayEquals(input, decompress(codec, enabled, input.length));
         assertTrue(enabled.length < disabled.length - blockSize / 2);
     }
 
@@ -484,7 +484,7 @@ public final class ZstdPureJavaEncoderTest {
 
         assertArrayEquals(new int[]{0, 0, 0, 0, 0, 2}, standardBlockTypes(codec, compressed));
         assertArrayEquals(input, Zstd.decompress(compressed, input.length));
-        assertArrayEquals(input, codec.decompress(ByteBuffer.wrap(compressed), input.length).array());
+        assertArrayEquals(input, decompress(codec, compressed, input.length));
     }
 
     /// Verifies long-distance candidates beyond the configured frame window are rejected.
@@ -507,7 +507,7 @@ public final class ZstdPureJavaEncoderTest {
 
         assertArrayEquals(new int[]{0, 0, 0, 0, 0, 2}, standardBlockTypes(codec, compressed));
         assertArrayEquals(input, Zstd.decompress(compressed, input.length));
-        assertArrayEquals(input, codec.decompress(ByteBuffer.wrap(compressed), input.length).array());
+        assertArrayEquals(input, decompress(codec, compressed, input.length));
     }
 
     /// Verifies all strategy-specific parser outputs interoperate with the native decoder.
@@ -520,7 +520,7 @@ public final class ZstdPureJavaEncoderTest {
             assertArrayEquals(input, Zstd.decompress(compressed, input.length), strategy.name());
             assertArrayEquals(
                     input,
-                    codec.decompress(ByteBuffer.wrap(compressed), input.length).array(),
+                    decompress(codec, compressed, input.length),
                     strategy.name()
             );
         }
@@ -970,6 +970,11 @@ public final class ZstdPureJavaEncoderTest {
     /// @param regeneratedSize decoded literal byte count
     /// @param streamCount Huffman stream count, or zero for an uncompressed representation
     private record LiteralSectionInfo(int type, int regeneratedSize, int streamCount) {
+    }
+
+    /// Decompresses bytes through a codec carrying the requested reusable output limit.
+    private static byte[] decompress(ZstdCodec codec, byte[] input, int maximumOutputSize) throws IOException {
+        return codec.withMaximumOutputSize(maximumOutputSize).decompress(ByteBuffer.wrap(input)).array();
     }
 
     /// Compresses bytes through the channel API without closing the caller-owned target.

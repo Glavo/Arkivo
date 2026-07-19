@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.bzip2;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
@@ -22,8 +21,8 @@ import java.util.Objects;
 /// The compression level is the BZip2 block-size digit: level one uses 100,000-byte blocks and level nine uses
 /// 900,000-byte blocks. It affects newly created encoders; decoders read the block size from each stream header.
 ///
-/// Instances contain no stream state and are safe for concurrent use. Every [#newEncoder()] or [#newDecoder(
-///DecodingOptions)] call returns an independent, mutable engine. A completed encoder frame is one complete BZip2
+/// Instances contain no stream state and are safe for concurrent use. Every [#newEncoder()] or [#newDecoder()] call
+/// returns an independent, mutable engine. A completed encoder frame is one complete BZip2
 /// stream, including its combined CRC trailer.
 @NotNullByDefault
 public final class BZip2Codec
@@ -39,18 +38,37 @@ public final class BZip2Codec
     public static final int DEFAULT_COMPRESSION_LEVEL = BZip2ChannelEncoder.DEFAULT_BLOCK_SIZE;
 
     /// The default immutable BZip2 codec configuration.
-    public static final BZip2Codec DEFAULT = new BZip2Codec(DEFAULT_COMPRESSION_LEVEL);
+    public static final BZip2Codec DEFAULT = new BZip2Codec(
+            DEFAULT_COMPRESSION_LEVEL,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE,
+            UNLIMITED_SIZE
+    );
 
     /// The configured BZip2 block-size level.
     private final int compressionLevel;
 
+    /// The configured decoded-output limit.
+    private final long maximumOutputSize;
+
+    /// The configured decoder history-window limit.
+    private final long maximumWindowSize;
+
+    /// The configured decoder working-memory limit.
+    private final long maximumMemorySize;
+
     /// Creates the default BZip2 codec configuration.
     public BZip2Codec() {
-        this(DEFAULT_COMPRESSION_LEVEL);
+        this(DEFAULT_COMPRESSION_LEVEL, UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
     }
 
     /// Creates a validated BZip2 codec configuration.
-    private BZip2Codec(long compressionLevel) {
+    private BZip2Codec(
+            long compressionLevel,
+            long maximumOutputSize,
+            long maximumWindowSize,
+            long maximumMemorySize
+    ) {
         if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
                 || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
             throw new IllegalArgumentException(
@@ -58,6 +76,69 @@ public final class BZip2Codec
             );
         }
         this.compressionLevel = Math.toIntExact(compressionLevel);
+        CompressionDecoderSupport.validateLimit(maximumOutputSize, "maximumOutputSize");
+        CompressionDecoderSupport.validateLimit(maximumWindowSize, "maximumWindowSize");
+        CompressionDecoderSupport.validateLimit(maximumMemorySize, "maximumMemorySize");
+        this.maximumOutputSize = maximumOutputSize;
+        this.maximumWindowSize = maximumWindowSize;
+        this.maximumMemorySize = maximumMemorySize;
+    }
+
+    /// Returns the configured decoded-output limit.
+    @Override
+    public long maximumOutputSize() {
+        return maximumOutputSize;
+    }
+
+    /// Returns the configured decoder history-window limit.
+    @Override
+    public long maximumWindowSize() {
+        return maximumWindowSize;
+    }
+
+    /// Returns the configured decoder working-memory limit.
+    @Override
+    public long maximumMemorySize() {
+        return maximumMemorySize;
+    }
+
+    /// Returns an immutable codec with the requested decoded-output limit.
+    @Override
+    public BZip2Codec withMaximumOutputSize(long maximumOutputSize) {
+        return maximumOutputSize == this.maximumOutputSize
+                ? this
+                : new BZip2Codec(
+                        compressionLevel,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder history-window limit.
+    @Override
+    public BZip2Codec withMaximumWindowSize(long maximumWindowSize) {
+        return maximumWindowSize == this.maximumWindowSize
+                ? this
+                : new BZip2Codec(
+                        compressionLevel,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
+    }
+
+    /// Returns an immutable codec with the requested decoder working-memory limit.
+    @Override
+    public BZip2Codec withMaximumMemorySize(long maximumMemorySize) {
+        return maximumMemorySize == this.maximumMemorySize
+                ? this
+                : new BZip2Codec(
+                        compressionLevel,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
     /// Returns the canonical BZip2 format.
@@ -95,7 +176,12 @@ public final class BZip2Codec
     public BZip2Codec withCompressionLevel(long compressionLevel) {
         return compressionLevel == this.compressionLevel
                 ? this
-                : new BZip2Codec(compressionLevel);
+                : new BZip2Codec(
+                        compressionLevel,
+                        maximumOutputSize,
+                        maximumWindowSize,
+                        maximumMemorySize
+                );
     }
 
 
@@ -106,17 +192,16 @@ public final class BZip2Codec
         return new BZip2Encoder(compressionLevel);
     }
 
-    /// Creates a transport-independent BZip2 decoder with an operation-scoped decoded-output limit.
+    /// Creates a transport-independent BZip2 decoder using this codec's decoded-output limit.
     ///
     /// The output limit is enforced across the decoder session. This implementation does not reject a member based on
     /// `maximumWindowSize` or `maximumMemorySize`; it selects its working buffers from the member's 100,000- through
     /// 900,000-byte block-size digit.
     @Override
-    public CompressionDecoder.Framed newDecoder(DecodingOptions options) {
-        Objects.requireNonNull(options, "options");
+    public CompressionDecoder.Framed newDecoder() {
         return CompressionDecoderSupport.limitEngineOutput(
                 new BZip2Decoder(),
-                options.maximumOutputSize()
+                maximumOutputSize
         );
     }
 }

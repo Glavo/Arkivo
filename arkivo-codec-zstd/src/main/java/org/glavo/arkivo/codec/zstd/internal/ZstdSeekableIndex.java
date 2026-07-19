@@ -4,9 +4,9 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -28,9 +28,6 @@ public final class ZstdSeekableIndex implements CompressionCodec.Seekable.Index 
     /// The codec configuration used by channels created from this index.
     private final ZstdCodec codec;
 
-    /// The decoder limits retained for channels created from this index.
-    private final DecodingOptions options;
-
     /// The complete encoded byte count, including the seek table.
     private final long compressedSize;
 
@@ -51,19 +48,16 @@ public final class ZstdSeekableIndex implements CompressionCodec.Seekable.Index 
 
     /// Parses a terminal seek table while preserving the caller's source position.
     ///
-    /// @param codec   the immutable standard-frame Zstandard configuration
-    /// @param source  the seekable encoding at its current logical origin
-    /// @param options the logical output and decoder limits
+    /// @param codec  the immutable standard-frame Zstandard configuration
+    /// @param source the seekable encoding at its current logical origin
     /// @return the validated index, or `null` when the terminal seekable magic is absent
     /// @throws IOException if source I/O fails or a recognized table is malformed or exceeds a configured limit
     public static @Nullable ZstdSeekableIndex read(
             ZstdCodec codec,
-            SeekableByteChannel source,
-            DecodingOptions options
+            SeekableByteChannel source
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(options, "options");
 
         long origin = source.position();
         try {
@@ -119,7 +113,10 @@ public final class ZstdSeekableIndex implements CompressionCodec.Seekable.Index 
             }
 
             long retainedMemorySize = retainedMemorySize(frameCount, hasChecksums);
-            options.requireMemorySize(Math.addExact(retainedMemorySize, PARSE_BUFFER_SIZE));
+            CompressionDecoderSupport.requireMemorySize(
+                    codec.maximumMemorySize(),
+                    Math.addExact(retainedMemorySize, PARSE_BUFFER_SIZE)
+            );
             long[] compressedOffsets = new long[frameCount + 1];
             long[] uncompressedOffsets = new long[frameCount + 1];
             int[] checksums = hasChecksums ? new int[frameCount] : new int[0];
@@ -138,14 +135,13 @@ public final class ZstdSeekableIndex implements CompressionCodec.Seekable.Index 
             }
 
             long uncompressedSize = uncompressedOffsets[frameCount];
-            long maximumOutputSize = options.maximumOutputSize();
-            if (maximumOutputSize != DecodingOptions.UNLIMITED_SIZE
+            long maximumOutputSize = codec.maximumOutputSize();
+            if (maximumOutputSize != CompressionCodec.UNLIMITED_SIZE
                     && uncompressedSize > maximumOutputSize) {
                 throw new DecompressionOutputLimitException(maximumOutputSize, uncompressedSize);
             }
             return new ZstdSeekableIndex(
                     codec,
-                    options,
                     compressedSize,
                     compressedOffsets,
                     uncompressedOffsets,
@@ -163,7 +159,6 @@ public final class ZstdSeekableIndex implements CompressionCodec.Seekable.Index 
     /// Creates an immutable index from validated primitive arrays.
     private ZstdSeekableIndex(
             ZstdCodec codec,
-            DecodingOptions options,
             long compressedSize,
             long[] compressedOffsets,
             long[] uncompressedOffsets,
@@ -172,7 +167,6 @@ public final class ZstdSeekableIndex implements CompressionCodec.Seekable.Index 
             long retainedMemorySize
     ) {
         this.codec = codec;
-        this.options = options;
         this.compressedSize = compressedSize;
         this.compressedOffsets = compressedOffsets;
         this.uncompressedOffsets = uncompressedOffsets;
@@ -239,11 +233,6 @@ public final class ZstdSeekableIndex implements CompressionCodec.Seekable.Index 
     /// Returns the immutable codec used to decode indexed frames.
     ZstdCodec codec() {
         return codec;
-    }
-
-    /// Returns the operation limits retained by this index.
-    DecodingOptions options() {
-        return options;
     }
 
     /// Returns the primitive index storage retained while a logical channel is open.
