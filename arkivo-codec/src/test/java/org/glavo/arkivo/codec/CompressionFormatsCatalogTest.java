@@ -16,25 +16,25 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies immutable compression format index lookup and validation.
+/// Verifies immutable compression format catalog lookup and validation.
 @NotNullByDefault
-public final class CompressionFormatIndexTest {
+public final class CompressionFormatsCatalogTest {
     /// Verifies names, aliases, format order, default codecs, and required lookup.
     @Test
     void indexesFormats() {
         TestFormat alpha = new TestFormat("alpha", List.of("a"), 1, 0x11);
         TestFormat beta = new TestFormat("beta", List.of("b"), 2, 0x2233);
-        CompressionFormatIndex index = CompressionFormatIndex.of(List.of(alpha, alpha, beta));
+        CompressionFormats.Catalog catalog = CompressionFormats.Catalog.of(List.of(alpha, alpha, beta));
 
-        assertEquals(List.of(alpha, beta), index.formats());
-        assertSame(alpha, index.find("ALPHA"));
-        assertSame(alpha, index.find("A"));
-        assertSame(beta, index.require("beta"));
+        assertEquals(List.of(alpha, beta), catalog.formats());
+        assertSame(alpha, catalog.find("ALPHA"));
+        assertSame(alpha, catalog.find("A"));
+        assertSame(beta, catalog.require("beta"));
         assertSame(alpha, alpha.defaultCodec().format());
-        assertEquals(2, index.probeSize());
+        assertEquals(2, catalog.probeSize());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> index.require("missing")
+                () -> catalog.require("missing")
         );
 
     }
@@ -44,12 +44,12 @@ public final class CompressionFormatIndexTest {
     void detectsWithoutModifyingPrefix() {
         TestFormat first = new TestFormat("first", List.of(), 1, 0x11);
         TestFormat second = new TestFormat("second", List.of(), 2, 0x2233);
-        CompressionFormatIndex index = CompressionFormatIndex.of(List.of(first, second));
+        CompressionFormats.Catalog catalog = CompressionFormats.Catalog.of(List.of(first, second));
         ByteBuffer prefix = ByteBuffer.wrap(new byte[]{0x22, 0x33, 0x44});
         int position = prefix.position();
         int limit = prefix.limit();
 
-        assertSame(second, index.detect(prefix));
+        assertSame(second, catalog.detect(prefix));
         assertEquals(position, prefix.position());
         assertEquals(limit, prefix.limit());
     }
@@ -62,7 +62,7 @@ public final class CompressionFormatIndexTest {
 
         IllegalStateException exception = assertThrows(
                 IllegalStateException.class,
-                () -> CompressionFormatIndex.of(List.of(first, second))
+                () -> CompressionFormats.Catalog.of(List.of(first, second))
         );
         assertTrue(exception.getMessage().contains("Ambiguous compression format"));
     }
@@ -75,11 +75,11 @@ public final class CompressionFormatIndexTest {
 
         assertThrows(
                 IllegalStateException.class,
-                () -> CompressionFormatIndex.of(List.of(blank))
+                () -> CompressionFormats.Catalog.of(List.of(blank))
         );
         assertThrows(
                 IllegalStateException.class,
-                () -> CompressionFormatIndex.of(List.of(negativeProbe))
+                () -> CompressionFormats.Catalog.of(List.of(negativeProbe))
         );
     }
 
@@ -238,13 +238,13 @@ public final class CompressionFormatIndexTest {
             return format;
         }
 
-        /// Rejects encoder creation because index tests only exercise metadata.
+        /// Rejects encoder creation because catalog tests only exercise metadata.
         @Override
         public CompressionEncoder newEncoder(EncodingOptions options) {
             throw new UnsupportedOperationException("Test codec has no encoder");
         }
 
-        /// Rejects decoder creation because index tests only exercise metadata.
+        /// Rejects decoder creation because catalog tests only exercise metadata.
         @Override
         public CompressionDecoder newDecoder() {
             throw new UnsupportedOperationException("Test codec has no decoder");

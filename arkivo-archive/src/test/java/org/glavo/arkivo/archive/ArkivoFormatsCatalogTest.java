@@ -15,27 +15,27 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies immutable archive format index lookup, detection, and validation.
+/// Verifies immutable archive format catalog lookup, detection, and validation.
 @NotNullByDefault
-public final class ArchiveFormatIndexTest {
+public final class ArkivoFormatsCatalogTest {
     /// Verifies names, aliases, stable order, and required lookup.
     @Test
     void indexesFormats() {
         TestFormat alpha = new TestFormat("alpha", List.of("a"), 1, 0x11);
         TestFormat beta = new TestFormat("beta", List.of("b"), 2, 0x2233);
-        ArchiveFormatIndex index = ArchiveFormatIndex.of(List.of(
+        ArkivoFormats.Catalog catalog = ArkivoFormats.Catalog.of(List.of(
                 alpha,
                 alpha,
                 new TestFormat("alpha", List.of("a"), 1, 0x11),
                 beta
         ));
 
-        assertEquals(List.of(alpha, beta), index.formats());
-        assertSame(alpha, index.find("ALPHA"));
-        assertSame(alpha, index.find("A"));
-        assertSame(beta, index.require("beta"));
-        assertEquals(2, index.probeSize());
-        assertThrows(IllegalArgumentException.class, () -> index.require("missing"));
+        assertEquals(List.of(alpha, beta), catalog.formats());
+        assertSame(alpha, catalog.find("ALPHA"));
+        assertSame(alpha, catalog.find("A"));
+        assertSame(beta, catalog.require("beta"));
+        assertEquals(2, catalog.probeSize());
+        assertThrows(IllegalArgumentException.class, () -> catalog.require("missing"));
     }
 
     /// Verifies detection prefers the matching format with the most specific requested prefix.
@@ -43,12 +43,12 @@ public final class ArchiveFormatIndexTest {
     void detectsMostSpecificFormatWithoutModifyingPrefix() {
         TestFormat shortFormat = new TestFormat("short", List.of(), 1, 0x22);
         TestFormat longFormat = new TestFormat("long", List.of(), 2, 0x2233);
-        ArchiveFormatIndex index = ArchiveFormatIndex.of(List.of(shortFormat, longFormat));
+        ArkivoFormats.Catalog catalog = ArkivoFormats.Catalog.of(List.of(shortFormat, longFormat));
         ByteBuffer prefix = ByteBuffer.wrap(new byte[]{0x22, 0x33, 0x44});
         int position = prefix.position();
         int limit = prefix.limit();
 
-        assertSame(longFormat, index.detect(prefix));
+        assertSame(longFormat, catalog.detect(prefix));
         assertEquals(position, prefix.position());
         assertEquals(limit, prefix.limit());
     }
@@ -61,7 +61,7 @@ public final class ArchiveFormatIndexTest {
 
         IllegalStateException exception = assertThrows(
                 IllegalStateException.class,
-                () -> ArchiveFormatIndex.of(List.of(first, second))
+                () -> ArkivoFormats.Catalog.of(List.of(first, second))
         );
         assertTrue(exception.getMessage().contains("Ambiguous archive format"));
     }
@@ -74,15 +74,15 @@ public final class ArchiveFormatIndexTest {
 
         assertThrows(
                 IllegalStateException.class,
-                () -> ArchiveFormatIndex.of(List.of(blank))
+                () -> ArkivoFormats.Catalog.of(List.of(blank))
         );
         assertThrows(
                 IllegalStateException.class,
-                () -> ArchiveFormatIndex.of(List.of(negativeProbe))
+                () -> ArkivoFormats.Catalog.of(List.of(negativeProbe))
         );
     }
 
-    /// Supplies immutable archive format metadata for index tests.
+    /// Supplies immutable archive format metadata for catalog tests.
     @NotNullByDefault
     private static final class TestFormat implements ArkivoFormat {
         /// The stable format name.
