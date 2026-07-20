@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 package org.glavo.arkivo.codec.zstd.internal;
+
+import org.glavo.arkivo.checksum.Checksums;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 
 import org.jetbrains.annotations.NotNullByDefault;
@@ -544,9 +546,8 @@ public final class ZstdDictionaryBuilder {
 
     /// Derives a compliant non-zero dictionary identifier from dictionary content.
     private static long dictionaryId(byte[] content) {
-        ZstdXXHash64 hash = new ZstdXXHash64();
-        hash.update(content, 0, content.length);
-        return Long.remainderUnsigned(hash.digest(), DICTIONARY_ID_RANGE) + MINIMUM_DICTIONARY_ID;
+        long hash = Checksums.XXH64.computeLong(content);
+        return Long.remainderUnsigned(hash, DICTIONARY_ID_RANGE) + MINIMUM_DICTIONARY_ID;
     }
 
     /// Writes the low 32 bits of a little-endian integer.

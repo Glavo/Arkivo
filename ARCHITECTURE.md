@@ -1,7 +1,7 @@
 # Arkivo Architecture
 
-Arkivo provides two related API families: compression codecs and archive containers. Both families use Java NIO types
-as their primary transport and storage abstractions, while stream-based methods are adapters over the same underlying
+Arkivo provides checksum algorithms, compression codecs, and archive containers. These APIs use Java NIO types as
+their primary transport and storage abstractions, while stream-based methods are adapters over the same underlying
 operations.
 
 This document describes the public programming model and module boundaries. Detailed contracts remain on the relevant
@@ -26,14 +26,27 @@ after the method returns.
 
 ### Configuration and operation state
 
-Completed configuration values are immutable. A `CompressionCodec` value contains compression parameters and can be
-shared safely between threads. Mutable builders are confined to configuration assembly and are not safe for concurrent
-use unless their type says otherwise. Each encoder, decoder, channel, stream, archive reader, archive writer, and
-archive file system owns independent operation state.
+Completed configuration values are immutable. A `ChecksumAlgorithm` contains reusable checksum parameters, and a
+`CompressionCodec` contains compression parameters; both can be shared safely between threads. Mutable builders are
+confined to configuration assembly and are not safe for concurrent use unless their type says otherwise. Each checksum
+accumulator, encoder, decoder, channel, stream, archive reader, archive writer, and archive file system owns independent
+operation state.
 
 Configuration methods named `withXxx` return an immutable value and do not change the receiver; an implementation may
 return the receiver when the requested setting is already present. Format-specific builders assemble configurations
 with multiple related parameters and produce the same immutable codec values.
+
+## Checksum model
+
+`ChecksumAlgorithm` describes immutable, reusable configuration and creates independent `ChecksumAccumulator`
+instances. One-shot methods consume a byte array or the remaining bytes of a `ByteBuffer`; incremental callers update
+an accumulator and then finish it. Finishing is idempotent and terminal until an explicit reset. Caller-owned buffers
+are consumed during a call but never retained.
+
+`ChecksumAlgorithm.UpTo64Bits` and its exact `Width32` and `Width64` subinterfaces expose allocation-free primitive
+results. Results narrower than 64 bits use a nonnegative unsigned `long`; `Width32` additionally exposes the raw `int`
+bit pattern. A `ChecksumValue` owns the canonical big-endian representation of any fixed-width result. Container formats
+remain responsible for format-specific byte order and truncation.
 
 ### Resource ownership
 
@@ -159,6 +172,7 @@ decoder memory. Formats enforce only the limits applicable to their structure.
 | Module | Responsibility |
 | --- | --- |
 | `org.glavo.arkivo.base` | Qualified, low-level implementation primitives shared by selected modules. |
+| `org.glavo.arkivo.checksum` | Reusable checksum algorithms, per-computation accumulators, and immutable values. |
 | `org.glavo.arkivo.codec` | Compression contracts, discovery, engines, adapters, limits, and transforms. |
 | `org.glavo.arkivo.codec.*` | Pure Java implementations for individual compression families. |
 | `org.glavo.arkivo.codec.all` | Transitive aggregate of all official codec modules. |

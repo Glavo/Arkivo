@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.lz4.internal;
 
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.Checksums;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
@@ -58,7 +60,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     private final long initialSourceSize;
 
     /// Streaming decoded-content checksum state.
-    private final XXHash32 contentHash = new XXHash32();
+    private final ChecksumAccumulator.Width32 contentHash = Checksums.XXH32.newAccumulator();
 
     /// Prefix history retained for the next linked block.
     private byte[] history = new byte[0];
@@ -333,7 +335,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         byte[] header = new byte[FRAME_MAGIC.length + descriptor.length + 1];
         System.arraycopy(FRAME_MAGIC, 0, header, 0, FRAME_MAGIC.length);
         System.arraycopy(descriptor, 0, header, FRAME_MAGIC.length, descriptor.length);
-        header[header.length - 1] = (byte) (XXHash32.hash(descriptor) >>> 8);
+        header[header.length - 1] = (byte) (Checksums.XXH32.computeInt(descriptor) >>> 8);
         queue(header);
         contentHash.reset();
         history = dictionaryHistory;
@@ -357,7 +359,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
             ByteArrayAccess.writeIntLittleEndian(
                     encoded,
                     Integer.BYTES + payload.length,
-                    (int) XXHash32.hash(payload)
+                    Checksums.XXH32.computeInt(payload)
             );
         }
         queue(encoded);
@@ -371,7 +373,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     private void emitTrailer() {
         byte[] trailer = new byte[Integer.BYTES + (contentChecksum ? Integer.BYTES : 0)];
         if (contentChecksum) {
-            ByteArrayAccess.writeIntLittleEndian(trailer, Integer.BYTES, (int) contentHash.value());
+            ByteArrayAccess.writeIntLittleEndian(trailer, Integer.BYTES, contentHash.finishInt());
         }
         queue(trailer);
     }

@@ -60,6 +60,7 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.archive.sevenzip", "org.glavo.arkivo.archive.sevenzip"),
             Map.entry("org.glavo.arkivo.archive.tar", "org.glavo.arkivo.archive.tar"),
             Map.entry("org.glavo.arkivo.archive.zip", "org.glavo.arkivo.archive.zip"),
+            Map.entry("org.glavo.arkivo.checksum", "org.glavo.arkivo.checksum"),
             Map.entry("org.glavo.arkivo.codec", "org.glavo.arkivo.codec"),
             Map.entry("org.glavo.arkivo.codec.transform", "org.glavo.arkivo.codec"),
             Map.entry("org.glavo.arkivo.codec.bzip2", "org.glavo.arkivo.codec.bzip2"),

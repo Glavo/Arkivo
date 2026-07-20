@@ -5,6 +5,8 @@ package org.glavo.arkivo.codec.lz4.internal;
 
 import net.jpountz.xxhash.StreamingXXHash32;
 import net.jpountz.xxhash.XXHashFactory;
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.XXHash32;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -31,24 +33,24 @@ public final class LZ4JavaXXHash32CompatibilityTest {
         for (int seed : seeds) {
             for (int length : lengths) {
                 int offset = length == bytes.length ? 0 : length & 15;
-                XXHash32 actual = new XXHash32(seed);
+                ChecksumAccumulator.Width32 actual = new XXHash32(seed).newAccumulator();
                 actual.update(bytes, offset, length);
                 long expected = Integer.toUnsignedLong(
                         ORACLE.hash32().hash(bytes, offset, length, seed)
                 );
-                assertEquals(expected, actual.value(), "seed " + seed + ", length " + length);
+                assertEquals(expected, actual.finishLong(), "seed " + seed + ", length " + length);
             }
         }
     }
 
-    /// Verifies fragmented updates, intermediate values, and resets against the streaming oracle.
+    /// Verifies fragmented updates and resets against the streaming oracle.
     @Test
     public void fragmentedUpdatesAndResetsMatchLZ4Java() {
         byte @Unmodifiable [] bytes = randomBytes(262_177, 0x5378L);
         int @Unmodifiable [] seeds = {0, 0x1357_9bdf, 0x8000_0000};
 
         for (int seed : seeds) {
-            XXHash32 actual = new XXHash32(seed);
+            ChecksumAccumulator.Width32 actual = new XXHash32(seed).newAccumulator();
             try (StreamingXXHash32 expected = ORACLE.newStreamingHash32(seed)) {
                 for (int pass = 0; pass < 3; pass++) {
                     actual.reset();
@@ -62,12 +64,12 @@ public final class LZ4JavaXXHash32CompatibilityTest {
                         actual.update(bytes, position, length);
                         expected.update(bytes, position, length);
                         position += length;
-                        assertEquals(
-                                Integer.toUnsignedLong(expected.getValue()),
-                                actual.value(),
-                                "seed " + seed + ", pass " + pass + ", position " + position
-                        );
                     }
+                    assertEquals(
+                            Integer.toUnsignedLong(expected.getValue()),
+                            actual.finishLong(),
+                            "seed " + seed + ", pass " + pass
+                    );
                 }
             }
         }

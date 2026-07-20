@@ -3,13 +3,14 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.ChecksumValue;
+import org.glavo.arkivo.checksum.Checksums;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.zip.CRC32;
+import java.util.Objects;
 
 /// Calculates one XZ block integrity-check type.
 @NotNullByDefault
@@ -20,37 +21,28 @@ final class XZCheck {
     /// The encoded check size.
     private final int size;
 
-    /// The CRC-32 state when type 1 is selected.
-    private final @Nullable CRC32 crc32;
-
-    /// The CRC-64 state when type 4 is selected.
-    private final @Nullable CRC64 crc64;
-
-    /// The SHA-256 state when type 10 is selected.
-    private final @Nullable MessageDigest sha256;
+    /// The active checksum state, or `null` for the None check.
+    private final @Nullable ChecksumAccumulator accumulator;
 
     /// Creates the selected check implementation.
     private XZCheck(
             int type,
             int size,
-            @Nullable CRC32 crc32,
-            @Nullable CRC64 crc64,
-            @Nullable MessageDigest sha256
+            @Nullable ChecksumAccumulator accumulator
     ) {
         this.type = type;
         this.size = size;
-        this.crc32 = crc32;
-        this.crc64 = crc64;
-        this.sha256 = sha256;
+        this.accumulator = accumulator;
     }
 
     /// Creates a supported XZ integrity check.
     static XZCheck create(int type) throws IOException {
         return switch (type) {
-            case XZSupport.CHECK_NONE -> new XZCheck(type, 0, null, null, null);
-            case XZSupport.CHECK_CRC32 -> new XZCheck(type, Integer.BYTES, new CRC32(), null, null);
-            case XZSupport.CHECK_CRC64 -> new XZCheck(type, Long.BYTES, null, new CRC64(), null);
-            case XZSupport.CHECK_SHA256 -> new XZCheck(type, 32, null, null, sha256());
+            case XZSupport.CHECK_NONE -> new XZCheck(type, 0, null);
+            case XZSupport.CHECK_CRC32 -> new XZCheck(type, Integer.BYTES, Checksums.CRC32.newAccumulator());
+            case XZSupport.CHECK_CRC64 -> new XZCheck(type, Long.BYTES, Checksums.CRC64_XZ.newAccumulator());
+            case XZSupport.CHECK_SHA256 ->
+                    new XZCheck(type, Checksums.SHA256.checksumSize(), Checksums.SHA256.newAccumulator());
             default -> throw new IOException("Unsupported XZ integrity check type: " + type);
         };
     }
@@ -75,47 +67,35 @@ final class XZCheck {
 
     /// Updates this check with uncompressed bytes.
     void update(byte[] bytes, int offset, int length) {
-        switch (type) {
-            case XZSupport.CHECK_NONE -> {
-            }
-            case XZSupport.CHECK_CRC32 -> java.util.Objects.requireNonNull(crc32).update(bytes, offset, length);
-            case XZSupport.CHECK_CRC64 -> java.util.Objects.requireNonNull(crc64).update(bytes, offset, length);
-            case XZSupport.CHECK_SHA256 -> java.util.Objects.requireNonNull(sha256).update(bytes, offset, length);
-            default -> throw new AssertionError(type);
+        Objects.checkFromIndexSize(offset, length, bytes.length);
+        ChecksumAccumulator selected = accumulator;
+        if (selected != null) {
+            selected.update(bytes, offset, length);
         }
     }
 
     /// Finishes and resets this check, returning its XZ byte representation.
     byte[] finish() {
         byte[] result = new byte[size];
+        ChecksumAccumulator selected = accumulator;
+        if (selected == null) {
+            return result;
+        }
         switch (type) {
-            case XZSupport.CHECK_NONE -> {
-            }
-            case XZSupport.CHECK_CRC32 -> {
-                CRC32 state = java.util.Objects.requireNonNull(crc32);
-                XZSupport.putLittleEndian(result, 0, state.getValue(), Integer.BYTES);
-                state.reset();
-            }
-            case XZSupport.CHECK_CRC64 -> {
-                CRC64 state = java.util.Objects.requireNonNull(crc64);
-                XZSupport.putLittleEndian(result, 0, state.value(), Long.BYTES);
-                state.reset();
-            }
+            case XZSupport.CHECK_CRC32, XZSupport.CHECK_CRC64 -> XZSupport.putLittleEndian(
+                    result,
+                    0,
+                    ((ChecksumAccumulator.UpTo64Bits) selected).finishLong(),
+                    size
+            );
             case XZSupport.CHECK_SHA256 -> {
-                byte[] digest = java.util.Objects.requireNonNull(sha256).digest();
+                ChecksumValue value = selected.finish();
+                byte[] digest = value.toByteArray();
                 System.arraycopy(digest, 0, result, 0, result.length);
             }
             default -> throw new AssertionError(type);
         }
+        selected.reset();
         return result;
-    }
-
-    /// Returns the mandatory SHA-256 implementation.
-    private static MessageDigest sha256() throws IOException {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IOException("SHA-256 is unavailable", exception);
-        }
     }
 }

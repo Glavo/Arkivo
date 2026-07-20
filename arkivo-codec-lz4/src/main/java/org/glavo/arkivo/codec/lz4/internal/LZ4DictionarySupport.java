@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.lz4.internal;
 
+import org.glavo.arkivo.checksum.Checksums;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.util.Objects;
@@ -19,6 +20,6 @@ public final class LZ4DictionarySupport {
     /// @param bytes the effective dictionary suffix
     /// @return the hash as an unsigned 32-bit value
     public static long contentIdentifier(byte[] bytes) {
-        return XXHash32.hash(Objects.requireNonNull(bytes, "bytes"));
+        return Checksums.XXH32.computeLong(Objects.requireNonNull(bytes, "bytes"));
     }
 }

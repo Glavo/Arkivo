@@ -5,6 +5,7 @@ import java.util.Properties
 dependencies {
     api(project(":arkivo-codec"))
     implementation(project(":arkivo-base"))
+    implementation(project(":arkivo-checksum"))
     testImplementation("com.github.luben:zstd-jni:1.5.7-9")
 }
 

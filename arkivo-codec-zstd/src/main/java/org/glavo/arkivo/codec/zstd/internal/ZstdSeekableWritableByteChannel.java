@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.Checksums;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
@@ -64,7 +66,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
     private int[] frameChecksums;
 
     /// Hash state for the active frame, or `null` when table checksums are disabled.
-    private @Nullable ZstdXXHash64 activeChecksum;
+    private @Nullable ChecksumAccumulator.Width64 activeChecksum;
 
     /// The number of completed frame records.
     private int frameCount;
@@ -152,7 +154,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         this.maximumFrameSize = options.maximumFrameSize();
         this.tableChecksums = tableChecksums;
         this.frameChecksums = tableChecksums ? new int[INITIAL_FRAME_CAPACITY] : new int[0];
-        this.activeChecksum = tableChecksums ? new ZstdXXHash64() : null;
+        this.activeChecksum = tableChecksums ? Checksums.XXH64.newAccumulator() : null;
     }
 
     /// Encodes all remaining source bytes, ending frames at the configured uncompressed size.
@@ -324,7 +326,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         activeFrameCompressedOffset = outputBytes;
         activeFrameSize = 0;
         frameActive = false;
-        activeChecksum = tableChecksums ? new ZstdXXHash64() : null;
+        activeChecksum = tableChecksums ? Checksums.XXH64.newAccumulator() : null;
     }
 
     /// Records one completed frame in the in-memory seek-table builder.
@@ -359,7 +361,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
 
     /// Adds one accepted source range to the active frame checksum.
     private void updateActiveChecksum(ByteBuffer source, int offset, int count) {
-        ZstdXXHash64 checksum = activeChecksum;
+        ChecksumAccumulator.Width64 checksum = activeChecksum;
         if (checksum == null) {
             return;
         }
@@ -379,8 +381,8 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
 
     /// Returns the low 32 bits of the active frame checksum, or zero when checksums are disabled.
     private int activeChecksumValue() {
-        ZstdXXHash64 checksum = activeChecksum;
-        return checksum != null ? (int) checksum.digest() : 0;
+        ChecksumAccumulator.Width64 checksum = activeChecksum;
+        return checksum != null ? (int) checksum.finishLong() : 0;
     }
 
     /// Serializes the terminal seek table as the assigned Zstandard skippable frame.

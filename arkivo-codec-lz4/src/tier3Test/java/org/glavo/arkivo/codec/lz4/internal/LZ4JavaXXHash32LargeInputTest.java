@@ -5,6 +5,8 @@ package org.glavo.arkivo.codec.lz4.internal;
 
 import net.jpountz.xxhash.StreamingXXHash32;
 import net.jpountz.xxhash.XXHashFactory;
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.XXHash32;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -21,31 +23,26 @@ public final class LZ4JavaXXHash32LargeInputTest {
     /// Logical input length required to cross both four-GiB and eight-GiB boundaries.
     private static final long TARGET_SIZE = (1L << 33) + CHUNK_SIZE;
 
-    /// Verifies every large-input checkpoint against lz4-java's pure Java streaming implementation.
+    /// Verifies a large-input result against lz4-java's pure Java streaming implementation.
     @Test
     public void hashesMoreThanEightGiBWithoutLengthTruncation() {
         byte[] chunk = new byte[CHUNK_SIZE];
         new Random(0x4c5a_3401L).nextBytes(chunk);
         int seed = 0x9747_b28c;
-        XXHash32 actual = new XXHash32(seed);
+        ChecksumAccumulator.Width32 actual = new XXHash32(seed).newAccumulator();
 
         try (StreamingXXHash32 expected = XXHashFactory.safeInstance().newStreamingHash32(seed)) {
             long totalSize = 0L;
-            int iteration = 0;
             while (totalSize < TARGET_SIZE) {
                 actual.update(chunk);
                 expected.update(chunk, 0, chunk.length);
                 totalSize += chunk.length;
-                iteration++;
-
-                if ((iteration & 31) == 0 || totalSize >= TARGET_SIZE) {
-                    assertEquals(
-                            Integer.toUnsignedLong(expected.getValue()),
-                            actual.value(),
-                            "logical input size " + totalSize
-                    );
-                }
             }
+            assertEquals(
+                    Integer.toUnsignedLong(expected.getValue()),
+                    actual.finishLong(),
+                    "logical input size " + totalSize
+            );
         }
     }
 }

@@ -5,6 +5,7 @@ import java.util.Properties
 dependencies {
     api(project(":arkivo-codec"))
     implementation(project(":arkivo-base"))
+    implementation(project(":arkivo-checksum"))
     api(project(":arkivo-codec-lzma"))
     testImplementation("org.tukaani:xz:1.12")
 }

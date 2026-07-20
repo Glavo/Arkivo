@@ -20,11 +20,15 @@ data class ArkivoPublicationMetadata(
 val publicationMetadata = mapOf(
     "arkivo-all" to ArkivoPublicationMetadata(
         "Arkivo",
-        "Aggregates all Arkivo archive formats and compression codecs."
+        "Aggregates all Arkivo archive formats, checksum algorithms, and compression codecs."
     ),
     "arkivo-base" to ArkivoPublicationMetadata(
         "Arkivo Base",
         "Provides internal low-level primitives shared by Arkivo modules."
+    ),
+    "arkivo-checksum" to ArkivoPublicationMetadata(
+        "Arkivo Checksum API",
+        "Provides reusable checksum algorithms, incremental accumulators, and immutable checksum values."
     ),
     "arkivo-archive" to ArkivoPublicationMetadata(
         "Arkivo Archive API",
@@ -325,9 +329,13 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
         "org.glavo:arkivo-archive-all:compile:$publicationVersion",
         "org.glavo:arkivo-archive-codec:runtime:$publicationVersion",
+        "org.glavo:arkivo-checksum:compile:$publicationVersion",
         "org.glavo:arkivo-codec-all:compile:$publicationVersion"
     ),
     "arkivo-base" to emptySet(),
+    "arkivo-checksum" to setOf(
+        "org.glavo:arkivo-base:runtime:$publicationVersion"
+    ),
     "arkivo-archive" to emptySet(),
     "arkivo-archive-codec" to setOf(
         "org.glavo:arkivo-archive:runtime:$publicationVersion",
@@ -393,7 +401,10 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec-xz:compile:$publicationVersion",
         "org.glavo:arkivo-codec-zstd:compile:$publicationVersion"
     ),
-    "arkivo-codec-bzip2" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
+    "arkivo-codec-bzip2" to setOf(
+        "org.glavo:arkivo-checksum:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec:compile:$publicationVersion"
+    ),
     "arkivo-codec-compress" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-deflate" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-lzma" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
@@ -404,16 +415,19 @@ val expectedDependencies = mapOf(
     ),
     "arkivo-codec-lz4" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
+        "org.glavo:arkivo-checksum:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:compile:$publicationVersion"
     ),
     "arkivo-codec-ppmd" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-xz" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
+        "org.glavo:arkivo-checksum:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:compile:$publicationVersion",
         "org.glavo:arkivo-codec-lzma:compile:$publicationVersion"
     ),
     "arkivo-codec-zstd" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
+        "org.glavo:arkivo-checksum:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:compile:$publicationVersion"
     )
 )

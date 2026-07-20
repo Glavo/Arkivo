@@ -8,6 +8,8 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.Checksums;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -131,7 +133,7 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
     private int expectedBlockCrc;
 
     /// The accumulating CRC state of the current block's decoded bytes.
-    private int blockCrc = BZip2CRC.initial();
+    private final ChecksumAccumulator.Width32 blockCrc = Checksums.CRC32_BZIP2.newAccumulator();
 
     /// The stream-level combined block CRC.
     private int combinedCrc;
@@ -261,7 +263,7 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
         blockData = new byte[0];
         blockPosition = 0;
         expectedBlockCrc = 0;
-        blockCrc = BZip2CRC.initial();
+        blockCrc.reset();
         combinedCrc = 0;
         runByte = -1;
         runLength = 0;
@@ -511,7 +513,7 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
 
     /// Records one decoded byte in the current block CRC and returns it.
     private int recordDecodedByte(int value) {
-        blockCrc = BZip2CRC.update(blockCrc, value);
+        blockCrc.update((byte) value);
         return value;
     }
 
@@ -560,7 +562,7 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
 
         blockData = inverseBurrowsWheeler(lastColumn, originalPointer);
         blockPosition = 0;
-        blockCrc = BZip2CRC.initial();
+        blockCrc.reset();
         runByte = -1;
         runLength = 0;
         repeatRemaining = 0;
@@ -744,7 +746,7 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
 
     /// Validates and retires the fully consumed current block.
     private void finishBlock() throws IOException {
-        int actualBlockCrc = BZip2CRC.finish(blockCrc);
+        int actualBlockCrc = blockCrc.finishInt();
         if (actualBlockCrc != expectedBlockCrc) {
             throw new IOException("BZip2 block CRC mismatch");
         }

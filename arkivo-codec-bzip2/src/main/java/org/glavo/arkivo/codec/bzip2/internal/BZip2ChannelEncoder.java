@@ -7,6 +7,8 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.Checksums;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -66,7 +68,7 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     private int blockLength;
 
     /// The CRC state for original bytes represented by the current block.
-    private int blockCrc = BZip2CRC.initial();
+    private final ChecksumAccumulator.Width32 blockCrc = Checksums.CRC32_BZIP2.newAccumulator();
 
     /// The stream-level combined block CRC.
     private int combinedCrc;
@@ -272,7 +274,7 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
             block[blockLength++] = (byte) (pendingRunLength - 4);
         }
         for (int index = 0; index < pendingRunLength; index++) {
-            blockCrc = BZip2CRC.update(blockCrc, runByte);
+            blockCrc.update((byte) runByte);
         }
         pendingRunByte = -1;
         pendingRunLength = 0;
@@ -287,7 +289,7 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
         SymbolSequence sequence = createSymbolSequence(transformed.lastColumn());
         int[] codeLengths = createCodeLengths(sequence.frequencies());
         int[] codes = createCanonicalCodes(codeLengths);
-        int blockCrcValue = BZip2CRC.finish(blockCrc);
+        int blockCrcValue = blockCrc.finishInt();
         combinedCrc = BZip2CRC.combine(combinedCrc, blockCrcValue);
 
         bits.writeBits(48, BLOCK_MAGIC);
@@ -310,7 +312,7 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
         }
 
         blockLength = 0;
-        blockCrc = BZip2CRC.initial();
+        blockCrc.reset();
     }
 
     /// Writes the two-level byte-presence bitmap for a block.

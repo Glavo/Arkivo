@@ -4,6 +4,7 @@ import java.util.Properties
 
 dependencies {
     api(project(":arkivo-codec"))
+    implementation(project(":arkivo-checksum"))
 }
 
 val bzip2TestDataManifestFile = rootProject.file("gradle/test-data/bzip2.properties")

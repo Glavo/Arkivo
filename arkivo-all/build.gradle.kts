@@ -23,6 +23,7 @@ configurations[benchmarkSourceSet.runtimeOnlyConfigurationName].extendsFrom(
 dependencies {
     api(project(":arkivo-archive"))
     api(project(":arkivo-archive-all"))
+    api(project(":arkivo-checksum"))
     api(project(":arkivo-codec-all"))
     implementation(project(":arkivo-archive-codec"))
     testImplementation("org.tukaani:xz:1.12")
@@ -222,6 +223,7 @@ val updatePublicApiBaselines by tasks.registering(JavaExec::class) {
 val moduleProjectPaths = listOf(
     ":arkivo-all",
     ":arkivo-base",
+    ":arkivo-checksum",
     ":arkivo-archive",
     ":arkivo-archive-codec",
     ":arkivo-archive-7z",
@@ -286,6 +288,7 @@ val verifyModuleDescriptors by tasks.registering {
         val expectedModules = setOf(
             "org.glavo.arkivo.all",
             "org.glavo.arkivo.base",
+            "org.glavo.arkivo.checksum",
             "org.glavo.arkivo.archive",
             "org.glavo.arkivo.archive.codec",
             "org.glavo.arkivo.archive.all",
@@ -344,6 +347,7 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.all" to setOf(
                 archiveModule,
                 "org.glavo.arkivo.archive.all",
+                "org.glavo.arkivo.checksum",
                 "org.glavo.arkivo.codec.all"
             ),
             "org.glavo.arkivo.archive.all" to setOf(
@@ -398,6 +402,7 @@ val verifyModuleDescriptors by tasks.registering {
         }
 
         val expectedPublicExports = mapOf(
+            "org.glavo.arkivo.checksum" to setOf("org.glavo.arkivo.checksum"),
             archiveModule to setOf("org.glavo.arkivo.archive"),
             "org.glavo.arkivo.archive.ar" to setOf("org.glavo.arkivo.archive.ar"),
             "org.glavo.arkivo.archive.cpio" to setOf("org.glavo.arkivo.archive.cpio"),
@@ -450,6 +455,7 @@ val verifyModuleDescriptors by tasks.registering {
                     "org.glavo.arkivo.archive.rar",
                     "org.glavo.arkivo.archive.sevenzip",
                     "org.glavo.arkivo.archive.zip",
+                    "org.glavo.arkivo.checksum",
                     "org.glavo.arkivo.codec.lz4",
                     "org.glavo.arkivo.codec.lzip",
                     "org.glavo.arkivo.codec.xz",

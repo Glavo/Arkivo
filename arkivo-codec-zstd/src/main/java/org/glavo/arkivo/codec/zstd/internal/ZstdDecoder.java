@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.Checksums;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
@@ -58,7 +60,7 @@ public final class ZstdDecoder
     private @Nullable ZstdBlockDecoder blockDecoder;
 
     /// Current standard-frame checksum, or null when absent or disabled.
-    private @Nullable ZstdXXHash64 checksum;
+    private @Nullable ChecksumAccumulator.Width64 checksum;
 
     /// Current standard-frame metadata, or null outside a standard frame.
     private @Nullable ZstdStandardFrameInfo frameInfo;
@@ -312,7 +314,7 @@ public final class ZstdDecoder
         frameInfo = standard;
         requiredDictionaryId = ZstdDictionary.NO_DICTIONARY_ID;
         blockDecoder = new ZstdBlockDecoder(standard.windowSize(), dictionary);
-        checksum = standard.checksum() && verifyChecksums ? new ZstdXXHash64() : null;
+        checksum = standard.checksum() && verifyChecksums ? Checksums.XXH64.newAccumulator() : null;
         blockHeader.clear();
         state = State.BLOCK_HEADER;
     }
@@ -355,7 +357,7 @@ public final class ZstdDecoder
         if (decoded.length > ZstdBlockDecoder.MAX_BLOCK_SIZE) {
             throw new IOException("Decoded Zstandard block exceeds the frame block-size limit");
         }
-        @Nullable ZstdXXHash64 selectedChecksum = checksum;
+        @Nullable ChecksumAccumulator.Width64 selectedChecksum = checksum;
         if (selectedChecksum != null) {
             selectedChecksum.update(decoded, 0, decoded.length);
         }
@@ -394,7 +396,7 @@ public final class ZstdDecoder
                         | Byte.toUnsignedInt(checksumBytes.get()) << 24
         );
         if (verifyChecksums) {
-            long actual = Objects.requireNonNull(checksum).digest() & 0xffff_ffffL;
+            long actual = Objects.requireNonNull(checksum).finishLong() & 0xffff_ffffL;
             if (stored != actual) {
                 throw new IOException("Zstandard frame checksum mismatch");
             }

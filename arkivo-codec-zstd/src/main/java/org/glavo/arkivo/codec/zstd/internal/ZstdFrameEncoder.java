@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -75,8 +76,8 @@ final class ZstdFrameEncoder {
     }
 
     /// Encodes the low 32 bits of an XXH64 frame checksum.
-    static byte[] checksum(ZstdXXHash64 checksum) {
-        long value = checksum.digest();
+    static byte[] checksum(ChecksumAccumulator.Width64 checksum) {
+        long value = checksum.finishLong();
         return new byte[]{
                 (byte) value,
                 (byte) (value >>> 8),

@@ -1,9 +1,9 @@
 # Arkivo
 
-Arkivo is a modular, pure Java archive and compression toolkit for Java 17 and later. It combines archive-backed NIO
-file systems, forward-only archive readers and writers, caller-owned `ByteBuffer` codec engines, channel and stream
-adapters, and deterministic discovery of installed official formats. The [architecture guide](ARCHITECTURE.md)
-describes the common programming model, lifecycle rules, and module boundaries.
+Arkivo is a modular, pure Java archive, checksum, and compression toolkit for Java 17 and later. It combines
+archive-backed NIO file systems, forward-only archive readers and writers, reusable checksum algorithms, caller-owned
+`ByteBuffer` codec engines, channel and stream adapters, and deterministic discovery of installed official formats.
+The [architecture guide](ARCHITECTURE.md) describes the common programming model, lifecycle rules, and module boundaries.
 
 The current build version is `1.0-SNAPSHOT`. Published artifacts use the group `org.glavo`.
 
@@ -61,6 +61,7 @@ The main module choices are:
 | `arkivo-archive-all` | Every archive format implementation |
 | `arkivo-codec-all` | Every compression codec and byte transform implementation |
 | `arkivo-archive` | Archive contracts, discovery, storage, and NIO support |
+| `arkivo-checksum` | Checksum algorithms, mutable accumulators, and immutable values |
 | `arkivo-codec` | Codec contracts, compression format discovery, and adapters |
 | `arkivo-archive-<format>` | One archive implementation, such as `zip`, `tar`, or `7z` |
 | `arkivo-codec-<family>` | One codec family, such as `zstd`, `xz`, or `deflate` |
