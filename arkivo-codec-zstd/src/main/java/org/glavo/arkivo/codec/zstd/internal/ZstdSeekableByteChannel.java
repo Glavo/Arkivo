@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.checksum.Checksums;
+import org.glavo.arkivo.checksum.xxhash.XXHash64;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.ResourceOwnership;
@@ -236,7 +236,7 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
             }
         }
         if (index.verifiesTableChecksums()) {
-            if ((int) Checksums.XXH64.computeLong(decoded) != index.frameChecksum(frameIndex)) {
+            if ((int) XXHash64.DEFAULT.computeLong(decoded) != index.frameChecksum(frameIndex)) {
                 throw new IOException("Indexed Zstandard frame checksum does not match the seek table");
             }
         }

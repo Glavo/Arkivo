@@ -8,7 +8,6 @@ import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.Checksums;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -68,7 +67,7 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     private int blockLength;
 
     /// The CRC state for original bytes represented by the current block.
-    private final ChecksumAccumulator.Width32 blockCrc = Checksums.CRC32_BZIP2.newAccumulator();
+    private final ChecksumAccumulator.Width32 blockCrc = BZip2CRC32Algorithm.INSTANCE.newAccumulator();
 
     /// The stream-level combined block CRC.
     private int combinedCrc;

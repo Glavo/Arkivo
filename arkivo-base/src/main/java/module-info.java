@@ -14,7 +14,7 @@ module org.glavo.arkivo.base {
             org.glavo.arkivo.archive.rar,
             org.glavo.arkivo.archive.sevenzip,
             org.glavo.arkivo.archive.zip,
-            org.glavo.arkivo.checksum,
+            org.glavo.arkivo.checksum.xxhash,
             org.glavo.arkivo.codec.lz4,
             org.glavo.arkivo.codec.lzip,
             org.glavo.arkivo.codec.xz,

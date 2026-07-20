@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.lz4.internal;
 import net.jpountz.xxhash.StreamingXXHash32;
 import net.jpountz.xxhash.XXHashFactory;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.XXHash32;
+import org.glavo.arkivo.checksum.xxhash.XXHash32;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 

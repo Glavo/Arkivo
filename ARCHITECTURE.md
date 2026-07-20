@@ -48,6 +48,10 @@ results. Results narrower than 64 bits use a nonnegative unsigned `long`; `Width
 bit pattern. A `ChecksumValue` owns the canonical big-endian representation of any fixed-width result. Container formats
 remain responsible for format-specific byte order and truncation.
 
+The core checksum module contains the shared contracts and common algorithms. Configurable XXH32 and XXH64
+implementations live in the separate `org.glavo.arkivo.checksum.xxhash` module. Integrity algorithms used only as
+format internals, such as the BZip2 block CRC and CRC-64/XZ, remain private to their codec modules.
+
 ### Resource ownership
 
 Factories that accept an existing channel or stream distinguish borrowed resources from owned resources. Codec adapter
@@ -172,7 +176,8 @@ decoder memory. Formats enforce only the limits applicable to their structure.
 | Module | Responsibility |
 | --- | --- |
 | `org.glavo.arkivo.base` | Qualified, low-level implementation primitives shared by selected modules. |
-| `org.glavo.arkivo.checksum` | Reusable checksum algorithms, per-computation accumulators, and immutable values. |
+| `org.glavo.arkivo.checksum` | Checksum contracts, common algorithms, per-computation accumulators, and immutable values. |
+| `org.glavo.arkivo.checksum.xxhash` | Configurable pure Java XXH32 and XXH64 algorithms. |
 | `org.glavo.arkivo.codec` | Compression contracts, discovery, engines, adapters, limits, and transforms. |
 | `org.glavo.arkivo.codec.*` | Pure Java implementations for individual compression families. |
 | `org.glavo.arkivo.codec.all` | Transitive aggregate of all official codec modules. |

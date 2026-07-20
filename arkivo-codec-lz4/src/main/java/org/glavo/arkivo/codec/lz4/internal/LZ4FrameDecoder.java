@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.lz4.internal;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.Checksums;
+import org.glavo.arkivo.checksum.xxhash.XXHash32;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
@@ -85,7 +85,7 @@ public final class LZ4FrameDecoder
     private final ByteBuffer checksum = ByteBuffer.allocate(Integer.BYTES);
 
     /// Streaming decoded-content checksum state.
-    private final ChecksumAccumulator.Width32 contentHash = Checksums.XXH32.newAccumulator();
+    private final ChecksumAccumulator.Width32 contentHash = XXHash32.DEFAULT.newAccumulator();
 
     /// Maximum decoded size of one block from the current descriptor.
     private int maximumBlockSize;
@@ -391,7 +391,7 @@ public final class LZ4FrameDecoder
         int descriptorLength = descriptor.limit();
         byte[] hashed = Arrays.copyOf(bytes, descriptorLength - 1);
         int storedHeaderChecksum = Byte.toUnsignedInt(bytes[descriptorLength - 1]);
-        int actualHeaderChecksum = (Checksums.XXH32.computeInt(hashed) >>> 8) & 0xff;
+        int actualHeaderChecksum = (XXHash32.DEFAULT.computeInt(hashed) >>> 8) & 0xff;
         if (storedHeaderChecksum != actualHeaderChecksum) {
             throw new IOException("LZ4 frame header checksum mismatch");
         }
@@ -531,7 +531,7 @@ public final class LZ4FrameDecoder
         checksum.flip();
         int stored = ByteArrayAccess.readIntLittleEndian(checksum.array(), 0);
         checksum.clear();
-        if (verifyChecksums && stored != Checksums.XXH32.computeInt(Objects.requireNonNull(payload))) {
+        if (verifyChecksums && stored != XXHash32.DEFAULT.computeInt(Objects.requireNonNull(payload))) {
             throw new IOException("LZ4 block checksum mismatch");
         }
     }

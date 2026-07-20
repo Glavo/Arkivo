@@ -40,7 +40,8 @@ final class XZCheck {
         return switch (type) {
             case XZSupport.CHECK_NONE -> new XZCheck(type, 0, null);
             case XZSupport.CHECK_CRC32 -> new XZCheck(type, Integer.BYTES, Checksums.CRC32.newAccumulator());
-            case XZSupport.CHECK_CRC64 -> new XZCheck(type, Long.BYTES, Checksums.CRC64_XZ.newAccumulator());
+            case XZSupport.CHECK_CRC64 ->
+                    new XZCheck(type, Long.BYTES, CRC64XZAlgorithm.INSTANCE.newAccumulator());
             case XZSupport.CHECK_SHA256 ->
                     new XZCheck(type, Checksums.SHA256.checksumSize(), Checksums.SHA256.newAccumulator());
             default -> throw new IOException("Unsupported XZ integrity check type: " + type);

@@ -147,8 +147,8 @@ org.glavo.arkivo.checksum.ChecksumAlgorithm$Width32
 org.glavo.arkivo.checksum.ChecksumAlgorithm$Width64
 org.glavo.arkivo.checksum.ChecksumValue
 org.glavo.arkivo.checksum.Checksums
-org.glavo.arkivo.checksum.XXHash32
-org.glavo.arkivo.checksum.XXHash64
+org.glavo.arkivo.checksum.xxhash.XXHash32
+org.glavo.arkivo.checksum.xxhash.XXHash64
 org.glavo.arkivo.codec.CodecOutcome
 org.glavo.arkivo.codec.CodecResult
 org.glavo.arkivo.codec.CodecResult$Status

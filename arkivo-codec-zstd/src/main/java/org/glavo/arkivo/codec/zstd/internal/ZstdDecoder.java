@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.Checksums;
+import org.glavo.arkivo.checksum.xxhash.XXHash64;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
@@ -314,7 +314,7 @@ public final class ZstdDecoder
         frameInfo = standard;
         requiredDictionaryId = ZstdDictionary.NO_DICTIONARY_ID;
         blockDecoder = new ZstdBlockDecoder(standard.windowSize(), dictionary);
-        checksum = standard.checksum() && verifyChecksums ? Checksums.XXH64.newAccumulator() : null;
+        checksum = standard.checksum() && verifyChecksums ? XXHash64.DEFAULT.newAccumulator() : null;
         blockHeader.clear();
         state = State.BLOCK_HEADER;
     }

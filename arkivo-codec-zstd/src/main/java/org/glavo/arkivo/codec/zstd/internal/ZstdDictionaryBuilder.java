@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.checksum.Checksums;
+import org.glavo.arkivo.checksum.xxhash.XXHash64;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 
 import org.jetbrains.annotations.NotNullByDefault;
@@ -546,7 +546,7 @@ public final class ZstdDictionaryBuilder {
 
     /// Derives a compliant non-zero dictionary identifier from dictionary content.
     private static long dictionaryId(byte[] content) {
-        long hash = Checksums.XXH64.computeLong(content);
+        long hash = XXHash64.DEFAULT.computeLong(content);
         return Long.remainderUnsigned(hash, DICTIONARY_ID_RANGE) + MINIMUM_DICTIONARY_ID;
     }
 

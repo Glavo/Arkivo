@@ -1,8 +1,10 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.checksum;
+package org.glavo.arkivo.checksum.xxhash;
 
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.ChecksumAlgorithm;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -12,44 +14,44 @@ import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Describes an immutable seeded XXH64 algorithm.
+/// Describes an immutable seeded XXH32 algorithm.
 ///
-/// [#DEFAULT] uses the zero seed required by Zstandard frame checksums. Each accumulator retains at most one partial
-/// 32-byte stripe and never retains caller-provided storage.
+/// [#DEFAULT] uses the zero seed required by standard LZ4 frame checksums. Each accumulator retains at most one partial
+/// 16-byte stripe and never retains caller-provided storage.
 @NotNullByDefault
-public final class XXHash64 implements ChecksumAlgorithm.Width64 {
-    /// The conventional zero-seeded XXH64 algorithm.
-    public static final XXHash64 DEFAULT = new XXHash64(0L);
+public final class XXHash32 implements ChecksumAlgorithm.Width32 {
+    /// The conventional zero-seeded XXH32 algorithm.
+    public static final XXHash32 DEFAULT = new XXHash32(0);
 
-    /// First XXH64 prime.
-    private static final long PRIME_1 = 0x9e37_79b1_85eb_ca87L;
+    /// First XXH32 prime.
+    private static final int PRIME_1 = 0x9e37_79b1;
 
-    /// Second XXH64 prime.
-    private static final long PRIME_2 = 0xc2b2_ae3d_27d4_eb4fL;
+    /// Second XXH32 prime.
+    private static final int PRIME_2 = 0x85eb_ca77;
 
-    /// Third XXH64 prime.
-    private static final long PRIME_3 = 0x1656_67b1_9e37_79f9L;
+    /// Third XXH32 prime.
+    private static final int PRIME_3 = 0xc2b2_ae3d;
 
-    /// Fourth XXH64 prime.
-    private static final long PRIME_4 = 0x85eb_ca77_c2b2_ae63L;
+    /// Fourth XXH32 prime.
+    private static final int PRIME_4 = 0x27d4_eb2f;
 
-    /// Fifth XXH64 prime.
-    private static final long PRIME_5 = 0x27d4_eb2f_1656_67c5L;
+    /// Fifth XXH32 prime.
+    private static final int PRIME_5 = 0x1656_67b1;
 
     /// The configured seed bit pattern.
-    private final long seed;
+    private final int seed;
 
     /// Creates a seeded algorithm.
     ///
     /// @param seed the seed bit pattern
-    public XXHash64(long seed) {
+    public XXHash32(int seed) {
         this.seed = seed;
     }
 
     /// Returns the configured seed bit pattern.
     ///
     /// @return the seed
-    public long seed() {
+    public int seed() {
         return seed;
     }
 
@@ -57,23 +59,23 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
     ///
     /// @param seed the seed bit pattern
     /// @return this instance when unchanged, otherwise a new algorithm
-    public XXHash64 withSeed(long seed) {
-        return this.seed == seed ? this : new XXHash64(seed);
+    public XXHash32 withSeed(int seed) {
+        return this.seed == seed ? this : new XXHash32(seed);
     }
 
     /// Returns the conventional algorithm name.
     ///
-    /// @return `XXH64`
+    /// @return `XXH32`
     @Override
     public String name() {
-        return "XXH64";
+        return "XXH32";
     }
 
-    /// Creates fresh active XXH64 state.
+    /// Creates fresh active XXH32 state.
     ///
     /// @return an independent accumulator
     @Override
-    public ChecksumAccumulator.Width64 newAccumulator() {
+    public ChecksumAccumulator.Width32 newAccumulator() {
         return new Accumulator(this);
     }
 
@@ -83,15 +85,15 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
     /// @return whether `other` describes the same seeded algorithm
     @Override
     public boolean equals(@Nullable Object other) {
-        return this == other || other instanceof XXHash64 hash && seed == hash.seed;
+        return this == other || other instanceof XXHash32 hash && seed == hash.seed;
     }
 
     /// Returns the seed hash code.
     ///
-    /// @return the configured seed hash code
+    /// @return the configured seed
     @Override
     public int hashCode() {
-        return Long.hashCode(seed);
+        return seed;
     }
 
     /// Returns a diagnostic seeded-algorithm description.
@@ -99,50 +101,40 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
     /// @return the algorithm name and unsigned hexadecimal seed
     @Override
     public String toString() {
-        return "XXH64[seed=0x" + Long.toUnsignedString(seed, 16) + "]";
+        return "XXH32[seed=0x" + Integer.toUnsignedString(seed, 16) + "]";
     }
 
-    /// Mixes one eight-byte lane into a large-input accumulator.
+    /// Mixes one four-byte lane into a large-input accumulator.
     ///
     /// @param accumulator the current stripe accumulator
     /// @param lane        the next little-endian lane
     /// @return the updated accumulator
-    private static long round(long accumulator, long lane) {
+    private static int round(int accumulator, int lane) {
         accumulator += lane * PRIME_2;
-        accumulator = Long.rotateLeft(accumulator, 31);
+        accumulator = Integer.rotateLeft(accumulator, 13);
         return accumulator * PRIME_1;
     }
 
-    /// Merges one large-input accumulator into the finalized hash.
-    ///
-    /// @param hash        the current hash
-    /// @param accumulator the stripe accumulator
-    /// @return the merged hash
-    private static long mergeRound(long hash, long accumulator) {
-        hash ^= round(0L, accumulator);
-        return hash * PRIME_1 + PRIME_4;
-    }
-
-    /// Holds one incremental XXH64 computation.
+    /// Holds one incremental XXH32 computation.
     @NotNullByDefault
-    private static final class Accumulator implements ChecksumAccumulator.Width64 {
+    private static final class Accumulator implements ChecksumAccumulator.Width32 {
         /// The immutable seeded algorithm.
-        private final XXHash64 algorithm;
+        private final XXHash32 algorithm;
 
         /// Incomplete stripe bytes.
-        private final byte[] memory = new byte[32];
+        private final byte[] memory = new byte[16];
 
         /// First large-input accumulator.
-        private long accumulator1;
+        private int accumulator1;
 
         /// Second large-input accumulator.
-        private long accumulator2;
+        private int accumulator2;
 
         /// Third large-input accumulator.
-        private long accumulator3;
+        private int accumulator3;
 
         /// Fourth large-input accumulator.
-        private long accumulator4;
+        private int accumulator4;
 
         /// Total input length modulo 2^64.
         private long totalLength;
@@ -151,7 +143,7 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
         private int memorySize;
 
         /// The cached completed result.
-        private long result;
+        private int result;
 
         /// Whether this computation has finished.
         private boolean finished;
@@ -159,7 +151,7 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
         /// Creates initial state for one seeded algorithm.
         ///
         /// @param algorithm the immutable seeded algorithm
-        private Accumulator(XXHash64 algorithm) {
+        private Accumulator(XXHash32 algorithm) {
             this.algorithm = algorithm;
             reset();
         }
@@ -168,7 +160,7 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
         ///
         /// @return the immutable seeded algorithm
         @Override
-        public ChecksumAlgorithm.Width64 algorithm() {
+        public ChecksumAlgorithm.Width32 algorithm() {
             return algorithm;
         }
 
@@ -258,11 +250,11 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
             source.position(source.limit());
         }
 
-        /// Completes and returns the raw XXH64 result.
+        /// Completes and returns the raw XXH32 result.
         ///
-        /// @return the raw 64-bit pattern
+        /// @return the raw 32-bit pattern
         @Override
-        public long finishLong() {
+        public int finishInt() {
             if (!finished) {
                 result = calculateResult();
                 finished = true;
@@ -273,83 +265,71 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
         /// Restores the configured seeded initial state.
         @Override
         public void reset() {
-            long seed = algorithm.seed;
+            int seed = algorithm.seed;
             accumulator1 = seed + PRIME_1 + PRIME_2;
             accumulator2 = seed + PRIME_2;
             accumulator3 = seed;
             accumulator4 = seed - PRIME_1;
             totalLength = 0L;
             memorySize = 0;
-            result = 0L;
+            result = 0;
             finished = false;
             Arrays.fill(memory, (byte) 0);
         }
 
         /// Calculates the current finalized result without changing stripe state.
         ///
-        /// @return the raw XXH64 result
-        private long calculateResult() {
-            long hash;
+        /// @return the raw XXH32 result
+        private int calculateResult() {
+            int hash;
             if (totalLength >= memory.length) {
-                hash = Long.rotateLeft(accumulator1, 1)
-                        + Long.rotateLeft(accumulator2, 7)
-                        + Long.rotateLeft(accumulator3, 12)
-                        + Long.rotateLeft(accumulator4, 18);
-                hash = mergeRound(hash, accumulator1);
-                hash = mergeRound(hash, accumulator2);
-                hash = mergeRound(hash, accumulator3);
-                hash = mergeRound(hash, accumulator4);
+                hash = Integer.rotateLeft(accumulator1, 1)
+                        + Integer.rotateLeft(accumulator2, 7)
+                        + Integer.rotateLeft(accumulator3, 12)
+                        + Integer.rotateLeft(accumulator4, 18);
             } else {
                 hash = algorithm.seed + PRIME_5;
             }
-            hash += totalLength;
+            hash += (int) totalLength;
 
-            int offset = 0;
-            int remaining = memorySize;
-            while (remaining >= Long.BYTES) {
-                long lane = round(0L, ByteArrayAccess.readLongLittleEndian(memory, offset));
-                hash ^= lane;
-                hash = Long.rotateLeft(hash, 27) * PRIME_1 + PRIME_4;
-                offset += Long.BYTES;
-                remaining -= Long.BYTES;
+            int position = 0;
+            while (position + Integer.BYTES <= memorySize) {
+                hash += ByteArrayAccess.readIntLittleEndian(memory, position) * PRIME_3;
+                hash = Integer.rotateLeft(hash, 17) * PRIME_4;
+                position += Integer.BYTES;
             }
-            if (remaining >= Integer.BYTES) {
-                hash ^= Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(memory, offset)) * PRIME_1;
-                hash = Long.rotateLeft(hash, 23) * PRIME_2 + PRIME_3;
-                offset += Integer.BYTES;
-                remaining -= Integer.BYTES;
+            while (position < memorySize) {
+                hash += Byte.toUnsignedInt(memory[position++]) * PRIME_5;
+                hash = Integer.rotateLeft(hash, 11) * PRIME_1;
             }
-            while (remaining-- > 0) {
-                hash ^= (long) Byte.toUnsignedInt(memory[offset++]) * PRIME_5;
-                hash = Long.rotateLeft(hash, 11) * PRIME_1;
-            }
-            hash ^= hash >>> 33;
+
+            hash ^= hash >>> 15;
             hash *= PRIME_2;
-            hash ^= hash >>> 29;
+            hash ^= hash >>> 13;
             hash *= PRIME_3;
-            hash ^= hash >>> 32;
+            hash ^= hash >>> 16;
             return hash;
         }
 
-        /// Processes one array-backed 32-byte stripe.
+        /// Processes one array-backed 16-byte stripe.
         ///
         /// @param source the source array
         /// @param offset the stripe offset
         private void processStripe(byte[] source, int offset) {
-            accumulator1 = round(accumulator1, ByteArrayAccess.readLongLittleEndian(source, offset));
-            accumulator2 = round(accumulator2, ByteArrayAccess.readLongLittleEndian(source, offset + 8));
-            accumulator3 = round(accumulator3, ByteArrayAccess.readLongLittleEndian(source, offset + 16));
-            accumulator4 = round(accumulator4, ByteArrayAccess.readLongLittleEndian(source, offset + 24));
+            accumulator1 = round(accumulator1, ByteArrayAccess.readIntLittleEndian(source, offset));
+            accumulator2 = round(accumulator2, ByteArrayAccess.readIntLittleEndian(source, offset + 4));
+            accumulator3 = round(accumulator3, ByteArrayAccess.readIntLittleEndian(source, offset + 8));
+            accumulator4 = round(accumulator4, ByteArrayAccess.readIntLittleEndian(source, offset + 12));
         }
 
-        /// Processes one 32-byte stripe from a little-endian buffer view.
+        /// Processes one 16-byte stripe from a little-endian buffer view.
         ///
         /// @param source the source view
         private void processStripe(ByteBuffer source) {
-            accumulator1 = round(accumulator1, source.getLong());
-            accumulator2 = round(accumulator2, source.getLong());
-            accumulator3 = round(accumulator3, source.getLong());
-            accumulator4 = round(accumulator4, source.getLong());
+            accumulator1 = round(accumulator1, source.getInt());
+            accumulator2 = round(accumulator2, source.getInt());
+            accumulator3 = round(accumulator3, source.getInt());
+            accumulator4 = round(accumulator4, source.getInt());
         }
 
         /// Requires this computation to remain active.

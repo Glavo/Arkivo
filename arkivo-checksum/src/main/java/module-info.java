@@ -6,7 +6,6 @@
 /// Algorithms are safe for concurrent use and create independent mutable accumulators. Accumulators consume caller
 /// buffers without retaining them and expose exact-width primitive results for checksums of up to 64 bits.
 module org.glavo.arkivo.checksum {
-    requires org.glavo.arkivo.base;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.checksum;

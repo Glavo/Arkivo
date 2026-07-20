@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.Checksums;
+import org.glavo.arkivo.checksum.xxhash.XXHash64;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
@@ -154,7 +154,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         this.maximumFrameSize = options.maximumFrameSize();
         this.tableChecksums = tableChecksums;
         this.frameChecksums = tableChecksums ? new int[INITIAL_FRAME_CAPACITY] : new int[0];
-        this.activeChecksum = tableChecksums ? Checksums.XXH64.newAccumulator() : null;
+        this.activeChecksum = tableChecksums ? XXHash64.DEFAULT.newAccumulator() : null;
     }
 
     /// Encodes all remaining source bytes, ending frames at the configured uncompressed size.
@@ -326,7 +326,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         activeFrameCompressedOffset = outputBytes;
         activeFrameSize = 0;
         frameActive = false;
-        activeChecksum = tableChecksums ? Checksums.XXH64.newAccumulator() : null;
+        activeChecksum = tableChecksums ? XXHash64.DEFAULT.newAccumulator() : null;
     }
 
     /// Records one completed frame in the in-memory seek-table builder.

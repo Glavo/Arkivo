@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.Checksums;
+import org.glavo.arkivo.checksum.xxhash.XXHash64;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -77,7 +77,7 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
     private long parallelFrameSubmitted;
 
     /// Checksum for the active frame.
-    private ChecksumAccumulator.Width64 checksum = Checksums.XXH64.newAccumulator();
+    private ChecksumAccumulator.Width64 checksum = XXHash64.DEFAULT.newAccumulator();
 
     /// Number of uncompressed bytes accepted in the active frame.
     private long frameInputBytes;
@@ -278,7 +278,7 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
         pendingJobSize = 0;
         nextJobPrefix = new byte[0];
         parallelFrameSubmitted = 0L;
-        checksum = Checksums.XXH64.newAccumulator();
+        checksum = XXHash64.DEFAULT.newAccumulator();
     }
 
     /// Writes the active frame header once.

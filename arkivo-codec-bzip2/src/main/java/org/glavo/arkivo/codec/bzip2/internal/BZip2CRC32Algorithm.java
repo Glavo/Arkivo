@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.checksum.internal;
+package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.checksum.ChecksumAlgorithm;
@@ -13,9 +13,9 @@ import java.util.Objects;
 
 /// Implements the non-reflected CRC-32/BZIP2 model.
 @NotNullByDefault
-public final class BZip2CRC32Algorithm implements ChecksumAlgorithm.Width32 {
+final class BZip2CRC32Algorithm implements ChecksumAlgorithm.Width32 {
     /// The shared immutable algorithm.
-    public static final BZip2CRC32Algorithm INSTANCE = new BZip2CRC32Algorithm();
+    static final BZip2CRC32Algorithm INSTANCE = new BZip2CRC32Algorithm();
 
     /// The normal-form CRC polynomial without its implicit top bit.
     private static final int POLYNOMIAL = 0x04c1_1db7;

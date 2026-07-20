@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies the common accumulator lifecycle and buffer contracts.
 @NotNullByDefault
 public final class ChecksumLifecycleTest {
-    /// Verifies finish idempotence, terminal updates, and explicit reset for every built-in algorithm.
+    /// Verifies finish idempotence, terminal updates, and explicit reset for every core built-in algorithm.
     @Test
     public void finishIsIdempotentAndResetRestoresActiveState() {
         byte[] input = "checksum lifecycle".getBytes(StandardCharsets.UTF_8);
@@ -26,10 +26,6 @@ public final class ChecksumLifecycleTest {
                 Checksums.ADLER32,
                 Checksums.CRC32,
                 Checksums.CRC32C,
-                Checksums.CRC32_BZIP2,
-                Checksums.CRC64_XZ,
-                Checksums.XXH32,
-                Checksums.XXH64,
                 Checksums.SHA256
         );
 

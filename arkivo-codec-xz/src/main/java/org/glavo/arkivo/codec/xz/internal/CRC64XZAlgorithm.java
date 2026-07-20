@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.checksum.internal;
+package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.checksum.ChecksumAlgorithm;
@@ -13,9 +13,9 @@ import java.util.Objects;
 
 /// Implements the reflected CRC-64/XZ model.
 @NotNullByDefault
-public final class CRC64XZAlgorithm implements ChecksumAlgorithm.Width64 {
+final class CRC64XZAlgorithm implements ChecksumAlgorithm.Width64 {
     /// The shared immutable algorithm.
-    public static final CRC64XZAlgorithm INSTANCE = new CRC64XZAlgorithm();
+    static final CRC64XZAlgorithm INSTANCE = new CRC64XZAlgorithm();
 
     /// The reflected CRC polynomial.
     private static final long POLYNOMIAL = 0xc96c_5795_d787_0f42L;

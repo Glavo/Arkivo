@@ -9,7 +9,6 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.Checksums;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -133,7 +132,7 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
     private int expectedBlockCrc;
 
     /// The accumulating CRC state of the current block's decoded bytes.
-    private final ChecksumAccumulator.Width32 blockCrc = Checksums.CRC32_BZIP2.newAccumulator();
+    private final ChecksumAccumulator.Width32 blockCrc = BZip2CRC32Algorithm.INSTANCE.newAccumulator();
 
     /// The stream-level combined block CRC.
     private int combinedCrc;

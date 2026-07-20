@@ -61,6 +61,7 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.archive.tar", "org.glavo.arkivo.archive.tar"),
             Map.entry("org.glavo.arkivo.archive.zip", "org.glavo.arkivo.archive.zip"),
             Map.entry("org.glavo.arkivo.checksum", "org.glavo.arkivo.checksum"),
+            Map.entry("org.glavo.arkivo.checksum.xxhash", "org.glavo.arkivo.checksum.xxhash"),
             Map.entry("org.glavo.arkivo.codec", "org.glavo.arkivo.codec"),
             Map.entry("org.glavo.arkivo.codec.transform", "org.glavo.arkivo.codec"),
             Map.entry("org.glavo.arkivo.codec.bzip2", "org.glavo.arkivo.codec.bzip2"),
@@ -76,6 +77,7 @@ public final class PublicApiBoundaryTest {
 
     /// Lists the public module dependencies exposed transitively by each module with exported types.
     private static final @Unmodifiable Map<String, @Unmodifiable Set<String>> TRANSITIVE_REQUIREMENTS = Map.ofEntries(
+            Map.entry("org.glavo.arkivo.checksum.xxhash", Set.of("org.glavo.arkivo.checksum")),
             Map.entry("org.glavo.arkivo.archive.ar", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.archive.cpio", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.archive.rar", Set.of("org.glavo.arkivo.archive")),

@@ -61,7 +61,8 @@ The main module choices are:
 | `arkivo-archive-all` | Every archive format implementation |
 | `arkivo-codec-all` | Every compression codec and byte transform implementation |
 | `arkivo-archive` | Archive contracts, discovery, storage, and NIO support |
-| `arkivo-checksum` | Checksum algorithms, mutable accumulators, and immutable values |
+| `arkivo-checksum` | Checksum contracts, common algorithms, mutable accumulators, and immutable values |
+| `arkivo-checksum-xxhash` | Configurable pure Java XXH32 and XXH64 algorithms |
 | `arkivo-codec` | Codec contracts, compression format discovery, and adapters |
 | `arkivo-archive-<format>` | One archive implementation, such as `zip`, `tar`, or `7z` |
 | `arkivo-codec-<family>` | One codec family, such as `zstd`, `xz`, or `deflate` |

@@ -30,6 +30,10 @@ val publicationMetadata = mapOf(
         "Arkivo Checksum API",
         "Provides reusable checksum algorithms, incremental accumulators, and immutable checksum values."
     ),
+    "arkivo-checksum-xxhash" to ArkivoPublicationMetadata(
+        "Arkivo XXHash Checksums",
+        "Provides configurable pure Java XXH32 and XXH64 checksum algorithms."
+    ),
     "arkivo-archive" to ArkivoPublicationMetadata(
         "Arkivo Archive API",
         "Provides archive format discovery, NIO file system contracts, streaming APIs, and storage abstractions."
@@ -330,11 +334,14 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive-all:compile:$publicationVersion",
         "org.glavo:arkivo-archive-codec:runtime:$publicationVersion",
         "org.glavo:arkivo-checksum:compile:$publicationVersion",
+        "org.glavo:arkivo-checksum-xxhash:compile:$publicationVersion",
         "org.glavo:arkivo-codec-all:compile:$publicationVersion"
     ),
     "arkivo-base" to emptySet(),
-    "arkivo-checksum" to setOf(
-        "org.glavo:arkivo-base:runtime:$publicationVersion"
+    "arkivo-checksum" to emptySet(),
+    "arkivo-checksum-xxhash" to setOf(
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
+        "org.glavo:arkivo-checksum:compile:$publicationVersion"
     ),
     "arkivo-archive" to emptySet(),
     "arkivo-archive-codec" to setOf(
@@ -416,6 +423,7 @@ val expectedDependencies = mapOf(
     "arkivo-codec-lz4" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-checksum:runtime:$publicationVersion",
+        "org.glavo:arkivo-checksum-xxhash:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:compile:$publicationVersion"
     ),
     "arkivo-codec-ppmd" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
@@ -428,6 +436,7 @@ val expectedDependencies = mapOf(
     "arkivo-codec-zstd" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-checksum:runtime:$publicationVersion",
+        "org.glavo:arkivo-checksum-xxhash:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:compile:$publicationVersion"
     )
 )

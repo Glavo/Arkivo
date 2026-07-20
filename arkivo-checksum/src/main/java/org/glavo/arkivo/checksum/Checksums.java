@@ -3,8 +3,6 @@
 
 package org.glavo.arkivo.checksum;
 
-import org.glavo.arkivo.checksum.internal.BZip2CRC32Algorithm;
-import org.glavo.arkivo.checksum.internal.CRC64XZAlgorithm;
 import org.glavo.arkivo.checksum.internal.JdkChecksumAlgorithm32;
 import org.glavo.arkivo.checksum.internal.MessageDigestChecksumAlgorithm;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -30,18 +28,6 @@ public final class Checksums {
     /// The reflected CRC-32C checksum using the Castagnoli polynomial.
     public static final ChecksumAlgorithm.Width32 CRC32C =
             new JdkChecksumAlgorithm32("CRC-32C", CRC32C::new);
-
-    /// The non-reflected CRC-32/BZIP2 checksum used for BZip2 blocks.
-    public static final ChecksumAlgorithm.Width32 CRC32_BZIP2 = BZip2CRC32Algorithm.INSTANCE;
-
-    /// The reflected CRC-64/XZ checksum.
-    public static final ChecksumAlgorithm.Width64 CRC64_XZ = CRC64XZAlgorithm.INSTANCE;
-
-    /// The zero-seeded XXH32 checksum used by LZ4 frames.
-    public static final XXHash32 XXH32 = XXHash32.DEFAULT;
-
-    /// The zero-seeded XXH64 checksum used by Zstandard frames.
-    public static final XXHash64 XXH64 = XXHash64.DEFAULT;
 
     /// The mandatory SHA-256 message digest used as an XZ integrity check.
     public static final ChecksumAlgorithm SHA256 = new MessageDigestChecksumAlgorithm("SHA-256", 32);
