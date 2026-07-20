@@ -36,7 +36,7 @@ public final class ChecksumValue {
     /// @param bytes the canonical checksum bytes
     /// @return an immutable checksum value
     /// @throws IllegalArgumentException if `bytes` is empty
-    public static ChecksumValue copyOf(byte[] bytes) {
+    public static ChecksumValue ofBytes(byte[] bytes) {
         Objects.requireNonNull(bytes, "bytes");
         if (bytes.length == 0) {
             throw new IllegalArgumentException("A checksum value must contain at least one byte");
@@ -49,7 +49,7 @@ public final class ChecksumValue {
     /// @param source the buffer whose remaining bytes form the value
     /// @return an immutable checksum value
     /// @throws IllegalArgumentException if `source` has no remaining bytes
-    public static ChecksumValue copyOf(ByteBuffer source) {
+    public static ChecksumValue ofBytes(ByteBuffer source) {
         ByteBuffer view = Objects.requireNonNull(source, "source").slice();
         if (!view.hasRemaining()) {
             throw new IllegalArgumentException("A checksum value must contain at least one byte");
@@ -110,7 +110,7 @@ public final class ChecksumValue {
     /// lifetime of this value.
     ///
     /// @return a read-only checksum view
-    public @UnmodifiableView ByteBuffer buffer() {
+    public @UnmodifiableView ByteBuffer toByteBuffer() {
         return ByteBuffer.wrap(bytes).asReadOnlyBuffer();
     }
 

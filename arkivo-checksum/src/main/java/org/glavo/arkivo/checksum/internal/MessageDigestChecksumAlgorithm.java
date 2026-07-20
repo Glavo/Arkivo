@@ -153,7 +153,7 @@ public final class MessageDigestChecksumAlgorithm implements ChecksumAlgorithm {
         public ChecksumValue finish() {
             ChecksumValue current = result;
             if (current == null) {
-                current = ChecksumValue.copyOf(digest.digest());
+                current = ChecksumValue.ofBytes(digest.digest());
                 result = current;
             }
             return current;

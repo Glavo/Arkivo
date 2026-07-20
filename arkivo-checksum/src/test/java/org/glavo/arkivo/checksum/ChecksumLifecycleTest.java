@@ -85,7 +85,7 @@ public final class ChecksumLifecycleTest {
         assertEquals(3 + Integer.BYTES, target.position());
         assertEquals(
                 Checksums.CRC32.compute(ByteBuffer.wrap(input, originalPosition, input.length - originalPosition)),
-                ChecksumValue.copyOf(target.flip().position(3))
+                ChecksumValue.ofBytes(target.flip().position(3))
         );
     }
 

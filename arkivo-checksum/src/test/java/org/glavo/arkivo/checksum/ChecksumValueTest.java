@@ -22,21 +22,21 @@ public final class ChecksumValueTest {
     @Test
     public void factoriesDoNotAliasCallerStorage() {
         byte[] bytes = {0x01, 0x23, (byte) 0xff};
-        ChecksumValue fromArray = ChecksumValue.copyOf(bytes);
+        ChecksumValue fromArray = ChecksumValue.ofBytes(bytes);
         bytes[0] = 0;
         assertEquals("0123ff", fromArray.toHexString());
 
         ByteBuffer source = ByteBuffer.wrap(new byte[]{9, 8, 7, 6});
         source.position(1).limit(3);
-        ChecksumValue fromBuffer = ChecksumValue.copyOf(source);
+        ChecksumValue fromBuffer = ChecksumValue.ofBytes(source);
         assertEquals(1, source.position());
         assertEquals("0807", fromBuffer.toString());
 
         byte[] copy = fromArray.toByteArray();
         copy[0] = 0;
         assertEquals("0123ff", fromArray.toHexString());
-        assertTrue(fromArray.buffer().isReadOnly());
-        assertThrows(ReadOnlyBufferException.class, () -> fromArray.buffer().put((byte) 0));
+        assertTrue(fromArray.toByteBuffer().isReadOnly());
+        assertThrows(ReadOnlyBufferException.class, () -> fromArray.toByteBuffer().put((byte) 0));
     }
 
     /// Verifies numeric factories use canonical big-endian bytes and preserve bit patterns.
@@ -76,9 +76,9 @@ public final class ChecksumValueTest {
     /// Verifies equality is based on canonical bytes.
     @Test
     public void equalityUsesCanonicalBytes() {
-        ChecksumValue first = ChecksumValue.copyOf(new byte[]{1, 2, 3});
-        ChecksumValue equal = ChecksumValue.copyOf(new byte[]{1, 2, 3});
-        ChecksumValue different = ChecksumValue.copyOf(new byte[]{1, 2, 4});
+        ChecksumValue first = ChecksumValue.ofBytes(new byte[]{1, 2, 3});
+        ChecksumValue equal = ChecksumValue.ofBytes(new byte[]{1, 2, 3});
+        ChecksumValue different = ChecksumValue.ofBytes(new byte[]{1, 2, 4});
         assertEquals(first, equal);
         assertEquals(first.hashCode(), equal.hashCode());
         assertFalse(first.equals(different));
