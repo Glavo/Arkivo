@@ -180,6 +180,29 @@ includes all lower tiers and normal checks:
 ./gradlew checkTier3
 ```
 
+Local coverage-guided fuzzing with Jazzer is explicitly opt-in and is not part of `check` or any test tier. Run the
+generated deterministic seed corpus without mutation first, then run one target or every target:
+
+```text
+./gradlew fuzzRegressionTest
+./gradlew fuzzCompressionDecoder -PjazzerMaxDuration=10m
+./gradlew fuzzCompressionRoundTrip -PjazzerMaxDuration=10m
+./gradlew fuzzArchiveStreaming -PjazzerMaxDuration=10m
+./gradlew fuzzArchiveFileSystem -PjazzerMaxDuration=10m
+./gradlew fuzzFormatDetection -PjazzerMaxDuration=10m
+./gradlew fuzz -PjazzerMaxDuration=2m
+```
+
+The available individual targets cover malformed incremental compression input, codec round trips, forward-only
+archive parsing, archive file-system parsing, and format detection. Each target runs in an independent test process;
+`jazzerMaxDuration` therefore applies to each selected target and defaults to `1m`. `jazzerMaxHeapSize` controls the
+per-process Java heap and defaults to `1g`, while `jazzerInstrumentation` can narrow the default
+`org.glavo.arkivo.**` instrumentation pattern.
+
+Seeds are generated from Arkivo's public writers at test runtime. Evolving corpora and finding artifacts are retained
+under `.arkivo-cache/fuzz`, which is ignored by Git. Confirmed findings should become ordinary source-level regression
+tests after the underlying defect is fixed; binary fuzz artifacts are not stored in the repository.
+
 Upstream test data is downloaded from official source archives into the project-local test-data cache when an applicable
 optional tier is requested; binary corpus files are not stored in this repository.
 

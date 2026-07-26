@@ -12,11 +12,23 @@ val benchmarkSourceSet = sourceSets.create("benchmark") {
     runtimeClasspath += output + compileClasspath
 }
 
+val fuzzTestSourceSet = sourceSets.create("fuzzTest") {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += output + compileClasspath
+}
+
 configurations[benchmarkSourceSet.implementationConfigurationName].extendsFrom(
     configurations.api.get(),
     configurations.implementation.get()
 )
 configurations[benchmarkSourceSet.runtimeOnlyConfigurationName].extendsFrom(
+    configurations.runtimeOnly.get()
+)
+configurations[fuzzTestSourceSet.implementationConfigurationName].extendsFrom(
+    configurations.api.get(),
+    configurations.implementation.get()
+)
+configurations[fuzzTestSourceSet.runtimeOnlyConfigurationName].extendsFrom(
     configurations.runtimeOnly.get()
 )
 
@@ -35,6 +47,11 @@ dependencies {
         benchmarkSourceSet.annotationProcessorConfigurationName,
         "org.openjdk.jmh:jmh-generator-annprocess:1.37"
     )
+    add(fuzzTestSourceSet.compileOnlyConfigurationName, "org.jetbrains:annotations:26.1.0")
+    add(fuzzTestSourceSet.implementationConfigurationName, platform("org.junit:junit-bom:6.0.0"))
+    add(fuzzTestSourceSet.implementationConfigurationName, "org.junit.jupiter:junit-jupiter")
+    add(fuzzTestSourceSet.implementationConfigurationName, "com.code-intelligence:jazzer-junit:0.30.0")
+    add(fuzzTestSourceSet.runtimeOnlyConfigurationName, "org.junit.platform:junit-platform-launcher")
 }
 
 val libarchiveManifestFile = rootProject.file("gradle/test-data/libarchive.properties")
@@ -200,6 +217,75 @@ val benchmark by tasks.registering(JavaExec::class) {
             )
         }
     }
+}
+
+val jazzerMaxDuration = providers.gradleProperty("jazzerMaxDuration").getOrElse("1m")
+val jazzerMaxHeapSize = providers.gradleProperty("jazzerMaxHeapSize").getOrElse("1g")
+val jazzerInstrumentation = providers.gradleProperty("jazzerInstrumentation")
+    .getOrElse("org.glavo.arkivo.**")
+val fuzzTargets = linkedMapOf(
+    "fuzzCompressionDecoder" to
+            "org.glavo.arkivo.fuzz.CompressionFuzzTest.fuzzCompressionDecoder",
+    "fuzzCompressionRoundTrip" to
+            "org.glavo.arkivo.fuzz.CompressionFuzzTest.fuzzCompressionRoundTrip",
+    "fuzzArchiveStreaming" to
+            "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzArchiveStreaming",
+    "fuzzArchiveFileSystem" to
+            "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzArchiveFileSystem",
+    "fuzzFormatDetection" to
+            "org.glavo.arkivo.fuzz.FormatDetectionFuzzTest.fuzzFormatDetection"
+)
+
+val fuzzTargetTasks = fuzzTargets.map { (taskName, targetMethod) ->
+    tasks.register<Test>(taskName) {
+        group = "fuzzing"
+        description = "Runs the $targetMethod Jazzer target locally."
+        dependsOn(tasks.named(fuzzTestSourceSet.classesTaskName))
+        testClassesDirs = fuzzTestSourceSet.output.classesDirs
+        classpath = fuzzTestSourceSet.runtimeClasspath
+        filter {
+            includeTestsMatching(targetMethod)
+        }
+        environment("JAZZER_FUZZ", "1")
+        systemProperty("jazzer.instrument", jazzerInstrumentation)
+        systemProperty("jazzer.max_duration", jazzerMaxDuration)
+        if (taskName == "fuzzArchiveFileSystem") {
+            // Arkivo paths belong to an in-memory provider and can never reach the host file system.
+            systemProperty(
+                "jazzer.disabled_hooks",
+                "com.code_intelligence.jazzer.sanitizers.FilePathTraversal"
+            )
+        }
+        maxHeapSize = jazzerMaxHeapSize
+        val fuzzWorkingDirectory = rootProject.file(".arkivo-cache/fuzz/$taskName")
+        workingDir(fuzzWorkingDirectory)
+        doFirst {
+            fuzzWorkingDirectory.mkdirs()
+        }
+        outputs.upToDateWhen { false }
+    }
+}
+
+val fuzzRegressionTest by tasks.registering(Test::class) {
+    group = "fuzzing"
+    description = "Runs the deterministic Jazzer seed corpus without coverage-guided mutation."
+    dependsOn(tasks.named(fuzzTestSourceSet.classesTaskName))
+    testClassesDirs = fuzzTestSourceSet.output.classesDirs
+    classpath = fuzzTestSourceSet.runtimeClasspath
+    systemProperty("jazzer.instrument", jazzerInstrumentation)
+    maxHeapSize = jazzerMaxHeapSize
+    val fuzzWorkingDirectory = rootProject.file(".arkivo-cache/fuzz/regression")
+    workingDir(fuzzWorkingDirectory)
+    doFirst {
+        fuzzWorkingDirectory.mkdirs()
+    }
+    outputs.upToDateWhen { false }
+}
+
+tasks.register("fuzzAll") {
+    group = "fuzzing"
+    description = "Runs every optional local Jazzer target with an independent fuzzing process."
+    dependsOn(fuzzTargetTasks)
 }
 
 val publicApiTypeBaseline = layout.projectDirectory.file(

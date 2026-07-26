@@ -284,3 +284,26 @@ tasks.register("checkTier3") {
     description = "Runs all verification through Tier 3."
     dependsOn(checkTier2, tier3Test)
 }
+
+val localFuzzTasks = mapOf(
+    "fuzzRegressionTest" to "Runs the deterministic Jazzer seed corpus without fuzzing.",
+    "fuzzCompressionDecoder" to "Fuzzes incremental compression decoders.",
+    "fuzzCompressionRoundTrip" to "Fuzzes compression round-trip invariants.",
+    "fuzzArchiveStreaming" to "Fuzzes forward-only archive readers.",
+    "fuzzArchiveFileSystem" to "Fuzzes random-access archive file systems.",
+    "fuzzFormatDetection" to "Fuzzes archive and compression format detection."
+)
+
+localFuzzTasks.forEach { (taskName, taskDescription) ->
+    tasks.register(taskName) {
+        group = "fuzzing"
+        description = taskDescription
+        dependsOn(":arkivo-all:$taskName")
+    }
+}
+
+tasks.register("fuzz") {
+    group = "fuzzing"
+    description = "Runs every optional local Jazzer target."
+    dependsOn(":arkivo-all:fuzzAll")
+}
