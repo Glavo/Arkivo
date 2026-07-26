@@ -7,6 +7,7 @@ dependencies {
     implementation(project(":arkivo-base"))
     implementation(project(":arkivo-checksum"))
     implementation(project(":arkivo-checksum-xxhash"))
+    testImplementation("io.airlift:aircompressor:2.0.3")
     testImplementation("com.github.luben:zstd-jni:1.5.7-9")
 }
 
@@ -75,7 +76,7 @@ val prepareZstdTestCorpus = tasks.register<Sync>("prepareZstdTestCorpus") {
 
 tasks.named<Test>("tier2Test") {
     group = "verification"
-    description = "Runs Zstandard tests against the pinned official golden corpus."
+    description = "Runs extended Zstandard interoperability tests and the pinned official golden corpus."
     dependsOn(prepareZstdTestCorpus)
     shouldRunAfter(tasks.test)
     systemProperty("arkivo.zstd.testDataDirectory", zstdTestDataDirectory.get().asFile.absolutePath)

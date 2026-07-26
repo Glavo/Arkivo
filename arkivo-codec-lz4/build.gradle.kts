@@ -13,6 +13,7 @@ dependencies {
     implementation(project(":arkivo-base"))
     implementation(project(":arkivo-checksum"))
     implementation(project(":arkivo-checksum-xxhash"))
+    testImplementation("io.airlift:aircompressor:2.0.3")
     testImplementation("org.lz4:lz4-pure-java:1.8.0")
 }
 
@@ -107,7 +108,7 @@ val prepareLZ4JavaTestCorpus = tasks.register<Sync>("prepareLZ4JavaTestCorpus") 
 
 tasks.named<Test>("tier2Test") {
     group = "verification"
-    description = "Runs compatibility tests ported from lz4-java against its pinned Calgary corpus."
+    description = "Runs extended LZ4 interoperability tests and the pinned lz4-java Calgary corpus."
     dependsOn(prepareLZ4JavaTestCorpus)
     shouldRunAfter(tasks.test)
     inputs.dir(lz4JavaTestDataDirectory)
