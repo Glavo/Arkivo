@@ -88,82 +88,19 @@ val downloadLibarchiveTestSources = tasks.register<DownloadVerifiedFile>("downlo
     destination.set(libarchiveArchive)
 }
 
-val libarchiveFixtureNames = listOf(
-    "test_read_format_ar.ar.uu",
-    "test_read_format_cpio_bin_be.cpio.uu",
-    "test_read_format_cpio_bin_le.cpio.uu",
-    "test_compat_cpio_1.cpio.uu",
-    "test_read_format_cpio_filename_utf8_jp.cpio.uu",
-    "test_read_format_cpio_filename_utf8_ru.cpio.uu",
-    "test_read_format_cpio_filename_koi8r.cpio.uu",
-    "test_read_format_cpio_filename_eucjp.cpio.uu",
-    "test_read_format_cpio_filename_cp866.cpio.uu",
-    "test_compat_gtar_1.tar.uu",
-    "test_compat_gtar_2.tar.uu",
-    "test_read_format_zip.zip.uu",
-    "test_read_format_zip_bzip2.zipx.uu",
-    "test_read_format_zip_bzip2_multi.zipx.uu",
-    "test_read_format_zip_bz2_hang.zip.uu",
-    "test_read_format_zip_lzma.zipx.uu",
-    "test_read_format_zip_lzma_alone_leak.zipx.uu",
-    "test_read_format_zip_lzma_multi.zipx.uu",
-    "test_read_format_zip_lzma_stream_end.zipx.uu",
-    "test_read_format_zip_xz_multi.zipx.uu",
-    "test_read_format_zip_zstd.zipx.uu",
-    "test_read_format_zip_zstd_multi.zipx.uu",
-    "test_read_format_zip_traditional_encryption_data.zip.uu",
-    "test_read_format_zip_winzip_aes128.zip.uu",
-    "test_read_format_zip_winzip_aes256.zip.uu",
-    "test_read_format_zip_winzip_aes256_large.zip.uu",
-    "test_read_format_zip_winzip_aes256_stored.zip.uu",
-    "test_read_format_7zip_copy.7z.uu",
-    "test_read_format_7zip_copy_2.7z.uu",
-    "test_read_format_7zip_lzma1.7z.uu",
-    "test_read_format_7zip_lzma2.7z.uu",
-    "test_read_format_7zip_lzma1_lzma2.7z.uu",
-    "test_read_format_7zip_bzip2.7z.uu",
-    "test_read_format_7zip_deflate.7z.uu",
-    "test_read_format_7zip_bcj_lzma2.7z.uu",
-    "test_read_format_7zip_bcj2_lzma2_1.7z.uu",
-    "test_read_format_7zip_delta_lzma2.7z.uu",
-    "test_read_format_7zip_delta4_lzma2.7z.uu",
-    "test_read_format_7zip_lzma2_arm.7z.uu",
-    "test_read_format_7zip_lzma2_arm64.7z.uu",
-    "test_read_format_7zip_lzma2_riscv.7z.uu",
-    "test_read_format_7zip_lzma2_powerpc.7z.uu",
-    "test_read_format_7zip_lzma2_sparc.7z.uu",
-    "test_read_format_7zip_deflate_arm64.7z.uu",
-    "test_read_format_7zip_deflate_powerpc.7z.uu",
-    "test_read_format_7zip_ppmd.7z.uu",
-    "test_read_format_7zip_zstd.7z.uu",
-    "test_read_format_7zip_solid_zstd.7z.uu",
-    "test_read_format_7zip_zstd_bcj.7z.uu",
-    "test_read_format_7zip_zstd_nobcj.7z.uu",
-    "test_read_format_7zip_zstd_arm.7z.uu",
-    "test_read_format_7zip_zstd_sparc.7z.uu",
-    "test_read_format_7zip_symbolic_name.7z.uu",
-    "test_read_format_7zip_extract_second.7z.uu",
-    "test_read_format_7zip_encryption.7z.uu",
-    "test_read_format_7zip_encryption_header.7z.uu",
-    "test_read_format_7zip_encryption_partially.7z.uu",
-    "test_read_format_rar.rar.uu",
-    "test_read_format_rar5_stored.rar.uu",
-    "test_read_format_rar5_compressed.rar.uu"
-)
+val libarchiveFixturePattern = "$libarchiveRoot/libarchive/test/*.uu"
 
 val prepareLibarchiveTestCorpus = tasks.register<Sync>("prepareLibarchiveTestCorpus") {
     group = "verification"
-    description = "Extracts reviewed uuencoded archive fixtures from the pinned libarchive source release."
+    description = "Extracts the complete uuencoded fixture corpus from the pinned libarchive source release."
     dependsOn(downloadLibarchiveTestSources)
-    inputs.property("fixtureNames", libarchiveFixtureNames)
+    inputs.property("fixturePattern", libarchiveFixturePattern)
 
     from(downloadLibarchiveTestSources.flatMap { it.destination }.map { archive ->
         tarTree(resources.gzip(archive.asFile))
     }) {
         include("$libarchiveRoot/COPYING")
-        libarchiveFixtureNames.forEach { fixtureName ->
-            include("$libarchiveRoot/libarchive/test/$fixtureName")
-        }
+        include(libarchiveFixturePattern)
         eachFile {
             val segments = relativePath.segments
             require(segments.isNotEmpty() && segments[0] == libarchiveRoot) {

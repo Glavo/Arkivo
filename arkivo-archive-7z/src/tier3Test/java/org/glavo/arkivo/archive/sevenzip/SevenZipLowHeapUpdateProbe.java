@@ -72,7 +72,6 @@ public final class SevenZipLowHeapUpdateProbe {
                 ArchiveUpdateOptions.DEFAULT.withEditStorageFactory(
                         ArkivoEditStorageFactory.temporaryFiles(storageDirectory)
                 ),
-                null,
                 SevenZipCompression.copy(),
                 SevenZipFilterChain.EMPTY,
                 SevenZipArchiveOptions.DEFAULT_SOLID_FILE_COUNT,

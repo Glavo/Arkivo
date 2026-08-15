@@ -8,6 +8,7 @@ import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.compress.compressors.lz4.BlockLZ4CompressorInputStream;
 import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.bzip2.BZip2Codec;
@@ -138,6 +139,17 @@ final class CommonsCompressCodecCorpusTest {
         );
         assertEquals(maximumMemorySize, exception.maximumWindowSize());
         assertEquals(0x7400_0000L, exception.requiredWindowSize());
+    }
+
+    /// Verifies COMPRESS-386 is detected without allocation and its nonportable code width is rejected.
+    @Test
+    void detectsAndSafelyRejectsCompress386CodeWidth() throws IOException {
+        byte @Unmodifiable [] compressed = CommonsCompressTestResources.read("COMPRESS-386");
+        assertEquals(
+                "compress",
+                Objects.requireNonNull(CompressionFormats.detect(ByteBuffer.wrap(compressed))).name()
+        );
+        assertThrows(IOException.class, () -> decompressComplete(new UnixCompressCodec(), compressed));
     }
 
     /// Verifies all three payloads bundled inside the upstream Zstandard TAR resource remain available.

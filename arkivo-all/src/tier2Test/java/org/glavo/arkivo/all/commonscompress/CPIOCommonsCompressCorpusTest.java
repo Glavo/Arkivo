@@ -23,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.zip.CRC32;
 import java.util.stream.Stream;
 
@@ -34,6 +35,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 final class CPIOCommonsCompressCorpusTest {
     /// The buffer size used to digest entry bodies without retaining corpus payloads.
     private static final int BUFFER_SIZE = 16 * 1024;
+
+    /// CPIO fixtures intentionally rejected by Arkivo's numeric-field validation.
+    private static final @Unmodifiable Set<String> MALFORMED_ARCHIVES = Set.of(
+            "org/apache/commons/compress/cpio/bad_long_value.cpio"
+    );
 
     /// Compares every valid upstream CPIO archive with an independently parsed Commons Compress view.
     @ParameterizedTest(name = "{0}")
@@ -189,21 +195,14 @@ final class CPIOCommonsCompressCorpusTest {
     }
 
     /// Returns every valid CPIO fixture in the pinned Commons Compress source release.
-    private static Stream<String> readableArchives() {
-        return Stream.of(
-                "archives/FreeBSD_bin.cpio",
-                "archives/FreeBSD_crc.cpio",
-                "archives/FreeBSD_hpbin.cpio",
-                "archives/FreeBSD_newc.cpio",
-                "archives/SunOS_-c.cpio",
-                "archives/SunOS_.cpio",
-                "archives/SunOS_crc.cpio",
-                "archives/SunOS_odc.cpio",
-                "bla.cpio",
-                "COMPRESS-459.cpio",
-                "longpath/minotaur.cpio",
-                "redline.cpio"
-        );
+    private static Stream<String> readableArchives() throws IOException {
+        Path root = CommonsCompressTestResources.resourceRoot();
+        return Files.walk(root)
+                .filter(Files::isRegularFile)
+                .map(path -> root.relativize(path).toString().replace('\\', '/'))
+                .filter(path -> path.endsWith(".cpio"))
+                .filter(path -> !MALFORMED_ARCHIVES.contains(path))
+                .sorted();
     }
 
     /// Describes one entry's type, format metadata, and content without retaining its body.

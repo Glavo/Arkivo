@@ -628,6 +628,27 @@ public final class ArArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies repeated member separators cannot create self-referential synthetic directories.
+    @Test
+    public void fileSystemNormalizesRepeatedMemberSeparators() throws IOException {
+        byte[] content = "normalized".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(member("dir//file/", 0, 0, 0, 0100644, content));
+        Path archivePath = createTemporaryArchivePath("ar-repeated-separator-");
+        try {
+            Files.write(archivePath, archive);
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath);
+                 var paths = Files.walk(fileSystem.getPath("/"))) {
+                assertEquals(
+                        Set.of("/", "/dir", "/dir/file"),
+                        paths.map(Path::toString).collect(java.util.stream.Collectors.toUnmodifiableSet())
+                );
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/dir/file")));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that AR archives can be created through a forward-only writable file system.
     @Test
     public void createsMembersAsWritableFileSystem() throws IOException {

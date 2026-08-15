@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -54,6 +55,23 @@ final class CommonsCompressResourceDispositionTest {
             totalSize = Math.addExact(totalSize, row.size());
         }
         assertEquals(EXPECTED_RESOURCE_SIZE, totalSize);
+    }
+
+    /// Verifies implemented CPIO and Unix compress fixtures remain assigned to executable Tier 2 tests.
+    @Test
+    void assignsImplementedCorpusFamiliesToTier2Tests() throws IOException {
+        @Unmodifiable Map<String, DispositionRow> manifest = readManifest();
+        manifest.values().stream()
+                .filter(row -> row.path().endsWith(".cpio"))
+                .forEach(row -> assertEquals(
+                        Disposition.TESTED_CPIO_TIER2,
+                        row.disposition(),
+                        row.path()
+                ));
+        for (String path : new String[]{"bla.tar.Z", "COMPRESS-386"}) {
+            DispositionRow row = Objects.requireNonNull(manifest.get(path), path);
+            assertEquals(Disposition.TESTED_CODEC_TIER2, row.disposition(), path);
+        }
     }
 
     /// Reads and validates the checked-in disposition manifest.
@@ -109,6 +127,8 @@ final class CommonsCompressResourceDispositionTest {
     private enum Disposition {
         /// Tested as an AR archive in Tier 2.
         TESTED_AR_TIER2,
+        /// Tested as a CPIO archive in Tier 2.
+        TESTED_CPIO_TIER2,
         /// Tested as a TAR archive in Tier 2.
         TESTED_TAR_TIER2,
         /// Tested as a ZIP archive in Tier 2.

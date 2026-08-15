@@ -101,6 +101,10 @@ subprojects {
             extendsFrom(configurations.named("testRuntimeOnly"))
         }
     }
+
+    tasks.named("check") {
+        dependsOn(tasks.named("compileTier2TestJava"), tasks.named("compileTier3TestJava"))
+    }
 }
 
 apply(from = "gradle/publishing.gradle.kts")

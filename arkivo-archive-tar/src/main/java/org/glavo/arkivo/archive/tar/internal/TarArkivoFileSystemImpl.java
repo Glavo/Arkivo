@@ -2793,14 +2793,21 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Normalizes an entry path into node map form.
     private static String normalizeEntryPath(String path) throws IOException {
-        String normalized = path;
-        while (normalized.endsWith("/") && normalized.length() > 1) {
-            normalized = normalized.substring(0, normalized.length() - 1);
+        requireArchiveLocalPath(path, "TAR entry path");
+        StringBuilder normalized = new StringBuilder(path.length());
+        int start = 0;
+        while (start <= path.length()) {
+            int end = nextPathSeparator(path, start);
+            String name = path.substring(start, end);
+            if (!name.isEmpty() && !".".equals(name)) {
+                if (!normalized.isEmpty()) {
+                    normalized.append('/');
+                }
+                normalized.append(name);
+            }
+            start = end + 1;
         }
-        if (normalized.isEmpty()) {
-            throw new IOException("TAR entry is missing a path");
-        }
-        return normalized;
+        return normalized.toString();
     }
 
     /// Requires an archive-local path without absolute or parent-directory components.

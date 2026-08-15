@@ -36,21 +36,21 @@ archive_with_trailer.tar	10254	TESTED_TAR_TIER2	opened by the TAR corpus with an
 archive_with_trailer.zip	680	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
 archives/files.txt	123	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
 archives/FreeBSD_.tar	11264	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
-archives/FreeBSD_bin.cpio	1024	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
-archives/FreeBSD_crc.cpio	2048	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
-archives/FreeBSD_hpbin.cpio	1024	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
-archives/FreeBSD_newc.cpio	2048	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/FreeBSD_bin.cpio	1024	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
+archives/FreeBSD_crc.cpio	2048	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
+archives/FreeBSD_hpbin.cpio	1024	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
+archives/FreeBSD_newc.cpio	2048	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
 archives/FreeBSD_pax.tar	21504	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 archives/FreeBSD_ustar.tar	11264	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 archives/FreeBSD.ar	876	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
 archives/FreeBSD.zip	1652	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
-archives/SunOS_-c.cpio	2048	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
-archives/SunOS_.cpio	1024	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/SunOS_-c.cpio	2048	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
+archives/SunOS_.cpio	1024	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
 archives/SunOS_cAEf.tar	21504	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 archives/SunOS_cEf.tar	21504	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 archives/SunOS_cf.tar	11264	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
-archives/SunOS_crc.cpio	2048	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
-archives/SunOS_odc.cpio	1536	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+archives/SunOS_crc.cpio	2048	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
+archives/SunOS_odc.cpio	1536	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
 archives/SunOS.ar	876	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
 archives/SunOS.zip	1472	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
 bla-multi.7z.001	512	TESTED_7Z_COMPANION_TIER2	consumed through the explicit multi-volume 7z source
@@ -64,7 +64,7 @@ bla-stored.zip	1006	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit s
 bla.7z	512	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
 bla.ar	820	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
 bla.arj	252	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
-bla.cpio	5120	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+bla.cpio	5120	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
 bla.deflate.7z	497	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
 bla.deflate64.7z	503	TESTED_7Z_TIER2	opened by the 7z corpus with an explicit success or rejection contract
 bla.dump	92160	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
@@ -83,7 +83,7 @@ bla.tar.lz4	623	TESTED_CODEC_TIER2	decoded by the standard LZ4 frame codec in Ti
 bla.tar.lzma	481	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
 bla.tar.sz	995	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
 bla.tar.xz	528	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
-bla.tar.Z	776	UNSUPPORTED_CODEC_FORMAT	Arkivo has no codec for this upstream compression family
+bla.tar.Z	776	TESTED_CODEC_TIER2	decoded by the Unix compress codec in Tier 2
 bla.tgz	480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 bla.txt.bz2	66	TESTED_CODEC_TIER2	decoded or used as an explicit malformed-input contract by the codec corpus
 bla.unix.arj	257	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
@@ -137,9 +137,9 @@ COMPRESS-380/COMPRESS-380-input	3072	REFERENCE_PAYLOAD	plain expected content or
 COMPRESS-380/COMPRESS-380-readbeyondmemory.zip	15290	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
 COMPRESS-380/COMPRESS-380.zip	2257	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
 COMPRESS-382	19	TESTED_CODEC_TIER2	LZMA-alone dictionary allocation is rejected by the configured Tier 2 window limit
-COMPRESS-386	4	UNSUPPORTED_CODEC_FORMAT	Unix compress input belongs to an unsupported codec family
+COMPRESS-386	4	TESTED_CODEC_TIER2	detected as Unix compress input and safely rejected for its nonportable code width in Tier 2
 COMPRESS-417.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
-COMPRESS-459.cpio	512	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+COMPRESS-459.cpio	512	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
 COMPRESS-477/split_zip_created_by_winrar/file_to_compare_1	49334	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture
 COMPRESS-477/split_zip_created_by_winrar/split_zip_created_by_winrar.z01	262144	TESTED_ZIP_COMPANION_TIER2	consumed as a split ZIP volume by its terminal .zip fixture
 COMPRESS-477/split_zip_created_by_winrar/split_zip_created_by_winrar.z02	262144	TESTED_ZIP_COMPANION_TIER2	consumed as a split ZIP volume by its terminal .zip fixture
@@ -227,7 +227,7 @@ longpath/minotaur-c.zip	5054	TESTED_ZIP_TIER2	opened by the ZIP corpus with an e
 longpath/minotaur-M.jar	4062	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
 longpath/minotaur-z.zip	5102	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
 longpath/minotaur.ar	898	TESTED_AR_TIER2	opened by the AR corpus with an explicit success or rejection contract
-longpath/minotaur.cpio	2833	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+longpath/minotaur.cpio	2833	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
 longpath/minotaur.jar	4377	TESTED_ZIP_CONTAINER_TIER2	opened as a ZIP-based application container through seekable and streaming APIs
 longpath/minotaur.zip	5042	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
 longpath/vmgump_gnu.tar	20480	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
@@ -273,7 +273,7 @@ org/apache/commons/compress/COMPRESS-679/file.7z	228	TESTED_7Z_TIER2	opened by t
 org/apache/commons/compress/COMPRESS-687/test-issue.7z	1008	TESTED_7Z_TIER2	valid 7z input reused by the upstream Pack200 wrong-format regression
 org/apache/commons/compress/COMPRESS-699/icure_medical_device_dart_sdk-1.2.10.tar	936448	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 org/apache/commons/compress/COMPRESS-700/flutter_awesome_buttons-0.1.0.tar	284160	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
-org/apache/commons/compress/cpio/bad_long_value.cpio	1536	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+org/apache/commons/compress/cpio/bad_long_value.cpio	1536	TESTED_CPIO_TIER2	rejected by the CPIO corpus for its malformed fixed-width numeric field
 org/apache/commons/compress/dump/directory_null_bytes-fail.dump	78903	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
 org/apache/commons/compress/dump/invalid_compression_type-fail.dump	11904	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
 org/apache/commons/compress/dump/looping_inodes-fail.dump	85237	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
@@ -332,7 +332,7 @@ posix01_sparse.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an expli
 posix10_sparse.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 preepoch-posix.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 preepoch-star.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
-redline.cpio	268	UNSUPPORTED_ARCHIVE_FORMAT	Arkivo has no reader for this upstream archive family
+redline.cpio	268	TESTED_CPIO_TIER2	exercised by the CPIO corpus with an explicit success or rejection contract
 SHRUNK.ZIP	352	TESTED_ZIP_TIER2	opened by the ZIP corpus with an explicit success or rejection contract
 simple-aix-native-tar.tar	10240	TESTED_TAR_TIER2	opened by the TAR corpus with an explicit success or rejection contract
 test with spaces.txt	398	REFERENCE_PAYLOAD	plain expected content or helper input consumed by an owning archive or codec fixture

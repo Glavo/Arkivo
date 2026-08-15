@@ -2284,14 +2284,42 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Normalizes an entry path into node map form.
     private static String normalizeEntryPath(String path) throws IOException {
-        String normalized = path;
-        while (normalized.endsWith("/") && normalized.length() > 1) {
-            normalized = normalized.substring(0, normalized.length() - 1);
+        if (path.startsWith("/") || path.startsWith("\\") || path.length() >= 2 && path.charAt(1) == ':') {
+            throw new IOException("AR entry path must be relative");
+        }
+        StringBuilder normalized = new StringBuilder(path.length());
+        int start = 0;
+        while (start <= path.length()) {
+            int end = nextPathSeparator(path, start);
+            String name = path.substring(start, end);
+            if (!name.isEmpty() && !".".equals(name)) {
+                if ("..".equals(name)) {
+                    throw new IOException("AR entry path must not contain ..");
+                }
+                if (!normalized.isEmpty()) {
+                    normalized.append('/');
+                }
+                normalized.append(name);
+            }
+            start = end + 1;
         }
         if (normalized.isEmpty()) {
             throw new IOException("AR entry is missing a path");
         }
-        return normalized;
+        return normalized.toString();
+    }
+
+    /// Returns the index of the next archive path separator, or the path length.
+    private static int nextPathSeparator(String path, int start) {
+        int forwardSlash = path.indexOf('/', start);
+        int backslash = path.indexOf('\\', start);
+        if (forwardSlash < 0) {
+            return backslash >= 0 ? backslash : path.length();
+        }
+        if (backslash < 0) {
+            return forwardSlash;
+        }
+        return Math.min(forwardSlash, backslash);
     }
 
     /// Returns the parent path for a normalized node path.

@@ -56,7 +56,6 @@ public final class SevenZipDecodedChannelScalabilityProbe {
                 archive,
                 new SevenZipArchiveOptions.Create(
                         ArchiveCreateOptions.DEFAULT,
-                        null,
                         SevenZipCompression.deflate(1),
                         SevenZipFilterChain.EMPTY,
                         SevenZipArchiveOptions.DEFAULT_SOLID_FILE_COUNT,

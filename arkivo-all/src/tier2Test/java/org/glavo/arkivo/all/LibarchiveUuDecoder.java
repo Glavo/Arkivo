@@ -11,9 +11,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 import java.util.List;
 
-/// Decodes the traditional uuencode representation used for libarchive test fixtures.
+/// Decodes the traditional and base64 uuencode representations used for libarchive test fixtures.
 @NotNullByDefault
 final class LibarchiveUuDecoder {
     /// Prevents instantiation of this utility class.
@@ -23,19 +24,32 @@ final class LibarchiveUuDecoder {
     /// Decodes one complete uuencoded file and returns its binary payload.
     static byte @Unmodifiable [] decode(Path source) throws IOException {
         List<String> lines = Files.readAllLines(source, StandardCharsets.US_ASCII);
+        for (int index = 0; index < lines.size(); index++) {
+            String line = lines.get(index);
+            if (line.startsWith("begin-base64 ")) {
+                validateHeader(source, line);
+                return decodeBase64(source, lines, index + 1);
+            }
+            if (line.startsWith("begin ")) {
+                validateHeader(source, line);
+                return decodeTraditional(source, lines, index + 1);
+            }
+        }
+        throw malformed(source, "missing begin header");
+    }
+
+    /// Decodes a traditional uuencode body beginning at the specified line.
+    private static byte @Unmodifiable [] decodeTraditional(
+            Path source,
+            List<String> lines,
+            int firstBodyLine
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        boolean headerFound = false;
         boolean zeroLengthLineFound = false;
         boolean endFound = false;
 
-        for (String line : lines) {
-            if (!headerFound) {
-                if (line.startsWith("begin ")) {
-                    validateHeader(source, line);
-                    headerFound = true;
-                }
-                continue;
-            }
+        for (int index = firstBodyLine; index < lines.size(); index++) {
+            String line = lines.get(index);
             if (line.equals("end")) {
                 endFound = true;
                 break;
@@ -63,9 +77,6 @@ final class LibarchiveUuDecoder {
             decodeLine(source, line, decodedLength, output);
         }
 
-        if (!headerFound) {
-            throw malformed(source, "missing begin header");
-        }
         if (!zeroLengthLineFound) {
             throw malformed(source, "missing zero-length terminator");
         }
@@ -73,6 +84,30 @@ final class LibarchiveUuDecoder {
             throw malformed(source, "missing end marker");
         }
         return output.toByteArray();
+    }
+
+    /// Decodes a base64 uuencode body beginning at the specified line.
+    private static byte @Unmodifiable [] decodeBase64(
+            Path source,
+            List<String> lines,
+            int firstBodyLine
+    ) throws IOException {
+        StringBuilder encoded = new StringBuilder();
+        for (int index = firstBodyLine; index < lines.size(); index++) {
+            String line = lines.get(index);
+            if (line.equals("====")) {
+                try {
+                    return Base64.getDecoder().decode(encoded.toString());
+                } catch (IllegalArgumentException exception) {
+                    throw malformed(source, "invalid base64 body", exception);
+                }
+            }
+            if (line.isEmpty()) {
+                throw malformed(source, "empty encoded line");
+            }
+            encoded.append(line);
+        }
+        throw malformed(source, "missing base64 end marker");
     }
 
     /// Validates the mode and filename fields in a uuencode header.
@@ -123,5 +158,10 @@ final class LibarchiveUuDecoder {
     /// Creates a checked failure identifying a malformed fixture.
     private static IOException malformed(Path source, String detail) {
         return new IOException("Malformed uuencoded fixture " + source + ": " + detail);
+    }
+
+    /// Creates a checked failure identifying a malformed fixture and its cause.
+    private static IOException malformed(Path source, String detail, Throwable cause) {
+        return new IOException("Malformed uuencoded fixture " + source + ": " + detail, cause);
     }
 }

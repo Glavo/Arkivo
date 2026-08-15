@@ -164,6 +164,9 @@ Run the normal compilation, fast comprehensive Tier 1 tests, API compatibility, 
 ./gradlew check
 ```
 
+This also compiles the optional Tier 2 and Tier 3 test source sets to catch API drift, but does not run them or
+download their external corpora.
+
 The slower upstream-corpus and interoperability tests are available as Tier 2. `tier2Test` runs only that tier, while
 `checkTier2` also includes the normal checks:
 
@@ -208,6 +211,8 @@ optional tier is requested; binary corpus files are not stored in this repositor
 
 The build targets Java 17. The checked-in API baselines make unreviewed public or protected signature changes fail the
 normal `check` lifecycle.
+
+Maintainers preparing a signed Maven Central release should follow [RELEASING.md](RELEASING.md).
 
 ## License
 

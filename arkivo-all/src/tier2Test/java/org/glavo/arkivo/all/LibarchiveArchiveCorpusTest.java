@@ -76,6 +76,9 @@ public final class LibarchiveArchiveCorpusTest {
     /// The GNU TAR symbolic-link path whose 200-byte name is carried in an extension record.
     private static final String GNU_LONG_LINK_NAME = "abcdefghij".repeat(20);
 
+    /// The seven-component directory path used by Apple's historical extended GNU TAR fixture.
+    private static final String MAC_LONG_DIRECTORY = "abcdefghijklmnopqrstuvwxyz/".repeat(7);
+
     /// The expected content of the canonical RAR4 text entries.
     private static final byte @Unmodifiable [] RAR4_TEXT =
             "test text document\r\n".getBytes(StandardCharsets.US_ASCII);
@@ -229,6 +232,24 @@ public final class LibarchiveArchiveCorpusTest {
             assertEquals(2_097_152L, attributes.userId());
             assertEquals(2_097_152L, attributes.groupId());
             assertEquals(119L, attributes.size());
+        }
+    }
+
+    /// Verifies dot-prefixed AppleDouble entries cannot introduce a self-referential synthetic directory.
+    @Test
+    public void readsMacTarDotPrefixedEntries(@TempDir Path temporaryDirectory) throws IOException {
+        Path archive = decodeFixture(
+                "test_compat_mac-1.tar.Z.uu",
+                "mac.tar.Z",
+                temporaryDirectory
+        );
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive);
+             Stream<Path> paths = Files.walk(fileSystem.getPath("/"))) {
+            assertEquals(16L, paths.count());
+            assertEquals(225L, Files.size(fileSystem.getPath("/._dir")));
+            assertEquals(0L, Files.size(fileSystem.getPath("/file")));
+            assertEquals(225L, Files.size(fileSystem.getPath("/" + MAC_LONG_DIRECTORY + "._file")));
+            assertTrue(Files.isDirectory(fileSystem.getPath("/" + MAC_LONG_DIRECTORY + "dir")));
         }
     }
 
