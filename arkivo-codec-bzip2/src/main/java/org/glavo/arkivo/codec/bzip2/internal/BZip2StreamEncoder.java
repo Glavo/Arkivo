@@ -3,30 +3,24 @@
 
 package org.glavo.arkivo.codec.bzip2.internal;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.EncodingOptions;
-import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Objects;
 import java.util.PriorityQueue;
 
-/// Encodes concatenated BZip2 streams with configurable block sizes from 100 through 900 KiB.
+/// Writes BZip2 frames with configurable block sizes from 100 through 900 KiB.
 ///
-/// The encoder performs the two BZip2 run-length stages, a cyclic Burrows-Wheeler transform, move-to-front coding,
-/// and canonical length-limited Huffman coding without delegating any format stage to an external library.
+/// The writer performs the two BZip2 run-length stages, a cyclic Burrows-Wheeler transform, move-to-front coding, and
+/// canonical length-limited Huffman coding. Its target is borrowed and remains open throughout the writer lifecycle.
 @NotNullByDefault
-public final class BZip2ChannelEncoder implements CompressingWritableByteChannel.Framed {
+final class BZip2StreamEncoder {
     /// The BZip2 block marker.
     private static final long BLOCK_MAGIC = 0x314159265359L;
 
@@ -35,9 +29,6 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
 
     /// The number of bytes represented by one block-size unit.
     private static final int BLOCK_SIZE_UNIT = 100_000;
-
-    /// The default BZip2 block size.
-    public static final int DEFAULT_BLOCK_SIZE = 9;
 
     /// The number of symbols controlled by one Huffman selector.
     private static final int GROUP_SIZE = 50;
@@ -53,9 +44,6 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
 
     /// The RUNB symbol used by the second run-length stage.
     private static final int RUNB = 1;
-
-    /// Tracks closure of the owned compressed-data target.
-    private final OwnedChannelCloser targetCloser;
 
     /// The most-significant-bit-first writer over the compressed target.
     private final BitOutput bits;
@@ -81,47 +69,25 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     /// Whether a BZip2 stream header has been emitted and awaits its trailer.
     private boolean frameActive;
 
-    /// Whether terminal finalization has been requested.
-    private boolean finished;
-
-    /// Whether this encoder has closed.
-    private boolean closed;
-
-    /// The number of uncompressed bytes accepted through channel writes.
-    private long inputBytes;
-
-    /// Creates an encoder over a compressed channel with explicit ownership and block size.
+    /// Creates a stream writer over a borrowed compressed target.
     ///
     /// @param target the channel that receives BZip2 bytes
-    /// @param ownership whether closing this encoder also closes `target`
     /// @param blockSize the BZip2 block-size level from one through nine
     /// @throws IllegalArgumentException if `blockSize` is outside the supported range
     /// @throws IOException if the initial stream header cannot be written
-    public BZip2ChannelEncoder(
-            WritableByteChannel target,
-            ResourceOwnership ownership,
-            int blockSize
-    ) throws IOException {
+    BZip2StreamEncoder(WritableByteChannel target, int blockSize) throws IOException {
         Objects.requireNonNull(target, "target");
-        this.targetCloser = new OwnedChannelCloser(target, ownership);
         if (blockSize < 1 || blockSize > 9) {
             throw new IllegalArgumentException("BZip2 block size must be between 1 and 9");
         }
         block = new byte[blockSize * BLOCK_SIZE_UNIT];
         bits = new BitOutput(target);
-        try {
-            startFrameIfNeeded();
-        } catch (IOException | RuntimeException | Error exception) {
-            targetCloser.closeAfter(exception);
-            throw exception;
-        }
+        startFrameIfNeeded();
     }
 
     /// Adds original bytes directly from the source buffer.
-    @Override
-    public int write(ByteBuffer source) throws IOException {
+    int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
-        ensureWritable();
         if (!source.hasRemaining()) {
             return 0;
         }
@@ -130,24 +96,11 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
         while (source.hasRemaining()) {
             addByte(Byte.toUnsignedInt(source.get()));
         }
-        int count = source.position() - start;
-        inputBytes += count;
-        return count;
-    }
-
-    /// Flushes complete compressed bytes already emitted to the wrapped target.
-    ///
-    /// @throws IOException if the wrapped target cannot accept pending bytes
-    public void flush() throws IOException {
-        ensureOpen();
-        bits.flush();
+        return source.position() - start;
     }
 
     /// Explicitly starts another BZip2 frame after a completed boundary.
-    @Override
-    public void startFrame(EncodingOptions options) throws IOException {
-        Objects.requireNonNull(options, "options");
-        ensureWritable();
+    void startFrame() throws IOException {
         if (frameActive) {
             throw new IllegalStateException("A BZip2 frame is already active");
         }
@@ -155,61 +108,11 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     }
 
     /// Finishes the active BZip2 stream while retaining the encoder for another stream.
-    @Override
-    public void finishFrame() throws IOException {
-        ensureWritable();
+    void finishFrame() throws IOException {
         if (!frameActive) {
             return;
         }
         finishActiveFrame();
-    }
-
-    /// Finalizes BZip2 encoding and applies the configured channel-context lifecycle.
-    @Override
-    public void finish() throws IOException {
-        if (closed) {
-            targetCloser.close();
-            return;
-        }
-        if (finished) {
-            return;
-        }
-        @Nullable Throwable failure = null;
-        try {
-            if (frameActive) {
-                finishActiveFrame();
-            }
-            finished = true;
-        } catch (IOException | RuntimeException | Error exception) {
-            failure = exception;
-        }
-        closed = true;
-        targetCloser.closeAfter(failure);
-        throwFailure(failure);
-    }
-
-    /// Finishes this BZip2 encoder and closes an owned target.
-    @Override
-    public void close() throws IOException {
-        finish();
-    }
-
-    /// Returns the number of uncompressed bytes accepted through channel writes.
-    @Override
-    public long inputBytes() {
-        return inputBytes;
-    }
-
-    /// Returns the exact number of compressed bytes written to the target.
-    @Override
-    public long outputBytes() {
-        return bits.byteCount();
-    }
-
-    /// Returns whether this encoder remains open.
-    @Override
-    public boolean isOpen() {
-        return !closed && !finished;
     }
 
     /// Lazily starts another BZip2 stream after an explicit frame boundary.
@@ -576,35 +479,6 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
         return codes;
     }
 
-    /// Requires this stream to remain open and not terminally finalized.
-    private void ensureWritable() throws IOException {
-        ensureOpen();
-        if (finished) {
-            throw new IOException("BZip2 encoder has already finished");
-        }
-    }
-
-    /// Requires this stream to remain open.
-    private void ensureOpen() throws IOException {
-        if (closed) {
-            throw new ClosedChannelException();
-        }
-    }
-
-    /// Rethrows a close-time failure with its original checked or unchecked type.
-    private static void throwFailure(@Nullable Throwable failure) throws IOException {
-        if (failure == null) {
-            return;
-        }
-        if (failure instanceof IOException exception) {
-            throw exception;
-        }
-        if (failure instanceof RuntimeException exception) {
-            throw exception;
-        }
-        throw (Error) failure;
-    }
-
     /// Stores one Burrows-Wheeler last column and the row containing the original block.
     ///
     /// @param lastColumn      the transformed byte column
@@ -640,9 +514,6 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
 
         /// The number of high-order bits populated in `currentByte`.
         private int bitCount;
-
-        /// The number of complete bytes written to the target.
-        private long byteCount;
 
         /// Creates a bit writer over the given target.
         private BitOutput(WritableByteChannel target) {
@@ -683,14 +554,8 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
                 if (written == 0) {
                     throw new IOException("BZip2 target channel made no progress");
                 }
-                byteCount += written;
             }
             outputBuffer.clear();
-        }
-
-        /// Returns the number of complete bytes written to the target.
-        private long byteCount() {
-            return byteCount;
         }
 
         /// Writes one complete byte to the compressed target.

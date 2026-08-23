@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Decoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Encoder;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
@@ -35,7 +34,7 @@ public final class BZip2Codec
     public static final int MAXIMUM_COMPRESSION_LEVEL = 9;
 
     /// The default BZip2 block-size level.
-    public static final int DEFAULT_COMPRESSION_LEVEL = BZip2ChannelEncoder.DEFAULT_BLOCK_SIZE;
+    public static final int DEFAULT_COMPRESSION_LEVEL = 9;
 
     /// The default immutable BZip2 codec configuration.
     public static final BZip2Codec DEFAULT = new BZip2Codec(

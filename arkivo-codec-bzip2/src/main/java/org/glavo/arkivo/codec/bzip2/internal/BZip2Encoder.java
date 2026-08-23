@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec.bzip2.internal;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.EncodingOptions;
@@ -18,22 +17,22 @@ import java.util.Objects;
 
 /// Incrementally encodes BZip2 frames without retaining caller-owned buffers.
 ///
-/// The pure Java block encoder writes into a bounded in-memory sink. Source bytes are supplied in bounded slices and no
+/// The pure Java stream writer emits into a bounded in-memory sink. Source bytes are supplied in bounded slices and no
 /// additional source is accepted while complete compressed bytes await caller-owned target space. Flushing completes
 /// the current BZip2 frame, which is the format's independently decodable continuing-stream boundary.
 @NotNullByDefault
 public final class BZip2Encoder implements CompressionEncoder.Framed {
-    /// The largest source slice supplied to the block encoder at once.
+    /// The largest source slice supplied to the stream writer at once.
     private static final int SOURCE_SLICE_SIZE = 16 * 1024;
 
-    /// Complete compressed bytes emitted by the block encoder.
+    /// Complete compressed bytes emitted by the stream writer.
     private final InMemorySink output = new InMemorySink();
 
     /// Configured BZip2 block-size level.
     private final int blockSize;
 
-    /// Active pure Java block encoder, or null after closure.
-    private @Nullable BZip2ChannelEncoder encoder;
+    /// Active pure Java stream writer, or null after closure.
+    private @Nullable BZip2StreamEncoder writer;
 
     /// Current encoder lifecycle state.
     private State state = State.ACTIVE;
@@ -46,7 +45,7 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
             throw new IllegalArgumentException("BZip2 block size must be between 1 and 9");
         }
         this.blockSize = blockSize;
-        encoder = createBlockEncoder();
+        writer = createStreamEncoder();
     }
 
     /// Explicitly starts another BZip2 frame after a completed boundary.
@@ -57,7 +56,7 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
         if (state != State.BETWEEN_FRAMES) {
             throw new IllegalStateException("Cannot start a BZip2 frame while encoder state is " + state);
         }
-        requireEncoder().startFrame(options);
+        requireWriter().startFrame();
         state = State.ACTIVE;
     }
 
@@ -87,9 +86,9 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
             int length = Math.min(source.remaining(), SOURCE_SLICE_SIZE);
             ByteBuffer slice = source.slice();
             slice.limit(length);
-            int consumed = requireEncoder().write(slice);
+            int consumed = requireWriter().write(slice);
             if (consumed <= 0 || consumed > length) {
-                throw new IOException("BZip2 block encoder made invalid source progress: " + consumed);
+                throw new IOException("BZip2 stream writer made invalid source progress: " + consumed);
             }
             source.position(source.position() + consumed);
         }
@@ -111,7 +110,7 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
             return CodecOutcome.FLUSHED;
         }
         if (state == State.ACTIVE) {
-            requireEncoder().finishFrame();
+            requireWriter().finishFrame();
             state = State.FLUSHING;
         } else if (state != State.FLUSHING) {
             throw new IllegalStateException("Cannot flush while BZip2 encoder state is " + state);
@@ -134,7 +133,7 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
             return CodecOutcome.BOUNDARY_REACHED;
         }
         if (state == State.ACTIVE) {
-            requireEncoder().finishFrame();
+            requireWriter().finishFrame();
             state = State.FRAME_FINISHING;
         } else if (state != State.FRAME_FINISHING) {
             throw new IllegalStateException("Cannot finish a frame while BZip2 encoder state is " + state);
@@ -157,11 +156,11 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
             return CodecOutcome.FINISHED;
         }
         if (state == State.BETWEEN_FRAMES) {
-            requireEncoder().finish();
+            requireWriter().finishFrame();
             state = State.FINISHING;
         }
         if (state == State.ACTIVE) {
-            requireEncoder().finish();
+            requireWriter().finishFrame();
             state = State.FINISHING;
         } else if (state != State.FINISHING) {
             throw new IllegalStateException("Cannot finish while BZip2 encoder state is " + state);
@@ -180,7 +179,7 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
     public void reset() {
         requireOpen();
         output.clear();
-        encoder = createBlockEncoder();
+        writer = createStreamEncoder();
         state = State.ACTIVE;
     }
 
@@ -188,22 +187,22 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
     @Override
     public void close() {
         state = State.CLOSED;
-        encoder = null;
+        writer = null;
         output.clear();
     }
 
-    /// Creates the pure Java block encoder over the private memory sink.
-    private BZip2ChannelEncoder createBlockEncoder() {
+    /// Creates the pure Java stream writer over the private memory sink.
+    private BZip2StreamEncoder createStreamEncoder() {
         try {
-            return new BZip2ChannelEncoder(output, ResourceOwnership.BORROWED, blockSize);
+            return new BZip2StreamEncoder(output, blockSize);
         } catch (IOException exception) {
-            throw new AssertionError("In-memory BZip2 encoder creation unexpectedly failed", exception);
+            throw new AssertionError("In-memory BZip2 stream-writer creation unexpectedly failed", exception);
         }
     }
 
-    /// Returns the active block encoder.
-    private BZip2ChannelEncoder requireEncoder() {
-        @Nullable BZip2ChannelEncoder current = encoder;
+    /// Returns the active stream writer.
+    private BZip2StreamEncoder requireWriter() {
+        @Nullable BZip2StreamEncoder current = writer;
         if (current == null) {
             throw new IllegalStateException("BZip2 encoder is closed");
         }

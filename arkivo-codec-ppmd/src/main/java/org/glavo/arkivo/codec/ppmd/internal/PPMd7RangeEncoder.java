@@ -40,9 +40,6 @@ final class PPMd7RangeEncoder {
     /// Number of delayed bytes represented by the cache.
     private long cacheSize = 1L;
 
-    /// Number of compressed bytes produced.
-    private long outputBytes;
-
     /// Whether the arithmetic representation was finished.
     private boolean finished;
 
@@ -108,11 +105,6 @@ final class PPMd7RangeEncoder {
         outputBuffer.clear();
     }
 
-    /// Returns the number of compressed bytes produced.
-    long outputBytes() {
-        return outputBytes;
-    }
-
     /// Abandons the current arithmetic representation and restores its initial state.
     void reset() {
         outputBuffer.clear();
@@ -120,7 +112,6 @@ final class PPMd7RangeEncoder {
         range = UINT_MASK;
         cache = 0;
         cacheSize = 1L;
-        outputBytes = 0L;
         finished = false;
     }
 
@@ -154,6 +145,5 @@ final class PPMd7RangeEncoder {
             flushOutput();
         }
         outputBuffer.put((byte) value);
-        outputBytes++;
     }
 }

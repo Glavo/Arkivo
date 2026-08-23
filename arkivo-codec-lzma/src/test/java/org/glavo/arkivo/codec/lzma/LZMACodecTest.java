@@ -10,7 +10,6 @@ import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
-import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.LZMA2Options;
@@ -494,17 +493,19 @@ public final class LZMACodecTest {
         assertEquals(dictionarySize, exception.requiredWindowSize());
     }
 
-    /// Verifies the channel-backed LZMA2 encoder against the transport-independent decoder.
+    /// Verifies the LZMA2 channel adapter against the transport-independent decoder.
     @Test
-    public void channelLzma2EncoderRoundTripsThroughEngineAdapter() throws IOException {
+    public void lzma2ChannelAdapterRoundTripsThroughEngine() throws IOException {
         byte[] content = mixedLzma2Content();
         ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
         WritableByteChannel target = Channels.newChannel(compressedBytes);
-        LZMA2ChannelEncoder encoder = new LZMA2ChannelEncoder(
-                target,
-                ResourceOwnership.BORROWED,
-                1 << 20
-        );
+        CompressingWritableByteChannel encoder = new LZMA2Codec()
+                .withDictionarySize(1 << 20)
+                .newWritableByteChannel(
+                        target,
+                        EncodingOptions.DEFAULT,
+                        ResourceOwnership.BORROWED
+                );
         ByteBuffer source = ByteBuffer.allocateDirect(content.length).put(content).flip();
         assertEquals(content.length, encoder.write(source));
         encoder.finish();

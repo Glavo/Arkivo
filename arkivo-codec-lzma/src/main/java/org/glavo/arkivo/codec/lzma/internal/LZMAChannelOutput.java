@@ -19,9 +19,6 @@ final class LZMAChannelOutput {
     /// The direct compressed-output staging buffer.
     private final ByteBuffer buffer = ByteBuffer.allocateDirect(8192);
 
-    /// The number of compressed bytes written to the target.
-    private long byteCount;
-
     /// Creates a buffered byte target.
     LZMAChannelOutput(WritableByteChannel target) {
         this.target = Objects.requireNonNull(target, "target");
@@ -57,13 +54,7 @@ final class LZMAChannelOutput {
             if (written == 0) {
                 throw new IOException("LZMA target channel made no progress");
             }
-            byteCount += written;
         }
         buffer.clear();
-    }
-
-    /// Returns the number of compressed bytes written to the target.
-    long byteCount() {
-        return byteCount;
     }
 }

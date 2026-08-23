@@ -5,18 +5,14 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.checksum.xxhash.XXHash64;
-import org.glavo.arkivo.codec.ResourceOwnership;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.EncodingOptions;
-import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -28,14 +24,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-/// Encodes Zstandard frames directly over a writable byte channel in pure Java.
+/// Encodes Zstandard frames into a borrowed channel in pure Java.
 @NotNullByDefault
-public final class ZstdChannelEncoder implements CompressingWritableByteChannel.FlushableFramed {
+final class ZstdStreamEncoder {
     /// Compressed-data target.
     private final WritableByteChannel target;
-
-    /// Tracks closure of the owned compressed-data target.
-    private final OwnedChannelCloser targetCloser;
 
     /// Validated encoder parameters.
     private ZstdEncoderParameters parameters;
@@ -82,35 +75,26 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
     /// Number of uncompressed bytes accepted in the active frame.
     private long frameInputBytes;
 
-    /// Number of uncompressed bytes consumed across all frames.
-    private long inputBytes;
-
-    /// Number of compressed bytes written across all frames.
-    private long outputBytes;
-
     /// Whether one frame is active and will be finished on the next frame boundary.
     private boolean frameActive = true;
 
     /// Whether the active frame header has been written.
     private boolean headerWritten;
 
-    /// Whether this encoder remains open.
-    private boolean open = true;
+    /// Whether worker resources have been stopped.
+    private boolean stopped;
 
     /// Creates a pure Java Zstandard channel encoder.
     ///
     /// @param target compressed-data target
-    /// @param ownership whether this context closes the target
     /// @param parameters validated encoder parameters
     /// @param magicless whether standard frame magic is omitted
-    public ZstdChannelEncoder(
+    ZstdStreamEncoder(
             WritableByteChannel target,
-            ResourceOwnership ownership,
             ZstdEncoderParameters parameters,
             boolean magicless
     ) {
         this.target = Objects.requireNonNull(target, "target");
-        this.targetCloser = new OwnedChannelCloser(target, ownership);
         this.parameters = Objects.requireNonNull(parameters, "parameters");
         this.magicless = magicless;
         this.blockEncoder.reset(parameters);
@@ -126,10 +110,8 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
     }
 
     /// Consumes uncompressed bytes while retaining one pending block for frame finalization.
-    @Override
-    public int write(ByteBuffer source) throws IOException {
+    int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
-        ensureOpen();
         if (!source.hasRemaining()) {
             return 0;
         }
@@ -148,15 +130,12 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
             checksum.update(inputBuffer, inputSize, count);
             inputSize += count;
             frameInputBytes += count;
-            inputBytes += count;
         }
         return source.position() - start;
     }
 
     /// Flushes all currently accepted input as complete non-final blocks.
-    @Override
-    public void flush() throws IOException {
-        ensureOpen();
+    void flush() throws IOException {
         if (!frameActive) {
             return;
         }
@@ -171,10 +150,8 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
     }
 
     /// Explicitly starts another frame with independent source-size metadata.
-    @Override
-    public void startFrame(EncodingOptions options) throws IOException {
+    void startFrame(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
-        ensureOpen();
         if (frameActive) {
             throw new IllegalStateException("A Zstandard frame is already active");
         }
@@ -183,9 +160,7 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
     }
 
     /// Finishes the active frame while retaining the encoder for another frame.
-    @Override
-    public void finishFrame() throws IOException {
-        ensureOpen();
+    void finishFrame() throws IOException {
         if (!frameActive) {
             return;
         }
@@ -194,57 +169,31 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
         parameters = parameters.withPledgedSourceSize(CompressionCodec.UNKNOWN_SIZE);
     }
 
-    /// Finishes the active frame and closes an owned target.
-    @Override
-    public void finish() throws IOException {
-        if (!open) {
-            targetCloser.close();
+    /// Finishes the active frame and stops worker resources without closing the borrowed target.
+    void finish() throws IOException {
+        if (stopped) {
             return;
         }
-
-        @Nullable Throwable failure = null;
         try {
             if (frameActive) {
                 endFrame();
+                frameActive = false;
             }
+            stopped = true;
+            closeExecutor(null);
         } catch (IOException | RuntimeException | Error exception) {
-            failure = exception;
+            stopped = true;
+            closeExecutor(exception);
+            throw exception;
         }
-        open = false;
-        closeExecutor(failure);
-        targetCloser.closeAfter(failure);
-    }
-
-    /// Returns the consumed uncompressed byte count.
-    @Override
-    public long inputBytes() {
-        return inputBytes;
-    }
-
-    /// Returns the emitted compressed byte count.
-    @Override
-    public long outputBytes() {
-        return outputBytes;
-    }
-
-    /// Returns whether this encoder remains open.
-    @Override
-    public boolean isOpen() {
-        return open;
-    }
-
-    /// Finishes and closes the encoder.
-    @Override
-    public void close() throws IOException {
-        finish();
     }
 
     /// Abandons pending frame and worker state without finishing output or closing the retained target.
     void abort() {
-        if (!open) {
+        if (stopped) {
             return;
         }
-        open = false;
+        stopped = true;
         for (Future<ZstdFrameEncoder.JobEncoding> pendingJob : pendingJobs) {
             pendingJob.cancel(true);
         }
@@ -462,14 +411,6 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
             if (written == 0) {
                 throw new IOException("Zstandard target channel made no progress");
             }
-            outputBytes += written;
-        }
-    }
-
-    /// Requires the encoder to remain open.
-    private void ensureOpen() throws ClosedChannelException {
-        if (!open) {
-            throw new ClosedChannelException();
         }
     }
 }

@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -35,7 +34,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     private final QueueingChannel output = new QueueingChannel();
 
     /// Pure Java frame encoder targeting only the internal output queue.
-    private ZstdChannelEncoder encoder;
+    private ZstdStreamEncoder encoder;
 
     /// Current encoder lifecycle state.
     private State state = State.ACTIVE;
@@ -60,9 +59,8 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
         if (state != State.BETWEEN_FRAMES) {
             throw new IllegalStateException("Cannot start a Zstandard frame while encoder state is " + state);
         }
-        encoder.abort();
         parameters = defaultFrameParameters.withPledgedSourceSize(options.sourceSize());
-        encoder = createEncoder();
+        encoder.startFrame(options);
         state = State.ACTIVE;
     }
 
@@ -138,12 +136,12 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
             return CodecOutcome.FINISHED;
         }
         if (state == State.BETWEEN_FRAMES) {
-            encoder.abort();
+            encoder.finish();
             state = State.FINISHED;
             return CodecOutcome.FINISHED;
         }
         if (state == State.ACTIVE) {
-            encoder.finishFrame();
+            encoder.finish();
             state = State.FINISHING;
         }
         drainOutput(target);
@@ -177,7 +175,6 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
             return CodecOutcome.NEEDS_OUTPUT;
         }
         parameters = defaultFrameParameters;
-        encoder = createEncoder();
         state = State.BETWEEN_FRAMES;
         return CodecOutcome.BOUNDARY_REACHED;
     }
@@ -204,8 +201,8 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     }
 
     /// Creates a fresh frame encoder targeting the internal queue.
-    private ZstdChannelEncoder createEncoder() {
-        return new ZstdChannelEncoder(output, ResourceOwnership.BORROWED, parameters, magicless);
+    private ZstdStreamEncoder createEncoder() {
+        return new ZstdStreamEncoder(output, parameters, magicless);
     }
 
     /// Copies queued encoded bytes into the caller's target buffer.

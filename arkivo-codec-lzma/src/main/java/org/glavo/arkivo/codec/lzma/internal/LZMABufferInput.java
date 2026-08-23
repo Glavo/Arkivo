@@ -33,17 +33,11 @@ final class LZMABufferInput implements LZMAInput {
     /// Whether exhaustion of the attached source is physical end of input.
     private boolean endOfInput;
 
-    /// Logical compressed bytes consumed by completed range-decoder operations.
-    private long byteCount;
-
     /// Saved caller position for the active symbol transaction.
     private int transactionSourcePosition;
 
     /// Saved owned lookahead position for the active symbol transaction.
     private int transactionLookaheadPosition;
-
-    /// Saved logical byte count for the active symbol transaction.
-    private long transactionByteCount;
 
     /// Whether one symbol transaction is active.
     private boolean transactionActive;
@@ -100,21 +94,14 @@ final class LZMABufferInput implements LZMAInput {
         lookaheadLimit += length;
     }
 
-    /// Returns the number of logically consumed compressed bytes.
-    long byteCount() {
-        return byteCount;
-    }
-
     /// Reads one byte from owned lookahead or the attached caller source.
     @Override
     public int read() throws LZMANeedInputException {
         if (lookaheadPosition < lookaheadLimit) {
-            byteCount++;
             return Byte.toUnsignedInt(lookahead[lookaheadPosition++]);
         }
         ByteBuffer input = Objects.requireNonNull(source, "No LZMA source buffer is attached");
         if (input.hasRemaining()) {
-            byteCount++;
             return Byte.toUnsignedInt(input.get());
         }
         if (endOfInput) {
@@ -138,7 +125,6 @@ final class LZMABufferInput implements LZMAInput {
         ByteBuffer input = Objects.requireNonNull(source, "No LZMA source buffer is attached");
         transactionSourcePosition = input.position();
         transactionLookaheadPosition = lookaheadPosition;
-        transactionByteCount = byteCount;
         transactionActive = true;
     }
 
@@ -157,7 +143,6 @@ final class LZMABufferInput implements LZMAInput {
         ByteBuffer input = Objects.requireNonNull(source, "No LZMA source buffer is attached");
         input.position(transactionSourcePosition);
         lookaheadPosition = transactionLookaheadPosition;
-        byteCount = transactionByteCount;
         transactionActive = false;
     }
 

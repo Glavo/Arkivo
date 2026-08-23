@@ -7,12 +7,11 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
-import java.io.ByteArrayInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.util.Objects;
 
 /// Incrementally decodes a raw LZMA2 stream without retaining caller-owned buffers.
@@ -50,7 +49,7 @@ public final class LZMA2Decoder implements CompressionDecoder {
     private int compressedOffset;
 
     /// The active in-memory compressed chunk source, or null.
-    private @Nullable LZMAChannelInput compressedChunk;
+    private @Nullable ChunkInput compressedChunk;
 
     /// Remaining output bytes in the active chunk.
     private int chunkRemaining;
@@ -256,11 +255,8 @@ public final class LZMA2Decoder implements CompressionDecoder {
     }
 
     /// Starts range decoding after the complete compressed chunk body has been staged.
-    private void startCompressedChunk(byte[] encoded) throws IOException {
-        LZMAChannelInput input = new LZMAChannelInput(
-                Channels.newChannel(new ByteArrayInputStream(encoded)),
-                Math.max(1, encoded.length)
-        );
+    private void startCompressedChunk(byte @Unmodifiable [] encoded) throws IOException {
+        ChunkInput input = new ChunkInput(encoded);
         compressedChunk = input;
         compressedData = null;
         compressedOffset = 0;
@@ -270,7 +266,7 @@ public final class LZMA2Decoder implements CompressionDecoder {
 
     /// Verifies the canonical range-coder termination of a completed compressed chunk.
     private void finishCompressedChunk() throws IOException {
-        LZMAChannelInput input = Objects.requireNonNull(compressedChunk, "compressedChunk");
+        ChunkInput input = Objects.requireNonNull(compressedChunk, "compressedChunk");
         if (decoder.readByte() >= 0 || !decoder.chunkEnded()) {
             throw new IOException("LZMA2 chunk exceeds its declared output size");
         }
@@ -298,6 +294,32 @@ public final class LZMA2Decoder implements CompressionDecoder {
     private void requireOpen() {
         if (phase == Phase.CLOSED) {
             throw new IllegalStateException("LZMA2 decoder is closed");
+        }
+    }
+
+    /// Supplies one completely staged compressed chunk to the range decoder.
+    @NotNullByDefault
+    private static final class ChunkInput implements LZMAInput {
+        /// Immutable compressed chunk bytes.
+        private final byte @Unmodifiable [] bytes;
+
+        /// Index of the next compressed byte.
+        private int position;
+
+        /// Creates an input over one decoder-owned chunk array.
+        private ChunkInput(byte @Unmodifiable [] bytes) {
+            this.bytes = Objects.requireNonNull(bytes, "bytes");
+        }
+
+        /// Reads one unsigned byte or returns `-1` at the chunk boundary.
+        @Override
+        public int read() {
+            return position < bytes.length ? Byte.toUnsignedInt(bytes[position++]) : -1;
+        }
+
+        /// Returns the number of compressed bytes not yet consumed.
+        private int available() {
+            return bytes.length - position;
         }
     }
 

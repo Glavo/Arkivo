@@ -19,9 +19,6 @@ final class XZChannelOutput {
     /// The direct compressed-output staging buffer.
     private final ByteBuffer buffer = ByteBuffer.allocateDirect(8192);
 
-    /// The number of bytes written to the target.
-    private long byteCount;
-
     /// Creates a buffered XZ target.
     XZChannelOutput(WritableByteChannel target) {
         this.target = Objects.requireNonNull(target, "target");
@@ -79,13 +76,7 @@ final class XZChannelOutput {
             if (written == 0) {
                 throw new IOException("XZ target channel made no progress");
             }
-            byteCount += written;
         }
         buffer.clear();
-    }
-
-    /// Returns the number of bytes written to the target.
-    long byteCount() {
-        return byteCount;
     }
 }

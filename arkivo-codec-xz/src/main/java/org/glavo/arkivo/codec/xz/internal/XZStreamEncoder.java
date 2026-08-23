@@ -6,8 +6,7 @@ package org.glavo.arkivo.codec.xz.internal;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
-import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
-import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
+import org.glavo.arkivo.codec.lzma.LZMA2Codec;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
@@ -24,26 +23,16 @@ import org.jetbrains.annotations.Nullable;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
-/// Encodes standards-compliant multi-Block and concatenated XZ streams directly to a channel.
+/// Encodes standards-compliant multi-Block and concatenated XZ streams into a borrowed channel.
 @NotNullByDefault
-public final class XZChannelEncoder implements CompressingWritableByteChannel.FlushableFramed {
-    /// The default LZMA2 dictionary size.
-    public static final int DEFAULT_DICTIONARY_SIZE = 8 * 1024 * 1024;
-
+final class XZStreamEncoder {
     /// The initial number of Block records retained for the final Index.
     private static final int INITIAL_INDEX_CAPACITY = 8;
-
-    /// The compressed-data target.
-    private final WritableByteChannel target;
-
-    /// Tracks closure of the owned compressed-data target.
-    private final OwnedChannelCloser targetCloser;
 
     /// The buffered XZ byte target.
     private final XZChannelOutput output;
@@ -70,16 +59,13 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     private @Nullable CountingChannel compressedCounter;
 
     /// The active LZMA2 block encoder after the first write.
-    private @Nullable LZMA2ChannelEncoder blockEncoder;
+    private @Nullable CompressingWritableByteChannel blockEncoder;
 
     /// The outermost preprocessing input, or the LZMA2 encoder when no preprocessing filter is configured.
     private @Nullable WritableByteChannel blockInput;
 
     /// The serialized Block Header size.
     private long blockHeaderSize;
-
-    /// The total number of uncompressed bytes accepted.
-    private long inputBytes;
 
     /// The active Block's uncompressed size.
     private long blockUncompressedSize;
@@ -96,75 +82,9 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     /// Whether an XZ Stream Header has been emitted and awaits a matching footer.
     private boolean streamActive = true;
 
-    /// Whether this encoder remains open.
-    private boolean open = true;
-
-    /// Creates an XZ encoder with explicit dictionary and integrity-check settings.
-    ///
-    /// @param target the channel receiving the XZ Stream
-    /// @param ownership whether finishing or closing this encoder also closes {@code target}
-    /// @param dictionarySize the LZMA2 dictionary size, in bytes
-    /// @param checkType the supported XZ Check ID written to the Stream flags
-    /// @throws IOException if {@code checkType} is unsupported or the Stream Header cannot be written
-    /// @throws NullPointerException if {@code target} or {@code ownership} is {@code null}
-    /// @throws IllegalArgumentException if {@code dictionarySize} cannot be represented by XZ's LZMA2 filter
-    public XZChannelEncoder(
-            WritableByteChannel target,
-            ResourceOwnership ownership,
-            int dictionarySize,
-            int checkType
-    ) throws IOException {
-        this(
-                target,
-                ownership,
-                LZMAProperties.defaults(dictionarySize),
-                checkType,
-                XZFilterChain.EMPTY
-        );
-    }
-
-    /// Creates an XZ encoder with complete LZMA2 model and integrity-check settings.
-    ///
-    /// @param target the channel receiving the XZ Stream
-    /// @param ownership whether finishing or closing this encoder also closes {@code target}
-    /// @param properties the LZMA2 model and dictionary properties
-    /// @param checkType the supported XZ Check ID written to the Stream flags
-    /// @throws IOException if {@code checkType} is unsupported or the Stream Header cannot be written
-    /// @throws NullPointerException if {@code target}, {@code ownership}, or {@code properties} is {@code null}
-    /// @throws IllegalArgumentException if the dictionary size cannot be represented by XZ's LZMA2 filter
-    public XZChannelEncoder(
-            WritableByteChannel target,
-            ResourceOwnership ownership,
-            LZMAProperties properties,
-            int checkType
-    ) throws IOException {
-        this(target, ownership, properties, checkType, XZFilterChain.EMPTY);
-    }
-
-    /// Creates an XZ encoder with complete LZMA2, integrity-check, and preprocessing settings.
-    ///
-    /// @param target the channel receiving the XZ Stream
-    /// @param ownership whether finishing or closing this encoder also closes {@code target}
-    /// @param properties the LZMA2 model and dictionary properties
-    /// @param checkType the supported XZ Check ID written to the Stream flags
-    /// @param filterChain the preprocessing filters in encoding order
-    /// @throws IOException if {@code checkType} is unsupported or the Stream Header cannot be written
-    /// @throws NullPointerException if any reference argument is {@code null}
-    /// @throws IllegalArgumentException if the dictionary size cannot be represented by XZ's LZMA2 filter
-    public XZChannelEncoder(
-            WritableByteChannel target,
-            ResourceOwnership ownership,
-            LZMAProperties properties,
-            int checkType,
-            XZFilterChain filterChain
-    ) throws IOException {
-        this(target, ownership, properties, checkType, filterChain, 0L);
-    }
-
     /// Creates an XZ encoder with complete filter and Block-layout settings.
     ///
     /// @param target the channel receiving the XZ Stream
-    /// @param ownership whether finishing or closing this encoder also closes {@code target}
     /// @param properties the LZMA2 model and dictionary properties
     /// @param checkType the supported XZ Check ID written to the Stream flags
     /// @param filterChain the preprocessing filters in encoding order
@@ -172,9 +92,8 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     /// @throws IOException if {@code checkType} is unsupported or the Stream Header cannot be written
     /// @throws NullPointerException if any reference argument is {@code null}
     /// @throws IllegalArgumentException if the dictionary is unsupported or {@code maximumBlockSize} is negative
-    public XZChannelEncoder(
+    XZStreamEncoder(
             WritableByteChannel target,
-            ResourceOwnership ownership,
             LZMAProperties properties,
             int checkType,
             XZFilterChain filterChain,
@@ -183,8 +102,7 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
         if (maximumBlockSize < 0L) {
             throw new IllegalArgumentException("XZ maximum Block size must not be negative");
         }
-        this.target = Objects.requireNonNull(target, "target");
-        this.targetCloser = new OwnedChannelCloser(target, ownership);
+        Objects.requireNonNull(target, "target");
         this.properties = Objects.requireNonNull(properties, "properties");
         XZSupport.lzma2DictionaryProperty(properties.dictionarySize());
         XZCheck.create(checkType);
@@ -192,19 +110,12 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
         this.filterChain = Objects.requireNonNull(filterChain, "filterChain");
         this.maximumBlockSize = maximumBlockSize;
         output = new XZChannelOutput(target);
-        try {
-            writeStreamHeader();
-        } catch (IOException | RuntimeException | Error exception) {
-            targetCloser.closeAfter(exception);
-            throw exception;
-        }
+        writeStreamHeader();
     }
 
     /// Consumes uncompressed bytes and rotates Blocks at the configured boundary.
-    @Override
-    public int write(ByteBuffer source) throws IOException {
+    int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
-        ensureOpen();
         if (!source.hasRemaining()) {
             return 0;
         }
@@ -219,14 +130,13 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
                     Math.min(source.remaining(), transferBuffer.length),
                     remainingInBlock
             );
-            if (inputBytes > Long.MAX_VALUE - count) {
-                throw new IOException("XZ uncompressed input size overflow");
+            if (blockUncompressedSize > Long.MAX_VALUE - count) {
+                throw new IOException("XZ Block uncompressed size overflow");
             }
 
             source.get(transferBuffer, 0, count);
             Objects.requireNonNull(blockCheck).update(transferBuffer, 0, count);
             Objects.requireNonNull(blockInput).write(ByteBuffer.wrap(transferBuffer, 0, count));
-            inputBytes += count;
             blockUncompressedSize += count;
 
             if (maximumBlockSize != 0L && blockUncompressedSize == maximumBlockSize) {
@@ -237,18 +147,14 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     }
 
     /// Finishes the active Block so every accepted byte reaches a decodable Stream boundary.
-    @Override
-    public void flush() throws IOException {
-        ensureOpen();
+    void flush() throws IOException {
         finishBlock();
         output.flush();
     }
 
     /// Explicitly starts another XZ Stream after a completed Stream boundary.
-    @Override
-    public void startFrame(EncodingOptions options) throws IOException {
+    void startFrame(EncodingOptions options) throws IOException {
         Objects.requireNonNull(options, "options");
-        ensureOpen();
         if (streamActive) {
             throw new IllegalStateException("An XZ Stream is already active");
         }
@@ -256,56 +162,18 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     }
 
     /// Finishes the active XZ Stream while retaining the encoder for another stream.
-    @Override
-    public void finishFrame() throws IOException {
-        ensureOpen();
+    void finishFrame() throws IOException {
         if (!streamActive) {
             return;
         }
         finishStream();
     }
 
-    /// Finishes the active XZ Stream and releases the encoder context.
-    @Override
-    public void finish() throws IOException {
-        if (!open) {
-            targetCloser.close();
-            return;
+    /// Finishes the active XZ Stream without closing the borrowed target.
+    void finish() throws IOException {
+        if (streamActive) {
+            finishStream();
         }
-        @Nullable Throwable failure = null;
-        try {
-            if (streamActive) {
-                finishStream();
-            }
-        } catch (IOException | RuntimeException | Error exception) {
-            failure = exception;
-        }
-        open = false;
-        targetCloser.closeAfter(failure);
-    }
-
-    /// Returns the number of uncompressed bytes accepted.
-    @Override
-    public long inputBytes() {
-        return inputBytes;
-    }
-
-    /// Returns the number of XZ bytes written to the target.
-    @Override
-    public long outputBytes() {
-        return output.byteCount();
-    }
-
-    /// Returns whether this encoder remains open.
-    @Override
-    public boolean isOpen() {
-        return open;
-    }
-
-    /// Finishes and closes this encoder context.
-    @Override
-    public void close() throws IOException {
-        finish();
     }
 
     /// Lazily starts another XZ Stream after an explicit frame boundary.
@@ -350,11 +218,7 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
         CountingChannel counter = new CountingChannel(output);
         blockCheck = XZCheck.create(checkType);
         compressedCounter = counter;
-        LZMA2ChannelEncoder encoder = new LZMA2ChannelEncoder(
-                counter,
-                ResourceOwnership.BORROWED,
-                properties
-        );
+        CompressingWritableByteChannel encoder = new LZMA2Codec(properties).newWritableByteChannel(counter);
         blockEncoder = encoder;
 
         WritableByteChannel input = encoder;
@@ -371,7 +235,7 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
 
     /// Finishes the active block, padding, and integrity check.
     private void finishBlock() throws IOException {
-        LZMA2ChannelEncoder encoder = blockEncoder;
+        CompressingWritableByteChannel encoder = blockEncoder;
         if (encoder == null) {
             return;
         }
@@ -535,13 +399,6 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
         output.write(footer);
     }
 
-    /// Requires this encoder to remain open.
-    private void ensureOpen() throws ClosedChannelException {
-        if (!open) {
-            throw new ClosedChannelException();
-        }
-    }
-
     /// Counts compressed block bytes forwarded to the XZ output.
     @NotNullByDefault
     private static final class CountingChannel implements WritableByteChannel {
@@ -550,9 +407,6 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
 
         /// The number of forwarded bytes.
         private long count;
-
-        /// Whether this counting channel remains open.
-        private boolean open = true;
 
         /// Creates a counting wrapper.
         private CountingChannel(XZChannelOutput output) {
@@ -567,16 +421,15 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
             return written;
         }
 
-        /// Returns whether this channel remains open.
+        /// Returns true because lifecycle is controlled by the enclosing XZ encoder.
         @Override
         public boolean isOpen() {
-            return open;
+            return true;
         }
 
-        /// Closes this wrapper without closing the XZ output.
+        /// Performs no action because the channel owns no external resource.
         @Override
         public void close() {
-            open = false;
         }
 
         /// Returns the forwarded byte count.

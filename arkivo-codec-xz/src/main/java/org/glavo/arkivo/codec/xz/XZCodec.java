@@ -9,7 +9,6 @@ import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
-import org.glavo.arkivo.codec.xz.internal.XZChannelEncoder;
 import org.glavo.arkivo.codec.xz.internal.XZDecoder;
 import org.glavo.arkivo.codec.xz.internal.XZEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -29,7 +28,7 @@ import java.util.Objects;
 @NotNullByDefault
 public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> {
     /// The default XZ LZMA2 dictionary size.
-    public static final int DEFAULT_DICTIONARY_SIZE = XZChannelEncoder.DEFAULT_DICTIONARY_SIZE;
+    public static final int DEFAULT_DICTIONARY_SIZE = 8 * 1024 * 1024;
 
     /// The default immutable XZ codec configuration.
     public static final XZCodec DEFAULT = builder().build();

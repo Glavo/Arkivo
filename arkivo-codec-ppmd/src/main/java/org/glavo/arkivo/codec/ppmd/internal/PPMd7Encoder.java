@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec.ppmd.internal;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -33,8 +32,11 @@ public final class PPMd7Encoder implements CompressionEncoder {
     /// Configured model arena size in bytes.
     private final long memorySize;
 
-    /// Active pure Java PPMd channel core, or null after closure.
-    private @Nullable PPMd7ChannelEncoder encoder;
+    /// Active arithmetic range encoder, or null after closure.
+    private @Nullable PPMd7RangeEncoder rangeEncoder;
+
+    /// Active Variant H context model, or null after closure.
+    private @Nullable PPMd7Model model;
 
     /// Current encoder lifecycle state.
     private State state = State.ACTIVE;
@@ -47,7 +49,11 @@ public final class PPMd7Encoder implements CompressionEncoder {
     public PPMd7Encoder(int maximumOrder, long memorySize) throws IOException {
         this.maximumOrder = maximumOrder;
         this.memorySize = memorySize;
-        encoder = createEncoder();
+        PPMd7RangeEncoder createdRangeEncoder = new PPMd7RangeEncoder(output);
+        PPMd7Model createdModel = new PPMd7Model(createdRangeEncoder);
+        createdModel.initialize(true, maximumOrder, memorySize);
+        rangeEncoder = createdRangeEncoder;
+        model = createdModel;
     }
 
     /// Encodes source bytes until source exhaustion or complete compressed output requires target space.
@@ -69,11 +75,11 @@ public final class PPMd7Encoder implements CompressionEncoder {
             int length = Math.min(source.remaining(), SOURCE_SLICE_SIZE);
             ByteBuffer slice = source.slice();
             slice.limit(length);
-            int consumed = requireEncoder().write(slice);
-            if (consumed <= 0 || consumed > length) {
-                throw new IOException("PPMd encoder made invalid source progress: " + consumed);
+            PPMd7Model currentModel = requireModel();
+            while (slice.hasRemaining()) {
+                currentModel.writeByte(Byte.toUnsignedInt(slice.get()));
             }
-            source.position(source.position() + consumed);
+            source.position(source.position() + length);
         }
     }
 
@@ -88,7 +94,7 @@ public final class PPMd7Encoder implements CompressionEncoder {
         Objects.requireNonNull(target, "target");
         requireOpen();
         if (state == State.ACTIVE) {
-            requireEncoder().flush();
+            requireRangeEncoder().flushOutput();
             state = State.FLUSHING;
         } else if (state != State.FLUSHING) {
             throw new IllegalStateException("Cannot flush while PPMd encoder state is " + state);
@@ -111,7 +117,7 @@ public final class PPMd7Encoder implements CompressionEncoder {
             return CodecOutcome.FINISHED;
         }
         if (state == State.ACTIVE) {
-            requireEncoder().finish();
+            requireRangeEncoder().finish();
             state = State.FINISHING;
         } else if (state != State.FINISHING) {
             throw new IllegalStateException("Cannot finish while PPMd encoder state is " + state);
@@ -131,7 +137,10 @@ public final class PPMd7Encoder implements CompressionEncoder {
         requireOpen();
         output.clear();
         try {
-            requireEncoder().resetForBufferEngine();
+            requireRangeEncoder().reset();
+            PPMd7Model currentModel = requireModel();
+            currentModel.reset();
+            currentModel.initialize(true, maximumOrder, memorySize);
         } catch (IOException exception) {
             throw new IllegalStateException("Unable to restore the validated PPMd model configuration", exception);
         }
@@ -141,24 +150,24 @@ public final class PPMd7Encoder implements CompressionEncoder {
     /// Releases encoder-owned state without implicitly finalizing pending input.
     @Override
     public void close() {
-        encoder = null;
+        rangeEncoder = null;
+        model = null;
         output.clear();
         state = State.CLOSED;
     }
 
-    /// Creates a fresh pure Java channel core over private memory storage.
-    private PPMd7ChannelEncoder createEncoder() throws IOException {
-        return new PPMd7ChannelEncoder(
-                output,
-                ResourceOwnership.BORROWED,
-                maximumOrder,
-                memorySize
-        );
+    /// Returns the active arithmetic range encoder.
+    private PPMd7RangeEncoder requireRangeEncoder() {
+        @Nullable PPMd7RangeEncoder current = rangeEncoder;
+        if (current == null) {
+            throw new IllegalStateException("PPMd encoder is closed");
+        }
+        return current;
     }
 
-    /// Returns the active pure Java PPMd channel core.
-    private PPMd7ChannelEncoder requireEncoder() {
-        @Nullable PPMd7ChannelEncoder current = encoder;
+    /// Returns the active Variant H context model.
+    private PPMd7Model requireModel() {
+        @Nullable PPMd7Model current = model;
         if (current == null) {
             throw new IllegalStateException("PPMd encoder is closed");
         }

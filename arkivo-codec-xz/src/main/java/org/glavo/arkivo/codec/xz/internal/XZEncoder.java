@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.EncodingOptions;
@@ -43,7 +42,7 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
     private final long maximumBlockSize;
 
     /// Active pure Java XZ writer, or null after closure.
-    private @Nullable XZChannelEncoder encoder;
+    private @Nullable XZStreamEncoder encoder;
 
     /// Current encoder lifecycle state.
     private State state = State.ACTIVE;
@@ -214,10 +213,9 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
     }
 
     /// Creates the pure Java XZ writer over the private memory sink.
-    private XZChannelEncoder createWriter() throws IOException {
-        return new XZChannelEncoder(
+    private XZStreamEncoder createWriter() throws IOException {
+        return new XZStreamEncoder(
                 output,
-                ResourceOwnership.BORROWED,
                 properties,
                 checkType,
                 filterChain,
@@ -226,8 +224,8 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
     }
 
     /// Returns the active XZ writer.
-    private XZChannelEncoder requireWriter() {
-        @Nullable XZChannelEncoder current = encoder;
+    private XZStreamEncoder requireWriter() {
+        @Nullable XZStreamEncoder current = encoder;
         if (current == null) {
             throw new IllegalStateException("XZ encoder is closed");
         }
