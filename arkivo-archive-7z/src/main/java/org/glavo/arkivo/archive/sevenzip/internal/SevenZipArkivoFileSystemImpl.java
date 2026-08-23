@@ -819,7 +819,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     public UserPrincipalLookupService getUserPrincipalLookupService() {
         try (Operation ignored = beginReadOperation()) {
             ensureOpen();
-            return SevenZipPrincipalSupport.userPrincipalLookupService();
+            return SevenZipPosixSupport.userPrincipalLookupService();
         }
     }
 

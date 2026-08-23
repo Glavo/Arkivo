@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.ar.internal;
 
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
+import org.glavo.arkivo.archive.internal.PosixModes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -112,25 +113,25 @@ final class ArEntryAttributes implements ArArkivoEntryAttributes, PosixFileAttri
     /// Returns whether this member is a regular file.
     @Override
     public boolean isRegularFile() {
-        return ArPosixSupport.isRegularFile(mode);
+        return PosixModes.isRegularFile(mode);
     }
 
     /// Returns whether this member is a directory.
     @Override
     public boolean isDirectory() {
-        return ArPosixSupport.isDirectory(mode);
+        return PosixModes.isDirectory(mode);
     }
 
     /// Returns whether this member is a symbolic link.
     @Override
     public boolean isSymbolicLink() {
-        return ArPosixSupport.isSymbolicLink(mode);
+        return PosixModes.isSymbolicLink(mode);
     }
 
     /// Returns whether this member has another file type.
     @Override
     public boolean isOther() {
-        return ArPosixSupport.isOther(mode);
+        return PosixModes.isOther(mode);
     }
 
     /// Returns the member data size.
@@ -160,6 +161,6 @@ final class ArEntryAttributes implements ArArkivoEntryAttributes, PosixFileAttri
     /// Returns the POSIX permissions encoded by the stored AR mode bits.
     @Override
     public @Unmodifiable Set<PosixFilePermission> permissions() {
-        return ArPosixSupport.permissions(mode);
+        return PosixModes.permissions(mode);
     }
 }

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
+import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -263,7 +264,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     /// Returns the POSIX permissions encoded by the stored TAR mode bits.
     @Override
     public @Unmodifiable Set<PosixFilePermission> permissions() {
-        return TarPosixSupport.permissions(mode);
+        return PosixModes.permissions(mode);
     }
 
     /// Returns the raw TAR body size.

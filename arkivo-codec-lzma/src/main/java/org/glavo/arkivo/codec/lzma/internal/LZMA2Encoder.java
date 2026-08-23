@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.lzma.LZMAProperties;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.internal.BufferedChannelOutput;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -185,7 +186,7 @@ public final class LZMA2Encoder implements CompressionEncoder {
                 properties.positionBits(),
                 effectiveDictionarySize
         );
-        LZMAChannelOutput compressedOutput = new LZMAChannelOutput(Channels.newChannel(compressed));
+        BufferedChannelOutput compressedOutput = new BufferedChannelOutput(Channels.newChannel(compressed));
         LZMAEncoderEngine encoder = new LZMAEncoderEngine(compressedOutput, blockProperties);
         encoder.write(block, 0, blockSize);
         encoder.finish(false);

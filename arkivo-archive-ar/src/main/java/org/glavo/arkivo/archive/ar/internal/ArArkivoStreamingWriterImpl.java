@@ -3,12 +3,13 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
+import org.glavo.arkivo.archive.internal.PosixModes;
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -714,10 +715,10 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
                 throw new IllegalArgumentException("mode must not be negative");
             }
             member.ensurePending();
-            if (member.kind() == MemberKind.DIRECTORY && !ArPosixSupport.isDirectory(mode)) {
+            if (member.kind() == MemberKind.DIRECTORY && !PosixModes.isDirectory(mode)) {
                 throw new IllegalArgumentException("mode must describe an AR directory");
             }
-            if (member.kind() == MemberKind.SYMBOLIC_LINK && !ArPosixSupport.isSymbolicLink(mode)) {
+            if (member.kind() == MemberKind.SYMBOLIC_LINK && !PosixModes.isSymbolicLink(mode)) {
                 throw new IllegalArgumentException("mode must describe an AR symbolic link");
             }
             this.mode = mode;
@@ -838,25 +839,25 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         /// Returns whether this pending member is a regular file.
         @Override
         public boolean isRegularFile() {
-            return ArPosixSupport.isRegularFile(attributes.mode());
+            return PosixModes.isRegularFile(attributes.mode());
         }
 
         /// Returns whether this pending member is a directory.
         @Override
         public boolean isDirectory() {
-            return ArPosixSupport.isDirectory(attributes.mode());
+            return PosixModes.isDirectory(attributes.mode());
         }
 
         /// Returns whether this pending member is a symbolic link.
         @Override
         public boolean isSymbolicLink() {
-            return ArPosixSupport.isSymbolicLink(attributes.mode());
+            return PosixModes.isSymbolicLink(attributes.mode());
         }
 
         /// Returns whether this pending member has another file type.
         @Override
         public boolean isOther() {
-            return ArPosixSupport.isOther(attributes.mode());
+            return PosixModes.isOther(attributes.mode());
         }
 
         /// Returns the pending member data size.

@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.xz.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.EncodingOptions;
+import org.glavo.arkivo.codec.internal.PendingOutputChannel;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.xz.XZFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -13,8 +14,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.WritableByteChannel;
-import java.util.Arrays;
 import java.util.Objects;
 
 /// Incrementally encodes XZ streams without retaining caller-owned buffers.
@@ -27,7 +26,7 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
     private static final int SOURCE_SLICE_SIZE = 16 * 1024;
 
     /// Complete encoded bytes emitted by the XZ writer.
-    private final InMemorySink output = new InMemorySink();
+    private final PendingOutputChannel output = new PendingOutputChannel();
 
     /// Immutable LZMA2 properties restored by reset.
     private final LZMAProperties properties;
@@ -270,87 +269,5 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
 
         /// The encoder has been closed.
         CLOSED
-    }
-
-    /// Stores complete encoded bytes independently of caller-owned targets.
-    @NotNullByDefault
-    private static final class InMemorySink implements WritableByteChannel {
-        /// Initial encoded-output capacity.
-        private static final int INITIAL_CAPACITY = 8192;
-
-        /// Encoded bytes between `start` and `end`.
-        private byte[] bytes = new byte[INITIAL_CAPACITY];
-
-        /// First encoded byte not yet returned to the caller.
-        private int start;
-
-        /// Position following the final encoded byte.
-        private int end;
-
-        /// Copies every supplied encoded byte into owned storage.
-        @Override
-        public int write(ByteBuffer source) {
-            Objects.requireNonNull(source, "source");
-            int length = source.remaining();
-            ensureCapacity(length);
-            source.get(bytes, end, length);
-            end += length;
-            return length;
-        }
-
-        /// Returns whether this private sink accepts bytes.
-        @Override
-        public boolean isOpen() {
-            return true;
-        }
-
-        /// Retains this private sink for encoder reset reuse.
-        @Override
-        public void close() {
-        }
-
-        /// Returns whether encoded bytes await caller-owned target space.
-        private boolean hasRemaining() {
-            return start < end;
-        }
-
-        /// Copies as many encoded bytes as fit in a caller-owned target.
-        private void drainTo(ByteBuffer target) {
-            int length = Math.min(target.remaining(), end - start);
-            target.put(bytes, start, length);
-            start += length;
-            if (start == end) {
-                start = 0;
-                end = 0;
-            }
-        }
-
-        /// Abandons all pending encoded bytes.
-        private void clear() {
-            start = 0;
-            end = 0;
-        }
-
-        /// Makes room for another encoded write while retaining pending bytes.
-        private void ensureCapacity(int additionalLength) {
-            int remaining = end - start;
-            if (additionalLength <= bytes.length - end) {
-                return;
-            }
-            if (additionalLength <= bytes.length - remaining) {
-                System.arraycopy(bytes, start, bytes, 0, remaining);
-                start = 0;
-                end = remaining;
-                return;
-            }
-            int required = Math.addExact(remaining, additionalLength);
-            int capacity = bytes.length;
-            while (capacity < required) {
-                capacity = Math.max(Math.addExact(capacity, capacity >>> 1), required);
-            }
-            bytes = Arrays.copyOfRange(bytes, start, start + capacity);
-            start = 0;
-            end = remaining;
-        }
     }
 }

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.bzip2.internal;
 
+import org.glavo.arkivo.codec.internal.BufferedChannelOutput;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -503,11 +504,8 @@ final class BZip2StreamEncoder {
     /// Writes BZip2 fields in most-significant-bit-first order.
     @NotNullByDefault
     private static final class BitOutput {
-        /// The compressed target.
-        private final WritableByteChannel target;
-
-        /// The compressed-output staging buffer.
-        private final ByteBuffer outputBuffer = ByteBuffer.allocateDirect(8192);
+        /// Buffered compressed output.
+        private final BufferedChannelOutput output;
 
         /// The partially populated output byte.
         private int currentByte;
@@ -517,7 +515,7 @@ final class BZip2StreamEncoder {
 
         /// Creates a bit writer over the given target.
         private BitOutput(WritableByteChannel target) {
-            this.target = target;
+            output = new BufferedChannelOutput(target);
         }
 
         /// Writes up to 63 low-order bits from a value.
@@ -543,27 +541,12 @@ final class BZip2StreamEncoder {
                 currentByte = 0;
                 bitCount = 0;
             }
-            flush();
-        }
-
-        /// Writes all staged complete bytes to the target.
-        private void flush() throws IOException {
-            outputBuffer.flip();
-            while (outputBuffer.hasRemaining()) {
-                int written = target.write(outputBuffer);
-                if (written == 0) {
-                    throw new IOException("BZip2 target channel made no progress");
-                }
-            }
-            outputBuffer.clear();
+            output.flush();
         }
 
         /// Writes one complete byte to the compressed target.
         private void writeByte(int value) throws IOException {
-            if (!outputBuffer.hasRemaining()) {
-                flush();
-            }
-            outputBuffer.put((byte) value);
+            output.write(value);
         }
     }
 }

@@ -8,13 +8,13 @@ import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.internal.BufferedChannelOutput;
+import org.glavo.arkivo.codec.internal.PendingOutputChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.WritableByteChannel;
-import java.util.Arrays;
 import java.util.Objects;
 
 /// Incrementally encodes one headerless LZMA stream without retaining caller-owned buffers.
@@ -39,10 +39,10 @@ public final class LZMARawEncoder implements CompressionEncoder {
     private final byte[] transferBuffer = new byte[SOURCE_SLICE_SIZE];
 
     /// Complete compressed bytes awaiting caller target space.
-    private final InMemorySink output = new InMemorySink();
+    private final PendingOutputChannel output = new PendingOutputChannel();
 
     /// Buffered range-coded output, or null after closure.
-    private @Nullable LZMAChannelOutput compressedOutput;
+    private @Nullable BufferedChannelOutput compressedOutput;
 
     /// Mutable match finder and range encoder, or null after closure.
     private @Nullable LZMAEncoderEngine encoder;
@@ -163,7 +163,7 @@ public final class LZMARawEncoder implements CompressionEncoder {
 
     /// Creates a fresh match finder and range output over private storage.
     private void initializeEngine() {
-        compressedOutput = new LZMAChannelOutput(output);
+        compressedOutput = new BufferedChannelOutput(output);
         encoder = new LZMAEncoderEngine(compressedOutput, properties);
     }
 
@@ -177,8 +177,8 @@ public final class LZMARawEncoder implements CompressionEncoder {
     }
 
     /// Returns the active compressed-byte staging output.
-    private LZMAChannelOutput requireCompressedOutput() {
-        @Nullable LZMAChannelOutput current = compressedOutput;
+    private BufferedChannelOutput requireCompressedOutput() {
+        @Nullable BufferedChannelOutput current = compressedOutput;
         if (current == null) {
             throw new IllegalStateException("LZMA encoder is closed");
         }
@@ -217,87 +217,5 @@ public final class LZMARawEncoder implements CompressionEncoder {
 
         /// The encoder has been closed.
         CLOSED
-    }
-
-    /// Stores complete encoded bytes independently of caller-owned targets.
-    @NotNullByDefault
-    private static final class InMemorySink implements WritableByteChannel {
-        /// Initial compressed-output capacity.
-        private static final int INITIAL_CAPACITY = 8192;
-
-        /// Compressed bytes between `start` and `end`.
-        private byte[] bytes = new byte[INITIAL_CAPACITY];
-
-        /// First compressed byte not yet returned to the caller.
-        private int start;
-
-        /// Position following the final compressed byte.
-        private int end;
-
-        /// Copies every supplied compressed byte into owned storage.
-        @Override
-        public int write(ByteBuffer source) {
-            Objects.requireNonNull(source, "source");
-            int length = source.remaining();
-            ensureCapacity(length);
-            source.get(bytes, end, length);
-            end += length;
-            return length;
-        }
-
-        /// Returns whether this private sink accepts bytes.
-        @Override
-        public boolean isOpen() {
-            return true;
-        }
-
-        /// Retains this private sink for encoder reset reuse.
-        @Override
-        public void close() {
-        }
-
-        /// Returns whether compressed bytes await caller target space.
-        private boolean hasRemaining() {
-            return start < end;
-        }
-
-        /// Copies as many compressed bytes as fit in a caller target.
-        private void drainTo(ByteBuffer target) {
-            int length = Math.min(target.remaining(), end - start);
-            target.put(bytes, start, length);
-            start += length;
-            if (start == end) {
-                start = 0;
-                end = 0;
-            }
-        }
-
-        /// Abandons every pending compressed byte.
-        private void clear() {
-            start = 0;
-            end = 0;
-        }
-
-        /// Makes room for another complete compressed write.
-        private void ensureCapacity(int additionalLength) {
-            int remaining = end - start;
-            if (additionalLength <= bytes.length - end) {
-                return;
-            }
-            if (additionalLength <= bytes.length - remaining) {
-                System.arraycopy(bytes, start, bytes, 0, remaining);
-                start = 0;
-                end = remaining;
-                return;
-            }
-            int required = Math.addExact(remaining, additionalLength);
-            int capacity = bytes.length;
-            while (capacity < required) {
-                capacity = Math.max(Math.addExact(capacity, capacity >>> 1), required);
-            }
-            bytes = Arrays.copyOfRange(bytes, start, start + capacity);
-            start = 0;
-            end = remaining;
-        }
     }
 }

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
+import org.glavo.arkivo.codec.internal.BufferedChannelOutput;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -141,7 +142,7 @@ final class LZMAEncoderEngine {
     private boolean finished;
 
     /// Creates a configured streaming LZMA encoder.
-    LZMAEncoderEngine(LZMAChannelOutput output, LZMAProperties properties) {
+    LZMAEncoderEngine(BufferedChannelOutput output, LZMAProperties properties) {
         this.properties = Objects.requireNonNull(properties, "properties");
         rangeEncoder = new LZMARangeEncoder(Objects.requireNonNull(output, "output"));
         dictionary = new byte[Math.max(properties.dictionarySize(), LZMAProperties.MINIMUM_DICTIONARY_SIZE)];

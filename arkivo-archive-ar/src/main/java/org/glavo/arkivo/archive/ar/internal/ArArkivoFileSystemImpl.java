@@ -1370,12 +1370,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             return UNKNOWN_MODE;
         }
         if (symbolicLink) {
-            return ArPosixSupport.symbolicLinkMode(permissions);
+            return PosixModes.SYMBOLIC_LINK_FILE_TYPE | PosixModes.permissionBits(permissions);
         }
         if (directory) {
-            return ArPosixSupport.directoryMode(permissions);
+            return PosixModes.DIRECTORY_FILE_TYPE | PosixModes.permissionBits(permissions);
         }
-        return ArPosixSupport.regularFileMode(permissions);
+        return PosixModes.REGULAR_FILE_TYPE | PosixModes.permissionBits(permissions);
     }
 
     /// Applies a supported initial mode to the current pending AR writer member.
@@ -1946,10 +1946,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Returns whether two AR modes describe the same member file type.
     private static boolean sameFileType(int firstMode, int secondMode) {
-        return ArPosixSupport.isRegularFile(firstMode) == ArPosixSupport.isRegularFile(secondMode)
-                && ArPosixSupport.isDirectory(firstMode) == ArPosixSupport.isDirectory(secondMode)
-                && ArPosixSupport.isSymbolicLink(firstMode) == ArPosixSupport.isSymbolicLink(secondMode)
-                && ArPosixSupport.isOther(firstMode) == ArPosixSupport.isOther(secondMode);
+        return PosixModes.isRegularFile(firstMode) == PosixModes.isRegularFile(secondMode)
+                && PosixModes.isDirectory(firstMode) == PosixModes.isDirectory(secondMode)
+                && PosixModes.isSymbolicLink(firstMode) == PosixModes.isSymbolicLink(secondMode)
+                && PosixModes.isOther(firstMode) == PosixModes.isOther(secondMode);
     }
 
     /// Returns copied metadata with selected AR values changed.
@@ -2550,25 +2550,25 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         /// Returns whether this node is a regular file.
         @Override
         public boolean isRegularFile() {
-            return ArPosixSupport.isRegularFile(mode);
+            return PosixModes.isRegularFile(mode);
         }
 
         /// Returns whether this node is a directory.
         @Override
         public boolean isDirectory() {
-            return ArPosixSupport.isDirectory(mode);
+            return PosixModes.isDirectory(mode);
         }
 
         /// Returns whether this node is a symbolic link.
         @Override
         public boolean isSymbolicLink() {
-            return ArPosixSupport.isSymbolicLink(mode);
+            return PosixModes.isSymbolicLink(mode);
         }
 
         /// Returns whether this node has another file type.
         @Override
         public boolean isOther() {
-            return ArPosixSupport.isOther(mode);
+            return PosixModes.isOther(mode);
         }
 
         /// Returns the node size.
@@ -2598,7 +2598,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         /// Returns the POSIX permissions encoded by the stored AR mode bits.
         @Override
         public @Unmodifiable Set<PosixFilePermission> permissions() {
-            return ArPosixSupport.permissions(mode);
+            return PosixModes.permissions(mode);
         }
     }
 

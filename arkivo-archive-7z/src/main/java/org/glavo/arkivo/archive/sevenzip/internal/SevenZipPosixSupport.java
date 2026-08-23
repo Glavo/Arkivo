@@ -3,6 +3,9 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.internal.FixedUserPrincipalLookupService;
+import org.glavo.arkivo.archive.internal.NamedGroupPrincipal;
+import org.glavo.arkivo.archive.internal.NamedUserPrincipal;
 import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -12,12 +15,24 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
+import java.nio.file.attribute.UserPrincipalLookupService;
+import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.util.Objects;
 import java.util.Set;
 
 /// Provides synthesized POSIX metadata helpers for 7z file systems.
 @NotNullByDefault
 final class SevenZipPosixSupport {
+    /// The default synthesized owner principal.
+    private static final UserPrincipal DEFAULT_OWNER = new NamedUserPrincipal("owner");
+
+    /// The default synthesized group principal.
+    private static final GroupPrincipal DEFAULT_GROUP = new NamedGroupPrincipal("group");
+
+    /// The lookup service for synthesized 7z principals.
+    private static final FixedUserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
+            new FixedUserPrincipalLookupService(DEFAULT_OWNER, DEFAULT_GROUP);
+
     /// The default synthesized permissions for writable regular files.
     private static final @Unmodifiable Set<PosixFilePermission> WRITABLE_FILE_PERMISSIONS = Set.of(
             PosixFilePermission.OWNER_READ,
@@ -60,12 +75,27 @@ final class SevenZipPosixSupport {
 
     /// Returns the default synthesized owner principal.
     static UserPrincipal owner() {
-        return SevenZipPrincipalSupport.DEFAULT_OWNER;
+        return DEFAULT_OWNER;
     }
 
     /// Returns the default synthesized group principal.
     static GroupPrincipal group() {
-        return SevenZipPrincipalSupport.DEFAULT_GROUP;
+        return DEFAULT_GROUP;
+    }
+
+    /// Returns the lookup service for synthesized 7z owner and group principals.
+    static UserPrincipalLookupService userPrincipalLookupService() {
+        return USER_PRINCIPAL_LOOKUP_SERVICE;
+    }
+
+    /// Requires a principal name to match the synthesized owner.
+    static void requireDefaultOwner(UserPrincipal owner) throws UserPrincipalNotFoundException {
+        USER_PRINCIPAL_LOOKUP_SERVICE.requireUser(owner);
+    }
+
+    /// Requires a principal name to match the synthesized group.
+    static void requireDefaultGroup(GroupPrincipal group) throws UserPrincipalNotFoundException {
+        USER_PRINCIPAL_LOOKUP_SERVICE.requireGroup(group);
     }
 
     /// Returns the Unix mode stored in the high 16 bits of 7z attributes, or `UNKNOWN_UNIX_MODE`.

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.internal.BufferedChannelOutput;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -12,7 +13,7 @@ import java.util.Objects;
 @NotNullByDefault
 final class LZMARangeEncoder {
     /// The destination for range-coded bytes.
-    private final LZMAChannelOutput output;
+    private final BufferedChannelOutput output;
 
     /// The low end of the active coding interval.
     private long low;
@@ -27,7 +28,7 @@ final class LZMARangeEncoder {
     private int cacheSize = 1;
 
     /// Creates a range encoder targeting the supplied stream.
-    LZMARangeEncoder(LZMAChannelOutput output) {
+    LZMARangeEncoder(BufferedChannelOutput output) {
         this.output = Objects.requireNonNull(output, "output");
     }
 

@@ -3,10 +3,10 @@
 
 package org.glavo.arkivo.codec.ppmd.internal;
 
+import org.glavo.arkivo.codec.internal.BufferedChannelOutput;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
@@ -19,14 +19,8 @@ final class PPMd7RangeEncoder {
     /// The normalization threshold.
     private static final long RANGE_TOP = 1L << 24;
 
-    /// Buffered output capacity.
-    private static final int OUTPUT_BUFFER_SIZE = 8 * 1_024;
-
-    /// The compressed target.
-    private final WritableByteChannel target;
-
     /// Buffered compressed output.
-    private final ByteBuffer outputBuffer = ByteBuffer.allocate(OUTPUT_BUFFER_SIZE);
+    private final BufferedChannelOutput output;
 
     /// Current arithmetic low endpoint including a carry bit.
     private long low;
@@ -45,7 +39,7 @@ final class PPMd7RangeEncoder {
 
     /// Creates an uninitialized-output 7z range encoder.
     PPMd7RangeEncoder(WritableByteChannel target) {
-        this.target = Objects.requireNonNull(target, "target");
+        output = new BufferedChannelOutput(Objects.requireNonNull(target, "target"));
     }
 
     /// Encodes one selected cumulative-frequency interval.
@@ -95,19 +89,12 @@ final class PPMd7RangeEncoder {
 
     /// Flushes complete staged bytes without ending the arithmetic representation.
     void flushOutput() throws IOException {
-        outputBuffer.flip();
-        while (outputBuffer.hasRemaining()) {
-            if (target.write(outputBuffer) == 0) {
-                outputBuffer.compact();
-                throw new IOException("PPMd7 target channel made no progress");
-            }
-        }
-        outputBuffer.clear();
+        output.flush();
     }
 
     /// Abandons the current arithmetic representation and restores its initial state.
     void reset() {
-        outputBuffer.clear();
+        output.clear();
         low = 0L;
         range = UINT_MASK;
         cache = 0;
@@ -141,9 +128,6 @@ final class PPMd7RangeEncoder {
 
     /// Stages one compressed byte.
     private void writeByte(int value) throws IOException {
-        if (!outputBuffer.hasRemaining()) {
-            flushOutput();
-        }
-        outputBuffer.put((byte) value);
+        output.write(value);
     }
 }

@@ -4,13 +4,11 @@
 package org.glavo.arkivo.archive.rar.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Objects;
-import java.util.zip.CRC32;
 
 /// Validates legacy RAR decompression requests and manages one native Arkivo decoder session.
 @NotNullByDefault
@@ -77,7 +75,7 @@ final class Rar4Decoder {
         }
 
         /// Decompresses one entry and returns its validated output size and CRC32.
-        synchronized Result decode(
+        synchronized long decode(
                 InputStream input,
                 OutputStream output,
                 int extractionVersion,
@@ -107,7 +105,8 @@ final class Rar4Decoder {
                 throw new IOException("RAR4 solid entry changes its decompression algorithm");
             }
 
-            DecoderOutput decoderOutput = new DecoderOutput(output, unpackedSize);
+            RarValidatingOutputStream decoderOutput =
+                    new RarValidatingOutputStream("RAR4", output, unpackedSize);
             try {
                 if (family == VERSION_15) {
                     decoder15.decode(input, decoderOutput, unpackedSize, solid);
@@ -116,11 +115,11 @@ final class Rar4Decoder {
                 } else {
                     decoder.decode(input, decoderOutput, unpackedSize, solid);
                 }
-                Result result = decoderOutput.result();
+                long crc32 = decoderOutput.validatedCrc32();
                 initialized = true;
                 historyAvailable = true;
                 activeFamily = family;
-                return result;
+                return crc32;
             } catch (IOException | RuntimeException | Error exception) {
                 initialized = true;
                 historyAvailable = false;
@@ -129,8 +128,6 @@ final class Rar4Decoder {
                 decoder20.invalidate();
                 activeFamily = 0;
                 throw exception;
-            } finally {
-                decoderOutput.clear();
             }
         }
 
@@ -159,93 +156,6 @@ final class Rar4Decoder {
             decoder15.release();
             decoder20.release();
             activeFamily = 0;
-        }
-    }
-
-    /// Describes the validated output produced by one decompression operation.
-    ///
-    /// @param size the decompressed byte count
-    /// @param crc32 the unsigned CRC32 of the decompressed bytes
-    @NotNullByDefault
-    record Result(long size, long crc32) {
-        /// Validates the decompression result values.
-        Result {
-            if (size < 0L || crc32 < 0L || crc32 > 0xffff_ffffL) {
-                throw new IllegalArgumentException("Invalid RAR4 decompression result");
-            }
-        }
-    }
-
-    /// Validates and hashes decompressed bytes before forwarding them to the caller.
-    @NotNullByDefault
-    private static final class DecoderOutput extends OutputStream {
-        /// The caller-owned decompressed output, or `null` after cleanup.
-        private @Nullable OutputStream output;
-
-        /// The declared decompressed byte count.
-        private final long expectedSize;
-
-        /// The decompressed byte count written so far.
-        private long writtenSize;
-
-        /// The CRC32 of decompressed bytes.
-        private final CRC32 crc32 = new CRC32();
-
-        /// Creates one validating output bridge.
-        private DecoderOutput(OutputStream output, long expectedSize) {
-            this.output = Objects.requireNonNull(output, "output");
-            this.expectedSize = expectedSize;
-        }
-
-        /// Writes one decompressed byte.
-        @Override
-        public void write(int value) throws IOException {
-            OutputStream currentOutput = requireOutput();
-            if (writtenSize >= expectedSize) {
-                throw new IOException("RAR4 decompressor exceeded the declared unpacked size");
-            }
-            currentOutput.write(value);
-            crc32.update(value);
-            writtenSize++;
-        }
-
-        /// Writes decompressed bytes while enforcing the declared unpacked size.
-        @Override
-        public void write(byte[] buffer, int offset, int length) throws IOException {
-            Objects.checkFromIndexSize(offset, length, buffer.length);
-            OutputStream currentOutput = requireOutput();
-            if (writtenSize > expectedSize - length) {
-                throw new IOException("RAR4 decompressor exceeded the declared unpacked size");
-            }
-            currentOutput.write(buffer, offset, length);
-            crc32.update(buffer, offset, length);
-            writtenSize += length;
-        }
-
-        /// Returns the validated decompression result.
-        private Result result() throws IOException {
-            if (writtenSize != expectedSize) {
-                throw new IOException(
-                        "RAR4 decompressor produced " + writtenSize + " bytes; expected " + expectedSize
-                );
-            }
-            return new Result(writtenSize, crc32.getValue());
-        }
-
-        /// Releases the caller-owned output reference and checksum state.
-        private void clear() {
-            output = null;
-            writtenSize = 0L;
-            crc32.reset();
-        }
-
-        /// Returns the active caller-owned output.
-        private OutputStream requireOutput() throws IOException {
-            OutputStream currentOutput = output;
-            if (currentOutput == null) {
-                throw new IOException("RAR4 decompression output is unavailable");
-            }
-            return currentOutput;
         }
     }
 }

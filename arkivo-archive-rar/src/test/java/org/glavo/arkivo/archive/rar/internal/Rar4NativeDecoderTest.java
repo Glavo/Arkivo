@@ -10,6 +10,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -27,7 +28,7 @@ public final class Rar4NativeDecoderTest {
 
         Rar4Decoder.Session session = Rar4Decoder.newSession();
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Rar4Decoder.Result result = session.decode(
+        long actualCrc32 = session.decode(
                 new ByteArrayInputStream(writer.toByteArray()),
                 output,
                 15,
@@ -35,7 +36,7 @@ public final class Rar4NativeDecoderTest {
                 false
         );
         assertArrayEquals("A".getBytes(StandardCharsets.US_ASCII), output.toByteArray());
-        assertEquals(1L, result.size());
+        assertEquals(crc32(output.toByteArray()), actualCrc32);
         session.release();
     }
 
@@ -44,7 +45,7 @@ public final class Rar4NativeDecoderTest {
     public void decodesRar20LiteralsAndSolidContinuation() throws IOException {
         Rar4Decoder.Session session = Rar4Decoder.newSession();
         ByteArrayOutputStream firstOutput = new ByteArrayOutputStream();
-        Rar4Decoder.Result firstResult = session.decode(
+        long firstCrc32 = session.decode(
                 new ByteArrayInputStream(rar20LiteralStream(6)),
                 firstOutput,
                 20,
@@ -52,10 +53,10 @@ public final class Rar4NativeDecoderTest {
                 false
         );
         assertArrayEquals("AAAAAA".getBytes(StandardCharsets.US_ASCII), firstOutput.toByteArray());
-        assertEquals(6L, firstResult.size());
+        assertEquals(crc32(firstOutput.toByteArray()), firstCrc32);
 
         ByteArrayOutputStream secondOutput = new ByteArrayOutputStream();
-        Rar4Decoder.Result secondResult = session.decode(
+        long secondCrc32 = session.decode(
                 new ByteArrayInputStream(repeatedZeroBits(3)),
                 secondOutput,
                 20,
@@ -63,7 +64,7 @@ public final class Rar4NativeDecoderTest {
                 true
         );
         assertArrayEquals("AAA".getBytes(StandardCharsets.US_ASCII), secondOutput.toByteArray());
-        assertEquals(3L, secondResult.size());
+        assertEquals(crc32(secondOutput.toByteArray()), secondCrc32);
         session.release();
     }
 
@@ -72,7 +73,7 @@ public final class Rar4NativeDecoderTest {
     public void decodesRar20AudioDeltas() throws IOException {
         Rar4Decoder.Session session = Rar4Decoder.newSession();
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Rar4Decoder.Result result = session.decode(
+        long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar20AudioStream(8)),
                 output,
                 20,
@@ -80,7 +81,7 @@ public final class Rar4NativeDecoderTest {
                 false
         );
         assertArrayEquals(new byte[8], output.toByteArray());
-        assertEquals(8L, result.size());
+        assertEquals(crc32(output.toByteArray()), actualCrc32);
         session.release();
     }
 
@@ -95,7 +96,7 @@ public final class Rar4NativeDecoderTest {
         };
         Rar4Decoder.Session session = Rar4Decoder.newSession();
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Rar4Decoder.Result result = session.decode(
+        long actualCrc32 = session.decode(
                 new ByteArrayInputStream(packed),
                 output,
                 29,
@@ -103,11 +104,11 @@ public final class Rar4NativeDecoderTest {
                 false
         );
         assertArrayEquals(new byte[]{'A', 'A', 'A'}, output.toByteArray());
-        assertEquals(3L, result.size());
+        assertEquals(crc32(output.toByteArray()), actualCrc32);
 
         byte[] continuation = {(byte) 0x81, 0, 0, 0, 0, 0, 0};
         ByteArrayOutputStream continuationOutput = new ByteArrayOutputStream();
-        Rar4Decoder.Result continuationResult = session.decode(
+        long continuationCrc32 = session.decode(
                 new ByteArrayInputStream(continuation),
                 continuationOutput,
                 29,
@@ -115,8 +116,15 @@ public final class Rar4NativeDecoderTest {
                 true
         );
         assertArrayEquals(new byte[]{'A'}, continuationOutput.toByteArray());
-        assertEquals(1L, continuationResult.size());
+        assertEquals(crc32(continuationOutput.toByteArray()), continuationCrc32);
         session.release();
+    }
+
+    /// Returns the unsigned CRC32 of the supplied bytes.
+    private static long crc32(byte[] bytes) {
+        CRC32 crc32 = new CRC32();
+        crc32.update(bytes);
+        return crc32.getValue();
     }
 
     /// Builds a normal RAR 2.x table containing one literal and one table marker.

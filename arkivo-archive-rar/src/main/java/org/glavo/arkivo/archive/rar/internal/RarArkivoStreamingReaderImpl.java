@@ -3549,7 +3549,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                     compressionInfo.extractionVersion(),
                     unpackedSize,
                     compressionInfo.solid()
-            ).crc32();
+            );
         }
 
         /// Invalidates the RAR4 dictionary after a failed operation.
@@ -3601,7 +3601,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                     compressionInfo.version7(),
                     compressionInfo.solid(),
                     unpackedSize
-            ).crc32();
+            );
         }
 
         /// Invalidates the RAR5 dictionary after a failed operation.

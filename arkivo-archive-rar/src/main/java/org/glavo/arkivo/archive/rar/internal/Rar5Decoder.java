@@ -4,13 +4,11 @@
 package org.glavo.arkivo.archive.rar.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Objects;
-import java.util.zip.CRC32;
 
 /// Validates RAR5 decompression requests and manages one native Arkivo decoder session.
 @NotNullByDefault
@@ -61,7 +59,7 @@ final class Rar5Decoder {
         }
 
         /// Decompresses one entry and returns its validated output size and CRC32.
-        synchronized Result decode(
+        synchronized long decode(
                 InputStream input,
                 OutputStream output,
                 int dictionaryPower,
@@ -89,7 +87,8 @@ final class Rar5Decoder {
                 throw new IOException("RAR5 solid entry is missing its preceding decompression history");
             }
 
-            DecoderOutput decoderOutput = new DecoderOutput(output, unpackedSize);
+            RarValidatingOutputStream decoderOutput =
+                    new RarValidatingOutputStream("RAR5", output, unpackedSize);
             try {
                 decoder.decode(
                         input,
@@ -99,17 +98,15 @@ final class Rar5Decoder {
                         solid,
                         unpackedSize
                 );
-                Result result = decoderOutput.result();
+                long crc32 = decoderOutput.validatedCrc32();
                 initialized = true;
                 historyAvailable = true;
-                return result;
+                return crc32;
             } catch (IOException | RuntimeException | Error exception) {
                 initialized = true;
                 historyAvailable = false;
                 decoder.invalidate();
                 throw exception;
-            } finally {
-                decoderOutput.clear();
             }
         }
 
@@ -132,96 +129,6 @@ final class Rar5Decoder {
             initialized = false;
             historyAvailable = false;
             decoder.release();
-        }
-    }
-
-    /// Describes the validated output produced by one RAR5 decompression operation.
-    ///
-    /// @param size the decompressed byte count
-    /// @param crc32 the unsigned CRC32 of the decompressed bytes
-    @NotNullByDefault
-    record Result(long size, long crc32) {
-        /// Validates the decompression result.
-        Result {
-            if (size < 0L || crc32 < 0L || crc32 > 0xffff_ffffL) {
-                throw new IllegalArgumentException("Invalid RAR5 decompression result");
-            }
-        }
-    }
-
-    /// Validates and hashes decompressed bytes before forwarding them to the caller.
-    @NotNullByDefault
-    private static final class DecoderOutput extends OutputStream {
-        /// The caller-owned decompressed output, or `null` after cleanup.
-        private @Nullable OutputStream output;
-
-        /// The declared decompressed byte count.
-        private final long expectedSize;
-
-        /// The decompressed byte count written so far.
-        private long writtenSize;
-
-        /// The CRC32 of decompressed bytes.
-        private final CRC32 crc32 = new CRC32();
-
-        /// Creates one validating output bridge.
-        private DecoderOutput(OutputStream output, long expectedSize) {
-            this.output = Objects.requireNonNull(output, "output");
-            this.expectedSize = expectedSize;
-        }
-
-        /// Writes one decompressed byte.
-        @Override
-        public void write(int value) throws IOException {
-            OutputStream currentOutput = requireOutput();
-            if (writtenSize >= expectedSize) {
-                throw new IOException("RAR5 decompressor exceeded the declared unpacked size");
-            }
-            currentOutput.write(value);
-            crc32.update(value);
-            writtenSize++;
-        }
-
-        /// Writes decompressed bytes while enforcing the declared unpacked size.
-        @Override
-        public void write(byte[] buffer, int offset, int length) throws IOException {
-            Objects.checkFromIndexSize(offset, length, buffer.length);
-            OutputStream currentOutput = requireOutput();
-            if (writtenSize > expectedSize - length) {
-                throw new IOException("RAR5 decompressor exceeded the declared unpacked size");
-            }
-            currentOutput.write(buffer, offset, length);
-            crc32.update(buffer, offset, length);
-            writtenSize += length;
-        }
-
-        /// Returns the validated decompression result.
-        private Result result() throws IOException {
-            if (writtenSize != expectedSize) {
-                throw new IOException(
-                        "RAR5 decompressor produced "
-                                + writtenSize
-                                + " bytes; expected "
-                                + expectedSize
-                );
-            }
-            return new Result(writtenSize, crc32.getValue());
-        }
-
-        /// Releases the caller-owned output reference and checksum state.
-        private void clear() {
-            output = null;
-            writtenSize = 0L;
-            crc32.reset();
-        }
-
-        /// Returns the active caller-owned output.
-        private OutputStream requireOutput() throws IOException {
-            OutputStream currentOutput = output;
-            if (currentOutput == null) {
-                throw new IOException("RAR5 decompression output is unavailable");
-            }
-            return currentOutput;
         }
     }
 }

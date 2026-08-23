@@ -614,7 +614,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             lock();
             try {
                 entry.ensurePending();
-                SevenZipPrincipalSupport.requireDefaultOwner(owner);
+                SevenZipPosixSupport.requireDefaultOwner(owner);
             } finally {
                 unlock();
             }
@@ -627,7 +627,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             lock();
             try {
                 entry.ensurePending();
-                SevenZipPrincipalSupport.requireDefaultGroup(group);
+                SevenZipPosixSupport.requireDefaultGroup(group);
             } finally {
                 unlock();
             }

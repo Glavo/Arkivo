@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.xz.internal;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
+import org.glavo.arkivo.codec.internal.BufferedChannelOutput;
 import org.glavo.arkivo.codec.lzma.LZMA2Codec;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.transform.ByteTransform;
@@ -35,7 +36,7 @@ final class XZStreamEncoder {
     private static final int INITIAL_INDEX_CAPACITY = 8;
 
     /// The buffered XZ byte target.
-    private final XZChannelOutput output;
+    private final BufferedChannelOutput output;
 
     /// The LZMA2 model properties.
     private final LZMAProperties properties;
@@ -109,7 +110,7 @@ final class XZStreamEncoder {
         this.checkType = checkType;
         this.filterChain = Objects.requireNonNull(filterChain, "filterChain");
         this.maximumBlockSize = maximumBlockSize;
-        output = new XZChannelOutput(target);
+        output = new BufferedChannelOutput(target);
         writeStreamHeader();
     }
 
@@ -403,13 +404,13 @@ final class XZStreamEncoder {
     @NotNullByDefault
     private static final class CountingChannel implements WritableByteChannel {
         /// The XZ output target.
-        private final XZChannelOutput output;
+        private final BufferedChannelOutput output;
 
         /// The number of forwarded bytes.
         private long count;
 
         /// Creates a counting wrapper.
-        private CountingChannel(XZChannelOutput output) {
+        private CountingChannel(BufferedChannelOutput output) {
             this.output = output;
         }
 
