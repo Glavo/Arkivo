@@ -10,7 +10,6 @@ import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
-import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelDecoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -495,9 +494,9 @@ public final class LZMACodecTest {
         assertEquals(dictionarySize, exception.requiredWindowSize());
     }
 
-    /// Verifies reusable direct LZMA2 channel contexts and their progress counters.
+    /// Verifies the channel-backed LZMA2 encoder against the transport-independent decoder.
     @Test
-    public void directLzma2ContextsRoundTripLargeInput() throws IOException {
+    public void channelLzma2EncoderRoundTripsThroughEngineAdapter() throws IOException {
         byte[] content = mixedLzma2Content();
         ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
         WritableByteChannel target = Channels.newChannel(compressedBytes);
@@ -516,19 +515,17 @@ public final class LZMACodecTest {
         ReadableByteChannel compressedSource = Channels.newChannel(
                 new ByteArrayInputStream(compressedBytes.toByteArray())
         );
-        LZMA2ChannelDecoder decoder = new LZMA2ChannelDecoder(
-                compressedSource,
-                ResourceOwnership.BORROWED,
-                1 << 20
-        );
         ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
-        while (decoded.hasRemaining()) {
-            assertTrue(decoder.read(decoded) > 0);
+        try (DecompressingReadableByteChannel decoder = new LZMA2Codec()
+                .withDictionarySize(1 << 20)
+                .newReadableByteChannel(compressedSource, ResourceOwnership.BORROWED)) {
+            while (decoded.hasRemaining()) {
+                assertTrue(decoder.read(decoded) > 0);
+            }
+            assertEquals(-1, decoder.read(ByteBuffer.allocateDirect(1)));
+            assertEquals(content.length, decoder.outputBytes());
+            assertTrue(decoder.inputBytes() > 0L);
         }
-        assertEquals(-1, decoder.read(ByteBuffer.allocateDirect(1)));
-        assertEquals(content.length, decoder.outputBytes());
-        assertTrue(decoder.inputBytes() > 0L);
-        decoder.close();
         assertTrue(compressedSource.isOpen());
         decoded.flip();
         byte[] actual = new byte[decoded.remaining()];

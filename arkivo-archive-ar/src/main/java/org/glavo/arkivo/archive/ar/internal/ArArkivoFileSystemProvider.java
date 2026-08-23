@@ -7,7 +7,6 @@ import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoFormat;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemImpl;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;

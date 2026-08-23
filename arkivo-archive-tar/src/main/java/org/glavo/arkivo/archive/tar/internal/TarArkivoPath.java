@@ -4,7 +4,6 @@
 package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.internal.AbstractArkivoPath;
-import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

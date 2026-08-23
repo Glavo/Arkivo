@@ -1,14 +1,8 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.internal;
+package org.glavo.arkivo.codec;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
-import org.glavo.arkivo.codec.CodecTransferResult;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -19,7 +13,7 @@ import java.util.Objects;
 
 /// Implements blocking channel-to-channel compression and decompression transfers.
 @NotNullByDefault
-public final class CodecTransferSupport {
+final class CodecTransferSupport {
     /// The transfer buffer size.
     private static final int BUFFER_SIZE = 8192;
 
@@ -35,7 +29,7 @@ public final class CodecTransferSupport {
     /// @param options the parameters for this encoding operation
     /// @return the total uncompressed input and compressed output byte counts
     /// @throws IOException if reading, encoding, finalization, or output fails or makes no progress
-    public static CodecTransferResult compress(
+    static CodecTransferResult compress(
             CompressionCodec<?> codec,
             ReadableByteChannel source,
             WritableByteChannel target,
@@ -61,7 +55,7 @@ public final class CodecTransferSupport {
     /// @param target the borrowed channel receiving every decoded byte
     /// @return the logically consumed compressed input and decoded output byte counts
     /// @throws IOException if reading, decoding, or output fails or makes no progress
-    public static CodecTransferResult decompress(
+    static CodecTransferResult decompress(
             CompressionCodec<?> codec,
             ReadableByteChannel source,
             WritableByteChannel target
@@ -82,7 +76,7 @@ public final class CodecTransferSupport {
     /// @param target  the borrowed channel receiving every decoded byte
     /// @return the decoder's cumulative logical input count and this transfer's decoded output count
     /// @throws IOException if decoding or target output fails or makes no progress
-    public static CodecTransferResult decompress(
+    static CodecTransferResult decompress(
             DecompressingReadableByteChannel decoder,
             WritableByteChannel target
     ) throws IOException {

@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.codec.lz4;
 
+import org.glavo.arkivo.checksum.xxhash.XXHash32;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
-import org.glavo.arkivo.codec.lz4.internal.LZ4DictionarySupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
 
@@ -104,7 +104,7 @@ public final class LZ4Dictionary implements CompressionDictionary {
         LZ4Dictionary dictionary = rawContent(bytes);
         return new LZ4Dictionary(
                 dictionary.buffer(),
-                LZ4DictionarySupport.contentIdentifier(dictionary.bytes())
+                XXHash32.DEFAULT.computeLong(dictionary.bytes())
         );
     }
 

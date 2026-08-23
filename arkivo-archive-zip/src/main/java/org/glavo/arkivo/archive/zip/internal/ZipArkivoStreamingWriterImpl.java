@@ -51,8 +51,8 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         SYMBOLIC_LINK
     }
 
-    /// The sink that serializes completed ZIP entries.
-    private final ZipArchiveEntrySink entrySink;
+    /// The file system that serializes completed ZIP entries.
+    private final ZipArkivoWritableFileSystemImpl fileSystem;
 
     /// The parsed ZIP streaming writer configuration.
     private final ZipArkivoFileSystemConfig config;
@@ -64,8 +64,8 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     private @Nullable ZipStreamingEntry pendingEntry;
 
     /// Creates a ZIP streaming writer.
-    private ZipArkivoStreamingWriterImpl(ZipArchiveEntrySink entrySink, ZipArkivoFileSystemConfig config) {
-        this.entrySink = Objects.requireNonNull(entrySink, "entrySink");
+    private ZipArkivoStreamingWriterImpl(ZipArkivoWritableFileSystemImpl fileSystem, ZipArkivoFileSystemConfig config) {
+        this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(Objects.requireNonNull(config, "config").threadSafety());
     }
@@ -78,7 +78,14 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     /// @throws NullPointerException if `path` or `config` is `null`
     /// @throws IOException if the destination cannot be prepared for writing
     public static ZipArkivoStreamingWriterImpl create(Path path, ZipArkivoFileSystemConfig config) throws IOException {
-        return new ZipArkivoStreamingWriterImpl(ZipArchiveEntrySink.create(path, config), config);
+        return new ZipArkivoStreamingWriterImpl(
+                new ZipArkivoWritableFileSystemImpl(
+                        ZipArkivoFileSystemProvider.instance(),
+                        Objects.requireNonNull(path, "path"),
+                        Objects.requireNonNull(config, "config")
+                ),
+                config
+        );
     }
 
     /// Opens a streaming ZIP writer over a writable channel.
@@ -93,7 +100,14 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     public static ZipArkivoStreamingWriterImpl open(WritableByteChannel output, ZipArkivoFileSystemConfig config) {
         Objects.requireNonNull(output, "output");
         try {
-            return new ZipArkivoStreamingWriterImpl(ZipArchiveEntrySink.open(output, config), config);
+            return new ZipArkivoStreamingWriterImpl(
+                    new ZipArkivoWritableFileSystemImpl(
+                            ZipArkivoFileSystemProvider.instance(),
+                            output,
+                            Objects.requireNonNull(config, "config")
+                    ),
+                    config
+            );
         } catch (RuntimeException | Error exception) {
             closeAfterOpenFailure(output, exception);
             throw exception;
@@ -141,7 +155,15 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             long splitSize,
             ZipArkivoFileSystemConfig config
     ) throws IOException {
-        return new ZipArkivoStreamingWriterImpl(ZipArchiveEntrySink.open(target, splitSize, config), config);
+        return new ZipArkivoStreamingWriterImpl(
+                new ZipArkivoWritableFileSystemImpl(
+                        ZipArkivoFileSystemProvider.instance(),
+                        Objects.requireNonNull(target, "target"),
+                        splitSize,
+                        Objects.requireNonNull(config, "config")
+                ),
+                config
+        );
     }
 
     /// Begins a pending regular file ZIP entry for the given logical archive path.
@@ -203,7 +225,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             entry.ensurePending();
             switch (entry.type) {
                 case FILE -> {
-                    try (OutputStream ignored = entrySink.openFile(
+                    try (OutputStream ignored = fileSystem.openFile(
                             entry.entryPath,
                             entry.attributes.metadata(entry, true)
                     )) {
@@ -212,14 +234,14 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                 }
                 case DIRECTORY -> {
                     entry.attributes.requireSupportedDirectory();
-                    entrySink.writeDirectory(
+                    fileSystem.writeDirectory(
                             entry.entryPath,
                             entry.attributes.metadata(entry, false)
                     );
                 }
                 case SYMBOLIC_LINK -> {
                     entry.attributes.requireSupportedSymbolicLink();
-                    entrySink.writeStoredEntry(
+                    fileSystem.writeStoredEntry(
                             entry.entryPath,
                             Objects.requireNonNull(entry.linkTarget, "linkTarget").getBytes(StandardCharsets.UTF_8),
                             entry.attributes.metadata(entry, false)
@@ -248,7 +270,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (entry.type != EntryType.FILE) {
                 throw new IllegalStateException("Only ZIP file entries can open a body channel");
             }
-            OutputStream output = entrySink.openFile(
+            OutputStream output = fileSystem.openFile(
                     entry.entryPath,
                     entry.attributes.metadata(entry, false)
             );
@@ -265,7 +287,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     protected void closeWriter() throws IOException {
         lock();
         try {
-            entrySink.close();
+            fileSystem.close();
         } finally {
             unlock();
         }

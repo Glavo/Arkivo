@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec;
 
-import org.glavo.arkivo.codec.internal.CodecTransferSupport;
 import org.glavo.arkivo.codec.internal.PrefixReplayReadableByteChannel;
 import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;

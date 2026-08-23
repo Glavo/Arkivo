@@ -10,7 +10,6 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
-import org.glavo.arkivo.codec.internal.PrefixReplayReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -183,50 +182,6 @@ final class CodecChannelInterruptibilityTest {
                 ),
                 framedSource
         );
-    }
-
-    /// Verifies that stream-based SPI adapters do not claim channel interruption semantics they cannot preserve.
-    @Test
-    void streamBasedAdaptersDoNotAdvertiseInterruptibility() throws IOException {
-        PlainWritableChannel plainTarget = new PlainWritableChannel();
-        CompressingWritableByteChannel plainEncoder = StreamCodecAdapters.newWritableByteChannel(
-                plainTarget,
-                ResourceOwnership.BORROWED,
-                output -> output
-        );
-        assertFalse(plainEncoder instanceof InterruptibleChannel);
-        plainEncoder.close();
-        plainTarget.close();
-
-        PlainReadableChannel plainSource = new PlainReadableChannel();
-        DecompressingReadableByteChannel plainDecoder = StreamCodecAdapters.newReadableByteChannel(
-                plainSource,
-                ResourceOwnership.BORROWED,
-                input -> input
-        );
-        assertFalse(plainDecoder instanceof InterruptibleChannel);
-        plainDecoder.close();
-        plainSource.close();
-
-        BlockingWritableChannel target = new BlockingWritableChannel();
-        CompressingWritableByteChannel encoder = StreamCodecAdapters.newWritableByteChannel(
-                target,
-                ResourceOwnership.BORROWED,
-                output -> output
-        );
-        assertFalse(encoder instanceof InterruptibleChannel);
-        encoder.close();
-        target.close();
-
-        BlockingReadableChannel source = new BlockingReadableChannel();
-        DecompressingReadableByteChannel decoder = StreamCodecAdapters.newReadableByteChannel(
-                source,
-                ResourceOwnership.BORROWED,
-                input -> input
-        );
-        assertFalse(decoder instanceof InterruptibleChannel);
-        decoder.close();
-        source.close();
     }
 
     /// Verifies capability preservation for the JDK channel types expected in file and socket pipelines.

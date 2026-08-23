@@ -26,7 +26,6 @@ import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
-import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
@@ -90,8 +89,7 @@ import java.util.Set;
 
 /// Implements a 7z archive file system backed by a read/update index or a forward-only writer.
 @NotNullByDefault
-public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
-        implements SevenZipArchiveEntrySink {
+public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem {
     /// The maximum decoded entry size retained in memory by default.
     private static final long DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD = 1024L * 1024L;
 
@@ -932,8 +930,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Opens a regular entry body for a normalized streaming-writer entry name.
-    @Override
-    public OutputStream openFile(String entryName, SevenZipEntryWriteMetadata metadata) throws IOException {
+    OutputStream openFile(String entryName, SevenZipEntryWriteMetadata metadata) throws IOException {
         return newOutputStream(getPath("/" + entryName), metadata);
     }
 
@@ -1004,8 +1001,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Writes a directory for a normalized streaming-writer entry name.
-    @Override
-    public void writeDirectory(String entryName, SevenZipEntryWriteMetadata metadata) throws IOException {
+    void writeDirectory(String entryName, SevenZipEntryWriteMetadata metadata) throws IOException {
         createDirectory(getPath("/" + entryName), metadata);
     }
 
@@ -1058,8 +1054,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Writes a symbolic link for normalized streaming-writer entry and target names.
-    @Override
-    public void writeSymbolicLink(
+    void writeSymbolicLink(
             String entryName,
             String target,
             SevenZipEntryWriteMetadata metadata

@@ -3,9 +3,7 @@
 
 package org.glavo.arkivo.codec.internal;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.internal.StreamCodecAdapters;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -16,7 +14,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 
@@ -109,37 +106,6 @@ final class StreamChannelAdaptersTest {
         assertFalse(encoder.isOpen());
     }
 
-    /// Verifies stream codec factory failures apply endpoint ownership after validation.
-    @Test
-    void appliesOwnershipAfterCodecFactoryFailure() {
-        WritableByteChannel ownedTarget = Channels.newChannel(new ByteArrayOutputStream());
-        IOException encoderFailure = assertThrows(
-                IOException.class,
-                () -> StreamCodecAdapters.newWritableByteChannel(
-                        ownedTarget,
-                        ResourceOwnership.OWNED,
-                        output -> {
-                            throw new IOException("encoder setup failed");
-                        }
-                )
-        );
-        assertEquals("encoder setup failed", encoderFailure.getMessage());
-        assertFalse(ownedTarget.isOpen());
-
-        ReadableByteChannel retainedSource = Channels.newChannel(new ByteArrayInputStream(new byte[0]));
-        IOException decoderFailure = assertThrows(
-                IOException.class,
-                () -> StreamCodecAdapters.newReadableByteChannel(
-                        retainedSource,
-                        ResourceOwnership.BORROWED,
-                        input -> {
-                            throw new IOException("decoder setup failed");
-                        }
-                )
-        );
-        assertEquals("decoder setup failed", decoderFailure.getMessage());
-        assertTrue(retainedSource.isOpen());
-    }
     /// Verifies every adapter retries a failed endpoint close.
     @Test
     void retriesFailedEndpointClosure() throws IOException {

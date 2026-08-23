@@ -8,8 +8,6 @@ import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
-import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemConfig;
-import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

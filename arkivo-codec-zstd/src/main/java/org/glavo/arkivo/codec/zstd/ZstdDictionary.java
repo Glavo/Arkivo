@@ -5,11 +5,11 @@ package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
-import org.glavo.arkivo.codec.zstd.internal.ZstdDictionarySupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Objects;
 
 /// Stores immutable Zstandard dictionary bytes together with their required interpretation.
@@ -126,7 +126,12 @@ public final class ZstdDictionary implements CompressionDictionary {
     /// @throws NullPointerException if {@code dictionary} is {@code null}
     public static long dictionaryId(ByteBuffer dictionary) {
         Objects.requireNonNull(dictionary, "dictionary");
-        return ZstdDictionarySupport.dictionaryId(dictionary);
+        ByteBuffer source = dictionary.slice().order(ByteOrder.LITTLE_ENDIAN);
+        if (source.remaining() < 8
+                || Integer.toUnsignedLong(source.getInt(0)) != FORMATTED_DICTIONARY_MAGIC) {
+            return NO_DICTIONARY_ID;
+        }
+        return Integer.toUnsignedLong(source.getInt(4));
     }
 
     /// Returns a copy of the complete dictionary representation.

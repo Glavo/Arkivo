@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec.internal;
 
-import org.glavo.arkivo.codec.internal.ForceCloseableChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

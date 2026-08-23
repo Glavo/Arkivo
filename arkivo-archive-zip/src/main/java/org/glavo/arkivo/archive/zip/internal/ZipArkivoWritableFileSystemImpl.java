@@ -138,7 +138,7 @@ import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.writeShort;
 /// creation remains write-only because emitted entry bytes cannot be recovered from the output endpoint.
 @NotNullByDefault
 public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
-        implements ZipFileSystemOperations, ZipArchiveEntrySink {
+        implements ZipFileSystemOperations {
     /// The LZMA SDK major version stored in ZIP LZMA property headers.
     private static final int LZMA_SDK_MAJOR_VERSION = 9;
 
@@ -2211,20 +2211,17 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Opens a regular entry body for a normalized streaming-writer entry name.
-    @Override
-    public OutputStream openFile(String entryName, ZipEntryWriteMetadata metadata) throws IOException {
+    OutputStream openFile(String entryName, ZipEntryWriteMetadata metadata) throws IOException {
         return newOutputStream(getPath("/" + entryName), entryMetadata(metadata));
     }
 
     /// Writes a directory for a normalized streaming-writer entry name.
-    @Override
-    public void writeDirectory(String entryName, ZipEntryWriteMetadata metadata) throws IOException {
+    void writeDirectory(String entryName, ZipEntryWriteMetadata metadata) throws IOException {
         createDirectory(getPath("/" + entryName), entryMetadata(metadata));
     }
 
     /// Writes a complete stored entry for a normalized streaming-writer entry name.
-    @Override
-    public void writeStoredEntry(String entryName, byte[] content, ZipEntryWriteMetadata metadata) throws IOException {
+    void writeStoredEntry(String entryName, byte[] content, ZipEntryWriteMetadata metadata) throws IOException {
         writeStoredEntry(getPath("/" + entryName), content, entryMetadata(metadata));
     }
 
