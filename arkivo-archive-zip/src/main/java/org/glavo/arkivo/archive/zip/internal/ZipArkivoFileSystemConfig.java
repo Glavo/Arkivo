@@ -30,11 +30,11 @@ import java.util.Set;
 /// Stores parsed ZIP file system configuration.
 @NotNullByDefault
 public final class ZipArkivoFileSystemConfig {
-    /// The legacy NIO environment key for a password provider.
+    /// The NIO environment key for a password provider.
     private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArchiveOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);
 
-    /// The legacy NIO environment key for default entry encryption.
+    /// The NIO environment key for default entry encryption.
     private static final ArchiveOption<ZipEncryption> DEFAULT_ENCRYPTION =
             ArchiveOption.of(
                     "arkivo.zip",
@@ -43,11 +43,11 @@ public final class ZipArkivoFileSystemConfig {
                     ZipArkivoFileSystemConfig::encryptionValue
             );
 
-    /// The legacy NIO environment key for split output size.
+    /// The NIO environment key for split output size.
     private static final ArchiveOption<Long> SPLIT_SIZE =
             ArchiveOption.of("arkivo.zip", "splitSize", Long.class, ZipArkivoFileSystemConfig::longValue);
 
-    /// The legacy NIO environment key for name detection.
+    /// The NIO environment key for legacy metadata charset detection.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
             ArchiveOption.of(
                     "arkivo.zip",

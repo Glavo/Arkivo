@@ -109,7 +109,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     public static TarArkivoFileSystem open(Path path, TarArchiveOptions.Read options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return TarArkivoFileSystemProvider.instance().openPath(path, toLegacyOptions(options));
+        return TarArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
     }
 
     /// Creates a new path-backed TAR archive file system.
@@ -130,7 +130,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     public static TarArkivoFileSystem create(Path path, TarArchiveOptions.Create options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return TarArkivoFileSystemProvider.instance().openPath(path, toLegacyOptions(options));
+        return TarArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
     }
 
     /// Opens a complete-rewrite update of an existing path-backed TAR archive.
@@ -151,7 +151,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     public static TarArkivoFileSystem update(Path path, TarArchiveOptions.Update options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return TarArkivoFileSystemProvider.instance().openPath(path, toLegacyOptions(options));
+        return TarArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
     }
 
     /// Opens a read-only TAR archive file system directly from one owned seekable channel.
@@ -215,7 +215,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
         return TarArkivoFileSystemImpl.open(
                 TarArkivoFileSystemProvider.instance(),
                 source,
-                toLegacyOptions(options)
+                toInternalOptions(options)
         );
     }
 
@@ -258,19 +258,19 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
         return TarArkivoFileSystemImpl.open(
                 TarArkivoFileSystemProvider.instance(),
                 source,
-                toLegacyOptions(options)
+                toInternalOptions(options)
         );
     }
 
     /// Converts strongly typed TAR read settings for internal indexed readers.
-    static ArchiveOptions toLegacyOptions(TarArchiveOptions.Read options) {
+    static ArchiveOptions toInternalOptions(TarArchiveOptions.Read options) {
         return ArchiveOptions.fromReadOptions(options.common())
                 .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector())
                 .with(COMPRESSION, options.compression());
     }
 
     /// Converts strongly typed TAR creation settings for the internal writer.
-    static ArchiveOptions toLegacyOptions(TarArchiveOptions.Create options) {
+    static ArchiveOptions toInternalOptions(TarArchiveOptions.Create options) {
         return ArchiveOptions.fromCreateOptions(options.common())
                 .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
                         StandardOpenOption.WRITE,
@@ -280,7 +280,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Converts strongly typed TAR update settings for the internal complete-rewrite implementation.
-    static ArchiveOptions toLegacyOptions(TarArchiveOptions.Update options) {
+    static ArchiveOptions toInternalOptions(TarArchiveOptions.Update options) {
         return ArchiveOptions.fromUpdateOptions(options.common())
                 .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
                         StandardOpenOption.READ,

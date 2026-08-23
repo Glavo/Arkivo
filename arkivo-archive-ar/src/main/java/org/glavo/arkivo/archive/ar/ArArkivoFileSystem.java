@@ -80,7 +80,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     public static ArArkivoFileSystem open(Path path, ArArchiveOptions.Read options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return ArArkivoFileSystemProvider.instance().openPath(path, toLegacyOptions(options));
+        return ArArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
     }
 
     /// Creates a new path-backed AR archive file system.
@@ -101,7 +101,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     public static ArArkivoFileSystem create(Path path, ArArchiveOptions.Create options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return ArArkivoFileSystemProvider.instance().openPath(path, toLegacyOptions(options));
+        return ArArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
     }
 
     /// Opens a complete-rewrite update of an existing path-backed AR archive.
@@ -122,7 +122,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     public static ArArkivoFileSystem update(Path path, ArArchiveOptions.Update options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return ArArkivoFileSystemProvider.instance().openPath(path, toLegacyOptions(options));
+        return ArArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
     }
 
     /// Opens a read-only AR archive file system directly from one owned seekable channel.
@@ -180,7 +180,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
         return ArArkivoFileSystemImpl.open(
                 ArArkivoFileSystemProvider.instance(),
                 source,
-                toLegacyOptions(options)
+                toInternalOptions(options)
         );
     }
 
@@ -215,18 +215,18 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
         return ArArkivoFileSystemImpl.open(
                 ArArkivoFileSystemProvider.instance(),
                 source,
-                toLegacyOptions(options)
+                toInternalOptions(options)
         );
     }
 
     /// Converts strongly typed AR read settings for the internal parser.
-    static ArchiveOptions toLegacyOptions(ArArchiveOptions.Read options) {
+    static ArchiveOptions toInternalOptions(ArArchiveOptions.Read options) {
         return ArchiveOptions.fromReadOptions(options.common())
                 .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector());
     }
 
     /// Converts strongly typed AR creation settings for the internal writer.
-    static ArchiveOptions toLegacyOptions(ArArchiveOptions.Create options) {
+    static ArchiveOptions toInternalOptions(ArArchiveOptions.Create options) {
         return ArchiveOptions.fromCreateOptions(options.common())
                 .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
                         StandardOpenOption.WRITE,
@@ -236,7 +236,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     }
 
     /// Converts strongly typed AR update settings for the internal complete-rewrite implementation.
-    static ArchiveOptions toLegacyOptions(ArArchiveOptions.Update options) {
+    static ArchiveOptions toInternalOptions(ArArchiveOptions.Update options) {
         return ArchiveOptions.fromUpdateOptions(options.common())
                 .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
                         StandardOpenOption.READ,

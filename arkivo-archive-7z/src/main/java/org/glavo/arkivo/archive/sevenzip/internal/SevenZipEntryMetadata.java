@@ -436,7 +436,7 @@ public final class SevenZipEntryMetadata {
         return windowsAttributes;
     }
 
-    /// Creates a single physical packed stream list for legacy metadata constructors.
+    /// Creates a single physical packed-stream list for the single-range metadata constructors.
     private static @Unmodifiable List<SevenZipPackedStream> packedStreams(
             long dataOffset,
             long packedSize,

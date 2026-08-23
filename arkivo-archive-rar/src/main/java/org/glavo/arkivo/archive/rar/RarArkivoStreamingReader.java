@@ -100,7 +100,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
         return new RarArkivoStreamingReaderImpl(
                 source,
                 options.passwordProvider(),
-                RarArkivoFileSystem.toLegacyOptions(options)
+                RarArkivoFileSystem.toInternalOptions(options)
         );
     }
 
@@ -125,7 +125,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
         return new RarArkivoStreamingReaderImpl(
                 source,
                 options.passwordProvider(),
-                RarArkivoFileSystem.toLegacyOptions(options)
+                RarArkivoFileSystem.toInternalOptions(options)
         );
     }
 
@@ -153,7 +153,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
         return new RarArkivoStreamingReaderImpl(
                 StreamChannelAdapters.inputStream(source),
                 options.passwordProvider(),
-                RarArkivoFileSystem.toLegacyOptions(options)
+                RarArkivoFileSystem.toInternalOptions(options)
         );
     }
 }

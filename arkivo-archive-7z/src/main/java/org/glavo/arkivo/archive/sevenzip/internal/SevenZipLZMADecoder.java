@@ -28,9 +28,6 @@ import java.util.Set;
 /// Opens supported coder streams stored in 7z folders.
 @NotNullByDefault
 final class SevenZipLZMADecoder {
-    /// Indicates that a packed input size is unavailable to an internal compatibility overload.
-    private static final long UNKNOWN_SIZE = -1L;
-
     /// The 7z Copy method ID.
     static final byte[] COPY_METHOD_ID = new byte[]{0x00};
 
@@ -215,80 +212,6 @@ final class SevenZipLZMADecoder {
                 || isBcjFilter(methodId);
     }
 
-    /// Opens the decoder pipeline for a 7z folder method.
-    static InputStream openFolder(
-            InputStream input,
-            SevenZipFolderMethod method,
-            long finalOutputLimit
-    ) throws IOException {
-        return openFolder(input, method, finalOutputLimit, null);
-    }
-
-    /// Opens the decoder pipeline for a 7z folder method.
-    static InputStream openFolder(
-            InputStream input,
-            SevenZipFolderMethod method,
-            long finalOutputLimit,
-            @Nullable ArkivoPasswordProvider passwordProvider
-    ) throws IOException {
-        return openFolder(List.of(input), method, finalOutputLimit, passwordProvider);
-    }
-
-    /// Opens the decoder graph for a 7z folder without exact physical packed input sizes.
-    static InputStream openFolder(
-            List<? extends InputStream> packedInputs,
-            SevenZipFolderMethod method,
-            long finalOutputLimit,
-            @Nullable ArkivoPasswordProvider passwordProvider
-    ) throws IOException {
-        Objects.requireNonNull(packedInputs, "packedInputs");
-        long[] packedInputSizes = new long[packedInputs.size()];
-        Arrays.fill(packedInputSizes, UNKNOWN_SIZE);
-        return openFolder(packedInputs, packedInputSizes, method, finalOutputLimit, passwordProvider);
-    }
-
-    /// Opens the decoder graph for a 7z folder with all physical packed inputs and their exact sizes.
-    static InputStream openFolder(
-            List<? extends InputStream> packedInputs,
-            long[] packedInputSizes,
-            SevenZipFolderMethod method,
-            long finalOutputLimit,
-            @Nullable ArkivoPasswordProvider passwordProvider
-    ) throws IOException {
-        return openFolder(
-                packedInputs,
-                packedInputSizes,
-                method,
-                finalOutputLimit,
-                passwordProvider,
-                PasswordPurpose.ARCHIVE_CONTENT,
-                null,
-                ArchiveReadLimits.UNLIMITED
-        );
-    }
-
-    /// Opens the decoder graph with password context for a 7z folder.
-    static InputStream openFolder(
-            List<? extends InputStream> packedInputs,
-            long[] packedInputSizes,
-            SevenZipFolderMethod method,
-            long finalOutputLimit,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            PasswordPurpose passwordPurpose,
-            @Nullable String entryPath
-    ) throws IOException {
-        return openFolder(
-                packedInputs,
-                packedInputSizes,
-                method,
-                finalOutputLimit,
-                passwordProvider,
-                passwordPurpose,
-                entryPath,
-                ArchiveReadLimits.UNLIMITED
-        );
-    }
-
     /// Opens the decoder graph with password and resource-limit context for a 7z folder.
     static InputStream openFolder(
             List<? extends InputStream> packedInputs,
@@ -318,8 +241,8 @@ final class SevenZipLZMADecoder {
         }
         long[] inputSizes = packedInputSizes.clone();
         for (long inputSize : inputSizes) {
-            if (inputSize < UNKNOWN_SIZE) {
-                throw new IllegalArgumentException("packedInputSizes must contain non-negative values or UNKNOWN_SIZE");
+            if (inputSize < 0L) {
+                throw new IllegalArgumentException("packedInputSizes must contain only non-negative values");
             }
         }
 
@@ -412,7 +335,7 @@ final class SevenZipLZMADecoder {
         /// The physical packed input streams in folder order.
         private final List<InputStream> packedInputs;
 
-        /// The exact physical packed input sizes, or `UNKNOWN_SIZE` where unavailable.
+        /// The exact physical packed input sizes.
         private final long @Unmodifiable [] packedInputSizes;
 
         /// The folder coder graph.
@@ -495,12 +418,6 @@ final class SevenZipLZMADecoder {
             byte[] properties = method.properties(coderIndex);
             InputStream output;
             if (isBcj2Filter(methodId)) {
-                for (long coderInputSize : coderInputSizes) {
-                    if (coderInputSize == UNKNOWN_SIZE) {
-                        Arrays.fill(coderInputSizes, UNKNOWN_SIZE);
-                        break;
-                    }
-                }
                 if (inputCount != 4) {
                     throw new IOException("7z BCJ2 coder must consume four input streams");
                 }

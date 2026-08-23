@@ -30,31 +30,31 @@ import java.util.Set;
 /// Stores parsed 7z file system configuration.
 @NotNullByDefault
 public final class SevenZipArkivoFileSystemConfig {
-    /// The legacy NIO environment key for a password provider.
+    /// The NIO environment key for a password provider.
     private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArchiveOption.of("arkivo.7z", "passwordProvider", ArkivoPasswordProvider.class);
 
-    /// The legacy NIO environment key for compression.
+    /// The NIO environment key for compression.
     private static final ArchiveOption<SevenZipCompression> COMPRESSION =
             ArchiveOption.of("arkivo.7z", "compression", SevenZipCompression.class);
 
-    /// The legacy NIO environment key for one filter.
+    /// The NIO environment key for one filter.
     private static final ArchiveOption<SevenZipFilter> FILTER =
             ArchiveOption.of("arkivo.7z", "filter", SevenZipFilter.class);
 
-    /// The legacy NIO environment key for a filter chain.
+    /// The NIO environment key for a filter chain.
     private static final ArchiveOption<SevenZipFilterChain> FILTERS =
             ArchiveOption.of("arkivo.7z", "filters", SevenZipFilterChain.class);
 
-    /// The legacy NIO environment key for solid grouping.
+    /// The NIO environment key for solid grouping.
     private static final ArchiveOption<Integer> SOLID_FILE_COUNT =
             ArchiveOption.of("arkivo.7z", "solidFileCount", Integer.class);
 
-    /// The legacy NIO environment key for split output.
+    /// The NIO environment key for split output.
     private static final ArchiveOption<Long> SPLIT_SIZE =
             ArchiveOption.of("arkivo.7z", "splitSize", Long.class);
 
-    /// The legacy NIO environment key for header encryption.
+    /// The NIO environment key for header encryption.
     private static final ArchiveOption<Boolean> ENCRYPT_HEADERS =
             ArchiveOption.of("arkivo.7z", "encryptHeaders", Boolean.class);
 

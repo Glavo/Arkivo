@@ -70,13 +70,6 @@ public final class CompressionProbeResult implements AutoCloseable {
         return current;
     }
 
-    /// Returns whether an installed format matched the probed prefix.
-    ///
-    /// @return {@code true} if {@link #format()} is non-null
-    public boolean detected() {
-        return format != null;
-    }
-
     /// Closes the prefix-replaying channel unless its ownership was transferred.
     ///
     /// A failed close retains ownership so a later call can retry cleanup.

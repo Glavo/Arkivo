@@ -290,12 +290,12 @@ final class SevenZipFolderMethod {
         return unpackSizes[finalOutputStreamIndex];
     }
 
-    /// Returns a copy of the first declared method ID for compatibility with entry metadata APIs.
+    /// Returns a copy of the first coder's method ID for entry metadata views.
     byte[] firstMethodId() {
         return methodId(0);
     }
 
-    /// Returns a copy of the first declared coder properties for compatibility with entry metadata APIs.
+    /// Returns a copy of the first coder's properties for entry metadata views.
     byte[] firstProperties() {
         return properties(0);
     }

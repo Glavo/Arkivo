@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies one-shot ByteBuffer operations directly drive mandatory buffer engines.
 @NotNullByDefault
-final class DirectByteBufferCodecSupportTest {
+final class ByteBufferCodecSupportTest {
     /// Verifies allocating and fixed operations never open channel adapters.
     @Test
     void drivesBufferEnginesWithoutChannelAdapters() throws IOException {
@@ -80,9 +80,9 @@ final class DirectByteBufferCodecSupportTest {
         assertEquals(content.length - 1L, limit.maximum());
     }
 
-    /// Verifies concatenated decoding and one-frame decoding use distinct direct-engine loops.
+    /// Verifies concatenated decoding and one-frame decoding use distinct buffer-engine loops.
     @Test
-    void preservesDirectFrameBoundaries() throws IOException {
+    void preservesFrameBoundaries() throws IOException {
         CompressionCodec.FlushableFramed<LengthPrefixedCodec> codec = new LengthPrefixedCodec();
         byte[] first = new byte[]{1, 2, 3};
         byte[] second = new byte[]{4, 5};

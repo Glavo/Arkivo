@@ -149,7 +149,7 @@ public final class SevenZipLZMADecoderTest {
 
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipLZMADecoder.openFolder(new CloseFailingInputStream(), method, 0)
+                () -> openFolder(new CloseFailingInputStream(), method)
         );
         assertEquals(true, exception.getMessage().contains("7z LZMA coder properties must contain five bytes"));
         assertEquals(1, exception.getSuppressed().length);
@@ -167,11 +167,25 @@ public final class SevenZipLZMADecoderTest {
 
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipLZMADecoder.openFolder(new RuntimeCloseFailingInputStream(), method, 0)
+                () -> openFolder(new RuntimeCloseFailingInputStream(), method)
         );
         assertEquals(true, exception.getMessage().contains("7z LZMA coder properties must contain five bytes"));
         assertEquals(1, exception.getSuppressed().length);
         assertEquals("close failed", exception.getSuppressed()[0].getMessage());
+    }
+
+    /// Opens a one-stream folder with the exact empty packed-input size used by setup-failure tests.
+    private static InputStream openFolder(InputStream input, SevenZipFolderMethod method) throws IOException {
+        return SevenZipLZMADecoder.openFolder(
+                List.of(input),
+                new long[]{0L},
+                method,
+                0L,
+                null,
+                PasswordPurpose.ARCHIVE_CONTENT,
+                null,
+                ArchiveReadLimits.UNLIMITED
+        );
     }
 
     /// Input stream that fails when closed.

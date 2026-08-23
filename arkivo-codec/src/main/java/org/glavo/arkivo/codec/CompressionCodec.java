@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec;
 
-import org.glavo.arkivo.codec.internal.ByteBufferCodecSupport;
 import org.glavo.arkivo.codec.internal.CodecTransferSupport;
 import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.internal.CodecChannelAdapters;

@@ -49,6 +49,10 @@ public interface ArchiveMetadataCharsetDetector {
     /// @param charset the charset selected by the returned detector
     /// @return a detector that always returns {@code charset}
     static ArchiveMetadataCharsetDetector fixed(Charset charset) {
-        return new FixedArchiveMetadataCharsetDetector(charset);
+        Charset checkedCharset = Objects.requireNonNull(charset, "charset");
+        return bytes -> {
+            Objects.requireNonNull(bytes, "bytes");
+            return checkedCharset;
+        };
     }
 }

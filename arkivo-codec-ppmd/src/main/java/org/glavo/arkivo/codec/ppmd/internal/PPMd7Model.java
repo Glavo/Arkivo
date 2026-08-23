@@ -68,7 +68,7 @@ public final class PPMd7Model {
     /// The arithmetic range decoder.
     private final @Nullable PPMdRangeDecoder rangeDecoder;
     /// The arithmetic range encoder.
-    private final @Nullable PPMdRangeEncoder rangeEncoder;
+    private final @Nullable PPMd7RangeEncoder rangeEncoder;
     /// Symbol exclusion generations indexed by unsigned byte.
     private final byte[] symbolMasks = new byte[256];
     /// Binary probabilities indexed by frequency and context class.
@@ -126,7 +126,7 @@ public final class PPMd7Model {
     }
 
     /// Creates an uninitialized PPMd encoding model.
-    PPMd7Model(PPMdRangeEncoder rangeEncoder) {
+    PPMd7Model(PPMd7RangeEncoder rangeEncoder) {
         this.rangeDecoder = null;
         this.rangeEncoder = Objects.requireNonNull(rangeEncoder, "rangeEncoder");
     }
@@ -341,7 +341,7 @@ public final class PPMd7Model {
 
     /// Encodes a symbol or escape from a one-state context.
     private int encodeBinarySymbol(int context, int symbol) throws IOException {
-        PPMdRangeEncoder encoder = Objects.requireNonNull(rangeEncoder);
+        PPMd7RangeEncoder encoder = Objects.requireNonNull(rangeEncoder);
         int state = allocator.contextStates(context);
         int suffix = allocator.contextSuffix(context);
         if (suffix == 0) throw new IOException("Corrupt PPMd binary context");
@@ -411,7 +411,7 @@ public final class PPMd7Model {
 
     /// Encodes from an unmasked multi-state context or emits its escape interval.
     private int encodeFirstOrderSymbol(int context, int symbol) throws IOException {
-        PPMdRangeEncoder encoder = Objects.requireNonNull(rangeEncoder);
+        PPMd7RangeEncoder encoder = Objects.requireNonNull(rangeEncoder);
         int scale = allocator.contextSumFrequency(context);
         if (scale == 0) throw new IOException("Corrupt PPMd zero-frequency context");
         previousSuccess = 0;
@@ -505,7 +505,7 @@ public final class PPMd7Model {
             int maskedStateCount,
             int symbol
     ) throws IOException {
-        PPMdRangeEncoder encoder = Objects.requireNonNull(rangeEncoder);
+        PPMd7RangeEncoder encoder = Objects.requireNonNull(rangeEncoder);
         @Nullable SeeContext see = selectSeeContext(context, maskedStateCount);
         int escapeFrequency = see == null ? 1 : see.mean();
         int states = allocator.contextStates(context);

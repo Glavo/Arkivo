@@ -12,7 +12,7 @@ import java.util.Objects;
 
 /// Encodes the 7z arithmetic range representation used with PPMd7 models.
 @NotNullByDefault
-final class PPMd7RangeEncoder implements PPMdRangeEncoder {
+final class PPMd7RangeEncoder {
     /// The unsigned 32-bit mask.
     private static final long UINT_MASK = 0xffff_ffffL;
 
@@ -52,8 +52,7 @@ final class PPMd7RangeEncoder implements PPMdRangeEncoder {
     }
 
     /// Encodes one selected cumulative-frequency interval.
-    @Override
-    public void encode(int lowCount, int highCount, int scale) throws IOException {
+    void encode(int lowCount, int highCount, int scale) throws IOException {
         if (finished) {
             throw new IOException("PPMd7 range encoder is already finished");
         }
@@ -67,8 +66,7 @@ final class PPMd7RangeEncoder implements PPMdRangeEncoder {
     }
 
     /// Encodes one binary context with the 7z range coder's format-defined rounding.
-    @Override
-    public void encodeBit(boolean one, int zeroSize, int scale) throws IOException {
+    void encodeBit(boolean one, int zeroSize, int scale) throws IOException {
         if (finished) {
             throw new IOException("PPMd7 range encoder is already finished");
         }
@@ -86,8 +84,7 @@ final class PPMd7RangeEncoder implements PPMdRangeEncoder {
     }
 
     /// Finishes the arithmetic representation and flushes all bytes.
-    @Override
-    public void finish() throws IOException {
+    void finish() throws IOException {
         if (finished) {
             flushOutput();
             return;

@@ -35,7 +35,6 @@ final class CompressionChannelProbeTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(bytes));
         CompressionProbeResult probe = CompressionFormats.probe(source, 8, ResourceOwnership.BORROWED);
 
-        assertTrue(probe.detected());
         assertNotNull(probe.format());
         assertEquals("gzip", probe.format().name());
         byte[] prefix = new byte[8];
@@ -59,7 +58,6 @@ final class CompressionChannelProbeTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(bytes));
         CompressionProbeResult probe = CompressionFormats.probe(source, ResourceOwnership.OWNED);
 
-        assertFalse(probe.detected());
         assertNull(probe.format());
         ReadableByteChannel replay = probe.takeChannel();
         assertArrayEquals(bytes, readInSmallChunks(replay));
