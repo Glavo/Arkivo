@@ -8,8 +8,8 @@ import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.deflate.internal.DeflateDecoder;
-import org.glavo.arkivo.codec.deflate.internal.DeflateEncoder;
+import org.glavo.arkivo.codec.deflate.internal.DeflateDecoderEngine;
+import org.glavo.arkivo.codec.deflate.internal.DeflateEncoderEngine;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -285,7 +285,12 @@ public final class DeflateCodec
     @Override
     public CompressionEncoder.Flushable newEncoder(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
-        return new DeflateEncoder(compressionLevel, dictionary, strategy);
+        return new DeflateEncoderEngine(
+                DeflateEncoderEngine.Format.DEFLATE,
+                compressionLevel,
+                dictionary != null ? dictionary.bytes() : null,
+                strategy
+        );
     }
 
     /// Creates a transport-independent raw Deflate decoder using this codec's configured limits.
@@ -296,7 +301,10 @@ public final class DeflateCodec
                 DECODING_WINDOW_SIZE
         );
         return CompressionDecoderSupport.limitEngineOutput(
-                new DeflateDecoder(dictionary),
+                new DeflateDecoderEngine(
+                        DeflateDecoderEngine.Format.DEFLATE,
+                        dictionary != null ? dictionary.bytes() : null
+                ),
                 maximumOutputSize
         );
     }

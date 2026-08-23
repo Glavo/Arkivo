@@ -77,7 +77,7 @@ final class DeflateDecoderFormatTest {
         ByteBuffer source = ByteBuffer.allocateDirect(compressed.length + trailing.length);
         source.put(compressed).put(trailing).flip();
         ByteBuffer target = ByteBuffer.allocateDirect(content.length + 1);
-        try (CompressionDecoder decoder = new DeflateDecoder(null)) {
+        try (CompressionDecoder decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
             assertEquals(CodecOutcome.FINISHED, decoder.decode(source, target));
         }
 
@@ -127,7 +127,7 @@ final class DeflateDecoderFormatTest {
     private static byte[] decodeInOneOperation(byte[] compressed, int expectedSize) throws IOException {
         ByteBuffer source = ByteBuffer.wrap(compressed);
         ByteBuffer target = ByteBuffer.allocate(expectedSize + 1);
-        try (CompressionDecoder decoder = new DeflateDecoder(null)) {
+        try (CompressionDecoder decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
             assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
         }
         assertEquals(compressed.length, source.position());
@@ -138,7 +138,7 @@ final class DeflateDecoderFormatTest {
     private static byte[] decode(byte[] compressed) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         int offset = 0;
-        try (CompressionDecoder decoder = new DeflateDecoder(null)) {
+        try (CompressionDecoder decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
             while (true) {
                 int offered = Math.min(1, compressed.length - offset);
                 ByteBuffer source = ByteBuffer.wrap(compressed, offset, offered).slice();

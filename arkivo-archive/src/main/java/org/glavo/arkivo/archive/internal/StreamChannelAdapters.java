@@ -30,7 +30,7 @@ public final class StreamChannelAdapters {
     /// @param source the input stream whose ownership is transferred to the channel
     /// @return a readable channel that preserves close-retry behavior
     public static ReadableByteChannel readableChannel(InputStream source) {
-        return new RetryingInputStreamChannel(Objects.requireNonNull(source, "source"));
+        return new InputStreamChannel(Objects.requireNonNull(source, "source"));
     }
 
     /// Returns a channel that owns and writes directly to the output stream.
@@ -55,6 +55,78 @@ public final class StreamChannelAdapters {
     /// @return an output stream that rejects zero-progress channel writes
     public static OutputStream outputStream(WritableByteChannel target) {
         return new ChannelOutputStream(Objects.requireNonNull(target, "target"));
+    }
+
+    /// Adapts one input stream to a readable channel.
+    @NotNullByDefault
+    private static final class InputStreamChannel implements ReadableByteChannel {
+        /// The backing input stream.
+        private final InputStream source;
+
+        /// The reusable transfer buffer for direct targets.
+        private final byte[] transferBuffer = new byte[TRANSFER_SIZE];
+
+        /// Whether this adapter remains open.
+        private boolean open = true;
+
+        /// Creates an input-stream channel.
+        private InputStreamChannel(InputStream source) {
+            this.source = source;
+        }
+
+        /// Performs one stream read and preserves zero-progress results for the channel caller.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            Objects.requireNonNull(target, "target");
+            ensureOpen();
+            if (target.isReadOnly()) {
+                throw new IllegalArgumentException("target must be writable");
+            }
+            if (!target.hasRemaining()) {
+                return 0;
+            }
+            if (target.hasArray()) {
+                int position = target.position();
+                int read = source.read(
+                        target.array(),
+                        target.arrayOffset() + position,
+                        target.remaining()
+                );
+                if (read > 0) {
+                    target.position(position + read);
+                }
+                return read;
+            }
+
+            int read = source.read(transferBuffer, 0, Math.min(target.remaining(), transferBuffer.length));
+            if (read > 0) {
+                target.put(transferBuffer, 0, read);
+            }
+            return read;
+        }
+
+        /// Returns whether this adapter remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes the stream and commits closure only after success.
+        @Override
+        public void close() throws IOException {
+            if (!open) {
+                return;
+            }
+            source.close();
+            open = false;
+        }
+
+        /// Requires this adapter to remain open.
+        private void ensureOpen() throws ClosedChannelException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+        }
     }
 
     /// Adapts one output stream to a writable channel.

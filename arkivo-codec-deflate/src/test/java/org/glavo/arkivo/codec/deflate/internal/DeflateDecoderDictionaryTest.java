@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -32,13 +31,15 @@ final class DeflateDecoderDictionaryTest {
         byte[] compressed = encodeWithDictionary(expected, dictionary);
         assertTrue(compressed.length < expected.length);
 
-        try (DeflateDecoder decoder = new DeflateDecoder(RawCompressionDictionary.of(dictionary))) {
+        try (DeflateDecoderEngine decoder =
+                     new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, dictionary)) {
             assertArrayEquals(expected, decode(decoder, compressed));
             decoder.reset();
             assertArrayEquals(expected, decode(decoder, compressed));
         }
 
-        try (DeflateDecoder decoder = new DeflateDecoder(null)) {
+        try (DeflateDecoderEngine decoder =
+                     new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
             assertThrows(IOException.class, () -> decode(decoder, compressed));
         }
     }

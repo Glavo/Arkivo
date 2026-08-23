@@ -124,7 +124,8 @@ final class Deflate64DecoderFormatTest {
     private static byte[] decode(byte[] compressed) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         int offset = 0;
-        try (Deflate64Decoder decoder = new Deflate64Decoder()) {
+        try (DeflateDecoderEngine decoder =
+                     new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE64, null)) {
             while (true) {
                 int offered = Math.min(1, compressed.length - offset);
                 ByteBuffer source = ByteBuffer.wrap(compressed, offset, offered).slice();

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -74,7 +75,7 @@ final class Deflate64BufferEngineTest {
         System.arraycopy(second, 0, expected, first.length, second.length);
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
-        try (Deflate64Encoder encoder = new Deflate64Encoder(6)) {
+        try (DeflateEncoderEngine encoder = newEncoder()) {
             encodeSegment(encoder, first, 19, 2, compressed);
             int beforeFlush = compressed.size();
             flush(encoder, 1, compressed);
@@ -98,7 +99,7 @@ final class Deflate64BufferEngineTest {
         byte[] expected = encode(retained, 29, 4);
         ByteArrayOutputStream actual = new ByteArrayOutputStream();
 
-        try (Deflate64Encoder encoder = new Deflate64Encoder(6)) {
+        try (DeflateEncoderEngine encoder = newEncoder()) {
             ByteBuffer source = directBuffer(abandoned, 0, abandoned.length);
             ByteBuffer target = ByteBuffer.allocateDirect(1);
             assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.encode(source, target));
@@ -133,7 +134,7 @@ final class Deflate64BufferEngineTest {
     /// Encodes one complete stream using fresh direct source and target buffers for every call.
     private static byte[] encode(byte[] input, int sourceChunkSize, int targetChunkSize) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (Deflate64Encoder encoder = new Deflate64Encoder(6)) {
+        try (DeflateEncoderEngine encoder = newEncoder()) {
             encodeSegment(encoder, input, sourceChunkSize, targetChunkSize, output);
             finish(encoder, targetChunkSize, output);
         }
@@ -142,7 +143,7 @@ final class Deflate64BufferEngineTest {
 
     /// Feeds one input segment through newly allocated caller buffers.
     private static void encodeSegment(
-            Deflate64Encoder encoder,
+            DeflateEncoderEngine encoder,
             byte[] input,
             int sourceChunkSize,
             int targetChunkSize,
@@ -165,7 +166,7 @@ final class Deflate64BufferEngineTest {
     }
 
     /// Completes a flush using a new target buffer for every operation.
-    private static void flush(Deflate64Encoder encoder, int targetChunkSize, ByteArrayOutputStream output) {
+    private static void flush(DeflateEncoderEngine encoder, int targetChunkSize, ByteArrayOutputStream output) {
         while (true) {
             ByteBuffer target = ByteBuffer.allocateDirect(targetChunkSize);
             CodecOutcome outcome = encoder.flush(target);
@@ -178,7 +179,7 @@ final class Deflate64BufferEngineTest {
     }
 
     /// Completes stream finalization using a new target buffer for every operation.
-    private static void finish(Deflate64Encoder encoder, int targetChunkSize, ByteArrayOutputStream output) {
+    private static void finish(DeflateEncoderEngine encoder, int targetChunkSize, ByteArrayOutputStream output) {
         while (true) {
             ByteBuffer target = ByteBuffer.allocateDirect(targetChunkSize);
             CodecOutcome outcome = encoder.finish(target);
@@ -199,7 +200,7 @@ final class Deflate64BufferEngineTest {
     ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         int offset = 0;
-        try (Deflate64Decoder decoder = new Deflate64Decoder()) {
+        try (DeflateDecoderEngine decoder = newDecoder()) {
             while (true) {
                 int offered = Math.min(sourceChunkSize, input.length - offset);
                 ByteBuffer source = directBuffer(input, offset, offered);
@@ -224,6 +225,21 @@ final class Deflate64BufferEngineTest {
                 }
             }
         }
+    }
+
+    /// Creates a Deflate64 encoder using the test suite's standard compression level.
+    private static DeflateEncoderEngine newEncoder() {
+        return new DeflateEncoderEngine(
+                DeflateEncoderEngine.Format.DEFLATE64,
+                6,
+                null,
+                DeflateStrategy.DEFAULT
+        );
+    }
+
+    /// Creates a Deflate64 decoder with its full history window.
+    private static DeflateDecoderEngine newDecoder() {
+        return new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE64, null);
     }
 
     /// Creates a newly allocated direct source containing one input slice.

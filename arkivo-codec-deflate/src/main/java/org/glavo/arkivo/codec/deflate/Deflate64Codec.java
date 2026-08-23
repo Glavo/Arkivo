@@ -7,8 +7,8 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.deflate.internal.Deflate64Decoder;
-import org.glavo.arkivo.codec.deflate.internal.Deflate64Encoder;
+import org.glavo.arkivo.codec.deflate.internal.DeflateDecoderEngine;
+import org.glavo.arkivo.codec.deflate.internal.DeflateEncoderEngine;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -188,7 +188,12 @@ public final class Deflate64Codec
     @Override
     public CompressionEncoder.Flushable newEncoder(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
-        return new Deflate64Encoder(compressionLevel);
+        return new DeflateEncoderEngine(
+                DeflateEncoderEngine.Format.DEFLATE64,
+                compressionLevel,
+                null,
+                DeflateStrategy.DEFAULT
+        );
     }
 
     /// Creates a transport-independent raw Deflate64 decoder using this codec's configured limits.
@@ -199,7 +204,7 @@ public final class Deflate64Codec
                 DECODING_WINDOW_SIZE
         );
         return CompressionDecoderSupport.limitEngineOutput(
-                new Deflate64Decoder(),
+                new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE64, null),
                 maximumOutputSize
         );
     }

@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,6 +24,48 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies progress-safe and close-retryable archive stream/channel adaptation.
 @NotNullByDefault
 final class StreamChannelAdaptersTest {
+    /// Verifies heap and direct targets receive input bytes with exact position advancement.
+    @Test
+    void adaptsInputStreamsToChannels() throws IOException {
+        try (ReadableByteChannel heapChannel = StreamChannelAdapters.readableChannel(
+                new ByteArrayInputStream(new byte[]{1, 2})
+        )) {
+            ByteBuffer target = ByteBuffer.allocate(4);
+            assertEquals(2, heapChannel.read(target));
+            assertEquals(2, target.position());
+        }
+
+        try (ReadableByteChannel directChannel = StreamChannelAdapters.readableChannel(
+                new ByteArrayInputStream(new byte[]{3, 4})
+        )) {
+            ByteBuffer target = ByteBuffer.allocateDirect(4);
+            assertEquals(2, directChannel.read(target));
+            assertEquals(2, target.position());
+        }
+    }
+
+    /// Verifies input-stream zero progress is returned without internal spinning.
+    @Test
+    void preservesZeroProgressFromInputStreams() throws IOException {
+        try (ReadableByteChannel channel =
+                     StreamChannelAdapters.readableChannel(new ZeroProgressInputStream())) {
+            assertEquals(0, channel.read(ByteBuffer.allocate(1)));
+        }
+    }
+
+    /// Verifies a read-only target is rejected before the input stream is consumed.
+    @Test
+    void rejectsReadOnlyChannelTargetBeforeReading() throws IOException {
+        ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{1});
+        try (ReadableByteChannel channel = StreamChannelAdapters.readableChannel(source)) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> channel.read(ByteBuffer.allocate(1).asReadOnlyBuffer())
+            );
+            assertEquals(1, source.available());
+        }
+    }
+
     /// Verifies output streams receive heap and direct buffers with exact source advancement.
     @Test
     void adaptsOutputStreamsToChannels() throws IOException {
@@ -107,6 +150,22 @@ final class StreamChannelAdaptersTest {
         /// Returns the number of write attempts.
         private int writeCount() {
             return writeCount;
+        }
+    }
+
+    /// Returns zero progress for every stream read.
+    @NotNullByDefault
+    private static final class ZeroProgressInputStream extends InputStream {
+        /// Returns zero progress.
+        @Override
+        public int read() {
+            return 0;
+        }
+
+        /// Returns zero progress.
+        @Override
+        public int read(byte[] bytes, int offset, int length) {
+            return 0;
         }
     }
 
