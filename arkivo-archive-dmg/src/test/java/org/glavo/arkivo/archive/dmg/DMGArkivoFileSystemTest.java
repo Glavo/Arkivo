@@ -5,15 +5,18 @@ package org.glavo.arkivo.archive.dmg;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.FileStore;
@@ -28,11 +31,21 @@ import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
+import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.createFragmentedHFSPlusDisk;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.createHFSPlusDisk;
+import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.fragmentedFileContents;
+import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.readFully;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.writeRawImage;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -90,6 +103,72 @@ final class DMGArkivoFileSystemTest {
             assertEquals(7L * DMGTestFixtures.SECTOR_SIZE, store.getUnallocatedSpace());
             assertEquals(0L, store.getUsableSpace());
             assertThrows(ReadOnlyFileSystemException.class, () -> Files.writeString(file, "changed"));
+        }
+    }
+
+    /// Resolves overflow extents for a fragmented catalog and a fragmented regular-file data fork.
+    @Test
+    void readsFragmentedOverflowExtents() throws IOException {
+        byte[] expected = fragmentedFileContents();
+        Path imagePath = writeRawImage(
+                temporaryDirectory.resolve("fragmented-extents.dmg"),
+                createFragmentedHFSPlusDisk()
+        );
+
+        try (DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(imagePath)) {
+            Path file = fileSystem.getPath("/fragmented.bin");
+            assertArrayEquals(expected, Files.readAllBytes(file));
+            assertEquals(
+                    fileSystem.getPath("fragmented.bin"),
+                    Files.readSymbolicLink(fileSystem.getPath("/link"))
+            );
+
+            int start = 16 * DMGTestFixtures.SECTOR_SIZE - 17;
+            int length = 41;
+            ByteBuffer range = ByteBuffer.allocate(length);
+            try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                channel.position(start);
+                readFully(channel, range);
+                assertEquals(start + length, channel.position());
+            }
+            assertArrayEquals(
+                    Arrays.copyOfRange(expected, start, start + length),
+                    range.array()
+            );
+        }
+    }
+
+    /// Reads one fragmented fork concurrently through independent channels from the same file system.
+    @Test
+    @Timeout(30)
+    void readsFragmentedForkConcurrently() throws Exception {
+        byte[] expected = fragmentedFileContents();
+        Path imagePath = writeRawImage(
+                temporaryDirectory.resolve("concurrent-fragmented-extents.dmg"),
+                createFragmentedHFSPlusDisk()
+        );
+
+        try (DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(imagePath)) {
+            assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, fileSystem.threadSafety());
+            Path file = fileSystem.getPath("/fragmented.bin");
+            ExecutorService executor = Executors.newFixedThreadPool(4);
+            try {
+                List<Future<?>> readers = new ArrayList<>();
+                for (int worker = 0; worker < 4; worker++) {
+                    readers.add(executor.submit(() -> {
+                        for (int iteration = 0; iteration < 16; iteration++) {
+                            assertArrayEquals(expected, Files.readAllBytes(file));
+                        }
+                        return null;
+                    }));
+                }
+                for (Future<?> reader : readers) {
+                    reader.get(20L, TimeUnit.SECONDS);
+                }
+            } finally {
+                executor.shutdownNow();
+                assertTrue(executor.awaitTermination(10L, TimeUnit.SECONDS));
+            }
         }
     }
 

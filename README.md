@@ -193,6 +193,7 @@ generated deterministic seed corpus without mutation first, then run one target 
 ./gradlew fuzzCompressionRoundTrip -PjazzerMaxDuration=10m
 ./gradlew fuzzArchiveStreaming -PjazzerMaxDuration=10m
 ./gradlew fuzzArchiveFileSystem -PjazzerMaxDuration=10m
+./gradlew fuzzDMGImage -PjazzerMaxDuration=10m
 ./gradlew fuzzFormatDetection -PjazzerMaxDuration=10m
 ./gradlew fuzz -PjazzerMaxDuration=2m
 ```

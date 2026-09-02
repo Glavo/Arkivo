@@ -23,6 +23,9 @@ final class HFSPlusBTree {
     /// The signed node-kind value for the header node.
     private static final byte HEADER_NODE_KIND = 1;
 
+    /// The required height of every leaf node.
+    private static final byte LEAF_NODE_HEIGHT = 1;
+
     /// Creates no instances.
     private HFSPlusBTree() {
     }
@@ -99,6 +102,7 @@ final class HFSPlusBTree {
         }
         HashSet<Long> visited = new HashSet<>();
         long nodeNumber = header.firstLeafNode();
+        long previousNode = 0L;
         long seenRecords = 0L;
         while (nodeNumber != 0L) {
             if (nodeNumber >= header.totalNodes() || !visited.add(nodeNumber)) {
@@ -109,6 +113,12 @@ final class HFSPlusBTree {
             tracker.acceptMetadata(node.length, null);
             if (node[8] != LEAF_NODE_KIND) {
                 throw new IOException("HFS Plus B-tree leaf chain references a non-leaf node");
+            }
+            if (node[9] != LEAF_NODE_HEIGHT) {
+                throw new IOException("Invalid HFS Plus B-tree leaf-node height");
+            }
+            if (uint32(node, 4) != previousNode) {
+                throw new IOException("Inconsistent HFS Plus B-tree backward leaf link");
             }
             int recordCount = Short.toUnsignedInt(ByteArrayAccess.readShortBigEndian(node, 10));
             validateRecordTable(node, recordCount);
@@ -127,6 +137,7 @@ final class HFSPlusBTree {
             if (next == 0L && nodeNumber != header.lastLeafNode()) {
                 throw new IOException("HFS Plus B-tree leaf chain ends before its declared last node");
             }
+            previousNode = nodeNumber;
             nodeNumber = next;
         }
         if (seenRecords != header.leafRecords()) {
