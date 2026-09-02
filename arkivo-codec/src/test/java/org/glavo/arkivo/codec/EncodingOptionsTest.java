@@ -35,4 +35,42 @@ final class EncodingOptionsTest {
                 () -> EncodingOptions.ofSourceSize(CompressionCodec.UNKNOWN_SIZE - 1L)
         );
     }
+
+    /// Verifies seekable source metadata and automatic frame-size policy.
+    @Test
+    void validatesSeekableFramePolicy() {
+        SeekableEncodingOptions defaults = SeekableEncodingOptions.DEFAULT;
+        assertEquals(CompressionCodec.UNKNOWN_SIZE, defaults.sourceSize());
+        assertEquals(SeekableEncodingOptions.DEFAULT_MAXIMUM_FRAME_SIZE, defaults.maximumFrameSize());
+        assertSame(
+                defaults,
+                SeekableEncodingOptions.ofMaximumFrameSize(
+                        SeekableEncodingOptions.DEFAULT_MAXIMUM_FRAME_SIZE
+                )
+        );
+
+        SeekableEncodingOptions configured = SeekableEncodingOptions.ofMaximumFrameSize(4096)
+                .withSourceSize(8193L);
+        assertEquals(8193L, configured.sourceSize());
+        assertEquals(4096, configured.maximumFrameSize());
+        assertSame(configured, configured.withSourceSize(8193L));
+        assertSame(configured, configured.withMaximumFrameSize(4096));
+        assertEquals(
+                new SeekableEncodingOptions(8193L, 2048),
+                configured.withMaximumFrameSize(2048)
+        );
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SeekableEncodingOptions(CompressionCodec.UNKNOWN_SIZE - 1L, 1)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SeekableEncodingOptions.ofMaximumFrameSize(0)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> configured.withMaximumFrameSize(-1)
+        );
+    }
 }
