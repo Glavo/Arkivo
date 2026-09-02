@@ -192,8 +192,10 @@ generated deterministic seed corpus without mutation first, then run one target 
 ./gradlew fuzzCompressionDecoder -PjazzerMaxDuration=10m
 ./gradlew fuzzCompressionRoundTrip -PjazzerMaxDuration=10m
 ./gradlew fuzzCompressionEncoderState -PjazzerMaxDuration=10m
+./gradlew fuzzCompressionConfigurations -PjazzerMaxDuration=10m
 ./gradlew fuzzArchiveStreaming -PjazzerMaxDuration=10m
 ./gradlew fuzzArchiveFileSystem -PjazzerMaxDuration=10m
+./gradlew fuzzArchiveFileSystemMutations -PjazzerMaxDuration=10m
 ./gradlew fuzzArchiveWriterState -PjazzerMaxDuration=10m
 ./gradlew fuzzArchiveVolumes -PjazzerMaxDuration=10m
 ./gradlew fuzzDMGImage -PjazzerMaxDuration=10m
@@ -202,8 +204,9 @@ generated deterministic seed corpus without mutation first, then run one target 
 ```
 
 The available individual targets cover malformed incremental compression input, codec round trips, encoder lifecycle
-and frame transitions, forward-only and indexed archive parsing, streaming-writer round trips, split-volume parsing and
-ownership, DMG images, and format detection. Each target runs in an independent test process;
+and frame transitions, non-default codec configurations, forward-only and indexed archive parsing, writable archive
+file-system mutations, streaming-writer round trips, split-volume parsing and ownership, DMG images, and format
+detection. Each target runs in an independent test process;
 `jazzerMaxDuration` therefore applies to each selected target and defaults to `1m`. `jazzerMaxHeapSize` controls the
 per-process Java heap and defaults to `1g`, while `jazzerInstrumentation` can narrow the default
 `org.glavo.arkivo.**` instrumentation pattern.
