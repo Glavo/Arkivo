@@ -382,6 +382,8 @@ val localFuzzTasks = mapOf(
     "fuzzCompressionRoundTrip" to "Fuzzes compression round-trip invariants.",
     "fuzzCompressionEncoderState" to "Fuzzes incremental encoder state transitions and frame boundaries.",
     "fuzzCompressionConfigurations" to "Fuzzes non-default compression configuration combinations.",
+    "fuzzZstdSeekableRoundTrip" to "Fuzzes Zstandard seekable frame maps and random logical reads.",
+    "fuzzZstdSeekableIndex" to "Fuzzes Zstandard seek-table parsing and indexed frame decoding.",
     "fuzzArchiveStreaming" to "Fuzzes forward-only archive readers.",
     "fuzzArchiveFileSystem" to "Fuzzes random-access archive file systems.",
     "fuzzArchiveFileSystemMutations" to "Fuzzes writable archive file-system mutations and volume publication.",

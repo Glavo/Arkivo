@@ -169,6 +169,10 @@ val fuzzTargets = linkedMapOf(
             "org.glavo.arkivo.fuzz.CompressionFuzzTest.fuzzCompressionEncoderState",
     "fuzzCompressionConfigurations" to
             "org.glavo.arkivo.fuzz.CompressionConfigurationFuzzTest.fuzzCompressionConfigurations",
+    "fuzzZstdSeekableRoundTrip" to
+            "org.glavo.arkivo.fuzz.ZstdSeekableFuzzTest.fuzzZstdSeekableRoundTrip",
+    "fuzzZstdSeekableIndex" to
+            "org.glavo.arkivo.fuzz.ZstdSeekableFuzzTest.fuzzZstdSeekableIndex",
     "fuzzArchiveStreaming" to
             "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzArchiveStreaming",
     "fuzzArchiveFileSystem" to
