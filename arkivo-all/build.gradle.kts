@@ -169,6 +169,8 @@ val fuzzTargets = linkedMapOf(
             "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzArchiveStreaming",
     "fuzzArchiveFileSystem" to
             "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzArchiveFileSystem",
+    "fuzzDMGImage" to
+            "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzDMGImage",
     "fuzzFormatDetection" to
             "org.glavo.arkivo.fuzz.FormatDetectionFuzzTest.fuzzFormatDetection"
 )
@@ -255,6 +257,7 @@ val moduleProjectPaths = listOf(
     ":arkivo-archive-all",
     ":arkivo-archive-ar",
     ":arkivo-archive-cpio",
+    ":arkivo-archive-dmg",
     ":arkivo-archive-rar",
     ":arkivo-archive-tar",
     ":arkivo-archive-zip",
@@ -320,6 +323,7 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.archive.all",
             "org.glavo.arkivo.archive.ar",
             "org.glavo.arkivo.archive.cpio",
+            "org.glavo.arkivo.archive.dmg",
             "org.glavo.arkivo.archive.rar",
             "org.glavo.arkivo.archive.sevenzip",
             "org.glavo.arkivo.archive.tar",
@@ -384,6 +388,7 @@ val verifyModuleDescriptors by tasks.registering {
                 archiveModule,
                 "org.glavo.arkivo.archive.ar",
                 "org.glavo.arkivo.archive.cpio",
+                "org.glavo.arkivo.archive.dmg",
                 "org.glavo.arkivo.archive.rar",
                 "org.glavo.arkivo.archive.sevenzip",
                 "org.glavo.arkivo.archive.tar",
@@ -391,6 +396,7 @@ val verifyModuleDescriptors by tasks.registering {
             ),
             "org.glavo.arkivo.archive.ar" to setOf(archiveModule),
             "org.glavo.arkivo.archive.cpio" to setOf(archiveModule),
+            "org.glavo.arkivo.archive.dmg" to setOf(archiveModule),
             "org.glavo.arkivo.archive.rar" to setOf(archiveModule),
             "org.glavo.arkivo.archive.sevenzip" to setOf(archiveModule),
             "org.glavo.arkivo.archive.tar" to setOf(archiveModule, codecModule),
@@ -437,6 +443,7 @@ val verifyModuleDescriptors by tasks.registering {
             archiveModule to setOf("org.glavo.arkivo.archive"),
             "org.glavo.arkivo.archive.ar" to setOf("org.glavo.arkivo.archive.ar"),
             "org.glavo.arkivo.archive.cpio" to setOf("org.glavo.arkivo.archive.cpio"),
+            "org.glavo.arkivo.archive.dmg" to setOf("org.glavo.arkivo.archive.dmg"),
             "org.glavo.arkivo.archive.rar" to setOf("org.glavo.arkivo.archive.rar"),
             "org.glavo.arkivo.archive.sevenzip" to setOf("org.glavo.arkivo.archive.sevenzip"),
             "org.glavo.arkivo.archive.tar" to setOf("org.glavo.arkivo.archive.tar"),
@@ -483,6 +490,7 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.base" to mapOf(
                 "org.glavo.arkivo.internal" to setOf(
                     "org.glavo.arkivo.archive.cpio",
+                    "org.glavo.arkivo.archive.dmg",
                     "org.glavo.arkivo.archive.rar",
                     "org.glavo.arkivo.archive.sevenzip",
                     "org.glavo.arkivo.archive.zip",
@@ -499,6 +507,7 @@ val verifyModuleDescriptors by tasks.registering {
                     "org.glavo.arkivo.archive.codec",
                     "org.glavo.arkivo.archive.ar",
                     "org.glavo.arkivo.archive.cpio",
+                    "org.glavo.arkivo.archive.dmg",
                     "org.glavo.arkivo.archive.rar",
                     "org.glavo.arkivo.archive.sevenzip",
                     "org.glavo.arkivo.archive.tar",
@@ -563,6 +572,11 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.archive.rar" to mapOf(
                 fileSystemProviderService to setOf(
                     "org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider"
+                )
+            ),
+            "org.glavo.arkivo.archive.dmg" to mapOf(
+                fileSystemProviderService to setOf(
+                    "org.glavo.arkivo.archive.dmg.internal.DMGArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.archive.sevenzip" to mapOf(

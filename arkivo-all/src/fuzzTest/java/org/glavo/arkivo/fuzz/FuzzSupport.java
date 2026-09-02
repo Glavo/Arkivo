@@ -20,7 +20,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 
 /// Provides bounded configurations and deterministic seeds shared by local Jazzer targets.
@@ -144,6 +146,9 @@ final class FuzzSupport {
         if ("rar".equals(formatName)) {
             return EMPTY_RAR5.clone();
         }
+        if ("dmg".equals(formatName)) {
+            return createDMGSeed();
+        }
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(formatName, output)) {
@@ -152,6 +157,45 @@ final class FuzzSupport {
                 body.write(SEED_CONTENT);
             }
         }
+        return output.toByteArray();
+    }
+
+    /// Creates a minimal flattened UDIF image containing one raw sector.
+    static byte @Unmodifiable [] createDMGSeed() {
+        byte[] sector = new byte[512];
+        byte[] blockTable = new byte[204 + 2 * 40];
+        ByteBuffer table = ByteBuffer.wrap(blockTable).order(ByteOrder.BIG_ENDIAN);
+        table.putInt(0, 0x6d697368);
+        table.putInt(4, 1);
+        table.putLong(16, 1L);
+        table.putInt(200, 2);
+        table.putInt(204, 1);
+        table.putLong(220, 1L);
+        table.putLong(236, sector.length);
+        table.putInt(244, -1);
+        table.putLong(252, 1L);
+
+        String plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<plist version=\"1.0\"><dict><key>resource-fork</key><dict>"
+                + "<key>blkx</key><array><dict><key>Data</key><data>"
+                + Base64.getEncoder().encodeToString(blockTable)
+                + "</data></dict></array></dict></dict></plist>";
+        byte[] xml = plist.getBytes(StandardCharsets.UTF_8);
+        byte[] trailer = new byte[512];
+        ByteBuffer koly = ByteBuffer.wrap(trailer).order(ByteOrder.BIG_ENDIAN);
+        koly.putInt(0, 0x6b6f6c79);
+        koly.putInt(4, 4);
+        koly.putInt(8, 512);
+        koly.putInt(12, 1);
+        koly.putLong(32, sector.length);
+        koly.putLong(216, sector.length);
+        koly.putLong(224, xml.length);
+        koly.putLong(492, 1L);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream(sector.length + xml.length + trailer.length);
+        output.writeBytes(sector);
+        output.writeBytes(xml);
+        output.writeBytes(trailer);
         return output.toByteArray();
     }
 

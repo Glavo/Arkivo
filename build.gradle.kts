@@ -259,6 +259,93 @@ listOf("tier2Test", "tier3Test").forEach { taskName ->
     }
 }
 
+val libdmgHfsplusManifestFile = file("gradle/test-data/libdmg-hfsplus.properties")
+val libdmgHfsplusManifest = Properties().apply {
+    libdmgHfsplusManifestFile.inputStream().use(::load)
+}
+val libdmgHfsplusCommit = libdmgHfsplusManifest.getProperty("commit")
+val libdmgHfsplusArchiveRoot = libdmgHfsplusManifest.getProperty("archiveRoot")
+val libdmgHfsplusArchiveName = libdmgHfsplusManifest.getProperty("archiveName")
+val libdmgHfsplusArchiveSha256 = libdmgHfsplusManifest.getProperty("archiveSha256")
+val libdmgHfsplusArchive = layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$libdmgHfsplusArchiveSha256/$libdmgHfsplusArchiveName").asFile
+})
+val libdmgHfsplusTestDataDirectory = layout.buildDirectory.dir(
+    "test-data/libdmg-hfsplus/$libdmgHfsplusCommit"
+)
+
+val downloadLibdmgHfsplusTestSources = tasks.register<DownloadVerifiedFile>(
+    "downloadLibdmgHfsplusTestSources"
+) {
+    group = "verification"
+    description = "Downloads and verifies the pinned libdmg-hfsplus source archive."
+    sourceUrl.set(libdmgHfsplusManifest.getProperty("archiveUrl"))
+    expectedSha256.set(libdmgHfsplusArchiveSha256)
+    expectedSize.set(libdmgHfsplusManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(libdmgHfsplusArchive)
+}
+
+val prepareLibdmgHfsplusTestCorpus = tasks.register<Sync>(
+    "prepareLibdmgHfsplusTestCorpus"
+) {
+    group = "verification"
+    description = "Extracts DMG and HFS fixtures from the pinned libdmg-hfsplus source archive."
+    dependsOn(downloadLibdmgHfsplusTestSources)
+    inputs.property("testFileCount", libdmgHfsplusManifest.getProperty("testFileCount"))
+    inputs.property("testTotalSize", libdmgHfsplusManifest.getProperty("testTotalSize"))
+
+    from(downloadLibdmgHfsplusTestSources.flatMap { it.destination }.map { archive ->
+        zipTree(archive.asFile)
+    }) {
+        include(
+            "$libdmgHfsplusArchiveRoot/LICENSE",
+            "$libdmgHfsplusArchiveRoot/test/**"
+        )
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size >= 2 && segments[0] == libdmgHfsplusArchiveRoot) {
+                "Unexpected libdmg-hfsplus source archive path: $relativePath"
+            }
+            relativePath = RelativePath(relativePath.isFile, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(libdmgHfsplusManifestFile) {
+        rename { "UPSTREAM.properties" }
+    }
+    into(libdmgHfsplusTestDataDirectory)
+
+    doLast {
+        val testRoot = libdmgHfsplusTestDataDirectory.get().dir("test").asFile.toPath()
+        var actualFileCount = 0L
+        var actualTotalSize = 0L
+        Files.walk(testRoot).use { paths ->
+            paths.filter(Files::isRegularFile).forEach { path ->
+                actualFileCount++
+                actualTotalSize = Math.addExact(actualTotalSize, Files.size(path))
+            }
+        }
+        check(actualFileCount == libdmgHfsplusManifest.getProperty("testFileCount").toLong()) {
+            "libdmg-hfsplus test file count is $actualFileCount"
+        }
+        check(actualTotalSize == libdmgHfsplusManifest.getProperty("testTotalSize").toLong()) {
+            "libdmg-hfsplus test data size is $actualTotalSize"
+        }
+    }
+}
+
+project(":arkivo-archive-dmg").tasks.named<Test>("tier2Test") {
+    dependsOn(prepareLibdmgHfsplusTestCorpus)
+    inputs.dir(libdmgHfsplusTestDataDirectory)
+    systemProperty(
+        "arkivo.libdmgHfsplus.testDataDirectory",
+        libdmgHfsplusTestDataDirectory.get().asFile.absolutePath
+    )
+}
+
 val tier1Test = tasks.register("tier1Test") {
     group = "verification"
     description = "Runs the default Tier 1 test suites across all modules."

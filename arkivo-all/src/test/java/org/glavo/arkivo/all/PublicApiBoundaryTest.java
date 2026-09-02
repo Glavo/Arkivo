@@ -56,6 +56,7 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.archive", "org.glavo.arkivo.archive"),
             Map.entry("org.glavo.arkivo.archive.ar", "org.glavo.arkivo.archive.ar"),
             Map.entry("org.glavo.arkivo.archive.cpio", "org.glavo.arkivo.archive.cpio"),
+            Map.entry("org.glavo.arkivo.archive.dmg", "org.glavo.arkivo.archive.dmg"),
             Map.entry("org.glavo.arkivo.archive.rar", "org.glavo.arkivo.archive.rar"),
             Map.entry("org.glavo.arkivo.archive.sevenzip", "org.glavo.arkivo.archive.sevenzip"),
             Map.entry("org.glavo.arkivo.archive.tar", "org.glavo.arkivo.archive.tar"),
@@ -80,6 +81,7 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.checksum.xxhash", Set.of("org.glavo.arkivo.checksum")),
             Map.entry("org.glavo.arkivo.archive.ar", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.archive.cpio", Set.of("org.glavo.arkivo.archive")),
+            Map.entry("org.glavo.arkivo.archive.dmg", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.archive.rar", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.archive.sevenzip", Set.of("org.glavo.arkivo.archive")),
             Map.entry("org.glavo.arkivo.archive.tar", Set.of(

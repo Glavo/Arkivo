@@ -141,6 +141,7 @@ Official archive modules provide these access models:
 | --- | --- | --- | --- | --- |
 | AR | Read/write | Yes | Yes | GNU and BSD metadata variants |
 | CPIO | None | Yes | Yes | `newc`, CRC, portable ASCII, and old binary dialects |
+| DMG | Read-only | No | No | Flattened UDIF, GPT/APM, and direct HFS Plus/HFSX volumes |
 | TAR | Read/write | Yes | Yes | Detected or selected outer compression |
 | ZIP | Read/write | Yes | Yes | Encryption, mutation, and split volumes |
 | 7z | Read/write | No | Yes | Solid archives, encryption, mutation, and split volumes |

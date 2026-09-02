@@ -70,6 +70,13 @@ org.glavo.arkivo.archive.cpio.CPIODialect
 org.glavo.arkivo.archive.cpio.CPIOMetadataCharsetDetector
 org.glavo.arkivo.archive.cpio.CPIOMetadataCharsetDetector$Context
 org.glavo.arkivo.archive.cpio.CPIOMetadataCharsetDetector$MetadataKind
+org.glavo.arkivo.archive.dmg.DMGArchiveOptions
+org.glavo.arkivo.archive.dmg.DMGArchiveOptions$Read
+org.glavo.arkivo.archive.dmg.DMGArkivoFileSystem
+org.glavo.arkivo.archive.dmg.DMGArkivoFormat
+org.glavo.arkivo.archive.dmg.DMGImage
+org.glavo.arkivo.archive.dmg.DMGPartition
+org.glavo.arkivo.archive.dmg.DMGPartitionScheme
 org.glavo.arkivo.archive.rar.RarArchiveOptions
 org.glavo.arkivo.archive.rar.RarArchiveOptions$Read
 org.glavo.arkivo.archive.rar.RarArkivoEntryAttributeView

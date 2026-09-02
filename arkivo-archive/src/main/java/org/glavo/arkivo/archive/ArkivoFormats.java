@@ -96,25 +96,13 @@ public final class ArkivoFormats {
     ///
     /// @param channel the borrowed seekable channel to probe
     /// @return the best matching installed format, or {@code null} if none matches
-    /// @throws IOException if prefix bytes cannot be read or the original channel position cannot be restored
+    /// @throws IOException if probe bytes cannot be read or the original channel position cannot be restored
     public static @Nullable ArkivoFormat detect(SeekableByteChannel channel) throws IOException {
         Objects.requireNonNull(channel, "channel");
-        int probeSize = INSTALLED_FORMATS.probeSize();
         long originalPosition = channel.position();
         @Nullable Throwable failure = null;
         try {
-            ByteBuffer prefix = ByteBuffer.allocate(probeSize);
-            while (prefix.hasRemaining()) {
-                int read = channel.read(prefix);
-                if (read < 0) {
-                    break;
-                }
-                if (read == 0) {
-                    throw new IOException("Archive format probe made no progress");
-                }
-            }
-            prefix.flip();
-            return INSTALLED_FORMATS.detect(prefix);
+            return INSTALLED_FORMATS.detect(channel);
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
@@ -123,7 +111,7 @@ public final class ArkivoFormats {
         }
     }
 
-    /// Detects an installed archive format from the beginning of the given path.
+    /// Detects an installed archive format from the content of the given path.
     ///
     /// @param path the archive path to probe
     /// @return the best matching installed format, or {@code null} if none matches
@@ -1657,6 +1645,7 @@ public final class ArkivoFormats {
                 "org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat",
                 "org.glavo.arkivo.archive.ar.ArArkivoFormat",
                 "org.glavo.arkivo.archive.cpio.CPIOArkivoFormat",
+                "org.glavo.arkivo.archive.dmg.DMGArkivoFormat",
                 "org.glavo.arkivo.archive.rar.RarArkivoFormat",
                 "org.glavo.arkivo.archive.tar.TarArkivoFormat",
                 "org.glavo.arkivo.archive.zip.ZipArkivoFormat"
@@ -1775,6 +1764,36 @@ public final class ArkivoFormats {
                 if (format.matches(prefix.asReadOnlyBuffer()) && format.probeSize() > detectedProbeSize) {
                     detected = format;
                     detectedProbeSize = format.probeSize();
+                }
+            }
+            return detected;
+        }
+
+        /// Returns the matching seekable format with the largest preferred probe size.
+        ///
+        /// Each format receives the same logical archive start. Format implementations must preserve the channel
+        /// position; this method also restores it defensively between probes.
+        ///
+        /// @param source the borrowed seekable archive source
+        /// @return the best matching format, or {@code null} if no format recognizes the source
+        /// @throws IOException if a format probe or position restoration fails
+        @Nullable ArkivoFormat detect(SeekableByteChannel source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            long origin = source.position();
+            @Nullable ArkivoFormat detected = null;
+            int detectedProbeSize = -1;
+            for (ArkivoFormat format : formats) {
+                @Nullable Throwable failure = null;
+                try {
+                    if (format.matches(source) && format.probeSize() > detectedProbeSize) {
+                        detected = format;
+                        detectedProbeSize = format.probeSize();
+                    }
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                    throw exception;
+                } finally {
+                    restorePosition(source, origin, failure);
                 }
             }
             return detected;

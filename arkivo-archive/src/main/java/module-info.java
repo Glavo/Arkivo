@@ -15,6 +15,7 @@ module org.glavo.arkivo.archive {
             org.glavo.arkivo.archive.codec,
             org.glavo.arkivo.archive.ar,
             org.glavo.arkivo.archive.cpio,
+            org.glavo.arkivo.archive.dmg,
             org.glavo.arkivo.archive.rar,
             org.glavo.arkivo.archive.sevenzip,
             org.glavo.arkivo.archive.tar,

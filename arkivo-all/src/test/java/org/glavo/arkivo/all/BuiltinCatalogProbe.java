@@ -22,11 +22,11 @@ import java.util.stream.Collectors;
 public final class BuiltinCatalogProbe {
     /// Expected Arkivo file system provider schemes.
     private static final @Unmodifiable Set<String> EXPECTED_SCHEMES =
-            Set.of("arkivo+7z", "arkivo+ar", "arkivo+rar", "arkivo+tar", "arkivo+zip");
+            Set.of("arkivo+7z", "arkivo+ar", "arkivo+dmg", "arkivo+rar", "arkivo+tar", "arkivo+zip");
 
     /// Expected archive format names, including formats without an NIO file-system provider.
     private static final @Unmodifiable List<String> EXPECTED_ARCHIVE_FORMAT_NAMES =
-            List.of("7z", "ar", "cpio", "rar", "tar", "zip");
+            List.of("7z", "ar", "cpio", "dmg", "rar", "tar", "zip");
 
     /// Expected compression format names in deterministic detection order.
     private static final @Unmodifiable List<String> EXPECTED_FORMAT_NAMES = List.of(

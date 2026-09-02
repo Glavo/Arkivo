@@ -9,6 +9,7 @@ import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ar.ArArkivoFormat;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoFormat;
+import org.glavo.arkivo.archive.dmg.DMGArkivoFormat;
 import org.glavo.arkivo.archive.rar.RarArkivoFormat;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
@@ -76,7 +77,7 @@ final class AllAggregationTest {
                 .map(CompressionFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
 
-        assertEquals(Set.of("7z", "ar", "cpio", "rar", "tar", "zip"), archiveFormatNames);
+        assertEquals(Set.of("7z", "ar", "cpio", "dmg", "rar", "tar", "zip"), archiveFormatNames);
         assertFalse(requireFormat(CPIOArkivoFormat.NAME) instanceof ArkivoFormat.FileSystem);
         assertTrue(ArkivoFormats.installed().stream()
                 .filter(format -> !CPIOArkivoFormat.NAME.equals(format.name()))
@@ -131,7 +132,14 @@ final class AllAggregationTest {
                 .map(FileSystemProvider::getScheme)
                 .filter(scheme -> scheme.startsWith("arkivo+"))
                 .collect(Collectors.toUnmodifiableSet());
-        assertEquals(archives.keySet(), installedSchemes);
+        assertEquals(Set.of(
+                ArArkivoFormat.instance().uriScheme(),
+                DMGArkivoFormat.instance().uriScheme(),
+                RarArkivoFormat.instance().uriScheme(),
+                SevenZipArkivoFormat.instance().uriScheme(),
+                TarArkivoFormat.instance().uriScheme(),
+                ZipArkivoFormat.instance().uriScheme()
+        ), installedSchemes);
 
         for (Map.Entry<String, Path> archive : archives.entrySet()) {
             URI fileSystemUri = URI.create(archive.getKey() + ":" + archive.getValue().toUri().toASCIIString());
@@ -218,6 +226,7 @@ final class AllAggregationTest {
         assertEquals(List.of("rar"), requireFormat("rar").fileExtensions());
         assertEquals(List.of("a", "ar", "deb"), requireFormat("ar").fileExtensions());
         assertEquals(List.of("cpio"), requireFormat("cpio").fileExtensions());
+        assertEquals(List.of("dmg"), requireFormat("dmg").fileExtensions());
 
         byte[] signature = new byte[]{'P', 'K', 5, 6};
         ByteBuffer prefix = ByteBuffer.allocate(signature.length + 2).order(ByteOrder.LITTLE_ENDIAN);

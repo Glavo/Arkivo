@@ -8,6 +8,7 @@ import org.glavo.arkivo.archive.ArchiveEntryAttributes;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
+import org.glavo.arkivo.archive.dmg.DMGImage;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.params.provider.Arguments;
@@ -16,6 +17,8 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -109,6 +112,41 @@ public final class ArchiveFuzzTest {
             }
         } catch (IOException | UnsupportedOperationException expectedMalformedArchive) {
             // Malformed data, configured limits, and unsupported stored methods are normal fuzz outcomes.
+        }
+    }
+
+    /// Fuzzes flattened UDIF layout and run decoding independently of the contained file system.
+    ///
+    /// @param data arbitrary possible DMG bytes
+    @MethodSource("dmgImageSeeds")
+    @FuzzTest(maxDuration = "1m")
+    void fuzzDMGImage(byte @Unmodifiable [] data) {
+        if (data.length > FuzzSupport.MAX_PARSER_INPUT_SIZE) {
+            return;
+        }
+
+        try (DMGImage image = DMGImage.open(
+                new ReadOnlyByteArrayChannel(data),
+                FuzzSupport.ARCHIVE_READ_OPTIONS
+        ); SeekableByteChannel disk = image.openChannel()) {
+            ByteBuffer buffer = ByteBuffer.allocate(4096);
+            int total = 0;
+            while (true) {
+                int count = disk.read(buffer);
+                if (count < 0) {
+                    break;
+                }
+                if (count == 0) {
+                    throw new AssertionError("DMG decoded channel made no progress");
+                }
+                total = Math.addExact(total, count);
+                if (total > FuzzSupport.MAX_DECODED_OUTPUT_SIZE) {
+                    throw new AssertionError("DMG decoded-output limit was not enforced");
+                }
+                buffer.clear();
+            }
+        } catch (IOException | UnsupportedOperationException expectedMalformedImage) {
+            // Malformed layouts, configured limits, and unsupported run encodings are normal fuzz outcomes.
         }
     }
 
@@ -210,6 +248,13 @@ public final class ArchiveFuzzTest {
             seeds.add(seed(index, true, archive));
         }
         return seeds.stream();
+    }
+
+    /// Supplies one valid flattened UDIF seed.
+    ///
+    /// @return the deterministic DMG-image seed arguments
+    private static Stream<Arguments> dmgImageSeeds() {
+        return Stream.of(Arguments.of((Object) FuzzSupport.createDMGSeed()));
     }
 
     /// Creates one archive seed argument with explicit or detected format selection.

@@ -106,7 +106,7 @@ public final class FormatDetectionFuzzTest {
                     codec.compress(ByteBuffer.wrap(FuzzSupport.SEED_CONTENT))
             )));
         }
-        for (String formatName : List.of("7z", "ar", "cpio", "rar", "tar", "zip")) {
+        for (String formatName : List.of("7z", "ar", "cpio", "dmg", "rar", "tar", "zip")) {
             seeds.add(Arguments.of((Object) FuzzSupport.createArchiveSeed(formatName)));
         }
         return seeds.stream();

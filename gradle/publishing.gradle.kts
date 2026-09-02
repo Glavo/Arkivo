@@ -54,6 +54,10 @@ val publicationMetadata = mapOf(
         "Arkivo CPIO Archive",
         "Provides streaming support for portable ASCII and historical binary CPIO archives."
     ),
+    "arkivo-archive-dmg" to ArkivoPublicationMetadata(
+        "Arkivo DMG Disk Images",
+        "Provides read-only UDIF disk image and HFS Plus file system access."
+    ),
     "arkivo-archive-rar" to ArkivoPublicationMetadata(
         "Arkivo RAR Archive",
         "Provides read-only RAR archive file system and streaming support."
@@ -354,6 +358,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive-7z:compile:$publicationVersion",
         "org.glavo:arkivo-archive-ar:compile:$publicationVersion",
         "org.glavo:arkivo-archive-cpio:compile:$publicationVersion",
+        "org.glavo:arkivo-archive-dmg:compile:$publicationVersion",
         "org.glavo:arkivo-archive-rar:compile:$publicationVersion",
         "org.glavo:arkivo-archive-tar:compile:$publicationVersion",
         "org.glavo:arkivo-archive-zip:compile:$publicationVersion"
@@ -366,6 +371,15 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
         "org.glavo:arkivo-archive-codec:runtime:$publicationVersion",
         "org.glavo:arkivo-base:runtime:$publicationVersion"
+    ),
+    "arkivo-archive-dmg" to setOf(
+        "org.glavo:arkivo-archive:compile:$publicationVersion",
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
+        "org.glavo:arkivo-checksum:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec-bzip2:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec-deflate:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec-xz:runtime:$publicationVersion"
     ),
     "arkivo-archive-rar" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",

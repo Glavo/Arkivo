@@ -11,6 +11,7 @@ module org.glavo.arkivo.base {
 
     exports org.glavo.arkivo.internal to
             org.glavo.arkivo.archive.cpio,
+            org.glavo.arkivo.archive.dmg,
             org.glavo.arkivo.archive.rar,
             org.glavo.arkivo.archive.sevenzip,
             org.glavo.arkivo.archive.zip,

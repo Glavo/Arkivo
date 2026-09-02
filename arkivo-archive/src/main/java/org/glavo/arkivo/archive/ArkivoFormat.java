@@ -47,9 +47,12 @@ public interface ArkivoFormat {
         return List.of(name());
     }
 
-    /// Returns the preferred number of leading bytes requested by generic format detection.
+    /// Returns the preferred number of source bytes requested by generic format detection.
     ///
-    /// A format may recognize a prefix containing fewer bytes. The returned value must not be negative.
+    /// The catalog uses this value to provision prefix probes and to prefer a more specific match when multiple formats
+    /// recognize the same source. A format may recognize a prefix containing fewer bytes. A format whose authoritative
+    /// signature is not at the beginning of the source may override [#matches(SeekableByteChannel)] and return the size
+    /// of the bounded structure inspected there. The returned value must not be negative.
     ///
     /// @return the preferred non-negative probe byte count
     default int probeSize() {
@@ -65,6 +68,49 @@ public interface ArkivoFormat {
     default boolean matches(ByteBuffer prefix) {
         Objects.requireNonNull(prefix, "prefix");
         return false;
+    }
+
+    /// Returns whether the seekable bytes from the channel's current position identify this archive format.
+    ///
+    /// The channel is borrowed. This method must restore its position before returning or throwing. The default
+    /// implementation reads at most [#probeSize()] leading bytes and delegates to [#matches(ByteBuffer)]. Formats whose
+    /// identifying data is not located at the beginning of the archive may override this method and perform bounded
+    /// random-access reads.
+    ///
+    /// @param source the borrowed channel whose current position is logical archive offset zero
+    /// @return {@code true} if the seekable source identifies this format
+    /// @throws IOException if the required bytes cannot be read or the original channel position cannot be restored
+    default boolean matches(SeekableByteChannel source) throws IOException {
+        Objects.requireNonNull(source, "source");
+        long originalPosition = source.position();
+        @Nullable Throwable failure = null;
+        try {
+            ByteBuffer prefix = ByteBuffer.allocate(probeSize());
+            while (prefix.hasRemaining()) {
+                int read = source.read(prefix);
+                if (read < 0) {
+                    break;
+                }
+                if (read == 0) {
+                    throw new IOException("Archive format probe made no progress");
+                }
+            }
+            prefix.flip();
+            return matches(prefix.asReadOnlyBuffer());
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            try {
+                source.position(originalPosition);
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    throw exception;
+                }
+            }
+        }
     }
 
     /// Describes an archive format that can read entries from a forward-only source.

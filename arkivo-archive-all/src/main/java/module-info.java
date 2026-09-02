@@ -12,6 +12,7 @@ module org.glavo.arkivo.archive.all {
     requires transitive org.glavo.arkivo.archive.sevenzip;
     requires transitive org.glavo.arkivo.archive.ar;
     requires transitive org.glavo.arkivo.archive.cpio;
+    requires transitive org.glavo.arkivo.archive.dmg;
     requires transitive org.glavo.arkivo.archive.rar;
     requires transitive org.glavo.arkivo.archive.tar;
     requires transitive org.glavo.arkivo.archive.zip;

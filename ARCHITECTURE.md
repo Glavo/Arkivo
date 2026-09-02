@@ -209,8 +209,9 @@ before streaming archive detection. The archive core loads only that known bridg
 than Arkivo's format-extension mechanism.
 
 Buffer-based signature matching inspects only the required prefix and does not alter caller buffer state. Channel-based
-probing follows the replay and ownership contract of its probe result. Operations that require more than a format
-identity select the corresponding capability interface before opening resources.
+probing may perform bounded random access for formats with authoritative trailing metadata, and restores the borrowed
+channel position before returning. Operations that require more than a format identity select the corresponding
+capability interface before opening resources.
 
 ## Concurrency
 

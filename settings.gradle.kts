@@ -20,6 +20,7 @@ include(
     "arkivo-archive-all",
     "arkivo-archive-ar",
     "arkivo-archive-cpio",
+    "arkivo-archive-dmg",
     "arkivo-archive-rar",
     "arkivo-archive-tar",
     "arkivo-archive-zip",
