@@ -382,6 +382,7 @@ val localFuzzTasks = mapOf(
     "fuzzCompressionRoundTrip" to "Fuzzes compression round-trip invariants.",
     "fuzzArchiveStreaming" to "Fuzzes forward-only archive readers.",
     "fuzzArchiveFileSystem" to "Fuzzes random-access archive file systems.",
+    "fuzzDMGImage" to "Fuzzes flattened UDIF layout and run decoding.",
     "fuzzFormatDetection" to "Fuzzes archive and compression format detection."
 )
 

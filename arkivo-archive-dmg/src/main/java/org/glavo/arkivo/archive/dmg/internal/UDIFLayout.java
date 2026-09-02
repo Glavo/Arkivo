@@ -14,8 +14,10 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+import org.xml.sax.ErrorHandler;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -115,9 +117,11 @@ record UDIFLayout(long size, @Unmodifiable List<UDIFRun> runs) {
             factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+            var builder = factory.newDocumentBuilder();
+            builder.setErrorHandler(XMLParsingErrorHandler.INSTANCE);
             InputSource input = new InputSource(new ByteArrayInputStream(xml));
             input.setSystemId("urn:arkivo:udif-resource-fork");
-            document = factory.newDocumentBuilder().parse(input);
+            document = builder.parse(input);
         } catch (ParserConfigurationException | SAXException | IllegalArgumentException exception) {
             throw new IOException("Invalid UDIF XML property list", exception);
         }
@@ -151,6 +155,30 @@ record UDIFLayout(long size, @Unmodifiable List<UDIFRun> runs) {
             throw new IOException("UDIF resource fork has no usable blkx data");
         }
         return List.copyOf(tables);
+    }
+
+    /// Converts XML parser diagnostics into controlled parse failures without writing to standard error.
+    @NotNullByDefault
+    private enum XMLParsingErrorHandler implements ErrorHandler {
+        /// The stateless shared handler.
+        INSTANCE;
+
+        /// Ignores parser warnings that do not invalidate the property list.
+        @Override
+        public void warning(SAXParseException exception) {
+        }
+
+        /// Rejects a recoverable XML parse error.
+        @Override
+        public void error(SAXParseException exception) throws SAXException {
+            throw exception;
+        }
+
+        /// Rejects a fatal XML parse error.
+        @Override
+        public void fatalError(SAXParseException exception) throws SAXException {
+            throw exception;
+        }
     }
 
     /// Parses one binary `mish` block table and appends its data runs.

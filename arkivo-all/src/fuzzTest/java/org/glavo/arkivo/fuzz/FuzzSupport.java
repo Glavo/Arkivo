@@ -43,6 +43,9 @@ final class FuzzSupport {
     /// The maximum codec-accounted memory made available to one decoder.
     private static final long MAXIMUM_CODEC_MEMORY_SIZE = 32L * 1024L * 1024L;
 
+    /// The fixed sector and allocation-block size used by the generated DMG seed.
+    private static final int DMG_SECTOR_SIZE = 512;
+
     /// The fixed body used to build valid compression and archive seeds.
     static final byte @Unmodifiable [] SEED_CONTENT =
             "Arkivo Jazzer seed\n".getBytes(StandardCharsets.UTF_8);
@@ -57,7 +60,7 @@ final class FuzzSupport {
 
     /// Formats exercised through their random-access file system.
     static final @Unmodifiable List<String> FILE_SYSTEM_ARCHIVE_FORMATS =
-            List.of("7z", "ar", "rar", "tar", "zip");
+            List.of("7z", "ar", "dmg", "rar", "tar", "zip");
 
     /// Resource limits applied to every archive parser invocation.
     static final ArchiveReadOptions ARCHIVE_READ_OPTIONS = ArchiveReadOptions.DEFAULT.withLimits(
@@ -160,20 +163,21 @@ final class FuzzSupport {
         return output.toByteArray();
     }
 
-    /// Creates a minimal flattened UDIF image containing one raw sector.
+    /// Creates a minimal flattened UDIF image containing a mountable empty HFS Plus volume.
     static byte @Unmodifiable [] createDMGSeed() {
-        byte[] sector = new byte[512];
+        byte[] disk = createEmptyHFSPlusDisk();
+        long sectorCount = disk.length / DMG_SECTOR_SIZE;
         byte[] blockTable = new byte[204 + 2 * 40];
         ByteBuffer table = ByteBuffer.wrap(blockTable).order(ByteOrder.BIG_ENDIAN);
         table.putInt(0, 0x6d697368);
         table.putInt(4, 1);
-        table.putLong(16, 1L);
+        table.putLong(16, sectorCount);
         table.putInt(200, 2);
         table.putInt(204, 1);
-        table.putLong(220, 1L);
-        table.putLong(236, sector.length);
+        table.putLong(220, sectorCount);
+        table.putLong(236, disk.length);
         table.putInt(244, -1);
-        table.putLong(252, 1L);
+        table.putLong(252, sectorCount);
 
         String plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<plist version=\"1.0\"><dict><key>resource-fork</key><dict>"
@@ -181,22 +185,102 @@ final class FuzzSupport {
                 + Base64.getEncoder().encodeToString(blockTable)
                 + "</data></dict></array></dict></dict></plist>";
         byte[] xml = plist.getBytes(StandardCharsets.UTF_8);
-        byte[] trailer = new byte[512];
+        byte[] trailer = new byte[DMG_SECTOR_SIZE];
         ByteBuffer koly = ByteBuffer.wrap(trailer).order(ByteOrder.BIG_ENDIAN);
         koly.putInt(0, 0x6b6f6c79);
         koly.putInt(4, 4);
-        koly.putInt(8, 512);
+        koly.putInt(8, DMG_SECTOR_SIZE);
         koly.putInt(12, 1);
-        koly.putLong(32, sector.length);
-        koly.putLong(216, sector.length);
+        koly.putLong(32, disk.length);
+        koly.putLong(216, disk.length);
         koly.putLong(224, xml.length);
-        koly.putLong(492, 1L);
+        koly.putLong(492, sectorCount);
 
-        ByteArrayOutputStream output = new ByteArrayOutputStream(sector.length + xml.length + trailer.length);
-        output.writeBytes(sector);
+        ByteArrayOutputStream output = new ByteArrayOutputStream(disk.length + xml.length + trailer.length);
+        output.writeBytes(disk);
         output.writeBytes(xml);
         output.writeBytes(trailer);
         return output.toByteArray();
+    }
+
+    /// Creates an eight-block HFS Plus volume containing only its root catalog folder.
+    private static byte[] createEmptyHFSPlusDisk() {
+        byte[] disk = new byte[8 * DMG_SECTOR_SIZE];
+        ByteBuffer buffer = ByteBuffer.wrap(disk).order(ByteOrder.BIG_ENDIAN);
+        int volumeHeader = 2 * DMG_SECTOR_SIZE;
+        buffer.putShort(volumeHeader, (short) 0x482b);
+        buffer.putShort(volumeHeader + 2, (short) 4);
+        buffer.putInt(volumeHeader + 40, DMG_SECTOR_SIZE);
+        buffer.putInt(volumeHeader + 44, 8);
+        buffer.putInt(volumeHeader + 48, 2);
+        writeHFSPlusFork(buffer, volumeHeader + 192, DMG_SECTOR_SIZE, 1, 3, 1);
+        writeHFSPlusFork(buffer, volumeHeader + 272, 2L * DMG_SECTOR_SIZE, 2, 4, 2);
+
+        writeBTreeHeader(buffer, 3 * DMG_SECTOR_SIZE, 0, 0, 0, 0, 0, 1, 10);
+        writeBTreeHeader(buffer, 4 * DMG_SECTOR_SIZE, 1, 1, 1, 1, 1, 2, 516);
+        int leaf = 5 * DMG_SECTOR_SIZE;
+        buffer.putInt(leaf, 0);
+        buffer.putInt(leaf + 4, 0);
+        buffer.put(leaf + 8, (byte) 0xff);
+        buffer.put(leaf + 9, (byte) 1);
+        buffer.putShort(leaf + 10, (short) 1);
+
+        int record = leaf + 14;
+        byte[] name = "Root".getBytes(StandardCharsets.UTF_16BE);
+        buffer.putShort(record, (short) 14);
+        buffer.putInt(record + 2, 1);
+        buffer.putShort(record + 6, (short) 4);
+        System.arraycopy(name, 0, disk, record + 8, name.length);
+        int data = record + 16;
+        buffer.putShort(data, (short) 1);
+        buffer.putInt(data + 8, 2);
+        buffer.putInt(data + 32, 501);
+        buffer.putInt(data + 36, 20);
+        buffer.putShort(data + 42, (short) 0040755);
+        buffer.putShort(leaf + DMG_SECTOR_SIZE - 2, (short) 14);
+        buffer.putShort(leaf + DMG_SECTOR_SIZE - 4, (short) 118);
+        return disk;
+    }
+
+    /// Writes one HFS Plus fork-data record with one extent.
+    private static void writeHFSPlusFork(
+            ByteBuffer buffer,
+            int offset,
+            long logicalSize,
+            int totalBlocks,
+            int startBlock,
+            int blockCount
+    ) {
+        buffer.putLong(offset, logicalSize);
+        buffer.putInt(offset + 12, totalBlocks);
+        buffer.putInt(offset + 16, startBlock);
+        buffer.putInt(offset + 20, blockCount);
+    }
+
+    /// Writes one minimal HFS Plus B-tree header node.
+    private static void writeBTreeHeader(
+            ByteBuffer buffer,
+            int offset,
+            int treeDepth,
+            int rootNode,
+            int leafRecords,
+            int firstLeafNode,
+            int lastLeafNode,
+            int totalNodes,
+            int maximumKeyLength
+    ) {
+        buffer.put(offset + 8, (byte) 1);
+        buffer.putShort(offset + 10, (short) 1);
+        int header = offset + 14;
+        buffer.putShort(header, (short) treeDepth);
+        buffer.putInt(header + 2, rootNode);
+        buffer.putInt(header + 6, leafRecords);
+        buffer.putInt(header + 10, firstLeafNode);
+        buffer.putInt(header + 14, lastLeafNode);
+        buffer.putShort(header + 18, (short) DMG_SECTOR_SIZE);
+        buffer.putShort(header + 20, (short) maximumKeyLength);
+        buffer.putInt(header + 22, totalNodes);
+        buffer.putShort(offset + DMG_SECTOR_SIZE - 2, (short) 14);
     }
 
     /// Compresses an archive seed with the named outer compression format.
