@@ -34,7 +34,9 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.stream.Stream;
 
@@ -56,6 +58,10 @@ final class LibarchiveCompleteFixtureCorpusTest {
     /// The SHA-256 digest of naturally sorted fixture names, each terminated by one line-feed byte.
     private static final String EXPECTED_NAME_DIGEST =
             "d21d447281e680dd2d332a3f364c1c0cd5a69e4fb1d3d90ddee9fa26de0234d1";
+
+    /// The SHA-256 digest of every fixture name and its complete stable probe outcome.
+    private static final String EXPECTED_OUTCOME_DIGEST =
+            "d78f4d15b987ee21d6c2919fd23038dd80c15b01320d4d071400b3b7fd5de69c";
 
     /// The maximum decoded stream retained while probing a compression fixture.
     private static final long MAXIMUM_DECODED_SIZE = 64L * 1024L * 1024L;
@@ -130,28 +136,62 @@ final class LibarchiveCompleteFixtureCorpusTest {
         );
     }
 
+    /// Verifies that every fixture retains its current detection and complete-read disposition.
+    ///
+    /// The digest covers naturally sorted fixture names, detected format names, and independent streaming,
+    /// file-system, decompression, and nested-archive results. A recognized fixture changing from successful reading
+    /// to checked rejection therefore fails this test instead of being silently accepted as another valid outcome.
+    @Test
+    void retainsStableFixtureOutcomes() throws IOException, NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        Map<String, Integer> outcomeCounts = new TreeMap<>();
+        try (Stream<String> fixtures = fixtureNames()) {
+            for (String fixture : fixtures.toList()) {
+                byte @Unmodifiable [] content = LibarchiveUuDecoder.decode(fixturePath(fixture));
+                String outcome = probeFixture(content);
+                outcomeCounts.merge(outcome, 1, Math::addExact);
+                digest.update(fixture.getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) '\t');
+                digest.update(outcome.getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) '\n');
+            }
+        }
+        String actualDigest = HexFormat.of().formatHex(digest.digest());
+        assertEquals(
+                EXPECTED_OUTCOME_DIGEST,
+                actualDigest,
+                () -> "Complete libarchive fixture outcome counts: " + outcomeCounts
+        );
+    }
+
     /// Decodes every fixture and exercises every archive or compression stream recognized by Arkivo.
     @ParameterizedTest(name = "{0}")
     @MethodSource("fixtureNames")
     @Timeout(10)
     void exercisesEveryRecognizedFixture(String fixture) throws IOException {
         byte @Unmodifiable [] content = LibarchiveUuDecoder.decode(fixturePath(fixture));
+        probeFixture(content);
+    }
+
+    /// Returns the stable detection and complete-read outcome for one decoded fixture.
+    private static String probeFixture(byte @Unmodifiable [] content) {
         @Nullable ArkivoFormat archiveFormat = ArkivoFormats.detect(ByteBuffer.wrap(content).asReadOnlyBuffer());
         if (archiveFormat != null) {
-            exerciseArchive(archiveFormat, content);
-            return;
+            return exerciseArchive(archiveFormat, content);
         }
 
         @Nullable CompressionFormat compressionFormat = CompressionFormats.detect(
                 ByteBuffer.wrap(content).asReadOnlyBuffer()
         );
         if (compressionFormat != null) {
-            exerciseCompressedFixture(compressionFormat, content);
+            return exerciseCompressedFixture(compressionFormat, content);
         }
+        return "unrecognized";
     }
 
-    /// Exercises advertised streaming and random-access readers while permitting checked format rejection.
-    private static void exerciseArchive(ArkivoFormat format, byte @Unmodifiable [] content) {
+    /// Exercises advertised streaming and random-access readers and returns both dispositions.
+    private static String exerciseArchive(ArkivoFormat format, byte @Unmodifiable [] content) {
+        ProbeOutcome streamingOutcome = ProbeOutcome.UNAVAILABLE;
         if (format instanceof ArkivoFormat.StreamingReader streamingFormat) {
             try (ArkivoStreamingReader reader = streamingFormat.openStreamingReader(
                     new ByteArrayInputStream(content),
@@ -165,11 +205,15 @@ final class LibarchiveCompleteFixtureCorpusTest {
                         }
                     }
                 }
-            } catch (IOException | UnsupportedOperationException expectedRejection) {
-                // Malformed archives and unsupported optional features must fail through checked or capability errors.
+                streamingOutcome = ProbeOutcome.SUCCESS;
+            } catch (IOException expectedRejection) {
+                streamingOutcome = ProbeOutcome.REJECTED;
+            } catch (UnsupportedOperationException expectedUnsupportedFeature) {
+                streamingOutcome = ProbeOutcome.UNSUPPORTED;
             }
         }
 
+        ProbeOutcome fileSystemOutcome = ProbeOutcome.UNAVAILABLE;
         if (format instanceof ArkivoFormat.FileSystem fileSystemFormat) {
             try (ArkivoFileSystem fileSystem = fileSystemFormat.open(
                     new SeekableInMemoryByteChannel(content),
@@ -182,14 +226,20 @@ final class LibarchiveCompleteFixtureCorpusTest {
                         }
                     }
                 }
-            } catch (IOException | UnsupportedOperationException expectedRejection) {
-                // Malformed archives and unsupported optional features must fail through checked or capability errors.
+                fileSystemOutcome = ProbeOutcome.SUCCESS;
+            } catch (IOException expectedRejection) {
+                fileSystemOutcome = ProbeOutcome.REJECTED;
+            } catch (UnsupportedOperationException expectedUnsupportedFeature) {
+                fileSystemOutcome = ProbeOutcome.UNSUPPORTED;
             }
         }
+        return "archive:" + format.name()
+                + ":streaming=" + streamingOutcome.token
+                + ":fileSystem=" + fileSystemOutcome.token;
     }
 
     /// Exercises one detected compressed stream and any archive produced within the bounded output limit.
-    private static void exerciseCompressedFixture(
+    private static String exerciseCompressedFixture(
             CompressionFormat format,
             byte @Unmodifiable [] content
     ) {
@@ -206,10 +256,38 @@ final class LibarchiveCompleteFixtureCorpusTest {
             byte @Unmodifiable [] decoded = output.toByteArray();
             @Nullable ArkivoFormat archiveFormat = ArkivoFormats.detect(ByteBuffer.wrap(decoded).asReadOnlyBuffer());
             if (archiveFormat != null) {
-                exerciseArchive(archiveFormat, decoded);
+                return "compression:" + format.name() + ":success:nested="
+                        + exerciseArchive(archiveFormat, decoded);
             }
-        } catch (IOException | UnsupportedOperationException expectedRejection) {
-            // Truncated streams, resource-limit violations, and unsupported variants are valid corpus outcomes.
+            return "compression:" + format.name() + ":success:nested=none";
+        } catch (IOException expectedRejection) {
+            return "compression:" + format.name() + ":rejected";
+        } catch (UnsupportedOperationException expectedUnsupportedFeature) {
+            return "compression:" + format.name() + ":unsupported";
+        }
+    }
+
+    /// Stable classification of one advertised archive access path.
+    @NotNullByDefault
+    private enum ProbeOutcome {
+        /// The format does not advertise this access path.
+        UNAVAILABLE("unavailable"),
+
+        /// The fixture was read completely through this access path.
+        SUCCESS("success"),
+
+        /// The parser rejected the fixture with a checked I/O failure.
+        REJECTED("rejected"),
+
+        /// The fixture requires a recognized but unsupported optional feature.
+        UNSUPPORTED("unsupported");
+
+        /// Stable lowercase token included in the aggregate digest.
+        private final String token;
+
+        /// Creates one outcome with its stable digest token.
+        ProbeOutcome(String token) {
+            this.token = token;
         }
     }
 

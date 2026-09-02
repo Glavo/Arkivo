@@ -165,10 +165,16 @@ val fuzzTargets = linkedMapOf(
             "org.glavo.arkivo.fuzz.CompressionFuzzTest.fuzzCompressionDecoder",
     "fuzzCompressionRoundTrip" to
             "org.glavo.arkivo.fuzz.CompressionFuzzTest.fuzzCompressionRoundTrip",
+    "fuzzCompressionEncoderState" to
+            "org.glavo.arkivo.fuzz.CompressionFuzzTest.fuzzCompressionEncoderState",
     "fuzzArchiveStreaming" to
             "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzArchiveStreaming",
     "fuzzArchiveFileSystem" to
             "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzArchiveFileSystem",
+    "fuzzArchiveWriterState" to
+            "org.glavo.arkivo.fuzz.ArchiveWriterFuzzTest.fuzzArchiveWriterState",
+    "fuzzArchiveVolumes" to
+            "org.glavo.arkivo.fuzz.ArchiveVolumeFuzzTest.fuzzArchiveVolumes",
     "fuzzDMGImage" to
             "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzDMGImage",
     "fuzzFormatDetection" to
@@ -188,7 +194,7 @@ val fuzzTargetTasks = fuzzTargets.map { (taskName, targetMethod) ->
         environment("JAZZER_FUZZ", "1")
         systemProperty("jazzer.instrument", jazzerInstrumentation)
         systemProperty("jazzer.max_duration", jazzerMaxDuration)
-        if (taskName == "fuzzArchiveFileSystem") {
+        if (taskName in setOf("fuzzArchiveFileSystem", "fuzzArchiveWriterState", "fuzzArchiveVolumes")) {
             // Arkivo paths belong to an in-memory provider and can never reach the host file system.
             systemProperty(
                 "jazzer.disabled_hooks",

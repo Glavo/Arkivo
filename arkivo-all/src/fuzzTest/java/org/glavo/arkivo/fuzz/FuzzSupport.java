@@ -24,6 +24,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.zip.CRC32;
 
 /// Provides bounded configurations and deterministic seeds shared by local Jazzer targets.
 @NotNullByDefault
@@ -46,6 +47,13 @@ final class FuzzSupport {
     /// The fixed sector and allocation-block size used by the generated DMG seed.
     private static final int DMG_SECTOR_SIZE = 512;
 
+    /// The deterministic incompressible body size used to force split seed output.
+    private static final int SPLIT_ARCHIVE_CONTENT_SIZE = 96 * 1024;
+
+    /// The RAR4 signature used by the generated split RAR seed.
+    private static final byte @Unmodifiable [] RAR4_SIGNATURE =
+            {'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
+
     /// The fixed body used to build valid compression and archive seeds.
     static final byte @Unmodifiable [] SEED_CONTENT =
             "Arkivo Jazzer seed\n".getBytes(StandardCharsets.UTF_8);
@@ -61,6 +69,10 @@ final class FuzzSupport {
     /// Formats exercised through their random-access file system.
     static final @Unmodifiable List<String> FILE_SYSTEM_ARCHIVE_FORMATS =
             List.of("7z", "ar", "dmg", "rar", "tar", "zip");
+
+    /// Formats exercised through their public forward-only writer.
+    static final @Unmodifiable List<String> STREAMING_WRITER_FORMATS =
+            List.of("7z", "ar", "cpio", "tar", "zip");
 
     /// Resource limits applied to every archive parser invocation.
     static final ArchiveReadOptions ARCHIVE_READ_OPTIONS = ArchiveReadOptions.DEFAULT.withLimits(
@@ -295,5 +307,127 @@ final class FuzzSupport {
     ) throws IOException {
         CompressionCodec<?> codec = CompressionFormats.require(formatName).defaultCodec();
         return remainingBytes(codec.compress(ByteBuffer.wrap(archive)));
+    }
+
+    /// Creates a deterministic split archive through Arkivo's public multi-volume writer.
+    ///
+    /// @param formatName the installed archive format name
+    /// @param splitSize the positive output volume size
+    /// @return at least two committed physical volumes
+    /// @throws IOException if the archive cannot be encoded
+    static @Unmodifiable List<byte @Unmodifiable []> createSplitArchiveSeed(
+            String formatName,
+            long splitSize
+    ) throws IOException {
+        byte[] content = new byte[SPLIT_ARCHIVE_CONTENT_SIZE];
+        int state = 0x6d2b79f5;
+        for (int index = 0; index < content.length; index++) {
+            state ^= state << 13;
+            state ^= state >>> 17;
+            state ^= state << 5;
+            content[index] = (byte) state;
+        }
+
+        InMemoryVolumeTarget target = new InMemoryVolumeTarget();
+        try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(formatName, target, splitSize)) {
+            try (OutputStream body = writer.beginFile("split-seed.bin").openOutputStream()) {
+                body.write(content);
+            }
+        }
+        List<byte[]> volumes = target.volumes();
+        if (volumes.size() < 2) {
+            throw new IOException("Split archive seed did not cross a volume boundary: " + formatName);
+        }
+        return volumes;
+    }
+
+    /// Creates a two-volume stored RAR4 archive without committing binary fixtures to the repository.
+    ///
+    /// @return two deterministic physical RAR volumes
+    /// @throws IOException if the in-memory RAR structure cannot be encoded
+    static @Unmodifiable List<byte @Unmodifiable []> createSplitRARSeed() throws IOException {
+        byte[] firstPart = "split ".getBytes(StandardCharsets.UTF_8);
+        byte[] secondPart = "rar seed".getBytes(StandardCharsets.UTF_8);
+        byte[] content = new byte[firstPart.length + secondPart.length];
+        System.arraycopy(firstPart, 0, content, 0, firstPart.length);
+        System.arraycopy(secondPart, 0, content, firstPart.length, secondPart.length);
+        CRC32 contentCRC = new CRC32();
+        contentCRC.update(content);
+
+        byte[] firstVolume = createRAR4Volume(
+                false,
+                rar4FileFields("split.txt", content.length, contentCRC.getValue(), firstPart),
+                0x8002L,
+                firstPart
+        );
+        byte[] secondVolume = createRAR4Volume(
+                true,
+                rar4FileFields("split.txt", content.length, contentCRC.getValue(), secondPart),
+                0x8001L,
+                secondPart
+        );
+        return List.of(firstVolume, secondVolume);
+    }
+
+    /// Creates one RAR4 volume containing a single stored file part.
+    private static byte @Unmodifiable [] createRAR4Volume(
+            boolean finalVolume,
+            byte @Unmodifiable [] fileFields,
+            long fileFlags,
+            byte @Unmodifiable [] body
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(RAR4_SIGNATURE);
+        writeRAR4Block(output, 0x73, 0L, new byte[6], new byte[0]);
+        writeRAR4Block(output, 0x74, fileFlags, fileFields, body);
+        if (finalVolume) {
+            writeRAR4Block(output, 0x7b, 0L, new byte[0], new byte[0]);
+        }
+        return output.toByteArray();
+    }
+
+    /// Encodes the fixed fields of one stored RAR4 file part.
+    private static byte @Unmodifiable [] rar4FileFields(
+            String path,
+            long unpackedSize,
+            long contentCRC,
+            byte @Unmodifiable [] body
+    ) throws IOException {
+        byte[] name = path.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer fields = ByteBuffer.allocate(25 + name.length).order(ByteOrder.LITTLE_ENDIAN);
+        fields.putInt(body.length);
+        fields.putInt(Math.toIntExact(unpackedSize));
+        fields.put((byte) 3);
+        fields.putInt((int) contentCRC);
+        fields.putInt(0);
+        fields.put((byte) 29);
+        fields.put((byte) 0x30);
+        fields.putShort((short) name.length);
+        fields.putInt(0100644);
+        fields.put(name);
+        return fields.array();
+    }
+
+    /// Writes one RAR4 block and its optional data area.
+    private static void writeRAR4Block(
+            ByteArrayOutputStream output,
+            int type,
+            long flags,
+            byte @Unmodifiable [] fields,
+            byte @Unmodifiable [] data
+    ) throws IOException {
+        byte[] header = new byte[5 + fields.length];
+        ByteBuffer headerBuffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
+        headerBuffer.put((byte) type);
+        headerBuffer.putShort((short) flags);
+        headerBuffer.putShort((short) (7 + fields.length));
+        headerBuffer.put(fields);
+        CRC32 headerCRC = new CRC32();
+        headerCRC.update(header);
+        byte[] checksum = new byte[2];
+        ByteBuffer.wrap(checksum).order(ByteOrder.LITTLE_ENDIAN).putShort((short) headerCRC.getValue());
+        output.write(checksum);
+        output.write(header);
+        output.write(data);
     }
 }
