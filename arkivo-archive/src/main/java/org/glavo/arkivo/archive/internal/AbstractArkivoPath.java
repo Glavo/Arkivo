@@ -162,14 +162,29 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     }
 
     /// Returns a name element by index.
+    ///
+    /// @throws IllegalArgumentException if `index` is negative or not less than [#getNameCount()]
     @Override
     public final Path getName(int index) {
+        if (index < 0 || index >= names.size()) {
+            throw new IllegalArgumentException("Path name index is out of range: " + index);
+        }
         return createPath(false, List.of(names.get(index)));
     }
 
     /// Returns a relative path containing a range of name elements.
+    ///
+    /// @throws IllegalArgumentException if the range is empty or outside the name elements
     @Override
     public final Path subpath(int beginIndex, int endIndex) {
+        if (beginIndex < 0
+                || beginIndex >= names.size()
+                || endIndex <= beginIndex
+                || endIndex > names.size()) {
+            throw new IllegalArgumentException(
+                    "Invalid path name range: " + beginIndex + ".." + endIndex
+            );
+        }
         return createPath(false, names.subList(beginIndex, endIndex));
     }
 
@@ -193,8 +208,11 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     @Override
     public final boolean endsWith(Path other) {
         AbstractArkivoPath<F> that = compatiblePath(other);
-        if (that == null || that.absolute && !absolute || names.size() < that.names.size()) {
+        if (that == null || names.size() < that.names.size()) {
             return false;
+        }
+        if (that.absolute) {
+            return absolute && names.size() == that.names.size() && names.equals(that.names);
         }
         return names.subList(names.size() - that.names.size(), names.size()).equals(that.names);
     }
@@ -227,6 +245,8 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     }
 
     /// Resolves another path against this path.
+    ///
+    /// @throws ProviderMismatchException if `other` belongs to another path implementation or archive file system
     @Override
     public final Path resolve(Path other) {
         AbstractArkivoPath<F> that = requireCompatiblePath(other);
@@ -261,6 +281,9 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     }
 
     /// Returns a relative path from this path to another path.
+    ///
+    /// @throws ProviderMismatchException if `other` belongs to another path implementation or archive file system
+    /// @throws IllegalArgumentException if exactly one of the paths is absolute
     @Override
     public final Path relativize(Path other) {
         AbstractArkivoPath<F> that = requireCompatiblePath(other);
@@ -384,9 +407,11 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     }
 
     /// Compares this path with another compatible path.
+    ///
+    /// @throws ClassCastException if `other` belongs to another path implementation or archive file system
     @Override
     public final int compareTo(Path other) {
-        return text.compareTo(requireCompatiblePath(other).text);
+        return text.compareTo(requireComparablePath(other).text);
     }
 
     /// Returns whether another object is the same path in the same file system.
@@ -427,10 +452,23 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     }
 
     /// Returns a compatible path from the same concrete implementation and file system.
+    ///
+    /// @throws ProviderMismatchException if the path has a different implementation or owning file system
     private AbstractArkivoPath<F> requireCompatiblePath(Path path) {
         AbstractArkivoPath<F> that = compatiblePath(path);
         if (that == null) {
-            throw new IllegalArgumentException("Path belongs to a different file system");
+            throw new ProviderMismatchException("Path belongs to a different archive file system");
+        }
+        return that;
+    }
+
+    /// Returns a comparable path from the same concrete implementation and file system.
+    ///
+    /// @throws ClassCastException if the path has a different implementation or owning file system
+    private AbstractArkivoPath<F> requireComparablePath(Path path) {
+        AbstractArkivoPath<F> that = compatiblePath(path);
+        if (that == null) {
+            throw new ClassCastException("Path belongs to a different archive file system");
         }
         return that;
     }

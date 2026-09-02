@@ -6052,8 +6052,17 @@ public final class ZipArkivoFileSystemTest {
             assertEquals(4, path.getNameCount());
             assertEquals("b", path.getName(1).toString());
             assertEquals("b/..", path.subpath(1, 3).toString());
+            assertThrows(IllegalArgumentException.class, () -> path.getName(-1));
+            assertThrows(IllegalArgumentException.class, () -> path.getName(path.getNameCount()));
+            assertThrows(IllegalArgumentException.class, () -> path.subpath(-1, 1));
+            assertThrows(IllegalArgumentException.class, () -> path.subpath(1, 1));
+            assertThrows(IllegalArgumentException.class, () -> path.subpath(0, path.getNameCount() + 1));
             assertEquals(true, path.startsWith("/a"));
             assertEquals(true, path.endsWith("c.txt"));
+            assertEquals(false, path.endsWith("/c.txt"));
+            assertEquals(true, normalized.endsWith("/a/c.txt"));
+            assertEquals(false, normalized.endsWith("/c.txt"));
+            assertEquals(false, normalized.endsWith("/"));
             assertEquals(normalized, path.normalize());
             assertEquals("/a/child", fileSystem.getPath("/a").resolve("child").toString());
             assertEquals("/a/child", normalized.resolveSibling("child").toString());
@@ -6063,7 +6072,9 @@ public final class ZipArkivoFileSystemTest {
             assertEquals(List.of("a", "b", "..", "c.txt"),
                     StreamSupport.stream(path.spliterator(), false).map(Path::toString).toList());
             assertEquals(false, path.startsWith(Path.of("/a")));
-            assertThrows(IllegalArgumentException.class, () -> path.resolve(Path.of("other")));
+            assertThrows(ProviderMismatchException.class, () -> path.resolve(Path.of("other")));
+            assertThrows(ProviderMismatchException.class, () -> path.relativize(Path.of("other")));
+            assertThrows(ClassCastException.class, () -> path.compareTo(Path.of("other")));
         }
     }
 

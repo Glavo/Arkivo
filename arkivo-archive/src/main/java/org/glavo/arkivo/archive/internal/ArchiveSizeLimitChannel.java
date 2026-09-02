@@ -60,6 +60,9 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
 
     /// Reads decoded bytes and accounts for partial progress before reporting a limit failure.
     ///
+    /// The delegate receives at most the remaining allowance plus one probe byte. If that probe exceeds the limit,
+    /// the target position reflects every byte read before the exception and its original limit is restored.
+    ///
     /// @param target the destination buffer
     /// @return the number of bytes read, possibly zero, or `-1` at end of input
     /// @throws ArkivoReadLimitException if this read makes the decoded byte count exceed the configured maximum
@@ -71,7 +74,7 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
         if (previousFailure != null) {
             throw previousFailure;
         }
-        int read = delegate.read(target);
+        int read = readWithinProbeBoundary(target);
         if (read > 0) {
             long actual = count > Long.MAX_VALUE - read ? Long.MAX_VALUE : count + read;
             count = actual;
@@ -87,6 +90,30 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
             }
         }
         return read;
+    }
+
+    /// Reads no farther than one byte beyond the remaining allowance while preserving the caller's buffer limit.
+    private int readWithinProbeBoundary(ByteBuffer target) throws IOException {
+        if (!target.hasRemaining()) {
+            return delegate.read(target);
+        }
+
+        long remainingAllowance = maximum - count;
+        long maximumRead = remainingAllowance == Long.MAX_VALUE
+                ? Long.MAX_VALUE
+                : remainingAllowance + 1L;
+        int requested = (int) Math.min((long) target.remaining(), maximumRead);
+        if (requested == target.remaining()) {
+            return delegate.read(target);
+        }
+
+        int originalLimit = target.limit();
+        target.limit(target.position() + requested);
+        try {
+            return delegate.read(target);
+        } finally {
+            target.limit(originalLimit);
+        }
     }
 
     /// Returns whether the owned delegate remains open.

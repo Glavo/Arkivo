@@ -7,6 +7,7 @@ package org.glavo.arkivo.codec;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -148,6 +149,70 @@ final class CompressionChannelContextTest {
         assertArrayEquals(new byte[]{8, 9, 10}, decodedBytes.toByteArray());
     }
 
+    /// Verifies blocking compression rejects a source that reports no progress.
+    @Test
+    @Timeout(5)
+    void rejectsZeroProgressCompressionSource() throws IOException {
+        ZeroProgressReadableChannel source = new ZeroProgressReadableChannel();
+        WritableByteChannel target = Channels.newChannel(new ByteArrayOutputStream());
+
+        IOException failure = assertThrows(IOException.class, () -> CODEC.compress(source, target));
+
+        assertEquals("Compression source channel made no progress", failure.getMessage());
+        assertTrue(source.isOpen());
+        assertTrue(target.isOpen());
+        source.close();
+        target.close();
+    }
+
+    /// Verifies blocking compression rejects a target that reports no progress.
+    @Test
+    @Timeout(5)
+    void rejectsZeroProgressCompressionTarget() throws IOException {
+        ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}));
+        ZeroProgressWritableChannel target = new ZeroProgressWritableChannel();
+
+        IOException failure = assertThrows(IOException.class, () -> CODEC.compress(source, target));
+
+        assertEquals("Compression target channel made no progress", failure.getMessage());
+        assertTrue(source.isOpen());
+        assertTrue(target.isOpen());
+        source.close();
+        target.close();
+    }
+
+    /// Verifies blocking decompression rejects a source that reports no progress.
+    @Test
+    @Timeout(5)
+    void rejectsZeroProgressDecompressionSource() throws IOException {
+        ZeroProgressReadableChannel source = new ZeroProgressReadableChannel();
+        WritableByteChannel target = Channels.newChannel(new ByteArrayOutputStream());
+
+        IOException failure = assertThrows(IOException.class, () -> CODEC.decompress(source, target));
+
+        assertEquals("Compression source channel made no progress", failure.getMessage());
+        assertTrue(source.isOpen());
+        assertTrue(target.isOpen());
+        source.close();
+        target.close();
+    }
+
+    /// Verifies blocking decompression rejects a target that reports no progress.
+    @Test
+    @Timeout(5)
+    void rejectsZeroProgressDecompressionTarget() throws IOException {
+        ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}));
+        ZeroProgressWritableChannel target = new ZeroProgressWritableChannel();
+
+        IOException failure = assertThrows(IOException.class, () -> CODEC.decompress(source, target));
+
+        assertEquals("Decompression target channel made no progress", failure.getMessage());
+        assertTrue(source.isOpen());
+        assertTrue(target.isOpen());
+        source.close();
+        target.close();
+    }
+
     /// Verifies unsupported configuration is absent from the codec type instead of rejected at runtime.
     @Test
     void exposesConfigurationOnlyThroughTypedSubinterfaces() {
@@ -282,6 +347,58 @@ final class CompressionChannelContextTest {
         /// Returns the close-attempt count.
         private int closeCount() {
             return closeCount;
+        }
+    }
+
+    /// Implements a readable channel that remains open but never makes progress.
+    @NotNullByDefault
+    private static final class ZeroProgressReadableChannel implements ReadableByteChannel {
+        /// Whether the channel is open.
+        private boolean open = true;
+
+        /// Returns zero without modifying the target.
+        @Override
+        public int read(ByteBuffer target) {
+            Objects.requireNonNull(target, "target");
+            return 0;
+        }
+
+        /// Returns whether the channel is open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes the channel.
+        @Override
+        public void close() {
+            open = false;
+        }
+    }
+
+    /// Implements a writable channel that remains open but never makes progress.
+    @NotNullByDefault
+    private static final class ZeroProgressWritableChannel implements WritableByteChannel {
+        /// Whether the channel is open.
+        private boolean open = true;
+
+        /// Returns zero without consuming the source.
+        @Override
+        public int write(ByteBuffer source) {
+            Objects.requireNonNull(source, "source");
+            return 0;
+        }
+
+        /// Returns whether the channel is open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes the channel.
+        @Override
+        public void close() {
+            open = false;
         }
     }
 

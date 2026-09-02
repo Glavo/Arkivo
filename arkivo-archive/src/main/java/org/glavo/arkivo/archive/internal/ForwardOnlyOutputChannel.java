@@ -121,13 +121,15 @@ public final class ForwardOnlyOutputChannel implements SeekableByteChannel {
     }
 
     /// Closes the wrapped output stream.
+    ///
+    /// A failed close leaves this channel logically open so a later call can retry cleanup.
     @Override
     public void close() throws IOException {
         if (!open) {
             return;
         }
-        open = false;
         output.close();
+        open = false;
     }
 
     /// Requires this channel to remain open.

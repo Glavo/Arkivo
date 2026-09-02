@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
@@ -76,6 +77,27 @@ final class ArchiveNioSupportTest {
         channel.close();
         assertArrayEquals(new byte[]{1, 2, 3, 4, 5}, output.toByteArray());
         assertThrows(ClosedChannelException.class, channel::position);
+    }
+
+    /// Verifies a failed forward-only output close remains retryable.
+    @Test
+    void retriesForwardOnlyOutputClose() throws IOException {
+        FailingCloseOutputStream output = new FailingCloseOutputStream();
+        ForwardOnlyOutputChannel channel = new ForwardOnlyOutputChannel(output);
+
+        IOException failure = assertThrows(IOException.class, channel::close);
+
+        assertEquals("close failed", failure.getMessage());
+        assertEquals(1, output.closeAttempts());
+        assertTrue(channel.isOpen());
+        channel.write(ByteBuffer.wrap(new byte[]{1}));
+
+        channel.close();
+        channel.close();
+
+        assertEquals(2, output.closeAttempts());
+        assertFalse(channel.isOpen());
+        assertThrows(ClosedChannelException.class, () -> channel.write(ByteBuffer.allocate(1)));
     }
 
     /// Verifies filtering, checked failure wrapping, snapshotting, and single-iterator semantics.
@@ -297,6 +319,42 @@ final class ArchiveNioSupportTest {
         public void close() throws IOException {
             channel.close();
             throw new IOException("storage close failed");
+        }
+    }
+
+    /// Implements an output stream whose first close attempt fails without closing it.
+    @NotNullByDefault
+    private static final class FailingCloseOutputStream extends OutputStream {
+        /// Whether the stream remains open.
+        private boolean open = true;
+
+        /// Number of close attempts made while open.
+        private int closeAttempts;
+
+        /// Accepts one byte while the stream is open.
+        @Override
+        public void write(int value) throws IOException {
+            if (!open) {
+                throw new IOException("stream closed");
+            }
+        }
+
+        /// Fails the first close attempt and closes on the second.
+        @Override
+        public void close() throws IOException {
+            if (!open) {
+                return;
+            }
+            closeAttempts++;
+            if (closeAttempts == 1) {
+                throw new IOException("close failed");
+            }
+            open = false;
+        }
+
+        /// Returns the number of close attempts made while open.
+        private int closeAttempts() {
+            return closeAttempts;
         }
     }
 }
