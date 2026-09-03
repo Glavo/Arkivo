@@ -8,6 +8,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.nio.file.PathMatcher;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /// Creates reusable path matchers for archive file systems.
 @NotNullByDefault
@@ -16,7 +17,8 @@ public final class ArkivoPathMatchers {
     ///
     /// @param syntaxAndPattern a {@code glob:pattern} or {@code regex:pattern} specification
     /// @return a matcher applied to each path's string representation
-    /// @throws IllegalArgumentException if the specification or pattern is invalid
+    /// @throws IllegalArgumentException if the specification does not contain a nonempty syntax name
+    /// @throws PatternSyntaxException if the glob or regular-expression pattern is invalid
     /// @throws UnsupportedOperationException if the named syntax is not supported
     public static PathMatcher create(String syntaxAndPattern) {
         return create(syntaxAndPattern, '/');
@@ -27,7 +29,8 @@ public final class ArkivoPathMatchers {
     /// @param syntaxAndPattern a {@code glob:pattern} or {@code regex:pattern} specification
     /// @param separator the path separator excluded by single-segment glob wildcards
     /// @return a matcher applied to each path's string representation
-    /// @throws IllegalArgumentException if the specification or pattern is invalid
+    /// @throws IllegalArgumentException if the specification does not contain a nonempty syntax name
+    /// @throws PatternSyntaxException if the glob or regular-expression pattern is invalid
     /// @throws UnsupportedOperationException if the named syntax is not supported
     public static PathMatcher create(String syntaxAndPattern, char separator) {
         Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
@@ -53,7 +56,7 @@ public final class ArkivoPathMatchers {
     /// Converts a glob pattern to a regular expression that treats `separator` as the only path separator.
     private static String globToRegex(String glob, char separator) {
         StringBuilder regex = new StringBuilder(glob.length() * 2);
-        int groupDepth = 0;
+        boolean inGroup = false;
         for (int index = 0; index < glob.length(); index++) {
             char ch = glob.charAt(index);
             switch (ch) {
@@ -67,39 +70,41 @@ public final class ArkivoPathMatchers {
                     }
                 }
                 case '?' -> appendNotSeparator(regex, separator);
-                case '[' -> index = appendGlobCharacterClass(glob, index, regex);
+                case '[' -> index = appendGlobCharacterClass(glob, index, regex, separator);
                 case '{' -> {
-                    regex.append("(?:");
-                    groupDepth++;
+                    if (inGroup) {
+                        throw new PatternSyntaxException("Cannot nest glob groups", glob, index);
+                    }
+                    regex.append("(?:(?:");
+                    inGroup = true;
                 }
                 case '}' -> {
-                    if (groupDepth > 0) {
-                        regex.append(')');
-                        groupDepth--;
+                    if (inGroup) {
+                        regex.append("))");
+                        inGroup = false;
                     } else {
                         appendRegexLiteral(regex, ch);
                     }
                 }
                 case ',' -> {
-                    if (groupDepth > 0) {
-                        regex.append('|');
+                    if (inGroup) {
+                        regex.append(")|(?:");
                     } else {
                         appendRegexLiteral(regex, ch);
                     }
                 }
                 case '\\' -> {
                     if (index + 1 >= glob.length()) {
-                        appendRegexLiteral(regex, ch);
-                    } else {
-                        appendRegexLiteral(regex, glob.charAt(++index));
+                        throw new PatternSyntaxException("No character to escape", glob, index);
                     }
+                    appendRegexLiteral(regex, glob.charAt(++index));
                 }
                 default -> appendRegexLiteral(regex, ch);
             }
         }
 
-        if (groupDepth != 0) {
-            throw new IllegalArgumentException("Unclosed glob group: " + glob);
+        if (inGroup) {
+            throw new PatternSyntaxException("Unclosed glob group", glob, glob.length() - 1);
         }
         return regex.toString();
     }
@@ -111,42 +116,96 @@ public final class ArkivoPathMatchers {
         regex.append(']');
     }
 
-    /// Appends a glob character class and returns the final consumed index.
-    private static int appendGlobCharacterClass(String glob, int startIndex, StringBuilder regex) {
+    /// Appends a separator-excluding glob character class and returns the final consumed index.
+    private static int appendGlobCharacterClass(
+            String glob,
+            int startIndex,
+            StringBuilder regex,
+            char separator
+    ) {
         int index = startIndex + 1;
         if (index >= glob.length()) {
-            throw new IllegalArgumentException("Unclosed glob character class: " + glob);
+            throw new PatternSyntaxException("Unclosed glob character class", glob, startIndex);
         }
 
-        regex.append('[');
+        regex.append("[[^");
+        appendCharacterClassLiteral(regex, separator);
+        regex.append("]&&[");
+
+        boolean hasMember = false;
+        boolean hasRangeStart = false;
+        char rangeStart = 0;
         if (glob.charAt(index) == '!') {
             regex.append('^');
             index++;
         } else if (glob.charAt(index) == '^') {
             regex.append("\\^");
             index++;
+            hasMember = true;
+            hasRangeStart = true;
+            rangeStart = '^';
+        }
+        if (index < glob.length() && glob.charAt(index) == '-') {
+            regex.append("\\-");
+            index++;
+            hasMember = true;
+            hasRangeStart = false;
         }
 
-        boolean closed = false;
         for (; index < glob.length(); index++) {
             char ch = glob.charAt(index);
             if (ch == ']') {
-                regex.append(']');
-                closed = true;
-                break;
+                if (!hasMember) {
+                    throw new PatternSyntaxException("Empty glob character class", glob, index);
+                }
+                regex.append("]]");
+                return index;
             }
-            appendCharacterClassLiteral(regex, ch);
-        }
+            if (ch == separator) {
+                throw new PatternSyntaxException("Path separator in glob character class", glob, index);
+            }
+            if (ch == '-') {
+                if (!hasRangeStart) {
+                    throw new PatternSyntaxException("Invalid glob character range", glob, index);
+                }
+                if (index + 1 >= glob.length()) {
+                    throw new PatternSyntaxException("Unclosed glob character class", glob, startIndex);
+                }
+                char rangeEnd = glob.charAt(index + 1);
+                if (rangeEnd == ']') {
+                    regex.append("\\-");
+                    hasRangeStart = false;
+                    continue;
+                }
+                if (rangeEnd == separator) {
+                    throw new PatternSyntaxException(
+                            "Path separator in glob character class",
+                            glob,
+                            index + 1
+                    );
+                }
+                if (rangeEnd == '-' || rangeEnd < rangeStart) {
+                    throw new PatternSyntaxException("Invalid glob character range", glob, index);
+                }
+                regex.append('-');
+                appendCharacterClassLiteral(regex, rangeEnd);
+                index++;
+                hasMember = true;
+                hasRangeStart = false;
+                continue;
+            }
 
-        if (!closed) {
-            throw new IllegalArgumentException("Unclosed glob character class: " + glob);
+            appendCharacterClassLiteral(regex, ch);
+            hasMember = true;
+            hasRangeStart = true;
+            rangeStart = ch;
         }
-        return index;
+        throw new PatternSyntaxException("Unclosed glob character class", glob, startIndex);
     }
 
     /// Appends one regular expression literal character.
     private static void appendRegexLiteral(StringBuilder regex, char ch) {
-        if ("\\.[]{}()+-^$|".indexOf(ch) >= 0) {
+        if ("\\.[]{}()+-^$|*?".indexOf(ch) >= 0) {
             regex.append('\\');
         }
         regex.append(ch);
@@ -154,7 +213,7 @@ public final class ArkivoPathMatchers {
 
     /// Appends one regular expression character class literal.
     private static void appendCharacterClassLiteral(StringBuilder regex, char ch) {
-        if ("\\[]^-".indexOf(ch) >= 0) {
+        if ("\\[]^-&".indexOf(ch) >= 0) {
             regex.append('\\');
         }
         regex.append(ch);

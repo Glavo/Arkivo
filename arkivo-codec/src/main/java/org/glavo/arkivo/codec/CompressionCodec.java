@@ -196,6 +196,10 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates a compressing output stream using operation options and explicit target ownership.
     ///
+    /// Calling `flush()` first emits any codec-supported decodable boundary and then flushes `target`. Closing the
+    /// returned stream finalizes the encoding and flushes a borrowed target; an owned target is closed after
+    /// finalization and is responsible for its normal close-time flushing.
+    ///
     /// @param target    the stream that receives compressed bytes
     /// @param options   the parameters for this encoding session
     /// @param ownership whether closing the returned stream also closes `target`
@@ -210,7 +214,9 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.outputStream(
-                newWritableByteChannel(StreamChannelAdapters.writableChannel(target), options, ownership)
+                newWritableByteChannel(StreamChannelAdapters.writableChannel(target), options, ownership),
+                target,
+                ownership
         );
     }
 

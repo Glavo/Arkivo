@@ -63,6 +63,13 @@ final class CompressionDecoderSupportTest {
                 4_095L,
                 CompressionDecoderSupport.effectiveMaximumWindowSize(8_192L, 4_095L)
         );
+        assertEquals(
+                8_192L,
+                CompressionDecoderSupport.effectiveMaximumWindowSize(
+                        8_192L,
+                        CompressionCodec.UNLIMITED_SIZE
+                )
+        );
         DecompressionWindowLimitException memoryBoundException = assertThrows(
                 DecompressionWindowLimitException.class,
                 () -> CompressionDecoderSupport.requireWindowSize(
@@ -104,6 +111,7 @@ final class CompressionDecoderSupportTest {
     void preservesDelegatesWithoutLimit() {
         CompressionDecoder engine = new NoOpDecoder();
         TestChannel decoder = new TestChannel(new byte[]{1});
+        FramedTestChannel framedDecoder = new FramedTestChannel(new byte[]{1});
 
         assertSame(
                 engine,
@@ -116,6 +124,13 @@ final class CompressionDecoderSupportTest {
                 decoder,
                 CompressionDecoderSupport.limitChannelOutput(
                         decoder,
+                        CompressionCodec.UNLIMITED_SIZE
+                )
+        );
+        assertSame(
+                framedDecoder,
+                CompressionDecoderSupport.limitChannelOutput(
+                        framedDecoder,
                         CompressionCodec.UNLIMITED_SIZE
                 )
         );
@@ -143,6 +158,21 @@ final class CompressionDecoderSupportTest {
                         1L
                 );
         assertInstanceOf(InterruptibleChannel.class, interruptibleFramed);
+
+        DecompressingReadableByteChannel genericFramed = CompressionDecoderSupport.limitChannelOutput(
+                (DecompressingReadableByteChannel) new FramedTestChannel(new byte[]{1}),
+                1L
+        );
+        assertInstanceOf(DecompressingReadableByteChannel.Framed.class, genericFramed);
+        assertFalse(genericFramed instanceof InterruptibleChannel);
+
+        DecompressingReadableByteChannel genericInterruptibleFramed =
+                CompressionDecoderSupport.limitChannelOutput(
+                        (DecompressingReadableByteChannel) new InterruptibleFramedTestChannel(new byte[]{1}),
+                        1L
+                );
+        assertInstanceOf(DecompressingReadableByteChannel.Framed.class, genericInterruptibleFramed);
+        assertInstanceOf(InterruptibleChannel.class, genericInterruptibleFramed);
     }
 
     /// Verifies output counters retain bytes produced before an interrupted delegate operation fails.
@@ -231,6 +261,86 @@ final class CompressionDecoderSupportTest {
         assertEquals(3L, decoder.outputBytes());
         assertEquals(4L, decoder.inputBytes());
         assertThrows(DecompressionLimitException.class, () -> decoder.read(target));
+    }
+
+    /// Verifies channel decode reports per-call counts and delegates observable source state.
+    @Test
+    void decodesExactLimitAndDelegatesSourceState() throws IOException {
+        TestChannel delegate = new TestChannel(new byte[]{31, 32});
+        DecompressingReadableByteChannel decoder =
+                CompressionDecoderSupport.limitChannelOutput(delegate, 2L);
+        ByteBuffer target = ByteBuffer.allocate(5);
+        target.position(1);
+        target.limit(4);
+
+        CodecResult decoded = decoder.decode(target);
+        assertEquals(2L, decoded.inputBytes());
+        assertEquals(2L, decoded.outputBytes());
+        assertEquals(CodecResult.Status.ACTIVE, decoded.status());
+        assertEquals(3, target.position());
+        assertEquals(4, target.limit());
+        assertEquals(2L, decoder.inputBytes());
+        assertEquals(2L, decoder.sourceBytes());
+        assertEquals(2L, decoder.outputBytes());
+        assertTrue(decoder.unconsumedInput().isReadOnly());
+        assertEquals(0, decoder.unconsumedInput().remaining());
+        assertTrue(decoder.isOpen());
+
+        CodecResult end = decoder.decode(ByteBuffer.allocate(1));
+        assertEquals(0L, end.inputBytes());
+        assertEquals(0L, end.outputBytes());
+        assertEquals(CodecResult.Status.END_OF_INPUT, end.status());
+    }
+
+    /// Verifies decode probing rejects excess output without exposing the hidden byte.
+    @Test
+    void rejectsExcessOutputThroughDecode() throws IOException {
+        TestChannel delegate = new TestChannel(new byte[]{41, 42, 43});
+        DecompressingReadableByteChannel decoder =
+                CompressionDecoderSupport.limitChannelOutput(delegate, 2L);
+        ByteBuffer target = ByteBuffer.allocate(5);
+
+        CodecResult prefix = decoder.decode(target);
+        assertEquals(2L, prefix.inputBytes());
+        assertEquals(2L, prefix.outputBytes());
+        assertEquals(2, target.position());
+
+        DecompressionLimitException failure = assertThrows(
+                DecompressionLimitException.class,
+                () -> decoder.decode(target)
+        );
+        assertEquals(2L, failure.maximum());
+        assertEquals(2, target.position());
+        assertEquals(3L, decoder.inputBytes());
+        assertEquals(2L, decoder.outputBytes());
+        assertThrows(DecompressionLimitException.class, () -> decoder.decode(target));
+    }
+
+    /// Verifies frame-stopping decode honors empty targets, exact limits, and end-of-input probing.
+    @Test
+    void decodesFramesThroughTheOutputLimiter() throws IOException {
+        FramedTestChannel delegate = new FramedTestChannel(new byte[]{51});
+        DecompressingReadableByteChannel.Framed decoder =
+                CompressionDecoderSupport.limitChannelOutput(delegate, 1L);
+
+        CodecResult empty = decoder.decodeFrame(ByteBuffer.allocate(0));
+        assertEquals(0L, empty.inputBytes());
+        assertEquals(0L, empty.outputBytes());
+        assertEquals(CodecResult.Status.ACTIVE, empty.status());
+
+        ByteBuffer target = ByteBuffer.allocate(4);
+        target.limit(3);
+        CodecResult decoded = decoder.decodeFrame(target);
+        assertEquals(1L, decoded.inputBytes());
+        assertEquals(1L, decoded.outputBytes());
+        assertEquals(CodecResult.Status.ACTIVE, decoded.status());
+        assertEquals(1, target.position());
+        assertEquals(3, target.limit());
+
+        CodecResult end = decoder.decodeFrame(ByteBuffer.allocate(1));
+        assertEquals(0L, end.inputBytes());
+        assertEquals(0L, end.outputBytes());
+        assertEquals(CodecResult.Status.END_OF_INPUT, end.status());
     }
 
     /// Provides an inert transport-independent decoder.

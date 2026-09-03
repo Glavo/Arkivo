@@ -6,7 +6,9 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.DictionaryRequiredException;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -27,7 +29,9 @@ import java.util.zip.Inflater;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests zlib codec behavior.
 @NotNullByDefault
@@ -178,6 +182,89 @@ public final class ZlibCodecTest {
         );
 
 
+    }
+
+    /// Verifies high-level decoding adapters expose a typed request when no preset dictionary is configured.
+    @Test
+    public void adaptersExposeTypedDictionaryRequests() throws IOException {
+        byte @Unmodifiable [] dictionaryBytes = (
+                "Arkivo typed zlib dictionary request phrase 0123456789;"
+        ).repeat(128).getBytes(StandardCharsets.UTF_8);
+        byte @Unmodifiable [] input = Arrays.copyOfRange(
+                dictionaryBytes,
+                dictionaryBytes.length - 1_024,
+                dictionaryBytes.length
+        );
+        ZlibDictionary dictionary = ZlibDictionary.of(dictionaryBytes);
+        ZlibDictionary wrongDictionary = ZlibDictionary.of(new byte[dictionaryBytes.length]);
+        ZlibCodec dictionaryCodec = new ZlibCodec().withDictionary(dictionary);
+        ByteBuffer encodedBuffer = dictionaryCodec.compress(ByteBuffer.wrap(input));
+        byte @Unmodifiable [] encoded = new byte[encodedBuffer.remaining()];
+        encodedBuffer.get(encoded);
+        ZlibCodec decoderCodec = new ZlibCodec().withMaximumOutputSize(input.length);
+
+        ByteBuffer allocatingSource = ByteBuffer.wrap(encoded);
+        int allocatingSourceLimit = allocatingSource.limit();
+        DictionaryRequiredException allocatingFailure = assertThrows(
+                DictionaryRequiredException.class,
+                () -> decoderCodec.decompress(allocatingSource)
+        );
+        assertDictionaryRequest(allocatingFailure, dictionary, wrongDictionary);
+        assertTrue(allocatingSource.position() > 0);
+        assertEquals(allocatingSourceLimit, allocatingSource.limit());
+
+        ByteBuffer fixedSource = ByteBuffer.wrap(encoded);
+        ByteBuffer fixedTarget = ByteBuffer.allocate(input.length);
+        int fixedSourceLimit = fixedSource.limit();
+        int fixedTargetLimit = fixedTarget.limit();
+        DictionaryRequiredException fixedBufferFailure = assertThrows(
+                DictionaryRequiredException.class,
+                () -> decoderCodec.decompress(fixedSource, fixedTarget)
+        );
+        assertDictionaryRequest(fixedBufferFailure, dictionary, wrongDictionary);
+        assertTrue(fixedSource.position() > 0);
+        assertEquals(fixedSourceLimit, fixedSource.limit());
+        assertEquals(0, fixedTarget.position());
+        assertEquals(fixedTargetLimit, fixedTarget.limit());
+
+        DictionaryRequiredException transferFailure = assertThrows(
+                DictionaryRequiredException.class,
+                () -> decoderCodec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(encoded)),
+                        Channels.newChannel(new ByteArrayOutputStream())
+                )
+        );
+        assertDictionaryRequest(transferFailure, dictionary, wrongDictionary);
+
+        try (var channel = decoderCodec.newReadableByteChannel(
+                Channels.newChannel(new ByteArrayInputStream(encoded))
+        )) {
+            DictionaryRequiredException channelFailure = assertThrows(
+                    DictionaryRequiredException.class,
+                    () -> channel.read(ByteBuffer.allocate(input.length))
+            );
+            assertDictionaryRequest(channelFailure, dictionary, wrongDictionary);
+        }
+
+        try (InputStream stream = decoderCodec.newInputStream(new ByteArrayInputStream(encoded))) {
+            DictionaryRequiredException streamFailure = assertThrows(
+                    DictionaryRequiredException.class,
+                    stream::readAllBytes
+            );
+            assertDictionaryRequest(streamFailure, dictionary, wrongDictionary);
+        }
+    }
+
+    /// Verifies one dictionary-required failure retains the exact format request and matching semantics.
+    private static void assertDictionaryRequest(
+            DictionaryRequiredException failure,
+            ZlibDictionary expected,
+            ZlibDictionary unexpected
+    ) {
+        ZlibDictionaryRequest request = assertInstanceOf(ZlibDictionaryRequest.class, failure.request());
+        assertEquals(expected.adler32(), request.adler32());
+        assertTrue(request.matches(expected));
+        assertFalse(request.matches(unexpected));
     }
 
     /// Compresses and decompresses the given bytes.

@@ -23,18 +23,38 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies Arkivo against the pinned official Zstandard 1.5.7 golden corpus.
 @NotNullByDefault
 public final class ZstdOfficialCorpusTest {
     /// The system property containing the extracted official corpus directory.
     private static final String TEST_DATA_DIRECTORY_PROPERTY = "arkivo.zstd.testDataDirectory";
+
+    /// Every extracted official corpus file classified by this test suite.
+    private static final @Unmodifiable Set<String> CLASSIFIED_CORPUS_FILES = Set.of(
+            "LICENSE",
+            "UPSTREAM.properties",
+            "tests/dict-files/zero-weight-dict",
+            "tests/golden-compression/PR-3517-block-splitter-corruption-test",
+            "tests/golden-compression/http",
+            "tests/golden-compression/huffman-compressed-larger",
+            "tests/golden-compression/large-literal-and-match-lengths",
+            "tests/golden-decompression-errors/off0.bin.zst",
+            "tests/golden-decompression-errors/truncated_huff_state.zst",
+            "tests/golden-decompression-errors/zeroSeq_extraneous.zst",
+            "tests/golden-decompression/block-128k.zst",
+            "tests/golden-decompression/empty-block.zst",
+            "tests/golden-decompression/rle-first-block.zst",
+            "tests/golden-decompression/zeroSeq_2B.zst",
+            "tests/golden-dictionaries/http-dict-missing-symbols"
+    );
 
     /// Verifies an official valid frame against output length and SHA-256 values produced by the official 1.5.7 CLI.
     @ParameterizedTest
@@ -141,11 +161,20 @@ public final class ZstdOfficialCorpusTest {
         assertArrayEquals(input, decompress(codec, nativeCompressed));
     }
 
-    /// Verifies extraction retains the upstream license and the exact download lock manifest.
+    /// Verifies every extracted file remains classified, including upstream provenance.
     @Test
-    public void retainsUpstreamProvenance() {
-        assertTrue(Files.isRegularFile(corpusPath("LICENSE")));
-        assertTrue(Files.isRegularFile(corpusPath("UPSTREAM.properties")));
+    public void classifiesCompleteOfficialCorpusAndRetainsProvenance() throws IOException {
+        Path root = corpusPath("");
+        @Unmodifiable Set<String> actual;
+        try (Stream<Path> files = Files.walk(root)) {
+            actual = files
+                    .filter(Files::isRegularFile)
+                    .map(root::relativize)
+                    .map(path -> path.toString().replace('\\', '/'))
+                    .collect(Collectors.toUnmodifiableSet());
+        }
+
+        assertEquals(CLASSIFIED_CORPUS_FILES, actual);
     }
 
     /// Returns official valid golden frame expectations.

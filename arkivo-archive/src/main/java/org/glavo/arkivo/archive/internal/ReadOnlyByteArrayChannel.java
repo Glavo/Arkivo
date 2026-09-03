@@ -20,7 +20,7 @@ public final class ReadOnlyByteArrayChannel implements SeekableByteChannel {
     private final byte @Unmodifiable [] content;
 
     /// The current channel position.
-    private int position;
+    private long position;
 
     /// Whether this channel remains open.
     private boolean open = true;
@@ -43,8 +43,9 @@ public final class ReadOnlyByteArrayChannel implements SeekableByteChannel {
         if (position >= content.length) {
             return -1;
         }
-        int count = Math.min(destination.remaining(), content.length - position);
-        destination.put(content, position, count);
+        int arrayPosition = Math.toIntExact(position);
+        int count = Math.min(destination.remaining(), content.length - arrayPosition);
+        destination.put(content, arrayPosition, count);
         position += count;
         return count;
     }
@@ -64,14 +65,14 @@ public final class ReadOnlyByteArrayChannel implements SeekableByteChannel {
         return position;
     }
 
-    /// Sets the current channel position.
+    /// Sets the current channel position, including positions beyond the immutable content.
     @Override
     public SeekableByteChannel position(long newPosition) throws IOException {
         ensureOpen();
-        if (newPosition < 0L || newPosition > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("newPosition is out of range");
+        if (newPosition < 0L) {
+            throw new IllegalArgumentException("newPosition must not be negative");
         }
-        position = Math.toIntExact(newPosition);
+        position = newPosition;
         return this;
     }
 

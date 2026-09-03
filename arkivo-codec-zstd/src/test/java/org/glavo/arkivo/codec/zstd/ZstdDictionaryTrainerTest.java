@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
+import java.io.IOException;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
@@ -20,6 +21,8 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -152,6 +155,45 @@ final class ZstdDictionaryTrainerTest {
         assertEquals(0L, truncated.sampleBytes());
     }
 
+    /// Verifies channel preflight, no-progress, and partial-failure paths leave trainer state transactional.
+    @Test
+    void rejectsIncompleteChannelSamplesTransactionally() throws Exception {
+        ZstdDictionaryTrainer tooSmall = new ZstdDictionaryTrainer(2L, 256L);
+        try (ReadableByteChannel source = Channels.newChannel(
+                new ByteArrayInputStream(new byte[]{1, 2, 3})
+        )) {
+            assertThrows(BufferOverflowException.class, () -> tooSmall.addSample(source, 3L));
+            ByteBuffer first = ByteBuffer.allocate(1);
+            assertEquals(1, source.read(first));
+            first.flip();
+            assertEquals(1, first.get());
+        }
+        assertEquals(0, tooSmall.sampleCount());
+        assertEquals(0L, tooSmall.sampleBytes());
+
+        ZstdDictionaryTrainer noProgress = new ZstdDictionaryTrainer(2L, 256L);
+        try (ReadableByteChannel source = new NoProgressChannel()) {
+            IOException exception = assertThrows(
+                    IOException.class,
+                    () -> noProgress.addSample(source, 1L)
+            );
+            assertEquals("Sample channel made no progress", exception.getMessage());
+        }
+        assertEquals(0, noProgress.sampleCount());
+        assertEquals(0L, noProgress.sampleBytes());
+
+        ZstdDictionaryTrainer partialFailure = new ZstdDictionaryTrainer(2L, 256L);
+        try (ReadableByteChannel source = new PartialFailureChannel()) {
+            IOException exception = assertThrows(
+                    IOException.class,
+                    () -> partialFailure.addSample(source, 2L)
+            );
+            assertEquals("injected read failure", exception.getMessage());
+        }
+        assertEquals(0, partialFailure.sampleCount());
+        assertEquals(0L, partialFailure.sampleBytes());
+    }
+
     /// Verifies trainer configuration and native training failures are reported precisely.
     @Test
     void validatesTrainingState() {
@@ -164,15 +206,68 @@ final class ZstdDictionaryTrainerTest {
         );
         assertThrows(
                 IllegalArgumentException.class,
+                () -> new ZstdDictionaryTrainer(1L, (long) Integer.MAX_VALUE + 1L)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
                 () -> new ZstdDictionaryTrainer(1L, 1L, codec.minimumCompressionLevel() - 1L)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new ZstdDictionaryTrainer(1L, 1L, codec.maximumCompressionLevel() + 1L)
+        );
+        assertEquals(
+                codec.minimumCompressionLevel(),
+                new ZstdDictionaryTrainer(1L, 1L, codec.minimumCompressionLevel()).compressionLevel()
+        );
+        assertEquals(
+                codec.maximumCompressionLevel(),
+                new ZstdDictionaryTrainer(1L, 1L, codec.maximumCompressionLevel()).compressionLevel()
         );
 
         ZstdDictionaryTrainer empty = new ZstdDictionaryTrainer(1L, 1L);
         assertThrows(IllegalStateException.class, empty::train);
-        empty.addSample(ByteBuffer.wrap(new byte[]{1}));
-        ZstdDictionaryTrainingException exception =
-                assertThrows(ZstdDictionaryTrainingException.class, empty::train);
-        assertTrue(exception.errorCode() != 0L);
+        assertThrows(NullPointerException.class, () -> empty.train(null));
+        assertThrows(NullPointerException.class, () -> empty.tryAddSample(null));
+        assertThrows(
+                NullPointerException.class,
+                () -> empty.addSample((ReadableByteChannel) null, 1L)
+        );
+        try (ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}))) {
+            assertThrows(IllegalArgumentException.class, () -> empty.addSample(source, 0L));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> empty.addSample(source, (long) Integer.MAX_VALUE + 1L)
+            );
+        } catch (IOException exception) {
+            throw new AssertionError(exception);
+        }
+
+        ZstdDictionaryTrainer smallDestination = new ZstdDictionaryTrainer(8L, 255L);
+        smallDestination.addSample(ByteBuffer.wrap(new byte[]{1, 2, 3, 4, 5, 6, 7, 8}));
+        ZstdDictionaryTrainingException destinationFailure =
+                assertThrows(ZstdDictionaryTrainingException.class, smallDestination::train);
+        assertEquals(ZstdDictionaryTrainingException.DESTINATION_TOO_SMALL, destinationFailure.errorCode());
+        assertTrue(destinationFailure.getMessage().contains("dictionary capacity"));
+        assertNull(destinationFailure.getCause());
+
+        ZstdDictionaryTrainer insufficientSamples = new ZstdDictionaryTrainer(8L, 256L);
+        insufficientSamples.addSample(ByteBuffer.wrap(new byte[]{1, 2, 3, 4, 5, 6, 7}));
+        ZstdDictionaryTrainingException sampleFailure =
+                assertThrows(ZstdDictionaryTrainingException.class, insufficientSamples::train);
+        assertEquals(ZstdDictionaryTrainingException.INSUFFICIENT_SAMPLES, sampleFailure.errorCode());
+        assertTrue(sampleFailure.getMessage().contains("sample bytes"));
+        assertNull(sampleFailure.getCause());
+
+        IllegalArgumentException cause = new IllegalArgumentException("builder rejected content");
+        ZstdDictionaryTrainingException creationFailure = new ZstdDictionaryTrainingException(
+                ZstdDictionaryTrainingException.DICTIONARY_CREATION_FAILED,
+                cause.getMessage(),
+                cause
+        );
+        assertEquals(ZstdDictionaryTrainingException.DICTIONARY_CREATION_FAILED, creationFailure.errorCode());
+        assertSame(cause, creationFailure.getCause());
+        assertTrue(creationFailure.getMessage().contains(cause.getMessage()));
     }
 
     /// Verifies dictionary identifier inspection supports ranges and raw dictionaries without moving source state.
@@ -316,5 +411,63 @@ final class ZstdDictionaryTrainerTest {
                         + ";sequence:" + index
                         + ";payload:0123456789abcdef0123456789abcdef"
         ).repeat(3).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /// Provides an open channel that reports no read progress.
+    @NotNullByDefault
+    private static final class NoProgressChannel implements ReadableByteChannel {
+        /// Whether this channel remains open.
+        private boolean open = true;
+
+        /// Reports zero bytes without changing the target.
+        @Override
+        public int read(ByteBuffer target) {
+            return 0;
+        }
+
+        /// Returns whether this channel remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel.
+        @Override
+        public void close() {
+            open = false;
+        }
+    }
+
+    /// Provides one byte and then injects a checked read failure.
+    @NotNullByDefault
+    private static final class PartialFailureChannel implements ReadableByteChannel {
+        /// Whether the first byte has been returned.
+        private boolean suppliedByte;
+
+        /// Whether this channel remains open.
+        private boolean open = true;
+
+        /// Supplies one byte on the first call and fails on the second call.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            if (!suppliedByte) {
+                target.put((byte) 42);
+                suppliedByte = true;
+                return 1;
+            }
+            throw new IOException("injected read failure");
+        }
+
+        /// Returns whether this channel remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel.
+        @Override
+        public void close() {
+            open = false;
+        }
     }
 }

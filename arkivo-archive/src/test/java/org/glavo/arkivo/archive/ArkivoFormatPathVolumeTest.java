@@ -14,12 +14,15 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies path-backed volume discovery and source construction.
 @NotNullByDefault
@@ -67,6 +70,38 @@ public final class ArkivoFormatPathVolumeTest {
         TestPathVolumeFormat format = new TestPathVolumeFormat(List.of(path));
 
         assertThrows(IllegalStateException.class, () -> format.openVolumeSource(path));
+    }
+
+    /// Verifies finite path sources snapshot their path list and return independently positioned channels.
+    @Test
+    public void finitePathSourceOwnsNoReturnedChannels() throws IOException {
+        Path path = temporaryDirectory.resolve("archive.001");
+        Files.write(path, new byte[]{1, 2, 3});
+        ArrayList<Path> mutablePaths = new ArrayList<>(List.of(path));
+        ArkivoVolumeSource source = ArkivoVolumeSource.of(mutablePaths);
+        mutablePaths.clear();
+
+        SeekableByteChannel first = Objects.requireNonNull(source.openVolume(0L));
+        SeekableByteChannel second = Objects.requireNonNull(source.openVolume(0L));
+        try {
+            assertNull(source.openVolume(-1L));
+            assertNull(source.openVolume(Long.MAX_VALUE));
+
+            ByteBuffer prefix = ByteBuffer.allocate(1);
+            assertEquals(1, first.read(prefix));
+            assertEquals(1L, first.position());
+            assertEquals(0L, second.position());
+            assertArrayEquals(new byte[]{1, 2, 3}, readAllBytes(second));
+
+            source.close();
+            assertTrue(first.isOpen());
+            assertTrue(second.isOpen());
+            assertEquals(1L, first.position());
+        } finally {
+            first.close();
+            second.close();
+            source.close();
+        }
     }
 
     /// Reads one test channel completely.

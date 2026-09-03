@@ -403,7 +403,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         private final ZipStreamingEntry entry;
 
         /// The requested POSIX permissions, or `null` when defaults are used.
-        private @Nullable Set<PosixFilePermission> permissions;
+        private @Nullable @Unmodifiable Set<PosixFilePermission> permissions;
 
         /// Creates a pending POSIX entry attribute view.
         private PendingPosixEntryAttributeView(ZipStreamingEntry entry) {
@@ -419,7 +419,12 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Reads the pending POSIX entry attributes.
         @Override
         public PosixFileAttributes readAttributes() {
-            return new PendingPosixEntryAttributes(entry, permissions);
+            lock();
+            try {
+                return new PendingPosixEntryAttributes(entry);
+            } finally {
+                unlock();
+            }
         }
 
         /// Returns the synthesized owner.
@@ -442,76 +447,111 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         @Override
         public void setOwner(UserPrincipal owner) throws UserPrincipalNotFoundException {
             Objects.requireNonNull(owner, "owner");
-            entry.ensurePending();
-            ZipPosixSupport.requireDefaultOwner(owner);
+            lock();
+            try {
+                entry.ensurePending();
+                ZipPosixSupport.requireDefaultOwner(owner);
+            } finally {
+                unlock();
+            }
         }
 
         /// Accepts the synthesized file group.
         @Override
         public void setGroup(GroupPrincipal group) throws UserPrincipalNotFoundException {
             Objects.requireNonNull(group, "group");
-            entry.ensurePending();
-            ZipPosixSupport.requireDefaultGroup(group);
+            lock();
+            try {
+                entry.ensurePending();
+                ZipPosixSupport.requireDefaultGroup(group);
+            } finally {
+                unlock();
+            }
         }
 
         /// Sets POSIX permissions.
         @Override
         public void setPermissions(Set<PosixFilePermission> permissions) {
-            Objects.requireNonNull(permissions, "permissions");
-            entry.ensurePending();
-            this.permissions = Set.copyOf(permissions);
+            @Unmodifiable Set<PosixFilePermission> copy = Set.copyOf(
+                    Objects.requireNonNull(permissions, "permissions")
+            );
+            lock();
+            try {
+                entry.ensurePending();
+                this.permissions = copy;
+            } finally {
+                unlock();
+            }
         }
     }
 
     /// Exposes a snapshot of pending synthesized POSIX entry metadata.
     @NotNullByDefault
     private static final class PendingPosixEntryAttributes implements PosixFileAttributes {
-        /// The pending ZIP entry.
-        private final ZipStreamingEntry entry;
+        /// The pending entry type.
+        private final EntryType type;
 
-        /// The configured permissions, or `null` when defaults are used.
-        private final @Nullable Set<PosixFilePermission> permissions;
+        /// The last modification time captured by this snapshot.
+        private final FileTime lastModifiedTime;
+
+        /// The last access time captured by this snapshot.
+        private final FileTime lastAccessTime;
+
+        /// The creation time captured by this snapshot.
+        private final FileTime creationTime;
+
+        /// The expected uncompressed size captured by this snapshot.
+        private final long size;
+
+        /// The effective permissions captured by this snapshot.
+        private final @Unmodifiable Set<PosixFilePermission> permissions;
 
         /// Creates a pending POSIX attributes snapshot.
-        private PendingPosixEntryAttributes(ZipStreamingEntry entry, @Nullable Set<PosixFilePermission> permissions) {
-            this.entry = Objects.requireNonNull(entry, "entry");
-            this.permissions = permissions != null ? Set.copyOf(permissions) : null;
+        private PendingPosixEntryAttributes(ZipStreamingEntry entry) {
+            Objects.requireNonNull(entry, "entry");
+            PendingZipEntryAttributes attributes = new PendingZipEntryAttributes(entry.entryPath, entry.attributes);
+            this.type = entry.type;
+            this.lastModifiedTime = attributes.lastModifiedTime();
+            this.lastAccessTime = attributes.lastAccessTime();
+            this.creationTime = attributes.creationTime();
+            this.size = attributes.size();
+            this.permissions = Set.copyOf(attributes.permissions());
         }
 
         /// Returns the last modification time.
         @Override
         public FileTime lastModifiedTime() {
-            return entry.attributes.readAttributes().lastModifiedTime();
+            return lastModifiedTime;
         }
 
         /// Returns the last access time.
         @Override
         public FileTime lastAccessTime() {
-            return entry.attributes.readAttributes().lastAccessTime();
+            return lastAccessTime;
         }
 
         /// Returns the creation time.
         @Override
         public FileTime creationTime() {
-            return entry.attributes.readAttributes().creationTime();
+            return creationTime;
         }
 
         /// Returns whether this pending entry is a regular file.
         @Override
         public boolean isRegularFile() {
-            return entry.type == EntryType.FILE;
+            return type == EntryType.FILE;
         }
 
         /// Returns whether this pending entry is a directory.
         @Override
         public boolean isDirectory() {
-            return entry.type == EntryType.DIRECTORY;
+            return type == EntryType.DIRECTORY;
         }
 
         /// Returns whether this pending entry is a symbolic link.
         @Override
         public boolean isSymbolicLink() {
-            return entry.type == EntryType.SYMBOLIC_LINK;
+            return type == EntryType.SYMBOLIC_LINK;
         }
 
         /// Returns whether this pending entry is another file type.
@@ -523,7 +563,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the expected uncompressed entry size.
         @Override
         public long size() {
-            return entry.attributes.readAttributes().size();
+            return size;
         }
 
         /// Returns no stable file key for a pending streaming entry.
@@ -547,10 +587,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns configured or synthesized permissions.
         @Override
         public @Unmodifiable Set<PosixFilePermission> permissions() {
-            Set<PosixFilePermission> configuredPermissions = permissions;
-            return configuredPermissions != null
-                    ? configuredPermissions
-                    : ZipPosixSupport.defaultPermissions(entry.type == EntryType.DIRECTORY);
+            return permissions;
         }
     }
 
@@ -690,6 +727,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Sets the ZIP internal file attributes.
         @Override
         public void setInternalAttributes(int internalAttributes) throws IOException {
+            ZipLittleEndian.requireUInt16(internalAttributes, "internal attributes");
             lock();
             try {
                 entry.ensurePending();
@@ -718,6 +756,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         @Override
         public void setLocalExtraData(byte[] extraData) throws IOException {
             byte[] copy = Objects.requireNonNull(extraData, "extraData").clone();
+            ZipLittleEndian.requireUInt16(copy.length, "local extra data length");
             lock();
             try {
                 entry.ensurePending();
@@ -732,6 +771,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         @Override
         public void setCentralDirectoryExtraData(byte[] extraData) throws IOException {
             byte[] copy = Objects.requireNonNull(extraData, "extraData").clone();
+            ZipLittleEndian.requireUInt16(copy.length, "central directory extra data length");
             lock();
             try {
                 entry.ensurePending();
@@ -745,10 +785,14 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Sets the raw ZIP entry comment bytes.
         @Override
         public void setRawComment(byte @Nullable [] rawComment) throws IOException {
+            byte @Nullable @Unmodifiable [] copy = rawComment != null ? rawComment.clone() : null;
+            if (copy != null) {
+                ZipLittleEndian.requireUInt16(copy.length, "comment length");
+            }
             lock();
             try {
                 entry.ensurePending();
-                this.rawComment = rawComment != null ? rawComment.clone() : null;
+                this.rawComment = copy;
             } finally {
                 unlock();
             }
@@ -857,6 +901,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// The effective ZIP compression method.
         private final ZipMethod method;
 
+        /// The effective ZIP version-made-by value.
+        private final int versionMadeBy;
+
         /// The requested ZIP encryption method.
         private final ZipEncryption encryption;
 
@@ -869,7 +916,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// The requested ZIP internal file attributes.
         private final int internalAttributes;
 
-        /// The requested ZIP external file attributes, or `UNKNOWN_EXTERNAL_ATTRIBUTES` when not configured.
+        /// The effective ZIP external file attributes.
         private final long externalAttributes;
 
         /// The requested POSIX permissions, or `null` when defaults are used.
@@ -893,11 +940,12 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             this.lastAccessTime = view.lastAccessTime;
             this.creationTime = view.creationTime;
             this.method = view.method();
+            this.versionMadeBy = view.versionMadeBy(view.entry);
             this.encryption = view.encryption();
             this.uncompressedSize = view.uncompressedSize;
             this.crc32 = view.crc32;
             this.internalAttributes = view.internalAttributes;
-            this.externalAttributes = view.externalAttributes;
+            this.externalAttributes = view.externalAttributes(view.entry);
             this.permissions = view.entry.posixAttributes.permissions != null
                     ? Set.copyOf(view.entry.posixAttributes.permissions)
                     : null;
@@ -953,7 +1001,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the ZIP version made by field.
         @Override
         public int versionMadeBy() {
-            return permissions != null ? ZipPosixSupport.UNIX_VERSION_MADE_BY : ZipConstants.VERSION_NEEDED;
+            return versionMadeBy;
         }
 
         /// Returns the ZIP version needed to extract field.
@@ -977,14 +1025,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the ZIP external file attributes.
         @Override
         public long externalAttributes() {
-            Set<PosixFilePermission> configuredPermissions = permissions;
-            if (externalAttributes != UNKNOWN_EXTERNAL_ATTRIBUTES) {
-                return externalAttributes;
-            }
-            if (configuredPermissions != null) {
-                return ZipPosixSupport.externalAttributes(configuredPermissions, type == EntryType.DIRECTORY);
-            }
-            return type == EntryType.DIRECTORY ? 0x10L : 0L;
+            return externalAttributes;
         }
 
         /// Returns `UNKNOWN_UNIX_ID` because pending writer metadata has no parsed Unix user identifier.
@@ -1110,7 +1151,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             Set<PosixFilePermission> configuredPermissions = permissions;
             return configuredPermissions != null
                     ? configuredPermissions
-                    : ZipPosixSupport.defaultPermissions(type == EntryType.DIRECTORY);
+                    : ZipPosixSupport.permissions(versionMadeBy, externalAttributes, type == EntryType.DIRECTORY);
         }
     }
 }

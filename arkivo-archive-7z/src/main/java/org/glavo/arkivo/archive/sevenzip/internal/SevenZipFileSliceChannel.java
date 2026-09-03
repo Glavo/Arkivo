@@ -8,6 +8,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.util.Objects;
 
@@ -74,12 +75,12 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
         }
     }
 
-    /// Rejects writes.
+    /// Rejects writes because archive slices are read-only.
     @Override
     public int write(ByteBuffer source) throws IOException {
         ensureOpen();
         Objects.requireNonNull(source, "source");
-        throw new UnsupportedOperationException("7z byte channels are read-only");
+        throw new NonWritableChannelException();
     }
 
     /// Returns the current slice-relative position.
@@ -89,14 +90,14 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
         return position;
     }
 
-    /// Sets the current slice-relative position.
+    /// Sets the current slice-relative position, including positions beyond the slice end.
     @Override
     public SeekableByteChannel position(long newPosition) throws IOException {
         ensureOpen();
         if (newPosition < 0) {
             throw new IllegalArgumentException("newPosition must be non-negative");
         }
-        position = Math.min(newPosition, size);
+        position = newPosition;
         return this;
     }
 
@@ -107,11 +108,14 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
         return size;
     }
 
-    /// Rejects truncation.
+    /// Validates the requested size and rejects truncation because archive slices are read-only.
     @Override
     public SeekableByteChannel truncate(long size) throws IOException {
         ensureOpen();
-        throw new UnsupportedOperationException("7z byte channels are read-only");
+        if (size < 0L) {
+            throw new IllegalArgumentException("size must not be negative");
+        }
+        throw new NonWritableChannelException();
     }
 
     /// Returns whether this channel is open.

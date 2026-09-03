@@ -82,7 +82,7 @@ record SevenZipPathVolumeTarget(Path firstVolumePath, @Unmodifiable Set<OpenOpti
             return SevenZipSplitVolumePaths.numberedVolumePath(firstVolumePath, (int) index + 1);
         }
 
-        /// Returns all existing numbered paths owned by this archive layout.
+        /// Returns all existing ASCII-numbered paths owned by this archive layout.
         @Override
         public @Unmodifiable List<Path> existingVolumePaths() throws IOException {
             String prefix = SevenZipSplitVolumePaths.volumeFileNamePrefix(firstVolumePath);
@@ -101,7 +101,7 @@ record SevenZipPathVolumeTarget(Path firstVolumePath, @Unmodifiable Set<OpenOpti
             return List.copyOf(paths);
         }
 
-        /// Returns whether a file name belongs to this numbered volume sequence.
+        /// Returns whether a file name belongs to this ASCII-numbered volume sequence.
         private static boolean isNumberedVolumeName(
                 String fileName,
                 String prefix,
@@ -113,7 +113,7 @@ record SevenZipPathVolumeTarget(Path firstVolumePath, @Unmodifiable Set<OpenOpti
             boolean nonZero = false;
             for (int index = prefix.length(); index < fileName.length(); index++) {
                 char character = fileName.charAt(index);
-                if (!Character.isDigit(character)) {
+                if (character < '0' || character > '9') {
                     return false;
                 }
                 nonZero |= character != '0';

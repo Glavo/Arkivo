@@ -16,16 +16,31 @@ import java.io.IOException;
 import java.nio.channels.Channels;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /// Verifies Arkivo against the official bzip2 1.0.8 reference samples.
 @NotNullByDefault
 public final class BZip2OfficialCorpusTest {
     /// The system property containing the extracted official corpus directory.
     private static final String TEST_DATA_DIRECTORY_PROPERTY = "arkivo.bzip2.testDataDirectory";
+
+    /// Every extracted official corpus file classified by this test suite.
+    private static final @Unmodifiable Set<String> CLASSIFIED_CORPUS_FILES = Set.of(
+            "LICENSE",
+            "README",
+            "UPSTREAM.properties",
+            "sample1.bz2",
+            "sample1.ref",
+            "sample2.bz2",
+            "sample2.ref",
+            "sample3.bz2",
+            "sample3.ref"
+    );
 
     /// Verifies every official compressed sample exactly matches its reference output.
     @ParameterizedTest(name = "{0}")
@@ -61,12 +76,18 @@ public final class BZip2OfficialCorpusTest {
         assertArrayEquals(expected.toByteArray(), decompress(compressed.toByteArray()));
     }
 
-    /// Verifies extraction retains the upstream license, README, and exact download lock manifest.
+    /// Verifies every extracted file remains classified, including upstream provenance.
     @Test
-    public void retainsUpstreamProvenance() {
-        assertTrue(Files.isRegularFile(corpusPath("LICENSE")));
-        assertTrue(Files.isRegularFile(corpusPath("README")));
-        assertTrue(Files.isRegularFile(corpusPath("UPSTREAM.properties")));
+    public void classifiesCompleteOfficialCorpusAndRetainsProvenance() throws IOException {
+        @Unmodifiable Set<String> actual;
+        try (Stream<Path> files = Files.list(corpusPath(""))) {
+            actual = files
+                    .filter(Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .collect(Collectors.toUnmodifiableSet());
+        }
+
+        assertEquals(CLASSIFIED_CORPUS_FILES, actual);
     }
 
     /// Returns official bzip2 reference sample stems.

@@ -50,7 +50,7 @@ final class FuzzSupport {
     /// The deterministic incompressible body size used to force split seed output.
     private static final int SPLIT_ARCHIVE_CONTENT_SIZE = 96 * 1024;
 
-    /// The RAR4 signature used by the generated split RAR seed.
+    /// The RAR4 signature used by generated stored-file seeds.
     private static final byte @Unmodifiable [] RAR4_SIGNATURE =
             {'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
 
@@ -61,6 +61,10 @@ final class FuzzSupport {
     /// Installed compression formats in deterministic catalog order.
     static final @Unmodifiable List<CompressionFormat> COMPRESSION_FORMATS =
             CompressionFormats.installed();
+
+    /// Installed compression formats whose default encodings carry a reliable detectable signature.
+    static final @Unmodifiable List<CompressionFormat> SIGNED_COMPRESSION_FORMATS =
+            COMPRESSION_FORMATS.stream().filter(format -> format.probeSize() > 0).toList();
 
     /// Formats exercised through their forward-only reader.
     static final @Unmodifiable List<String> STREAMING_ARCHIVE_FORMATS =
@@ -87,10 +91,6 @@ final class FuzzSupport {
                     .maximumOuterCompressionLayers(2L)
                     .build()
     );
-
-    /// The valid empty RAR5 signature used to enter the read-only RAR implementation.
-    private static final byte @Unmodifiable [] EMPTY_RAR5 =
-            {'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00};
 
     /// Prevents instantiation.
     private FuzzSupport() {
@@ -151,28 +151,51 @@ final class FuzzSupport {
 
     /// Creates a small valid archive for the named supported format.
     ///
-    /// RAR is read-only and therefore uses a valid empty RAR5 signature. Other formats are generated through Arkivo's
-    /// public streaming writer so their seeds track the current encoder implementation.
+    /// RAR is read-only and therefore uses a source-generated stored RAR4 archive. Other writable formats are generated
+    /// through Arkivo's public streaming writer so their seeds track the current encoder implementation.
     ///
     /// @param formatName the installed archive format name
     /// @return a complete valid archive
     /// @throws IOException if the archive cannot be encoded
     static byte @Unmodifiable [] createArchiveSeed(String formatName) throws IOException {
+        return createArchiveSeed(formatName, 1);
+    }
+
+    /// Creates a small valid archive with the requested number of regular-file entries.
+    ///
+    /// @param formatName the installed archive format name
+    /// @param entryCount the positive number of generated entries
+    /// @return a complete valid archive
+    /// @throws IOException if the archive cannot be encoded
+    static byte @Unmodifiable [] createArchiveSeed(String formatName, int entryCount) throws IOException {
+        if (entryCount <= 0) {
+            throw new IllegalArgumentException("entryCount must be positive");
+        }
         if ("rar".equals(formatName)) {
-            return EMPTY_RAR5.clone();
+            return createRAR4ArchiveSeed(entryCount);
         }
         if ("dmg".equals(formatName)) {
+            if (entryCount != 1) {
+                throw new IllegalArgumentException("DMG seeds do not have archive entries");
+            }
             return createDMGSeed();
         }
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(formatName, output)) {
-            ArkivoStreamingWriter.Entry entry = writer.beginFile("seed.txt");
-            try (OutputStream body = entry.openOutputStream()) {
-                body.write(SEED_CONTENT);
+            for (int index = 0; index < entryCount; index++) {
+                ArkivoStreamingWriter.Entry entry = writer.beginFile(archiveSeedEntryName(index));
+                try (OutputStream body = entry.openOutputStream()) {
+                    body.write(SEED_CONTENT);
+                }
             }
         }
         return output.toByteArray();
+    }
+
+    /// Returns the stable path of one generated archive seed entry.
+    private static String archiveSeedEntryName(int index) {
+        return index == 0 ? "seed.txt" : "seed-" + index + ".txt";
     }
 
     /// Creates a minimal flattened UDIF image containing a mountable empty HFS Plus volume.
@@ -367,6 +390,32 @@ final class FuzzSupport {
                 secondPart
         );
         return List.of(firstVolume, secondVolume);
+    }
+
+    /// Creates one stored RAR4 archive with the requested number of complete entries.
+    private static byte @Unmodifiable [] createRAR4ArchiveSeed(int entryCount) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(RAR4_SIGNATURE);
+        writeRAR4Block(output, 0x73, 0L, new byte[6], new byte[0]);
+
+        CRC32 contentCRC = new CRC32();
+        contentCRC.update(SEED_CONTENT);
+        for (int index = 0; index < entryCount; index++) {
+            writeRAR4Block(
+                    output,
+                    0x74,
+                    0L,
+                    rar4FileFields(
+                            archiveSeedEntryName(index),
+                            SEED_CONTENT.length,
+                            contentCRC.getValue(),
+                            SEED_CONTENT
+                    ),
+                    SEED_CONTENT
+            );
+        }
+        writeRAR4Block(output, 0x7b, 0L, new byte[0], new byte[0]);
+        return output.toByteArray();
     }
 
     /// Creates one RAR4 volume containing a single stored file part.

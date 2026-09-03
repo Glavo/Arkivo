@@ -9,6 +9,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.util.Objects;
 import java.util.zip.CRC32;
@@ -104,12 +105,12 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
         return read;
     }
 
-    /// Rejects writes.
+    /// Rejects writes because validating entry channels are read-only.
     @Override
     public int write(ByteBuffer source) throws IOException {
         ensureOpen();
         Objects.requireNonNull(source, "source");
-        throw new UnsupportedOperationException("7z byte channels are read-only");
+        throw new NonWritableChannelException();
     }
 
     /// Returns the current channel position.
@@ -137,11 +138,14 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
         return channel.size();
     }
 
-    /// Rejects truncation.
+    /// Validates the requested size and rejects truncation because validating entry channels are read-only.
     @Override
     public SeekableByteChannel truncate(long size) throws IOException {
         ensureOpen();
-        throw new UnsupportedOperationException("7z byte channels are read-only");
+        if (size < 0L) {
+            throw new IllegalArgumentException("size must not be negative");
+        }
+        throw new NonWritableChannelException();
     }
 
     /// Returns whether this channel is open.

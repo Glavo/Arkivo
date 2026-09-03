@@ -159,9 +159,14 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
         return index.uncompressedSize();
     }
 
-    /// Rejects truncation because the decoded logical view is read-only.
+    /// Validates the requested size and otherwise rejects truncation because the decoded logical view is read-only.
+    ///
+    /// @throws IllegalArgumentException if `size` is negative
     @Override
     public SeekableByteChannel truncate(long size) throws IOException {
+        if (size < 0L) {
+            throw new IllegalArgumentException("size must not be negative");
+        }
         ensureOpen();
         throw new NonWritableChannelException();
     }

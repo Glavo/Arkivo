@@ -130,6 +130,7 @@ tasks.named<Test>("tier2Test") {
     description = "Runs archive readers against the pinned official libarchive corpus."
     dependsOn(prepareLibarchiveTestCorpus)
     shouldRunAfter(tasks.test)
+    inputs.dir(libarchiveTestDataDirectory)
     systemProperty(
         "arkivo.libarchive.testDataDirectory",
         libarchiveTestDataDirectory.get().asFile.absolutePath
@@ -173,6 +174,10 @@ val fuzzTargets = linkedMapOf(
             "org.glavo.arkivo.fuzz.ZstdSeekableFuzzTest.fuzzZstdSeekableRoundTrip",
     "fuzzZstdSeekableIndex" to
             "org.glavo.arkivo.fuzz.ZstdSeekableFuzzTest.fuzzZstdSeekableIndex",
+    "fuzzTarOuterCompression" to
+            "org.glavo.arkivo.fuzz.TarOuterCompressionFuzzTest.fuzzTarOuterCompression",
+    "fuzzTarOuterCompressionUpdate" to
+            "org.glavo.arkivo.fuzz.TarOuterCompressionFuzzTest.fuzzTarOuterCompressionUpdate",
     "fuzzArchiveStreaming" to
             "org.glavo.arkivo.fuzz.ArchiveFuzzTest.fuzzArchiveStreaming",
     "fuzzArchiveFileSystem" to
@@ -206,6 +211,8 @@ val fuzzTargetTasks = fuzzTargets.map { (taskName, targetMethod) ->
                     "fuzzArchiveFileSystem",
                     "fuzzArchiveFileSystemMutations",
                     "fuzzArchiveWriterState",
+                    "fuzzTarOuterCompression",
+                    "fuzzTarOuterCompressionUpdate",
                     "fuzzArchiveVolumes"
                 )) {
             // Arkivo paths belong to an in-memory provider and can never reach the host file system.

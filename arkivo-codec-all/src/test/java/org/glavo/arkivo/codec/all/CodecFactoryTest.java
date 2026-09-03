@@ -9,8 +9,12 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DictionaryRequiredException;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.lz4.LZ4Codec;
+import org.glavo.arkivo.codec.lz4.LZ4Dictionary;
+import org.glavo.arkivo.codec.lz4.LZ4DictionaryRequest;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -31,6 +35,7 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -134,6 +139,58 @@ final class CodecFactoryTest {
             }
             assertFalse(source.isOpen(), codec.format().name());
         }
+    }
+
+    /// Verifies automatic format detection preserves dictionary requests and source ownership.
+    @Test
+    void detectedDecoderPreservesDictionaryRequestsAndOwnership() throws IOException {
+        LZ4Dictionary dictionary = LZ4Dictionary.identified(23L, CONTENT);
+        LZ4Dictionary wrongDictionary = LZ4Dictionary.identified(24L, CONTENT);
+        ByteBuffer encodedBuffer = new LZ4Codec()
+                .withDictionary(dictionary)
+                .compress(ByteBuffer.wrap(CONTENT));
+        byte @Unmodifiable [] encoded = new byte[encodedBuffer.remaining()];
+        encodedBuffer.get(encoded);
+
+        TrackingReadableChannel retainedSource = new TrackingReadableChannel(encoded);
+        TrackingWritableChannel retainedTarget = new TrackingWritableChannel();
+        DictionaryRequiredException transferFailure = assertThrows(
+                DictionaryRequiredException.class,
+                () -> CompressionFormats.decompress(retainedSource, retainedTarget)
+        );
+        assertLZ4DictionaryRequest(transferFailure, dictionary, wrongDictionary);
+        assertTrue(retainedSource.isOpen());
+        assertTrue(retainedTarget.isOpen());
+        retainedSource.close();
+        retainedTarget.close();
+
+        TrackingReadableChannel ownedSource = new TrackingReadableChannel(encoded);
+        try (DecompressingReadableByteChannel decoder = CompressionFormats.newReadableByteChannel(
+                ownedSource,
+                ResourceOwnership.OWNED
+        )) {
+            DictionaryRequiredException channelFailure = assertThrows(
+                    DictionaryRequiredException.class,
+                    () -> decoder.read(ByteBuffer.allocate(CONTENT.length))
+            );
+            assertLZ4DictionaryRequest(channelFailure, dictionary, wrongDictionary);
+            assertTrue(ownedSource.isOpen());
+        }
+        assertFalse(ownedSource.isOpen());
+
+        TrackingInputStream ownedStream = new TrackingInputStream(encoded);
+        try (InputStream decoder = CompressionFormats.newInputStream(
+                ownedStream,
+                ResourceOwnership.OWNED
+        )) {
+            DictionaryRequiredException streamFailure = assertThrows(
+                    DictionaryRequiredException.class,
+                    decoder::readAllBytes
+            );
+            assertLZ4DictionaryRequest(streamFailure, dictionary, wrongDictionary);
+            assertFalse(ownedStream.closed());
+        }
+        assertTrue(ownedStream.closed());
     }
 
     /// Verifies named channel transfers round-trip default codecs for all installed formats without closing caller channels.
@@ -338,6 +395,18 @@ final class CodecFactoryTest {
         assertEquals(1, failing.closeCount());
         assertEquals(1, failure.getSuppressed().length);
         assertEquals("channel close failed", failure.getSuppressed()[0].getMessage());
+    }
+
+    /// Verifies an automatically detected LZ4 request retains exact identifier matching semantics.
+    private static void assertLZ4DictionaryRequest(
+            DictionaryRequiredException failure,
+            LZ4Dictionary expected,
+            LZ4Dictionary unexpected
+    ) {
+        LZ4DictionaryRequest request = assertInstanceOf(LZ4DictionaryRequest.class, failure.request());
+        assertEquals(expected.dictionaryId(), request.dictionaryId());
+        assertTrue(request.matches(expected));
+        assertFalse(request.matches(unexpected));
     }
 
     /// Encodes the shared content through one named codec.

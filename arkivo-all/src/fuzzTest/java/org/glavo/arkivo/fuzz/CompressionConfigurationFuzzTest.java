@@ -21,8 +21,12 @@ import org.glavo.arkivo.codec.lzma.LZMACodec;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.lzma.RawLZMACodec;
 import org.glavo.arkivo.codec.ppmd.PPMdCodec;
+import org.glavo.arkivo.codec.xz.XZBCJFilter;
 import org.glavo.arkivo.codec.xz.XZCheckType;
 import org.glavo.arkivo.codec.xz.XZCodec;
+import org.glavo.arkivo.codec.xz.XZDeltaFilter;
+import org.glavo.arkivo.codec.xz.XZFilterChain;
+import org.glavo.arkivo.codec.xz.XZFormat;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.glavo.arkivo.codec.zstd.ZstdFrameFormat;
@@ -47,6 +51,9 @@ public final class CompressionConfigurationFuzzTest {
     /// The fixed minimum dictionary content generated for dictionary-capable formats.
     private static final int GENERATED_DICTIONARY_SIZE = 256;
 
+    /// Branch-like instruction bytes used to seed every XZ BCJ architecture.
+    private static final byte @Unmodifiable [] XZ_FILTER_SEED_CONTENT = xzFilterSeedContent();
+
     /// Creates a compression-configuration fuzz-test instance for JUnit.
     public CompressionConfigurationFuzzTest() {
     }
@@ -54,8 +61,9 @@ public final class CompressionConfigurationFuzzTest {
     /// Configures the selected format, round-trips arbitrary content, and checks complete buffer consumption.
     ///
     /// The target covers generic compression-level extremes together with format-specific dictionaries, checksums,
-    /// framing, block sizing, LZMA properties, and PPMd model settings. Every generated configuration is valid by
-    /// construction, so checked failures are treated as defects rather than malformed-input outcomes.
+    /// framing, block sizing, XZ Delta and BCJ filter chains, LZMA properties, and PPMd model settings. Every generated
+    /// configuration is valid by construction, so checked failures are treated as defects rather than malformed-input
+    /// outcomes.
     ///
     /// @param data format, configuration, and buffer controls followed by arbitrary source bytes
     /// @throws IOException if a valid generated configuration cannot complete its round trip
@@ -90,6 +98,16 @@ public final class CompressionConfigurationFuzzTest {
         }
 
         byte[] encoded = FuzzSupport.remainingBytes(compressed);
+        long maximumCompressedSize = codec.maxCompressedSize(expected.length);
+        if (maximumCompressedSize != CompressionCodec.UNKNOWN_SIZE
+                && encoded.length > maximumCompressedSize) {
+            throw new AssertionError(
+                    "Configured codec exceeded its compressed-size bound: "
+                            + format.name()
+                            + " encoded=" + encoded.length
+                            + " maximum=" + maximumCompressedSize
+            );
+        }
         ByteBuffer encodedSource = guardedBuffer(encoded, (bufferControl & 4) != 0, (bufferControl & 8) != 0);
         int encodedLimit = encodedSource.limit();
         ByteOrder encodedOrder = encodedSource.order();
@@ -157,6 +175,7 @@ public final class CompressionConfigurationFuzzTest {
             configured = xz
                     .withProperties(lzmaProperties(primary, secondary))
                     .withCheckType(XZCheckType.values()[secondary % XZCheckType.values().length])
+                    .withFilterChain(xzFilterChain(primary, secondary, sourceSize))
                     .withBlockSize(1L + Math.floorMod(sourceSize + primary, 128))
                     .withVerifyChecksums(true);
         } else if (configured instanceof RawLZMACodec rawLzma) {
@@ -208,6 +227,36 @@ public final class CompressionConfigurationFuzzTest {
         );
     }
 
+    /// Selects an empty, Delta-only, BCJ-only, or three-stage XZ preprocessing chain.
+    private static XZFilterChain xzFilterChain(int primary, int secondary, int sourceSize) {
+        int variant = secondary >>> 6;
+        if (variant == 0) {
+            return XZFilterChain.EMPTY;
+        }
+
+        XZDeltaFilter firstDelta = new XZDeltaFilter(
+                1L + ((primary * 17 + secondary + sourceSize) & 0xff)
+        );
+        if (variant == 1) {
+            return XZFilterChain.of(firstDelta);
+        }
+
+        XZBCJFilter.Architecture architecture = XZBCJFilter.Architecture.values()[
+                primary % XZBCJFilter.Architecture.values().length
+        ];
+        int encodedOffset = (primary << 24) | (secondary << 16) | (sourceSize & 0xffff);
+        long startOffset = Integer.toUnsignedLong(encodedOffset) & ~(architecture.alignment() - 1L);
+        XZBCJFilter bcj = new XZBCJFilter(architecture, startOffset);
+        if (variant == 2) {
+            return XZFilterChain.of(bcj);
+        }
+
+        XZDeltaFilter secondDelta = new XZDeltaFilter(
+                1L + ((primary + secondary * 31 + sourceSize * 7) & 0xff)
+        );
+        return XZFilterChain.of(firstDelta, bcj, secondDelta);
+    }
+
     /// Builds dictionary bytes that follow source mutations while remaining valid for every tested dictionary format.
     private static byte @Unmodifiable [] generatedDictionary(byte @Unmodifiable [] source) {
         byte[] dictionary = new byte[GENERATED_DICTIONARY_SIZE];
@@ -236,11 +285,11 @@ public final class CompressionConfigurationFuzzTest {
         return readOnly ? storage.asReadOnlyBuffer().order(storage.order()) : storage;
     }
 
-    /// Supplies three configuration families for every installed compression format.
+    /// Supplies three configuration families for every format and actual BCJ paths for every XZ architecture.
     ///
     /// @return deterministic configuration fuzz seeds
     private static Stream<Arguments> configurationSeeds() {
-        return IntStream.range(0, FuzzSupport.COMPRESSION_FORMATS.size())
+        Stream<Arguments> generalSeeds = IntStream.range(0, FuzzSupport.COMPRESSION_FORMATS.size())
                 .boxed()
                 .flatMap(formatIndex -> IntStream.range(0, 3).mapToObj(variant -> Arguments.of((Object) FuzzSupport.prefix(
                         new byte[]{
@@ -251,5 +300,44 @@ public final class CompressionConfigurationFuzzTest {
                         },
                         FuzzSupport.SEED_CONTENT
                 ))));
+
+        int xzIndex = FuzzSupport.COMPRESSION_FORMATS.indexOf(XZFormat.instance());
+        if (xzIndex < 0) {
+            throw new AssertionError("The aggregate fuzzing module does not contain XZ");
+        }
+        Stream<Arguments> filterSeeds = Arrays.stream(XZBCJFilter.Architecture.values())
+                .flatMap(architecture -> IntStream.rangeClosed(2, 3).mapToObj(variant -> Arguments.of(
+                        (Object) FuzzSupport.prefix(
+                                new byte[]{
+                                        (byte) xzIndex,
+                                        (byte) architecture.ordinal(),
+                                        (byte) ((variant << 6) | architecture.ordinal()),
+                                        (byte) (architecture.ordinal() * 3 + variant)
+                                },
+                                XZ_FILTER_SEED_CONTENT
+                        )
+                )));
+        return Stream.concat(generalSeeds, filterSeeds);
+    }
+
+    /// Returns compact source-generated content containing branch-like words for every BCJ transform.
+    private static byte @Unmodifiable [] xzFilterSeedContent() {
+        byte @Unmodifiable [] unit = {
+                (byte) 0xe8, 0x10, 0x20, 0x30, 0x00,
+                0x48, 0x00, 0x00, 0x01,
+                0x10, 0x00, 0x00, 0x50, 0x00, 0x00, 0x40,
+                0x00, 0x00, 0x00, (byte) 0xeb,
+                0x00, (byte) 0xf0, 0x00, (byte) 0xf8,
+                0x40, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, (byte) 0x94,
+                0x00, 0x00, 0x00, (byte) 0x90,
+                (byte) 0xef, 0x00, 0x00, 0x00,
+                0x17, 0x05, 0x00, 0x00, 0x67, (byte) 0x80, 0x05, 0x00
+        };
+        byte[] content = new byte[unit.length * 32 + 17];
+        for (int offset = 0; offset + unit.length <= content.length; offset += unit.length) {
+            System.arraycopy(unit, 0, content, offset, unit.length);
+        }
+        return content;
     }
 }

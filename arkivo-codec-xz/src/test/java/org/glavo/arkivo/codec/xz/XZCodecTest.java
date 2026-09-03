@@ -45,6 +45,7 @@ import java.util.zip.CRC32;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -72,10 +73,91 @@ public final class XZCodecTest {
     @Test
     public void metadata() {
         XZCodec codec = new XZCodec();
-        assertEquals(true, codec.format().matches(ByteBuffer.wrap(new byte[]{
+        assertSame(XZFormat.instance(), codec.format());
+        assertEquals(XZFormat.NAME, codec.format().name());
+        assertTrue(codec.format().aliases().isEmpty());
+        assertEquals(List.of("xz"), codec.format().fileExtensions());
+        assertEquals(6, codec.format().probeSize());
+        assertSame(XZCodec.DEFAULT, codec.format().defaultCodec());
+
+        ByteBuffer prefix = ByteBuffer.wrap(new byte[]{0,
                 (byte) 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00
-        })));
-        assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{(byte) 0xfd, 0x37})));
+        });
+        prefix.position(1);
+        assertTrue(codec.format().matches(prefix));
+        assertEquals(1, prefix.position());
+        assertFalse(codec.format().matches(ByteBuffer.wrap(new byte[]{(byte) 0xfd, 0x37})));
+        assertFalse(codec.format().matches(ByteBuffer.wrap(new byte[]{0, 0x37, 0x7a, 0x58, 0x5a, 0x00})));
+    }
+
+    /// Verifies builders and immutable withers preserve every independent XZ configuration dimension.
+    @Test
+    public void immutableConfigurationAndBuilderSnapshots() {
+        var properties = XZCodec.DEFAULT.properties()
+                .withDictionarySize(1 << 17)
+                .withLiteralContextBits(2)
+                .withLiteralPositionBits(1)
+                .withPositionBits(3);
+        XZFilterChain filters = XZFilterChain.of(
+                new XZDeltaFilter(7),
+                new XZBCJFilter(XZBCJFilter.Architecture.X86)
+        );
+        XZCodec configured = XZCodec.builder()
+                .properties(properties)
+                .checkType(XZCheckType.SHA256)
+                .filterChain(filters)
+                .blockSize(4_096L)
+                .verifyChecksums(false)
+                .maximumOutputSize(10_000L)
+                .maximumWindowSize(20_000L)
+                .maximumMemorySize(30_000L)
+                .build();
+
+        assertSame(properties, configured.properties());
+        assertEquals(XZCheckType.SHA256, configured.checkType());
+        assertSame(filters, configured.filterChain());
+        assertEquals(4_096L, configured.blockSize());
+        assertFalse(configured.verifiesChecksums());
+        assertEquals(10_000L, configured.maximumOutputSize());
+        assertEquals(20_000L, configured.maximumWindowSize());
+        assertEquals(30_000L, configured.maximumMemorySize());
+
+        assertSame(configured, configured.withProperties(properties));
+        assertSame(configured, configured.withDictionarySize(properties.dictionarySize()));
+        assertSame(configured, configured.withCheckType(XZCheckType.SHA256));
+        assertSame(configured, configured.withFilterChain(filters));
+        assertSame(configured, configured.withBlockSize(4_096L));
+        assertSame(configured, configured.withVerifyChecksums(false));
+        assertSame(configured, configured.withMaximumOutputSize(10_000L));
+        assertSame(configured, configured.withMaximumWindowSize(20_000L));
+        assertSame(configured, configured.withMaximumMemorySize(30_000L));
+
+        XZCodec snapshot = configured.toBuilder().build();
+        assertEquals(configured.properties(), snapshot.properties());
+        assertEquals(configured.checkType(), snapshot.checkType());
+        assertEquals(configured.filterChain(), snapshot.filterChain());
+        assertEquals(configured.blockSize(), snapshot.blockSize());
+        assertEquals(configured.verifiesChecksums(), snapshot.verifiesChecksums());
+        assertEquals(configured.maximumOutputSize(), snapshot.maximumOutputSize());
+        assertEquals(configured.maximumWindowSize(), snapshot.maximumWindowSize());
+        assertEquals(configured.maximumMemorySize(), snapshot.maximumMemorySize());
+
+        assertEquals(1 << 18, configured.withDictionarySize(1 << 18).properties().dictionarySize());
+        assertEquals(XZCheckType.CRC32, configured.withCheckType(XZCheckType.CRC32).checkType());
+        assertEquals(XZFilterChain.EMPTY, configured.withFilterChain(XZFilterChain.EMPTY).filterChain());
+        assertEquals(8_192L, configured.withBlockSize(8_192L).blockSize());
+        assertTrue(configured.withVerifyChecksums(true).verifiesChecksums());
+        assertEquals(11_000L, configured.withMaximumOutputSize(11_000L).maximumOutputSize());
+        assertEquals(21_000L, configured.withMaximumWindowSize(21_000L).maximumWindowSize());
+        assertEquals(31_000L, configured.withMaximumMemorySize(31_000L).maximumMemorySize());
+
+        assertThrows(NullPointerException.class, () -> XZCodec.builder().properties(null));
+        assertThrows(NullPointerException.class, () -> XZCodec.builder().checkType(null));
+        assertThrows(NullPointerException.class, () -> XZCodec.builder().filterChain(null));
+        assertThrows(IllegalArgumentException.class, () -> XZCodec.builder().blockSize(-1L));
+        assertThrows(IllegalArgumentException.class, () -> XZCodec.builder().maximumOutputSize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> XZCodec.builder().maximumWindowSize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> XZCodec.builder().maximumMemorySize(-2L));
     }
 
     /// Verifies Arkivo's pure Java XZ writer through XZ for Java's independent reader.
@@ -216,6 +298,11 @@ public final class XZCodecTest {
                 IllegalArgumentException.class,
                 () -> new XZBCJFilter(XZBCJFilter.Architecture.X86, 0x1_0000_0000L)
         );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new XZBCJFilter(XZBCJFilter.Architecture.X86, -1L)
+        );
+        assertThrows(NullPointerException.class, () -> new XZBCJFilter(null, 0L));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new XZFilterChain(List.of(

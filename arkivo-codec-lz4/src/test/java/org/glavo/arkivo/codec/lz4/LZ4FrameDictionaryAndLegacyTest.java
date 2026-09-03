@@ -6,20 +6,26 @@ package org.glavo.arkivo.codec.lz4;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
+import org.glavo.arkivo.codec.DictionaryRequiredException;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -144,6 +150,75 @@ public final class LZ4FrameDictionaryAndLegacyTest {
             assertThrows(IOException.class, () -> decoder.provideDictionary(wrong));
             decoder.provideDictionary(requested);
         }
+    }
+
+    /// Verifies framed high-level adapters preserve an identified dictionary request.
+    @Test
+    public void framedAdaptersExposeTypedDictionaryRequests() throws IOException {
+        byte @Unmodifiable [] dictionaryBytes = dictionaryBytes();
+        byte @Unmodifiable [] input = Arrays.copyOfRange(
+                dictionaryBytes,
+                dictionaryBytes.length - 2_048,
+                dictionaryBytes.length
+        );
+        LZ4Dictionary dictionary = LZ4Dictionary.identified(23L, dictionaryBytes);
+        LZ4Dictionary wrongDictionary = LZ4Dictionary.identified(24L, dictionaryBytes);
+        byte @Unmodifiable [] frame = compress(new LZ4Codec().withDictionary(dictionary), input);
+        LZ4Codec decoderCodec = new LZ4Codec().withMaximumOutputSize(input.length);
+
+        ByteBuffer concatenatedSource = ByteBuffer.wrap(frame);
+        int concatenatedSourceLimit = concatenatedSource.limit();
+        DictionaryRequiredException concatenatedFailure = assertThrows(
+                DictionaryRequiredException.class,
+                () -> decoderCodec.decompress(concatenatedSource)
+        );
+        assertDictionaryRequest(concatenatedFailure, dictionary, wrongDictionary);
+        assertTrue(concatenatedSource.position() > 0);
+        assertEquals(concatenatedSourceLimit, concatenatedSource.limit());
+
+        ByteBuffer frameSource = ByteBuffer.wrap(frame);
+        ByteBuffer frameTarget = ByteBuffer.allocate(input.length);
+        int frameSourceLimit = frameSource.limit();
+        int frameTargetLimit = frameTarget.limit();
+        DictionaryRequiredException frameFailure = assertThrows(
+                DictionaryRequiredException.class,
+                () -> decoderCodec.decompressFrame(frameSource, frameTarget)
+        );
+        assertDictionaryRequest(frameFailure, dictionary, wrongDictionary);
+        assertTrue(frameSource.position() > 0);
+        assertEquals(frameSourceLimit, frameSource.limit());
+        assertEquals(0, frameTarget.position());
+        assertEquals(frameTargetLimit, frameTarget.limit());
+
+        try (var channel = decoderCodec.newReadableByteChannel(
+                Channels.newChannel(new ByteArrayInputStream(frame))
+        )) {
+            DictionaryRequiredException channelFailure = assertThrows(
+                    DictionaryRequiredException.class,
+                    () -> channel.read(ByteBuffer.allocate(input.length))
+            );
+            assertDictionaryRequest(channelFailure, dictionary, wrongDictionary);
+        }
+
+        try (InputStream stream = decoderCodec.newInputStream(new ByteArrayInputStream(frame))) {
+            DictionaryRequiredException streamFailure = assertThrows(
+                    DictionaryRequiredException.class,
+                    stream::readAllBytes
+            );
+            assertDictionaryRequest(streamFailure, dictionary, wrongDictionary);
+        }
+    }
+
+    /// Verifies one framed dictionary-required failure retains exact identifier matching semantics.
+    private static void assertDictionaryRequest(
+            DictionaryRequiredException failure,
+            LZ4Dictionary expected,
+            LZ4Dictionary unexpected
+    ) {
+        LZ4DictionaryRequest request = assertInstanceOf(LZ4DictionaryRequest.class, failure.request());
+        assertEquals(expected.dictionaryId(), request.dictionaryId());
+        assertTrue(request.matches(expected));
+        assertFalse(request.matches(unexpected));
     }
 
     /// Verifies configured dictionary storage is charged before any physical block is retained.

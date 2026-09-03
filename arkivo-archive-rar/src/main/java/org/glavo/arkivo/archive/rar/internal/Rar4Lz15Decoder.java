@@ -283,8 +283,8 @@ final class Rar4Lz15Decoder {
 
     /// Releases the fixed dictionary immediately.
     void release() {
-        dictionary = new byte[0];
         invalidate();
+        dictionary = new byte[0];
     }
 
     /// Resets per-entry state and, when required, the complete adaptive model.

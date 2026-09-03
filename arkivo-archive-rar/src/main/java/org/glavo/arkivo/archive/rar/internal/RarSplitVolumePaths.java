@@ -159,7 +159,7 @@ public final class RarSplitVolumePaths {
         return new LegacyPathResolver(firstVolumePath.getParent(), prefix);
     }
 
-    /// Returns the decimal number encoded in the given string range, or `NO_VOLUME_NUMBER`.
+    /// Returns the ASCII decimal number encoded in the given string range, or `NO_VOLUME_NUMBER`.
     private static int decimalNumber(String text, int start, int end) {
         if (start >= end) {
             return NO_VOLUME_NUMBER;
@@ -167,8 +167,12 @@ public final class RarSplitVolumePaths {
 
         int number = 0;
         for (int index = start; index < end; index++) {
-            int digit = Character.digit(text.charAt(index), 10);
-            if (digit < 0 || number > (Integer.MAX_VALUE - digit) / 10) {
+            char character = text.charAt(index);
+            if (character < '0' || character > '9') {
+                return NO_VOLUME_NUMBER;
+            }
+            int digit = character - '0';
+            if (number > (Integer.MAX_VALUE - digit) / 10) {
                 return NO_VOLUME_NUMBER;
             }
             number = number * 10 + digit;

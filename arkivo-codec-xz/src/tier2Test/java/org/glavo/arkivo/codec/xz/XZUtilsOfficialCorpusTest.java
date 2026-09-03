@@ -21,6 +21,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -87,6 +89,44 @@ public final class XZUtilsOfficialCorpusTest {
     @MethodSource("badLZMAFileNames")
     public void rejectsOfficialMalformedLZMAFile(String name) {
         assertThrows(IOException.class, () -> decompress(new LZMACodec(), corpusFile(name)), name);
+    }
+
+    /// Verifies every extracted XZ and LZMA_Alone fixture is assigned to an executable test category.
+    @Test
+    public void classifiesCompleteOfficialXZAndLZMACorpus() throws IOException {
+        @Unmodifiable Set<String> classifiedXZ = Stream.concat(
+                        validXZFiles().map(GoldenFile::name),
+                        Stream.concat(
+                                badXZFileNames().stream(),
+                                unsupportedXZFileNames().stream()
+                        )
+                )
+                .collect(Collectors.toUnmodifiableSet());
+        @Unmodifiable Set<String> actualXZ = corpusFileNames("", ".xz").stream()
+                .collect(Collectors.toUnmodifiableSet());
+        assertEquals(classifiedXZ, actualXZ);
+
+        @Unmodifiable Set<String> classifiedLZMA = Stream.concat(
+                        validLZMAFiles().map(GoldenFile::name),
+                        badLZMAFileNames().stream()
+                )
+                .collect(Collectors.toUnmodifiableSet());
+        @Unmodifiable Set<String> actualLZMA = corpusFileNames("", ".lzma").stream()
+                .collect(Collectors.toUnmodifiableSet());
+        assertEquals(classifiedLZMA, actualLZMA);
+
+        @Unmodifiable List<String> unclassifiedFileTypes;
+        try (Stream<Path> files = Files.list(corpusPath("tests/files"))) {
+            unclassifiedFileTypes = files
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> !name.equals("README"))
+                    .filter(name -> !name.endsWith(".xz"))
+                    .filter(name -> !name.endsWith(".lzma"))
+                    .filter(name -> !name.endsWith(".lz"))
+                    .sorted()
+                    .toList();
+        }
+        assertEquals(List.of(), unclassifiedFileTypes);
     }
 
     /// Verifies extraction retains the upstream licensing and exact download lock manifest.

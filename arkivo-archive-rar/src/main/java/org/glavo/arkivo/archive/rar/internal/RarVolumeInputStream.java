@@ -152,6 +152,9 @@ final class RarVolumeInputStream extends InputStream {
     }
 
     /// Opens the next available volume.
+    ///
+    /// A continuation-signature failure makes this stream terminal. If closing that invalid volume also fails, the
+    /// channel remains owned by this stream so [#close()] can retry cleanup.
     private boolean openNextVolume() throws IOException {
         if (endOfVolumes) {
             return false;
@@ -162,19 +165,20 @@ final class RarVolumeInputStream extends InputStream {
             endOfVolumes = true;
             return false;
         }
+        currentChannel = channel;
         if (volumeIndex > 0) {
             try {
                 skipContinuationVolumeSignature(channel);
             } catch (IOException | RuntimeException | Error exception) {
+                open = false;
                 try {
-                    channel.close();
+                    closeCurrentVolume();
                 } catch (IOException | RuntimeException | Error closeException) {
                     exception.addSuppressed(closeException);
                 }
                 throw exception;
             }
         }
-        currentChannel = channel;
         return true;
     }
 

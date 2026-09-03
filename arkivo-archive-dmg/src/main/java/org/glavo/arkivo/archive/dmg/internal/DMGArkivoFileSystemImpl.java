@@ -26,6 +26,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
@@ -88,6 +89,12 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
 
     /// Whether the file system remains open.
     private volatile boolean open = true;
+
+    /// Whether the owned image has completed cleanup.
+    private boolean imageClosed;
+
+    /// Whether the provider-unregistration callback has completed.
+    private boolean closeActionCompleted;
 
     /// Creates one parsed file system.
     private DMGArkivoFileSystemImpl(
@@ -183,26 +190,35 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
     }
 
     /// Closes the owned image and unregisters this file system.
+    ///
+    /// The file system rejects operations as soon as closing starts. A later call retries any image cleanup or
+    /// provider unregistration that previously failed.
     @Override
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
-            if (!open) {
+            if (!open && imageClosed && closeActionCompleted) {
                 return;
             }
             open = false;
             @Nullable Throwable failure = null;
-            try {
-                image.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
-            }
-            try {
-                closeAction.run();
-            } catch (RuntimeException | Error exception) {
-                if (failure == null) {
+            if (!imageClosed) {
+                try {
+                    image.close();
+                    imageClosed = true;
+                } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
-                } else if (failure != exception) {
-                    failure.addSuppressed(exception);
+                }
+            }
+            if (!closeActionCompleted) {
+                try {
+                    closeAction.run();
+                    closeActionCompleted = true;
+                } catch (RuntimeException | Error exception) {
+                    if (failure == null) {
+                        failure = exception;
+                    } else if (failure != exception) {
+                        failure.addSuppressed(exception);
+                    }
                 }
             }
             throwFailure(failure);
@@ -372,7 +388,7 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
     ///
     /// @param path the entry path to check
     /// @param modes the requested access modes
-    /// @throws IOException if the entry does not exist
+    /// @throws IOException if the entry does not exist or a requested access mode is unavailable
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             requireNode(path);
@@ -380,7 +396,7 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
             for (AccessMode mode : modes) {
                 Objects.requireNonNull(mode, "mode");
                 if (mode != AccessMode.READ) {
-                    throw new ReadOnlyFileSystemException();
+                    throw new AccessDeniedException(path.toString());
                 }
             }
         }

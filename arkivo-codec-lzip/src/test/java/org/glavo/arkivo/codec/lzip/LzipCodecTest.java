@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.lzip;
 
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
@@ -51,7 +52,10 @@ public final class LzipCodecTest {
         LzipCodec codec = new LzipCodec();
         assertSame(LzipFormat.instance(), codec.format());
         assertEquals("lzip", codec.format().name());
+        assertTrue(codec.format().aliases().isEmpty());
         assertEquals(Arrays.asList("lz", "tlz"), codec.format().fileExtensions());
+        assertEquals(LzipSupport.MAGIC.length, codec.format().probeSize());
+        assertSame(LzipCodec.DEFAULT, codec.format().defaultCodec());
         assertEquals(LzipCodec.DEFAULT_DICTIONARY_SIZE, codec.dictionarySize());
         assertSame(codec, codec.withDictionarySize(codec.dictionarySize()));
         assertEquals(TEST_DICTIONARY_SIZE, codec.withDictionarySize(TEST_DICTIONARY_SIZE).dictionarySize());
@@ -62,10 +66,39 @@ public final class LzipCodecTest {
         assertTrue(codec.format().matches(prefix));
         assertEquals(1, prefix.position());
         assertFalse(codec.format().matches(ByteBuffer.wrap(new byte[]{'L', 'Z', 'I'})));
+        assertFalse(codec.format().matches(ByteBuffer.wrap(new byte[]{'X', 'Z', 'I', 'P'})));
         assertInstanceOf(
                 LzipCodec.class,
                 CompressionFormats.require(LzipFormat.NAME).defaultCodec()
         );
+    }
+
+    /// Verifies immutable decoding limits remain independent and reject invalid sentinel values.
+    @Test
+    public void decodingLimitConfiguration() {
+        LzipCodec codec = new LzipCodec(TEST_DICTIONARY_SIZE);
+        assertEquals(CompressionCodec.UNLIMITED_SIZE, codec.maximumOutputSize());
+        assertEquals(CompressionCodec.UNLIMITED_SIZE, codec.maximumWindowSize());
+        assertEquals(CompressionCodec.UNLIMITED_SIZE, codec.maximumMemorySize());
+
+        LzipCodec configured = codec
+                .withMaximumOutputSize(123L)
+                .withMaximumWindowSize(456L)
+                .withMaximumMemorySize(789L);
+        assertEquals(123L, configured.maximumOutputSize());
+        assertEquals(456L, configured.maximumWindowSize());
+        assertEquals(789L, configured.maximumMemorySize());
+        assertEquals(TEST_DICTIONARY_SIZE, configured.dictionarySize());
+        assertSame(configured, configured.withMaximumOutputSize(123L));
+        assertSame(configured, configured.withMaximumWindowSize(456L));
+        assertSame(configured, configured.withMaximumMemorySize(789L));
+
+        assertEquals(CompressionCodec.UNLIMITED_SIZE, codec.maximumOutputSize());
+        assertEquals(CompressionCodec.UNLIMITED_SIZE, codec.maximumWindowSize());
+        assertEquals(CompressionCodec.UNLIMITED_SIZE, codec.maximumMemorySize());
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOutputSize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumWindowSize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumMemorySize(-2L));
     }
 
     /// Verifies pure Java lzip compression and decompression for patterned and empty members.
@@ -207,6 +240,22 @@ public final class LzipCodecTest {
         assertMalformed(changed(encoded, encoded.length - 16, 1), IOException.class);
         assertMalformed(changed(encoded, encoded.length - 8, 1), IOException.class);
         assertMalformed(Arrays.copyOf(encoded, encoded.length - 1), EOFException.class);
+
+        byte[] unsignedDataSize = encoded.clone();
+        ByteArrayAccess.writeLongLittleEndian(unsignedDataSize, unsignedDataSize.length - 16, Long.MIN_VALUE);
+        assertMalformed(unsignedDataSize, IOException.class);
+
+        byte[] oversizedMember = encoded.clone();
+        ByteArrayAccess.writeLongLittleEndian(
+                oversizedMember,
+                oversizedMember.length - 8,
+                LzipSupport.MAXIMUM_MEMBER_SIZE + 1L
+        );
+        assertMalformed(oversizedMember, IOException.class);
+
+        byte[] unsignedMemberSize = encoded.clone();
+        ByteArrayAccess.writeLongLittleEndian(unsignedMemberSize, unsignedMemberSize.length - 8, Long.MIN_VALUE);
+        assertMalformed(unsignedMemberSize, IOException.class);
 
         assertThrows(
                 DecompressionWindowLimitException.class,

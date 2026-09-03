@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
@@ -144,7 +145,7 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
             lock.lock();
             try {
                 ensureOpen();
-                throw new UnsupportedOperationException("Shared archive channel views are read-only");
+                throw new NonWritableChannelException();
             } finally {
                 lock.unlock();
             }
@@ -196,7 +197,10 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
             lock.lock();
             try {
                 ensureOpen();
-                throw new UnsupportedOperationException("Shared archive channel views are read-only");
+                if (newSize < 0L) {
+                    throw new IllegalArgumentException("newSize must not be negative");
+                }
+                throw new NonWritableChannelException();
             } finally {
                 lock.unlock();
             }

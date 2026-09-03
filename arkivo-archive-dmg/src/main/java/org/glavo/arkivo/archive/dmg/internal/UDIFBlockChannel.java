@@ -13,6 +13,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
@@ -75,6 +76,9 @@ class UDIFBlockChannel implements SeekableByteChannel {
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
+        if (target.isReadOnly()) {
+            throw new ReadOnlyBufferException();
+        }
         if (!target.hasRemaining()) {
             return 0;
         }
@@ -120,8 +124,9 @@ class UDIFBlockChannel implements SeekableByteChannel {
 
     /// Rejects writes because decoded DMG images are read-only.
     @Override
-    public int write(ByteBuffer source) throws NonWritableChannelException {
+    public int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
+        ensureOpen();
         throw new NonWritableChannelException();
     }
 
@@ -150,9 +155,13 @@ class UDIFBlockChannel implements SeekableByteChannel {
         return layout.size();
     }
 
-    /// Rejects truncation because decoded DMG images are read-only.
+    /// Validates the requested size and rejects truncation because decoded DMG images are read-only.
     @Override
-    public SeekableByteChannel truncate(long size) throws NonWritableChannelException {
+    public SeekableByteChannel truncate(long size) throws IOException {
+        ensureOpen();
+        if (size < 0L) {
+            throw new IllegalArgumentException("size must not be negative");
+        }
         throw new NonWritableChannelException();
     }
 
@@ -163,9 +172,12 @@ class UDIFBlockChannel implements SeekableByteChannel {
     }
 
     /// Closes the encoded source and discards cached decoded bytes.
+    ///
+    /// Reads are rejected as soon as closing starts. If closing the encoded source fails while leaving it open, a
+    /// later call retries that cleanup.
     @Override
     public void close() throws IOException {
-        if (!open) {
+        if (!open && !source.isOpen()) {
             return;
         }
         open = false;

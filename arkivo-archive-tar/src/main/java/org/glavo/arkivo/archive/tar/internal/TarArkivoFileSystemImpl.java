@@ -43,6 +43,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.CopyOption;
@@ -1225,7 +1226,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// @param path  the path whose existence and accessibility are checked
     /// @param modes the requested access modes, or an empty array to check only existence
     /// @throws IOException                   if the path does not exist or is currently hidden by an open update channel
-    /// @throws ReadOnlyFileSystemException   if a non-read mode is requested from a read-only session
+    /// @throws AccessDeniedException         if a non-read mode is requested from a read-only session
     /// @throws UnsupportedOperationException if read or execute access is requested from a forward-only writer
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
@@ -1244,9 +1245,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return;
         }
         requireNode(path);
+        Objects.requireNonNull(modes, "modes");
         for (AccessMode mode : modes) {
+            Objects.requireNonNull(mode, "mode");
             if (mode != AccessMode.READ) {
-                throw new ReadOnlyFileSystemException();
+                throw new AccessDeniedException(path.toString());
             }
         }
     }

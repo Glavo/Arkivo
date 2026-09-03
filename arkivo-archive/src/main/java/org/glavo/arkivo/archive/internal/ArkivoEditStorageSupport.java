@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.internal;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -156,59 +157,73 @@ public final class ArkivoEditStorageSupport {
     /// Implements memory-backed stored content.
     @NotNullByDefault
     private static final class MemoryStoredContent implements ArkivoStoredContent {
-        /// The staged bytes.
-        private byte[] data;
-
-        /// The staged byte count.
-        private int size;
-
-        /// Whether this content object is open.
-        private boolean open = true;
+        /// The staged state retained directly by this open content handle, or `null` after closure.
+        private @Nullable MemoryData data;
 
         /// Creates memory-backed stored content.
         private MemoryStoredContent(long expectedSize) {
             int initialCapacity = expectedSize >= 0 && expectedSize <= Integer.MAX_VALUE ? (int) expectedSize : 0;
-            this.data = new byte[initialCapacity];
+            this.data = new MemoryData(initialCapacity);
         }
 
         /// Opens a memory-backed channel.
         @Override
-        public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
+        public synchronized SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
             Objects.requireNonNull(options, "options");
-            ensureOpen();
-            if (options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
-                size = 0;
+            MemoryData data = requireData();
+            boolean writable = writable(options);
+            if (writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
+                synchronized (data) {
+                    data.size = 0;
+                }
             }
-            return new MemoryChannel(this, readable(options), writable(options));
+            return new MemoryChannel(data, readable(options), writable);
         }
 
         /// Returns the staged content size.
         @Override
-        public long size() throws IOException {
-            ensureOpen();
-            return size;
+        public synchronized long size() throws IOException {
+            MemoryData data = requireData();
+            synchronized (data) {
+                return data.size;
+            }
         }
 
-        /// Closes this content.
+        /// Releases this handle's state reference without invalidating channels that already retain it.
         @Override
-        public void close() {
-            open = false;
-            data = new byte[0];
-            size = 0;
+        public synchronized void close() {
+            data = null;
         }
 
-        /// Requires this content object to be open.
-        private void ensureOpen() throws IOException {
-            if (!open) {
+        /// Returns the staged state while this content handle remains open.
+        private MemoryData requireData() throws IOException {
+            MemoryData data = this.data;
+            if (data == null) {
                 throw new IOException("Stored content is closed");
             }
+            return data;
+        }
+    }
+
+    /// Stores mutable bytes independently from the lifetime of the content handle that created them.
+    @NotNullByDefault
+    private static final class MemoryData {
+        /// The allocated byte storage.
+        private byte[] bytes;
+
+        /// The logical staged byte count.
+        private int size;
+
+        /// Creates staged state with the requested initial capacity.
+        private MemoryData(int initialCapacity) {
+            this.bytes = new byte[initialCapacity];
         }
 
         /// Ensures that the backing array can store the given byte count.
         private void ensureCapacity(int capacity) {
-            if (capacity > data.length) {
-                int newCapacity = Math.max(capacity, Math.max(16, data.length * 2));
-                data = Arrays.copyOf(data, newCapacity);
+            if (capacity > bytes.length) {
+                int newCapacity = Math.max(capacity, Math.max(16, bytes.length * 2));
+                bytes = Arrays.copyOf(bytes, newCapacity);
             }
         }
     }
@@ -216,8 +231,8 @@ public final class ArkivoEditStorageSupport {
     /// Implements a seekable byte channel over memory-backed stored content.
     @NotNullByDefault
     private static final class MemoryChannel implements SeekableByteChannel {
-        /// The stored content that owns the bytes.
-        private final MemoryStoredContent content;
+        /// The shared staged state retained by this channel, or `null` after closure.
+        private @Nullable MemoryData content;
 
         /// Whether reads are allowed.
         private final boolean readable;
@@ -226,13 +241,10 @@ public final class ArkivoEditStorageSupport {
         private final boolean writable;
 
         /// The current channel position.
-        private int position;
-
-        /// Whether this channel is open.
-        private boolean open = true;
+        private long position;
 
         /// Creates a memory channel.
-        private MemoryChannel(MemoryStoredContent content, boolean readable, boolean writable) {
+        private MemoryChannel(MemoryData content, boolean readable, boolean writable) {
             this.content = Objects.requireNonNull(content, "content");
             this.readable = readable;
             this.writable = writable;
@@ -242,91 +254,117 @@ public final class ArkivoEditStorageSupport {
         @Override
         public int read(ByteBuffer destination) throws IOException {
             Objects.requireNonNull(destination, "destination");
-            ensureOpen();
+            MemoryData content = requireContent();
             if (!readable) {
                 throw new NonReadableChannelException();
             }
-            int remaining = content.size - position;
-            if (remaining <= 0) {
-                return -1;
+            if (!destination.hasRemaining()) {
+                return 0;
             }
-            int count = Math.min(destination.remaining(), remaining);
-            destination.put(content.data, position, count);
-            position += count;
-            return count;
+            synchronized (content) {
+                if (position >= content.size) {
+                    return -1;
+                }
+                int arrayPosition = Math.toIntExact(position);
+                int remaining = content.size - arrayPosition;
+                int count = Math.min(destination.remaining(), remaining);
+                destination.put(content.bytes, arrayPosition, count);
+                position += count;
+                return count;
+            }
         }
 
         /// Writes bytes at the current position.
         @Override
         public int write(ByteBuffer source) throws IOException {
             Objects.requireNonNull(source, "source");
-            ensureOpen();
+            MemoryData content = requireContent();
             if (!writable) {
                 throw new NonWritableChannelException();
             }
             int count = source.remaining();
-            int end = Math.addExact(position, count);
-            content.ensureCapacity(end);
-            source.get(content.data, position, count);
-            position = end;
-            content.size = Math.max(content.size, end);
-            return count;
+            if (count == 0) {
+                return 0;
+            }
+            if (position > Integer.MAX_VALUE - (long) count) {
+                throw new IOException("Memory stored content exceeds the maximum array size");
+            }
+            int arrayPosition = Math.toIntExact(position);
+            int end = arrayPosition + count;
+            synchronized (content) {
+                content.ensureCapacity(end);
+                source.get(content.bytes, arrayPosition, count);
+                position = end;
+                content.size = Math.max(content.size, end);
+                return count;
+            }
         }
 
         /// Returns the current channel position.
         @Override
         public long position() throws IOException {
-            ensureOpen();
+            requireContent();
             return position;
         }
 
-        /// Sets the current channel position.
+        /// Sets the current channel position, including positions beyond the representable in-memory content extent.
         @Override
         public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureOpen();
-            if (newPosition < 0 || newPosition > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException("newPosition must fit in a non-negative int");
+            requireContent();
+            if (newPosition < 0) {
+                throw new IllegalArgumentException("newPosition must not be negative");
             }
-            position = (int) newPosition;
+            position = newPosition;
             return this;
         }
 
         /// Returns the current content size.
         @Override
         public long size() throws IOException {
-            ensureOpen();
-            return content.size;
+            MemoryData content = requireContent();
+            synchronized (content) {
+                return content.size;
+            }
         }
 
-        /// Truncates the content.
+        /// Truncates writable content and adjusts a position beyond the requested size.
         @Override
         public SeekableByteChannel truncate(long newSize) throws IOException {
-            ensureOpen();
-            if (newSize < 0 || newSize > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException("newSize must fit in a non-negative int");
+            MemoryData content = requireContent();
+            if (newSize < 0) {
+                throw new IllegalArgumentException("newSize must not be negative");
             }
-            content.size = Math.min(content.size, (int) newSize);
-            position = Math.min(position, content.size);
+            if (!writable) {
+                throw new NonWritableChannelException();
+            }
+            synchronized (content) {
+                if (newSize < content.size) {
+                    content.size = (int) newSize;
+                }
+                position = Math.min(position, newSize);
+            }
             return this;
         }
 
         /// Returns whether this channel is open.
         @Override
         public boolean isOpen() {
-            return open;
+            return content != null;
         }
 
-        /// Closes this channel.
+        /// Releases this channel's reference to the shared staged state.
         @Override
         public void close() {
-            open = false;
+            content = null;
         }
 
-        /// Requires this channel to be open.
-        private void ensureOpen() throws ClosedChannelException {
-            if (!open) {
+        /// Returns the shared staged state while this channel remains open.
+        private MemoryData requireContent() throws ClosedChannelException {
+            MemoryData content = this.content;
+            if (content == null) {
                 throw new ClosedChannelException();
             }
+            return content;
         }
     }
 

@@ -61,11 +61,12 @@ final class SevenZipSingleVolumeTarget implements ArkivoVolumeTarget {
             if (finished) {
                 throw new IOException("7z output channel transaction is finished");
             }
-            if (index != 0L) {
-                throw new IOException("7z output channel supports exactly one volume");
+            long expectedIndex = volumeOpened ? 1L : 0L;
+            if (index != expectedIndex) {
+                throw new IllegalArgumentException("Volume indexes must be opened once in ascending order");
             }
             if (volumeOpened) {
-                throw new IOException("7z output channel volume is already open");
+                throw new IOException("7z output channel supports exactly one volume");
             }
             volumeOpened = true;
             return channel;
@@ -88,13 +89,23 @@ final class SevenZipSingleVolumeTarget implements ArkivoVolumeTarget {
         }
 
         /// Closes the destination channel and abandons uncommitted output.
+        ///
+        /// If closing fails while leaving the channel open, a later call retries cleanup. A failure reported after the
+        /// channel has already closed is still propagated, but cleanup is considered complete.
         @Override
         public void rollback() throws IOException {
             if (finished) {
                 return;
             }
-            channel.close();
-            finished = true;
+            try {
+                channel.close();
+                finished = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                if (!channel.isOpen()) {
+                    finished = true;
+                }
+                throw exception;
+            }
         }
 
         /// Rolls back this output when it has not committed.

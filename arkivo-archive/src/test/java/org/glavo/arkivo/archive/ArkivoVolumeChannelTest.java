@@ -69,6 +69,7 @@ final class ArkivoVolumeChannelTest {
             channel.position(100L);
             assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
             assertEquals(100L, channel.position());
+            assertEquals(0, channel.read(ByteBuffer.allocate(0)));
         }
     }
 
@@ -80,13 +81,50 @@ final class ArkivoVolumeChannelTest {
 
         assertThrows(NonWritableChannelException.class, () -> channel.write(ByteBuffer.wrap(bytes("x"))));
         assertThrows(NonWritableChannelException.class, () -> channel.truncate(0L));
+        assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1L));
         assertThrows(IllegalArgumentException.class, () -> channel.position(-1L));
+        assertThrows(IOException.class, () -> channel.volumeStartOffset(-1L));
         assertThrows(IOException.class, () -> channel.volumeStartOffset(1L));
+        assertThrows(IOException.class, () -> channel.volumeSize(Long.MAX_VALUE));
 
+        channel.close();
         channel.close();
         assertFalse(channel.isOpen());
         assertThrows(ClosedChannelException.class, channel::size);
         assertThrows(ClosedChannelException.class, channel::volumeCount);
+        assertThrows(ClosedChannelException.class, () -> channel.volumeSize(0L));
+    }
+
+    /// Verifies discovery rejects a missing first volume, negative sizes, and aggregate-size overflow.
+    @Test
+    void validatesDiscoveredVolumeSizes() throws IOException {
+        TrackingVolumeSource absent = new TrackingVolumeSource(List.of());
+        IOException missing = assertThrows(IOException.class, () -> ArkivoVolumeChannel.open(absent));
+        assertEquals("Archive volume source did not provide volume zero", missing.getMessage());
+        assertFalse(absent.closed);
+
+        DeclaredSizeChannel negative = new DeclaredSizeChannel(-1L);
+        TrackingVolumeSource negativeSource = new TrackingVolumeSource(List.of(negative));
+        IOException invalid = assertThrows(
+                IOException.class,
+                () -> ArkivoVolumeChannel.open(negativeSource)
+        );
+        assertEquals("Archive volume size is negative: 0", invalid.getMessage());
+        assertFalse(negative.isOpen());
+        assertFalse(negativeSource.closed);
+
+        DeclaredSizeChannel maximum = new DeclaredSizeChannel(Long.MAX_VALUE);
+        DeclaredSizeChannel overflow = new DeclaredSizeChannel(1L);
+        TrackingVolumeSource overflowSource = new TrackingVolumeSource(List.of(maximum, overflow));
+        IOException tooLarge = assertThrows(
+                IOException.class,
+                () -> ArkivoVolumeChannel.open(overflowSource)
+        );
+        assertEquals("Logical archive size is too large", tooLarge.getMessage());
+        assertTrue(tooLarge.getCause() instanceof ArithmeticException);
+        assertFalse(maximum.isOpen());
+        assertFalse(overflow.isOpen());
+        assertFalse(overflowSource.closed);
     }
 
     /// Verifies setup failure closes every channel already obtained without closing the source contract.
@@ -102,6 +140,27 @@ final class ArkivoVolumeChannelTest {
         assertFalse(first.isOpen());
         assertFalse(second.isOpen());
         assertFalse(source.closed);
+    }
+
+    /// Verifies setup cleanup failures are suppressed without replacing the metadata failure.
+    @Test
+    void suppressesCleanupFailuresAfterSetupFailure() throws IOException {
+        TrackingChannel first = new TrackingChannel(openVolume(writeVolume("first", "a")), false, true);
+        TrackingChannel second = new TrackingChannel(openVolume(writeVolume("second", "b")), true, true);
+        TrackingVolumeSource source = new TrackingVolumeSource(List.of(first, second));
+
+        IOException exception = assertThrows(IOException.class, () -> ArkivoVolumeChannel.open(source));
+
+        assertEquals("size failure", exception.getMessage());
+        assertEquals(2, exception.getSuppressed().length);
+        assertEquals("close failure", exception.getSuppressed()[0].getMessage());
+        assertEquals("close failure", exception.getSuppressed()[1].getMessage());
+        assertTrue(first.isOpen());
+        assertTrue(second.isOpen());
+        assertFalse(source.closed);
+
+        first.close();
+        second.close();
     }
 
     /// Verifies close failures are collected and channels left open are retried by a later close call.
@@ -126,14 +185,64 @@ final class ArkivoVolumeChannelTest {
         assertEquals(2, second.closeAttempts);
     }
 
+    /// Verifies a failed close is not retried when the physical channel nevertheless became closed.
+    @Test
+    void doesNotRetryCompletedCleanupAfterCloseFailure() throws IOException {
+        ClosingFailureChannel physical = new ClosingFailureChannel(openVolume(writeVolume("volume", "a")));
+        ArkivoVolumeChannel channel = ArkivoVolumeChannel.open(
+                new TrackingVolumeSource(List.of(physical))
+        );
+
+        IOException exception = assertThrows(IOException.class, channel::close);
+        assertEquals("close failed after completion", exception.getMessage());
+        assertFalse(channel.isOpen());
+        assertFalse(physical.isOpen());
+        assertEquals(1, physical.closeAttempts);
+
+        channel.close();
+        assertEquals(1, physical.closeAttempts);
+    }
+
+    /// Verifies a later zero-progress volume returns bytes already read during the same logical operation.
+    @Test
+    void returnsAccumulatedProgressBeforeZeroProgress() throws IOException {
+        SeekableByteChannel first = openVolume(writeVolume("first", "ab"));
+        first.position(1L);
+        ZeroProgressChannel second = new ZeroProgressChannel(2L);
+        TrackingVolumeSource source = new TrackingVolumeSource(List.of(first, second));
+
+        try (ArkivoVolumeChannel channel = ArkivoVolumeChannel.open(source)) {
+            ByteBuffer target = ByteBuffer.allocate(6);
+            target.position(1).limit(5);
+
+            assertEquals(2, channel.read(target));
+            assertEquals(3, target.position());
+            assertEquals(5, target.limit());
+            assertEquals((byte) 'a', target.get(1));
+            assertEquals((byte) 'b', target.get(2));
+            assertEquals(2L, channel.position());
+
+            assertEquals(0, channel.read(target));
+            assertEquals(3, target.position());
+            assertEquals(2L, channel.position());
+            assertEquals(0, channel.read(ByteBuffer.allocate(0)));
+        }
+
+        assertFalse(first.isOpen());
+        assertFalse(second.isOpen());
+        assertFalse(source.closed);
+    }
+
     /// Verifies a volume ending before its snapshotted size is rejected instead of silently skipping bytes.
     @Test
     void rejectsPrematureVolumeEnd() throws IOException {
         PrematureEndChannel truncated = new PrematureEndChannel();
         try (ArkivoVolumeChannel channel = ArkivoVolumeChannel.open(index -> index == 0L ? truncated : null)) {
             ByteBuffer target = ByteBuffer.allocate(3);
-            assertThrows(EOFException.class, () -> channel.read(target));
+            EOFException exception = assertThrows(EOFException.class, () -> channel.read(target));
+            assertEquals("Archive volume ended before its declared size: 0", exception.getMessage());
             assertEquals(2, target.position());
+            assertEquals(2L, channel.position());
         }
     }
 
@@ -158,13 +267,13 @@ final class ArkivoVolumeChannelTest {
     @NotNullByDefault
     private static final class TrackingVolumeSource implements ArkivoVolumeSource {
         /// Channels returned in volume order.
-        private final @Unmodifiable List<TrackingChannel> channels;
+        private final @Unmodifiable List<SeekableByteChannel> channels;
 
         /// Whether the source itself was closed.
         private boolean closed;
 
         /// Creates a source for the given channels.
-        private TrackingVolumeSource(List<TrackingChannel> channels) {
+        private TrackingVolumeSource(List<? extends SeekableByteChannel> channels) {
             this.channels = List.copyOf(channels);
         }
 
@@ -178,6 +287,89 @@ final class ArkivoVolumeChannelTest {
         @Override
         public void close() {
             closed = true;
+        }
+    }
+
+    /// Provides a minimal channel whose declared size is independently configurable.
+    @NotNullByDefault
+    private static final class DeclaredSizeChannel implements SeekableByteChannel {
+        /// The size reported during volume discovery.
+        private final long declaredSize;
+
+        /// The current channel position.
+        private long position;
+
+        /// Whether this channel remains open.
+        private boolean open = true;
+
+        /// Creates a channel with the given declared size.
+        private DeclaredSizeChannel(long declaredSize) {
+            this.declaredSize = declaredSize;
+        }
+
+        /// Reports end of input for this metadata-only channel.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            ensureOpen();
+            return destination.hasRemaining() ? -1 : 0;
+        }
+
+        /// Rejects writes because this channel is read-only.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            ensureOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the current position.
+        @Override
+        public long position() throws IOException {
+            ensureOpen();
+            return position;
+        }
+
+        /// Sets a non-negative position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureOpen();
+            if (newPosition < 0L) {
+                throw new IllegalArgumentException("newPosition must not be negative");
+            }
+            position = newPosition;
+            return this;
+        }
+
+        /// Returns the configured declared size.
+        @Override
+        public long size() throws IOException {
+            ensureOpen();
+            return declaredSize;
+        }
+
+        /// Rejects truncation because this channel is read-only.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            ensureOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether this channel remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel.
+        @Override
+        public void close() {
+            open = false;
+        }
+
+        /// Requires this channel to remain open.
+        private void ensureOpen() throws ClosedChannelException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
         }
     }
 
@@ -258,6 +450,158 @@ final class ArkivoVolumeChannelTest {
                 throw new IOException("close failure");
             }
             delegate.close();
+        }
+    }
+
+    /// Wraps a channel whose first close both completes and reports an I/O failure.
+    @NotNullByDefault
+    private static final class ClosingFailureChannel implements SeekableByteChannel {
+        /// The physical channel delegate.
+        private final SeekableByteChannel delegate;
+
+        /// The number of close invocations.
+        private int closeAttempts;
+
+        /// Creates a failure-reporting wrapper.
+        private ClosingFailureChannel(SeekableByteChannel delegate) {
+            this.delegate = delegate;
+        }
+
+        /// Reads from the delegate.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            return delegate.read(destination);
+        }
+
+        /// Delegates writes.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            return delegate.write(source);
+        }
+
+        /// Returns the delegate position.
+        @Override
+        public long position() throws IOException {
+            return delegate.position();
+        }
+
+        /// Sets the delegate position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            delegate.position(newPosition);
+            return this;
+        }
+
+        /// Returns the delegate size.
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        /// Delegates truncation.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            delegate.truncate(size);
+            return this;
+        }
+
+        /// Returns whether the delegate remains open.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Closes the delegate and reports a failure after the first completed close.
+        @Override
+        public void close() throws IOException {
+            closeAttempts++;
+            delegate.close();
+            if (closeAttempts == 1) {
+                throw new IOException("close failed after completion");
+            }
+        }
+    }
+
+    /// Provides a finite-size channel that never makes read progress.
+    @NotNullByDefault
+    private static final class ZeroProgressChannel implements SeekableByteChannel {
+        /// The declared channel size.
+        private final long size;
+
+        /// The current channel position.
+        private long position;
+
+        /// Whether this channel remains open.
+        private boolean open = true;
+
+        /// Creates a zero-progress channel with the given size.
+        private ZeroProgressChannel(long size) {
+            this.size = size;
+        }
+
+        /// Returns zero without changing the destination.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            ensureOpen();
+            return 0;
+        }
+
+        /// Rejects writes because this channel is read-only.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            ensureOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the current position.
+        @Override
+        public long position() throws IOException {
+            ensureOpen();
+            return position;
+        }
+
+        /// Sets a position within or beyond the declared extent.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureOpen();
+            if (newPosition < 0L) {
+                throw new IllegalArgumentException("newPosition must not be negative");
+            }
+            position = newPosition;
+            return this;
+        }
+
+        /// Returns the declared size.
+        @Override
+        public long size() throws IOException {
+            ensureOpen();
+            return size;
+        }
+
+        /// Rejects truncation because this channel is read-only.
+        @Override
+        public SeekableByteChannel truncate(long newSize) throws IOException {
+            ensureOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether this channel remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel.
+        @Override
+        public void close() {
+            open = false;
+        }
+
+        /// Requires this channel to remain open.
+        private void ensureOpen() throws ClosedChannelException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
         }
     }
 

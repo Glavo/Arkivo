@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.ResourceOwnership;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -138,6 +139,30 @@ final class StreamChannelAdaptersTest {
         assertEquals(2, writableChannel.closeCount());
     }
 
+    /// Verifies close retries only a failed downstream flush after codec finalization has completed.
+    @Test
+    void retriesBorrowedDownstreamFlushWithoutRefinalizingCodec() throws IOException {
+        TrackingCompressingWritableByteChannel encoder = new TrackingCompressingWritableByteChannel();
+        FailingOnceFlushOutputStream downstream = new FailingOnceFlushOutputStream();
+        OutputStream output = StreamChannelAdapters.outputStream(
+                encoder,
+                downstream,
+                ResourceOwnership.BORROWED
+        );
+        output.write(new byte[]{1, 2, 3});
+
+        IOException failure = assertThrows(IOException.class, output::close);
+        assertEquals("flush failed", failure.getMessage());
+        assertEquals(1, encoder.finishCount());
+        assertEquals(1, downstream.flushCount());
+
+        output.close();
+        assertEquals(1, encoder.finishCount());
+        assertEquals(2, downstream.flushCount());
+        output.close();
+        assertEquals(2, downstream.flushCount());
+    }
+
     /// Records calls made through a stream view of a compression encoder.
     @NotNullByDefault
     private static final class TrackingCompressingWritableByteChannel implements CompressingWritableByteChannel.Flushable {
@@ -146,6 +171,9 @@ final class StreamChannelAdaptersTest {
 
         /// The number of flush calls.
         private int flushCount;
+
+        /// Number of encoder finalizations.
+        private int finishCount;
 
         /// Whether this encoder remains open.
         private boolean open = true;
@@ -168,7 +196,10 @@ final class StreamChannelAdaptersTest {
         /// Finishes this encoder.
         @Override
         public void finish() {
-            open = false;
+            if (open) {
+                finishCount++;
+                open = false;
+            }
         }
 
         /// Returns the number of accepted source bytes.
@@ -198,6 +229,11 @@ final class StreamChannelAdaptersTest {
         /// Returns the number of recorded flush calls.
         private int flushCount() {
             return flushCount;
+        }
+
+        /// Returns the number of encoder finalizations.
+        private int finishCount() {
+            return finishCount;
         }
     }
 
@@ -351,6 +387,32 @@ final class StreamChannelAdaptersTest {
         /// Returns the number of close attempts.
         private int closeCount() {
             return closeCount;
+        }
+    }
+
+    /// Fails its first flush while accepting all writes.
+    @NotNullByDefault
+    private static final class FailingOnceFlushOutputStream extends OutputStream {
+        /// Number of flush attempts.
+        private int flushCount;
+
+        /// Accepts one byte.
+        @Override
+        public void write(int value) {
+        }
+
+        /// Fails the first flush attempt.
+        @Override
+        public void flush() throws IOException {
+            flushCount++;
+            if (flushCount == 1) {
+                throw new IOException("flush failed");
+            }
+        }
+
+        /// Returns the number of flush attempts.
+        private int flushCount() {
+            return flushCount;
         }
     }
 

@@ -1170,7 +1170,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         }
     }
 
-    /// Exposes a snapshot of pending TAR entry metadata.
+    /// Exposes a live read-only projection of pending TAR entry metadata.
     @NotNullByDefault
     private static final class PendingTarEntryAttributes implements PosixFileAttributes, TarArkivoEntryAttributes {
         /// The pending entry.
@@ -1179,7 +1179,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// The pending metadata view.
         private final PendingTarEntryAttributeView attributes;
 
-        /// Creates a pending TAR entry attribute snapshot.
+        /// Creates a pending TAR entry attribute projection.
         private PendingTarEntryAttributes(PendingEntry entry, PendingTarEntryAttributeView attributes) {
             this.entry = Objects.requireNonNull(entry, "entry");
             this.attributes = Objects.requireNonNull(attributes, "attributes");

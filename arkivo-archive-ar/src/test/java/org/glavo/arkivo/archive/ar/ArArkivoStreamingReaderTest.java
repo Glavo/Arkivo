@@ -507,6 +507,9 @@ public final class ArArkivoStreamingReaderTest {
                 assertEquals(Set.of("/dir", "/root.bin"), Set.copyOf(children));
 
                 Path file = fileSystem.getPath("/dir/hello.txt");
+                assertEquals(true, Files.isReadable(file));
+                assertEquals(false, Files.isWritable(file));
+                assertEquals(false, Files.isExecutable(file));
                 ArArkivoEntryAttributes fileAttributes = Files.readAttributes(file, ArArkivoEntryAttributes.class);
                 assertEquals(true, fileAttributes.isRegularFile());
                 assertEquals(1000, fileAttributes.userId());

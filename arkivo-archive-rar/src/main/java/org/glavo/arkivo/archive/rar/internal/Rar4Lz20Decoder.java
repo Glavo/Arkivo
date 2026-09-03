@@ -194,8 +194,8 @@ final class Rar4Lz20Decoder {
 
     /// Releases the fixed dictionary immediately.
     void release() {
-        dictionary = new byte[0];
         invalidate();
+        dictionary = new byte[0];
     }
 
     /// Restores a released dictionary before reuse.

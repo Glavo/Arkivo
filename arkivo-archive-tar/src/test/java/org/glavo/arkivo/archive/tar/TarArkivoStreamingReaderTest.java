@@ -341,6 +341,9 @@ public final class TarArkivoStreamingReaderTest {
                 assertEquals(Set.of("/dir", "/link"), Set.copyOf(children));
 
                 Path file = fileSystem.getPath("/dir/hello.txt");
+                assertEquals(true, Files.isReadable(file));
+                assertEquals(false, Files.isWritable(file));
+                assertEquals(false, Files.isExecutable(file));
                 TarArkivoEntryAttributes fileAttributes = Files.readAttributes(file, TarArkivoEntryAttributes.class);
                 assertEquals(true, fileAttributes.isRegularFile());
                 assertEquals(0640, fileAttributes.mode());

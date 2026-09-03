@@ -43,10 +43,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 @NotNullByDefault
 final class MalformedArchiveRobustnessTest {
     /// Stable archive formats exercised by the malformed-input suite.
-    private static final @Unmodifiable List<String> FORMATS = List.of("ar", "tar", "zip", "7z", "rar");
+    private static final @Unmodifiable List<String> FORMATS = List.of("ar", "cpio", "tar", "zip", "7z", "rar");
+
+    /// Formats whose readers expose a random-access file system.
+    private static final @Unmodifiable Set<String> FILE_SYSTEM_FORMATS = Set.of("ar", "tar", "zip", "7z", "rar");
 
     /// Formats whose readers can operate without random access.
-    private static final @Unmodifiable Set<String> STREAMING_FORMATS = Set.of("ar", "tar", "zip", "rar");
+    private static final @Unmodifiable Set<String> STREAMING_FORMATS = Set.of("ar", "cpio", "tar", "zip", "rar");
 
     /// Deterministic content stored in every generated archive.
     private static final byte @Unmodifiable [] CONTENT = (
@@ -83,7 +86,9 @@ final class MalformedArchiveRobustnessTest {
             Path archivePath = Files.createTempFile("arkivo-malformed-" + format + "-", ".bin");
             try {
                 Files.write(archivePath, validArchive, StandardOpenOption.TRUNCATE_EXISTING);
-                assertEquals(CONTENT.length, readFileSystem(format, archivePath), format);
+                if (FILE_SYSTEM_FORMATS.contains(format)) {
+                    assertEquals(CONTENT.length, readFileSystem(format, archivePath), format);
+                }
                 if (STREAMING_FORMATS.contains(format)) {
                     assertEquals(CONTENT.length, readStreaming(format, validArchive), format);
                 }
@@ -133,10 +138,12 @@ final class MalformedArchiveRobustnessTest {
         );
 
         Files.write(archivePath, archive, StandardOpenOption.TRUNCATE_EXISTING);
-        tolerateMalformedFailure(
-                () -> readFileSystem(format, archivePath),
-                context + " file system"
-        );
+        if (FILE_SYSTEM_FORMATS.contains(format)) {
+            tolerateMalformedFailure(
+                    () -> readFileSystem(format, archivePath),
+                    context + " file system"
+            );
+        }
         if (STREAMING_FORMATS.contains(format)) {
             tolerateMalformedFailure(
                     () -> readStreaming(format, archive),

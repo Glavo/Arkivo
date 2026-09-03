@@ -107,5 +107,15 @@ public final class ChecksumLifecycleTest {
         assertEquals(Integer.toUnsignedLong(raw), Checksums.CRC32.computeLong(padded, 2, 9));
         assertEquals(ChecksumValue.ofInt(raw), Checksums.CRC32.compute(padded, 2, 9));
         assertThrows(IndexOutOfBoundsException.class, () -> Checksums.CRC32.computeInt(padded, -1, 1));
+
+        ByteBuffer direct = ByteBuffer.allocateDirect(padded.length + 4);
+        direct.position(2).put(padded).limit(13).position(4);
+        ByteBuffer readOnly = direct.asReadOnlyBuffer();
+        assertEquals(raw, Checksums.CRC32.computeInt(readOnly));
+        assertEquals(readOnly.limit(), readOnly.position());
+
+        direct.position(4);
+        assertEquals(Integer.toUnsignedLong(raw), Checksums.CRC32.computeLong(direct));
+        assertEquals(direct.limit(), direct.position());
     }
 }

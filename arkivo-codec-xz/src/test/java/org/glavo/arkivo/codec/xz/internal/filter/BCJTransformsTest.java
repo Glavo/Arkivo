@@ -9,6 +9,7 @@ import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.tukaani.xz.ARM64Options;
 import org.tukaani.xz.ARMOptions;
 import org.tukaani.xz.ARMThumbOptions;
 import org.tukaani.xz.ArrayCache;
@@ -17,6 +18,7 @@ import org.tukaani.xz.FinishableOutputStream;
 import org.tukaani.xz.FinishableWrapperOutputStream;
 import org.tukaani.xz.IA64Options;
 import org.tukaani.xz.PowerPCOptions;
+import org.tukaani.xz.RISCVOptions;
 import org.tukaani.xz.SPARCOptions;
 import org.tukaani.xz.X86Options;
 
@@ -29,6 +31,7 @@ import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests BCJ transforms against independent XZ filter streams.
 @NotNullByDefault
@@ -45,6 +48,8 @@ public final class BCJTransformsTest {
         assertBcjInteroperability(armSample(), armOptions(), BCJTransforms::arm);
         assertBcjInteroperability(armThumbSample(), armThumbOptions(), BCJTransforms::armThumb);
         assertBcjInteroperability(sparcSample(), sparcOptions(), BCJTransforms::sparc);
+        assertBcjInteroperability(arm64Sample(), arm64Options(), BCJTransforms::arm64);
+        assertBcjInteroperability(riscVSample(), riscVOptions(), BCJTransforms::riscV);
     }
 
     /// Verifies that a tail shorter than one x86 instruction passes through unchanged.
@@ -54,6 +59,17 @@ public final class BCJTransformsTest {
         byte[] encoded = encodeNatively(original, BCJTransforms.x86(Direction.ENCODE, 0));
         assertArrayEquals(original, encoded);
         assertArrayEquals(original, decodeNatively(encoded, BCJTransforms.x86(Direction.DECODE, 0)));
+    }
+
+    /// Verifies all transform factories reject null directions and offsets outside the unsigned 32-bit domain.
+    @Test
+    public void transformFactoriesValidateArguments() {
+        assertThrows(NullPointerException.class, () -> BCJTransforms.x86(null, 0L));
+        assertThrows(IllegalArgumentException.class, () -> BCJTransforms.arm64(Direction.ENCODE, -1L));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> BCJTransforms.riscV(Direction.DECODE, 0x1_0000_0000L)
+        );
     }
 
     /// Verifies one BCJ encoder and decoder against XZ.
@@ -151,6 +167,20 @@ public final class BCJTransformsTest {
         return options;
     }
 
+    /// Returns XZ ARM64 options configured with the shared start offset.
+    private static ARM64Options arm64Options() throws IOException {
+        ARM64Options options = new ARM64Options();
+        options.setStartOffset(START_OFFSET);
+        return options;
+    }
+
+    /// Returns XZ RISC-V options configured with the shared start offset.
+    private static RISCVOptions riscVOptions() throws IOException {
+        RISCVOptions options = new RISCVOptions();
+        options.setStartOffset(START_OFFSET);
+        return options;
+    }
+
     /// Returns x86 bytes with CALL and JMP operands on both sides of the 8 KiB filter boundary.
     private static byte[] x86Sample() {
         byte[] sample = filledSample((byte) 0x90);
@@ -205,6 +235,31 @@ public final class BCJTransformsTest {
         return sample;
     }
 
+    /// Returns little-endian ARM64 BL and ADRP instructions around the transform-buffer boundary.
+    private static byte[] arm64Sample() {
+        byte[] sample = filledSample((byte) 0);
+        putIntLittleEndian(sample, 0, 0x9400_0008);
+        putArm64Adrp(sample, 64, 0x0004_0000);
+        putIntLittleEndian(sample, 8188, 0x9000_0000);
+        putIntLittleEndian(sample, 8500, 0x97ff_fff0);
+        return sample;
+    }
+
+    /// Returns RISC-V JAL, AUIPC pairs, and a reversible special-format candidate across chunk boundaries.
+    private static byte[] riscVSample() {
+        byte[] sample = filledSample((byte) 0);
+        putIntLittleEndian(sample, 0, 0x0000_00ef);
+        putRiscVAuipcPair(sample, 16, 5, 0x1234_5000, 0x123);
+        putRiscVSpecialPair(sample, 48, 5, 0x1234_5678);
+        putIntLittleEndian(sample, 64, 0x0000_01ef);
+        putIntLittleEndian(sample, 72, 0x0000_0297);
+        putIntLittleEndian(sample, 76, 0x0000_0000);
+        putIntLittleEndian(sample, 88, 0x0000_0017);
+        putRiscVAuipcPair(sample, 8188, 10, 0x7fff_f000, -16);
+        putIntLittleEndian(sample, 8500, 0x0010_02ef);
+        return sample;
+    }
+
     /// Returns a 9003-byte sample initialized to one byte value.
     private static byte[] filledSample(byte value) {
         byte[] sample = new byte[9003];
@@ -245,6 +300,35 @@ public final class BCJTransformsTest {
         for (int index = 0; index < 6; index++) {
             sample[offset + 10 + index] = (byte) (packed >>> (index * 8));
         }
+    }
+
+    /// Stores a valid RISC-V AUIPC and I-type instruction pair using the same source register.
+    private static void putRiscVAuipcPair(
+            byte[] sample,
+            int offset,
+            int register,
+            int upperImmediate,
+            int lowerImmediate
+    ) {
+        putIntLittleEndian(sample, offset, upperImmediate | register << 7 | 0x17);
+        putIntLittleEndian(
+                sample,
+                offset + Integer.BYTES,
+                lowerImmediate << 20 | register << 15 | register << 7 | 0x13
+        );
+    }
+
+    /// Stores a RISC-V special-format candidate that exercises the transform's arbitrary-data bijection.
+    private static void putRiscVSpecialPair(byte[] sample, int offset, int sourceRegister, int address) {
+        int instruction = sourceRegister << 27 | 3 << 12 | 2 << 7 | 0x17;
+        putIntLittleEndian(sample, offset, instruction);
+        putIntLittleEndian(sample, offset + Integer.BYTES, address);
+    }
+
+    /// Stores an ARM64 ADRP instruction with the requested page-relative immediate.
+    private static void putArm64Adrp(byte[] sample, int offset, int address) {
+        int instruction = 0x9000_0000 | (address & 3) << 29 | (address & 0x001f_fffc) << 3;
+        putIntLittleEndian(sample, offset, instruction);
     }
 
     /// Stores one little-endian integer.

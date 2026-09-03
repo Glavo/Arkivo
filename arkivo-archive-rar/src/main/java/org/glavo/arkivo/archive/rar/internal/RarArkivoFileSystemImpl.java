@@ -31,6 +31,7 @@ import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryIteratorException;
@@ -540,9 +541,11 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             requireNode(path);
+            Objects.requireNonNull(modes, "modes");
             for (AccessMode mode : modes) {
+                Objects.requireNonNull(mode, "mode");
                 if (mode != AccessMode.READ) {
-                    throw new ReadOnlyFileSystemException();
+                    throw new AccessDeniedException(path.toString());
                 }
             }
         }

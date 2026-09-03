@@ -241,7 +241,7 @@ public final class LZ4Codec
                 : toBuilder().verifyChecksums(verifyChecksums).build();
     }
 
-    /// Returns a safe upper bound for one encoded LZ4 frame.
+    /// Returns a safe upper bound for one encoded LZ4 frame, including a declared content-size field.
     @Override
     public long maxCompressedSize(long sourceSize) {
         if (sourceSize < 0L) {
@@ -252,7 +252,11 @@ public final class LZ4Codec
                 : 1L + (sourceSize - 1L) / blockSize.byteSize();
         long perBlockOverhead = Integer.BYTES + (blockChecksum ? Integer.BYTES : 0L);
         long dictionaryIdSize = dictionary != null && dictionary.hasDictionaryId() ? Integer.BYTES : 0L;
-        long frameOverhead = 7L + dictionaryIdSize + Integer.BYTES + (contentChecksum ? Integer.BYTES : 0L);
+        long frameOverhead = 7L
+                + Long.BYTES
+                + dictionaryIdSize
+                + Integer.BYTES
+                + (contentChecksum ? Integer.BYTES : 0L);
         try {
             return Math.addExact(
                     sourceSize,

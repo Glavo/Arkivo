@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
@@ -114,6 +115,37 @@ final class ByteBufferCodecSupportTest {
         assertEquals(emptyEncoded.length, emptyThenFirst.position());
     }
 
+    /// Verifies an empty frame source returns immediately without constructing a decoder.
+    @Test
+    void emptyFrameDoesNotConstructDecoder() throws IOException {
+        LengthPrefixedCodec codec = new LengthPrefixedCodec(true).withMaximumOutputSize(0L);
+        ByteBuffer source = ByteBuffer.allocateDirect(4);
+        source.position(2);
+        source.limit(2);
+
+        ByteBuffer decoded = codec.decompressFrame(source);
+        assertEquals(0, decoded.position());
+        assertEquals(0, decoded.limit());
+        assertEquals(2, source.position());
+        assertEquals(2, source.limit());
+
+        ByteBuffer target = ByteBuffer.allocate(5);
+        target.position(1);
+        target.limit(4);
+        codec.decompressFrame(source, target);
+        assertEquals(2, source.position());
+        assertEquals(2, source.limit());
+        assertEquals(1, target.position());
+        assertEquals(4, target.limit());
+
+        ByteBuffer same = ByteBuffer.allocate(0);
+        assertThrows(IllegalArgumentException.class, () -> codec.decompressFrame(same, same));
+        assertThrows(
+                ReadOnlyBufferException.class,
+                () -> codec.decompressFrame(ByteBuffer.allocate(0), ByteBuffer.allocate(0).asReadOnlyBuffer())
+        );
+    }
+
     /// Returns all remaining bytes without changing the supplied buffer.
     private static byte[] bufferBytes(ByteBuffer buffer) {
         return bufferBytes(buffer, buffer.position(), buffer.limit());
@@ -142,16 +174,30 @@ final class ByteBufferCodecSupportTest {
         /// The maximum decoder working-memory size.
         private final long maximumMemorySize;
 
+        /// Whether decoder construction indicates a test failure.
+        private final boolean rejectDecoderConstruction;
+
         /// Creates an unrestricted length-prefixed codec.
         private LengthPrefixedCodec() {
-            this(UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
+            this(UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE, false);
+        }
+
+        /// Creates an unrestricted codec with optionally forbidden decoder construction.
+        private LengthPrefixedCodec(boolean rejectDecoderConstruction) {
+            this(UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE, rejectDecoderConstruction);
         }
 
         /// Creates a fully configured length-prefixed codec.
-        private LengthPrefixedCodec(long maximumOutputSize, long maximumWindowSize, long maximumMemorySize) {
+        private LengthPrefixedCodec(
+                long maximumOutputSize,
+                long maximumWindowSize,
+                long maximumMemorySize,
+                boolean rejectDecoderConstruction
+        ) {
             this.maximumOutputSize = maximumOutputSize;
             this.maximumWindowSize = maximumWindowSize;
             this.maximumMemorySize = maximumMemorySize;
+            this.rejectDecoderConstruction = rejectDecoderConstruction;
         }
 
         /// Returns the maximum decoded output size.
@@ -178,7 +224,12 @@ final class ByteBufferCodecSupportTest {
             CompressionDecoderSupport.validateLimit(value, "maximumOutputSize");
             return value == maximumOutputSize
                     ? this
-                    : new LengthPrefixedCodec(value, maximumWindowSize, maximumMemorySize);
+                    : new LengthPrefixedCodec(
+                            value,
+                            maximumWindowSize,
+                            maximumMemorySize,
+                            rejectDecoderConstruction
+                    );
         }
 
         /// Returns a codec with the requested decoder history-window limit.
@@ -187,7 +238,12 @@ final class ByteBufferCodecSupportTest {
             CompressionDecoderSupport.validateLimit(value, "maximumWindowSize");
             return value == maximumWindowSize
                     ? this
-                    : new LengthPrefixedCodec(maximumOutputSize, value, maximumMemorySize);
+                    : new LengthPrefixedCodec(
+                            maximumOutputSize,
+                            value,
+                            maximumMemorySize,
+                            rejectDecoderConstruction
+                    );
         }
 
         /// Returns a codec with the requested decoder working-memory limit.
@@ -196,7 +252,12 @@ final class ByteBufferCodecSupportTest {
             CompressionDecoderSupport.validateLimit(value, "maximumMemorySize");
             return value == maximumMemorySize
                     ? this
-                    : new LengthPrefixedCodec(maximumOutputSize, maximumWindowSize, value);
+                    : new LengthPrefixedCodec(
+                            maximumOutputSize,
+                            maximumWindowSize,
+                            value,
+                            rejectDecoderConstruction
+                    );
         }
 
         /// Returns the test compression format name.
@@ -227,6 +288,9 @@ final class ByteBufferCodecSupportTest {
         /// Creates a length-prefixed identity decoder.
         @Override
         public CompressionDecoder.Framed newDecoder() {
+            if (rejectDecoderConstruction) {
+                throw new AssertionError("Decoder must not be constructed for an empty frame source");
+            }
             return CompressionDecoderSupport.limitEngineOutput(
                     new LengthPrefixedDecoder(),
                     maximumOutputSize

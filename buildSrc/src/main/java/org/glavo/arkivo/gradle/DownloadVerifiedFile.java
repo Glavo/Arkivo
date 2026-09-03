@@ -252,7 +252,7 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
     }
 
     /// Copies a response while refusing to consume more than one byte beyond the declared size.
-    private static void copyExpectedResponse(
+    static void copyExpectedResponse(
             InputStream input,
             OutputStream output,
             long expectedSize,

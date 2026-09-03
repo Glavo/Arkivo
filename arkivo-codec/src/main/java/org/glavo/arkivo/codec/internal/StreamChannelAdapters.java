@@ -4,8 +4,11 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
+import java.io.Flushable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -54,7 +57,28 @@ public final class StreamChannelAdapters {
     /// @param target the channel whose ownership is transferred to the stream
     /// @return an output stream that rejects zero-progress writes and forwards codec flushes
     public static OutputStream outputStream(WritableByteChannel target) {
-        return new ChannelOutputStream(Objects.requireNonNull(target, "target"));
+        return new ChannelOutputStream(Objects.requireNonNull(target, "target"), null, false);
+    }
+
+    /// Returns an output stream that owns the writable channel and propagates flushes to a downstream stream.
+    ///
+    /// The downstream stream is distinct from the channel lifecycle: every explicit flush reaches it, while close
+    /// flushes it only when the channel has borrowed rather than closed that stream.
+    ///
+    /// @param target the channel whose ownership is transferred to the returned stream
+    /// @param downstream the stream that ultimately receives the channel's bytes
+    /// @param ownership whether the channel closes or retains `downstream`
+    /// @return an output stream that propagates codec and downstream flushes
+    public static OutputStream outputStream(
+            WritableByteChannel target,
+            OutputStream downstream,
+            ResourceOwnership ownership
+    ) {
+        return new ChannelOutputStream(
+                Objects.requireNonNull(target, "target"),
+                Objects.requireNonNull(downstream, "downstream"),
+                Objects.requireNonNull(ownership, "ownership") == ResourceOwnership.BORROWED
+        );
     }
 
     /// Adapts one input stream to a readable channel.
@@ -265,6 +289,12 @@ public final class StreamChannelAdapters {
         /// The backing writable channel.
         private final WritableByteChannel target;
 
+        /// Optional downstream stream that must receive explicit flushes.
+        private final @Nullable Flushable downstream;
+
+        /// Whether close must flush a downstream stream retained by the channel.
+        private final boolean flushDownstreamOnClose;
+
         /// The reusable single-byte source.
         private final byte[] singleByte = new byte[1];
 
@@ -272,8 +302,14 @@ public final class StreamChannelAdapters {
         private boolean open = true;
 
         /// Creates a writable-channel output stream.
-        private ChannelOutputStream(WritableByteChannel target) {
+        private ChannelOutputStream(
+                WritableByteChannel target,
+                @Nullable Flushable downstream,
+                boolean flushDownstreamOnClose
+        ) {
             this.target = target;
+            this.downstream = downstream;
+            this.flushDownstreamOnClose = flushDownstreamOnClose;
         }
 
         /// Writes one byte to the channel.
@@ -300,19 +336,54 @@ public final class StreamChannelAdapters {
         @Override
         public void flush() throws IOException {
             ensureOpen();
-            if (target instanceof CompressingWritableByteChannel.Flushable encoder) {
-                encoder.flush();
+            @Nullable Throwable failure = null;
+            try {
+                if (target instanceof CompressingWritableByteChannel.Flushable encoder) {
+                    encoder.flush();
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+            try {
+                flushDownstream();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
+            }
+            if (failure != null) {
+                rethrow(failure);
             }
         }
 
-        /// Closes the channel and commits closure only after success.
+        /// Closes the channel, flushes a retained downstream stream, and commits closure only after success.
         @Override
         public void close() throws IOException {
             if (!open) {
                 return;
             }
-            target.close();
+            @Nullable Throwable failure = null;
+            try {
+                target.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+            if (flushDownstreamOnClose) {
+                try {
+                    flushDownstream();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = mergeFailure(failure, exception);
+                }
+            }
+            if (failure != null) {
+                rethrow(failure);
+            }
             open = false;
+        }
+
+        /// Flushes the optional downstream stream.
+        private void flushDownstream() throws IOException {
+            if (downstream != null) {
+                downstream.flush();
+            }
         }
 
         /// Requires this adapter to remain open.
@@ -321,5 +392,27 @@ public final class StreamChannelAdapters {
                 throw new IOException("Stream closed");
             }
         }
+    }
+
+    /// Adds a secondary failure as suppressed and retains the primary failure.
+    private static Throwable mergeFailure(@Nullable Throwable primary, Throwable secondary) {
+        if (primary == null) {
+            return secondary;
+        }
+        if (primary != secondary) {
+            primary.addSuppressed(secondary);
+        }
+        return primary;
+    }
+
+    /// Rethrows a stream lifecycle failure with its original checked or unchecked type.
+    private static void rethrow(Throwable failure) throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        throw (Error) failure;
     }
 }

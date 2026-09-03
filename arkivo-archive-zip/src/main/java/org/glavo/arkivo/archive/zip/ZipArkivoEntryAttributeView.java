@@ -108,6 +108,7 @@ public interface ZipArkivoEntryAttributeView extends PosixFileAttributeView {
     ///
     /// @param extraData the complete encoded local-header extra field records
     /// @throws NullPointerException if `extraData` is `null`
+    /// @throws IllegalArgumentException if `extraData` is longer than an unsigned 16-bit ZIP length field
     /// @throws IllegalStateException if the streaming entry has already been committed
     /// @throws UnsupportedOperationException if the view is read-only or the existing local record cannot be changed
     /// @throws IOException if `extraData` is malformed or an I/O error occurs while updating the entry
@@ -117,6 +118,7 @@ public interface ZipArkivoEntryAttributeView extends PosixFileAttributeView {
     ///
     /// @param extraData the complete encoded central-directory extra field records
     /// @throws NullPointerException if `extraData` is `null`
+    /// @throws IllegalArgumentException if `extraData` is longer than an unsigned 16-bit ZIP length field
     /// @throws IllegalStateException if the streaming entry has already been committed
     /// @throws UnsupportedOperationException if the view is read-only or the existing central record cannot be changed
     /// @throws IOException if `extraData` is malformed or an I/O error occurs while updating the entry

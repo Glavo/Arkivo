@@ -33,6 +33,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -45,6 +46,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared archive file system provider URI and registration behavior.
 @NotNullByDefault
 final class ArkivoFileSystemProviderSupportTest {
+    /// Maximum time allowed for cooperating registry test tasks to make progress.
+    private static final long CONCURRENCY_TIMEOUT_SECONDS = 10L;
+
     /// Temporary directory used to create portable nested file URIs.
     @TempDir
     private Path temporaryDirectory;
@@ -230,7 +234,9 @@ final class ArkivoFileSystemProviderSupportTest {
                         TestFileSystem fileSystem = registry.open(archiveUri, closeAction -> {
                             factoriesReady.countDown();
                             try {
-                                releaseFactories.await();
+                                if (!releaseFactories.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                                    throw new IOException("Timed out while synchronizing test candidates");
+                                }
                             } catch (InterruptedException exception) {
                                 Thread.currentThread().interrupt();
                                 throw new IOException("Interrupted while synchronizing test candidates", exception);
@@ -247,11 +253,11 @@ final class ArkivoFileSystemProviderSupportTest {
                 }));
             }
 
-            factoriesReady.await();
+            assertTrue(factoriesReady.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS));
             releaseFactories.countDown();
             int successCount = 0;
             for (Future<Boolean> result : results) {
-                if (result.get()) {
+                if (result.get(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                     successCount++;
                 }
             }

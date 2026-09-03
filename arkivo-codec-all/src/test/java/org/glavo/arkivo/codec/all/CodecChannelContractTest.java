@@ -31,6 +31,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.ReadOnlyBufferException;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
@@ -49,6 +50,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the first-class channel contract across default codecs for all installed formats.
 @NotNullByDefault
 final class CodecChannelContractTest {
+    /// Sentinel retained outside caller-visible output ranges.
+    private static final byte BUFFER_GUARD = (byte) 0xa5;
+
     /// Verifies every installed codec exposes immutable, reusable decoding resource configuration.
     @Test
     void configuresReusableDecodingLimitsAcrossEveryCodec() {
@@ -633,11 +637,16 @@ final class CodecChannelContractTest {
     ) throws IOException {
         int sourceOffset = 3;
         ByteBuffer sourceStorage = allocateBuffer(directSource, sourceOffset + input.length + 5);
+        fillBuffer(sourceStorage, BUFFER_GUARD);
+        sourceStorage.order(ByteOrder.LITTLE_ENDIAN);
         sourceStorage.position(sourceOffset);
         sourceStorage.put(input);
         sourceStorage.flip();
         sourceStorage.position(sourceOffset);
-        ByteBuffer source = readOnlySources ? sourceStorage.asReadOnlyBuffer() : sourceStorage;
+        byte[] originalSourceBytes = snapshotBuffer(sourceStorage);
+        ByteBuffer source = (readOnlySources ? sourceStorage.asReadOnlyBuffer() : sourceStorage)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        int sourceLimit = source.limit();
 
         int compressedOffset = 5;
         int compressedCapacity = input.length * 4 + 8_192;
@@ -645,25 +654,47 @@ final class CodecChannelContractTest {
                 directCompressed,
                 compressedOffset + compressedCapacity + 7
         );
+        fillBuffer(compressed, BUFFER_GUARD);
+        compressed.order(ByteOrder.LITTLE_ENDIAN);
         compressed.position(compressedOffset);
         compressed.limit(compressedOffset + compressedCapacity);
+        int compressedLimit = compressed.limit();
         codec.compress(source, compressed);
         assertEquals(source.limit(), source.position(), codec.format().name());
+        assertEquals(sourceLimit, source.limit(), codec.format().name());
+        assertEquals(ByteOrder.LITTLE_ENDIAN, source.order(), codec.format().name());
+        assertEquals(compressedLimit, compressed.limit(), codec.format().name());
+        assertEquals(ByteOrder.LITTLE_ENDIAN, compressed.order(), codec.format().name());
+        assertArrayEquals(originalSourceBytes, snapshotBuffer(sourceStorage), codec.format().name());
 
         int compressedEnd = compressed.position();
-        ByteBuffer compressedSource = compressed.duplicate();
+        assertGuardRange(compressed, 0, compressedOffset, codec.format().name());
+        assertGuardRange(compressed, compressedEnd, compressed.capacity(), codec.format().name());
+        byte[] originalCompressedBytes = snapshotBuffer(compressed);
+        ByteBuffer compressedSource = compressed.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         compressedSource.position(compressedOffset);
         compressedSource.limit(compressedEnd);
         if (readOnlySources) {
-            compressedSource = compressedSource.asReadOnlyBuffer();
+            compressedSource = compressedSource.asReadOnlyBuffer().order(ByteOrder.LITTLE_ENDIAN);
         }
+        int compressedSourceLimit = compressedSource.limit();
 
         int decodedOffset = 7;
         ByteBuffer decoded = allocateBuffer(directDecoded, decodedOffset + input.length + 3);
+        fillBuffer(decoded, BUFFER_GUARD);
+        decoded.order(ByteOrder.LITTLE_ENDIAN);
         decoded.position(decodedOffset);
         decoded.limit(decodedOffset + input.length);
+        int decodedLimit = decoded.limit();
         decompressFixed(codec, compressedSource, decoded, input.length);
         assertEquals(decoded.limit(), decoded.position(), codec.format().name());
+        assertEquals(compressedSourceLimit, compressedSource.limit(), codec.format().name());
+        assertEquals(ByteOrder.LITTLE_ENDIAN, compressedSource.order(), codec.format().name());
+        assertEquals(decodedLimit, decoded.limit(), codec.format().name());
+        assertEquals(ByteOrder.LITTLE_ENDIAN, decoded.order(), codec.format().name());
+        assertArrayEquals(originalCompressedBytes, snapshotBuffer(compressed), codec.format().name());
+        assertGuardRange(decoded, 0, decodedOffset, codec.format().name());
+        assertGuardRange(decoded, decoded.position(), decoded.capacity(), codec.format().name());
 
         ByteBuffer output = decoded.duplicate();
         output.position(decodedOffset);
@@ -688,6 +719,31 @@ final class CodecChannelContractTest {
     /// Allocates one heap or direct buffer with the requested capacity.
     private static ByteBuffer allocateBuffer(boolean direct, int capacity) {
         return direct ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
+    }
+
+    /// Fills a buffer's complete storage without changing its position, limit, or byte order.
+    private static void fillBuffer(ByteBuffer buffer, byte value) {
+        for (int index = 0; index < buffer.capacity(); index++) {
+            buffer.put(index, value);
+        }
+    }
+
+    /// Returns a copy of a buffer's complete storage without changing its observable state.
+    private static byte[] snapshotBuffer(ByteBuffer buffer) {
+        ByteBuffer view = buffer.duplicate();
+        view.clear();
+        byte[] snapshot = new byte[view.remaining()];
+        view.get(snapshot);
+        return snapshot;
+    }
+
+    /// Verifies every byte in a half-open storage range retains the guard sentinel.
+    private static void assertGuardRange(ByteBuffer buffer, int start, int end, String context) {
+        ByteBuffer storage = buffer.duplicate();
+        storage.clear();
+        for (int index = start; index < end; index++) {
+            assertEquals(BUFFER_GUARD, storage.get(index), context + " guard index " + index);
+        }
     }
 
     /// Verifies every compression-level codec can derive and use its documented default configuration.
@@ -800,7 +856,7 @@ final class CodecChannelContractTest {
     /// Verifies every codec accepts exact source-size metadata and size-aware codecs enforce it.
     @Test
     void acceptsExactSourceSizesAcrossAllCodecs() throws IOException {
-        Set<String> sizeAwareCodecs = Set.of("lzma", "lzma-raw", "zstd");
+        Set<String> sizeAwareCodecs = Set.of("lz4", "lzma", "lzma-raw", "zstd");
         byte[] input = (
                 "exact source size contract 0123456789abcdef;"
         ).repeat(512).getBytes(StandardCharsets.UTF_8);
@@ -845,6 +901,20 @@ final class CodecChannelContractTest {
                             try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                                     Channels.newChannel(new ByteArrayOutputStream()),
                                     EncodingOptions.ofSourceSize(input.length - 1L),
+                                    ResourceOwnership.BORROWED
+                            )) {
+                                writeAll(encoder, input);
+                                encoder.finish();
+                            }
+                        },
+                        codec.format().name()
+                );
+                assertThrows(
+                        IOException.class,
+                        () -> {
+                            try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
+                                    Channels.newChannel(new ByteArrayOutputStream()),
+                                    EncodingOptions.ofSourceSize(input.length + 1L),
                                     ResourceOwnership.BORROWED
                             )) {
                                 writeAll(encoder, input);

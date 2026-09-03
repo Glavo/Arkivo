@@ -135,6 +135,11 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
             target.limit(originalLimit);
         }
         outputBytes += target.position() - targetStart;
+        if (outcome == CodecOutcome.NEEDS_OUTPUT
+                && outputBytes == maximumOutputSize
+                && target.hasRemaining()) {
+            return probeForExcess(source, endOfInput);
+        }
         return outcome;
     }
 

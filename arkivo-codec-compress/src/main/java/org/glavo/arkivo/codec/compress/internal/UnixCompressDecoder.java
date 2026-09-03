@@ -339,8 +339,11 @@ public final class UnixCompressDecoder implements CompressionDecoder {
         }
     }
 
-    /// Marks successful completion at physical EOF and discards sub-code padding bits.
-    private void finishAtPhysicalEnd() {
+    /// Marks successful completion at physical EOF and discards sub-byte padding bits.
+    private void finishAtPhysicalEnd() throws EOFException {
+        if (bitCount >= Byte.SIZE) {
+            throw new EOFException("Truncated Unix compress LZW code");
+        }
         bitBuffer = 0L;
         bitCount = 0;
         alignmentAction = AlignmentAction.NONE;

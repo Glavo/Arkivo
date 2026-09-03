@@ -73,5 +73,6 @@ tasks.named<Test>("tier2Test") {
     description = "Runs BZip2 tests against the pinned official reference samples."
     dependsOn(prepareBZip2TestCorpus)
     shouldRunAfter(tasks.test)
+    inputs.dir(bzip2TestDataDirectory)
     systemProperty("arkivo.bzip2.testDataDirectory", bzip2TestDataDirectory.get().asFile.absolutePath)
 }

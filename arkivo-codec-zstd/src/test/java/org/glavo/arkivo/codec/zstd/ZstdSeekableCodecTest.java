@@ -15,7 +15,11 @@ import org.junit.jupiter.api.Timeout;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.ReadOnlyBufferException;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.InterruptibleChannel;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -224,6 +229,151 @@ public final class ZstdSeekableCodecTest {
                 assertTrue(source.isOpen());
             }
         } finally {
+            Files.deleteIfExists(path);
+        }
+    }
+
+    /// Verifies logical views implement the positioning, read-only, buffer-progress, and closure contracts of NIO.
+    @Test
+    public void implementsReadOnlySeekableChannelContract() throws IOException {
+        byte[] decoded = patternedBytes(2500);
+        Path path = Files.createTempFile("arkivo-zstd-seekable-channel-contract-", ".zst");
+        try {
+            try (SeekableByteChannel target = Files.newByteChannel(
+                    path,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING
+            ); var encoder = ZstdCodec.DEFAULT.newSeekableWritableByteChannel(
+                    target,
+                    SeekableEncodingOptions.ofMaximumFrameSize(512),
+                    ResourceOwnership.BORROWED
+            )) {
+                encoder.encode(ByteBuffer.wrap(decoded));
+            }
+
+            CompressionCodec.Seekable.Index index;
+            try (SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ)) {
+                index = ZstdCodec.DEFAULT.readIndex(source);
+                assertNotNull(index);
+            }
+
+            try (SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ)) {
+                SeekableByteChannel logical = index.newReadableByteChannel(source, ResourceOwnership.BORROWED);
+                assertEquals(decoded.length, logical.size());
+                assertEquals(0L, logical.position());
+
+                long beyondEnd = decoded.length + 19L;
+                assertSame(logical, logical.position(beyondEnd));
+                assertEquals(0, logical.read(ByteBuffer.allocate(0)));
+                assertEquals(-1, logical.read(ByteBuffer.allocate(1)));
+                assertEquals(beyondEnd, logical.position());
+                assertThrows(IllegalArgumentException.class, () -> logical.position(-1L));
+                assertEquals(beyondEnd, logical.position());
+
+                assertSame(logical, logical.position(17L));
+                ByteBuffer writeSource = ByteBuffer.wrap(patternedBytes(8));
+                assertThrows(NonWritableChannelException.class, () -> logical.write(writeSource));
+                assertEquals(0, writeSource.position());
+                assertEquals(17L, logical.position());
+                assertThrows(IllegalArgumentException.class, () -> logical.truncate(-1L));
+                assertThrows(NonWritableChannelException.class, () -> logical.truncate(0L));
+                assertEquals(17L, logical.position());
+
+                assertSame(logical, logical.position(0L));
+                ByteBuffer readOnlyTarget = ByteBuffer.allocate(16).asReadOnlyBuffer();
+                assertThrows(ReadOnlyBufferException.class, () -> logical.read(readOnlyTarget));
+                assertEquals(0, readOnlyTarget.position());
+                assertEquals(0L, logical.position());
+
+                ByteBuffer target = ByteBuffer.allocate(16);
+                assertEquals(16, logical.read(target));
+                assertArrayEquals(java.util.Arrays.copyOf(decoded, 16), target.array());
+
+                logical.close();
+                logical.close();
+                assertFalse(logical.isOpen());
+                assertTrue(source.isOpen());
+                assertThrows(ClosedChannelException.class, logical::position);
+                assertThrows(ClosedChannelException.class, logical::size);
+                assertThrows(ClosedChannelException.class, () -> logical.position(0L));
+                assertThrows(ClosedChannelException.class, () -> logical.read(ByteBuffer.allocate(1)));
+                assertThrows(ClosedChannelException.class, () -> logical.write(ByteBuffer.allocate(1)));
+                assertThrows(ClosedChannelException.class, () -> logical.truncate(0L));
+            }
+
+            SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ);
+            SeekableByteChannel logical = index.newReadableByteChannel(source, ResourceOwnership.BORROWED);
+            source.close();
+            assertFalse(logical.isOpen());
+            assertThrows(ClosedChannelException.class, () -> logical.read(ByteBuffer.allocate(1)));
+            logical.close();
+        } finally {
+            Files.deleteIfExists(path);
+        }
+    }
+
+    /// Verifies pre-existing interruption aborts seekable writers and logical readers together with their endpoints.
+    @Test
+    public void preservesInterruptibleLifecycle() throws IOException {
+        byte[] decoded = patternedBytes(1024);
+        Path path = Files.createTempFile("arkivo-zstd-seekable-interrupt-", ".zst");
+        try {
+            SeekableByteChannel target = Files.newByteChannel(
+                    path,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING
+            );
+            var encoder = ZstdCodec.DEFAULT.newSeekableWritableByteChannel(
+                    target,
+                    SeekableEncodingOptions.DEFAULT,
+                    ResourceOwnership.BORROWED
+            );
+            try {
+                Thread.currentThread().interrupt();
+                assertThrows(
+                        ClosedByInterruptException.class,
+                        () -> encoder.write(ByteBuffer.wrap(decoded))
+                );
+                assertTrue(Thread.currentThread().isInterrupted());
+                assertFalse(encoder.isOpen());
+                assertFalse(target.isOpen());
+            } finally {
+                Thread.interrupted();
+                encoder.close();
+                target.close();
+            }
+
+            try (SeekableByteChannel encodedTarget = Files.newByteChannel(
+                    path,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING
+            ); var completeEncoder = ZstdCodec.DEFAULT.newSeekableWritableByteChannel(encodedTarget)) {
+                completeEncoder.encode(ByteBuffer.wrap(decoded));
+            }
+            CompressionCodec.Seekable.Index index;
+            try (SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ)) {
+                index = ZstdCodec.DEFAULT.readIndex(source);
+                assertNotNull(index);
+            }
+
+            SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ);
+            SeekableByteChannel logical = index.newReadableByteChannel(source, ResourceOwnership.BORROWED);
+            try {
+                Thread.currentThread().interrupt();
+                assertThrows(
+                        ClosedByInterruptException.class,
+                        () -> logical.read(ByteBuffer.allocate(1))
+                );
+                assertTrue(Thread.currentThread().isInterrupted());
+                assertFalse(logical.isOpen());
+                assertFalse(source.isOpen());
+            } finally {
+                Thread.interrupted();
+                logical.close();
+                source.close();
+            }
+        } finally {
+            Thread.interrupted();
             Files.deleteIfExists(path);
         }
     }

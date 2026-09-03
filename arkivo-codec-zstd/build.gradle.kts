@@ -79,5 +79,6 @@ tasks.named<Test>("tier2Test") {
     description = "Runs extended Zstandard interoperability tests and the pinned official golden corpus."
     dependsOn(prepareZstdTestCorpus)
     shouldRunAfter(tasks.test)
+    inputs.dir(zstdTestDataDirectory)
     systemProperty("arkivo.zstd.testDataDirectory", zstdTestDataDirectory.get().asFile.absolutePath)
 }

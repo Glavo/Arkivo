@@ -5,7 +5,10 @@ package org.glavo.arkivo.archive;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -15,14 +18,18 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.ClosedDirectoryStreamException;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -34,8 +41,11 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -43,6 +53,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests the shared archive file system concurrency and lifecycle contract.
 @NotNullByDefault
 public final class ArkivoFileSystemConcurrencyTest {
+    /// Maximum time allowed for a cooperating test thread to enter or complete an operation.
+    private static final long OPERATION_TIMEOUT_SECONDS = 10L;
+
+    /// Directory containing managed-channel test content.
+    @TempDir
+    private Path temporaryDirectory;
+
     /// Verifies that read operations overlap while write operations remain exclusive.
     @Test
     public void concurrentReadsOverlapAndWritesWait() throws Exception {
@@ -60,7 +77,7 @@ public final class ArkivoFileSystemConcurrencyTest {
                 fileSystem.holdRead(readsEntered, releaseReads);
                 return null;
             });
-            assertTrue(readsEntered.await(2L, TimeUnit.SECONDS));
+            assertTrue(readsEntered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
 
             Future<Void> write = executor.submit(() -> {
                 fileSystem.runWrite();
@@ -69,9 +86,9 @@ public final class ArkivoFileSystemConcurrencyTest {
             assertThrows(TimeoutException.class, () -> write.get(100L, TimeUnit.MILLISECONDS));
 
             releaseReads.countDown();
-            firstRead.get(2L, TimeUnit.SECONDS);
-            secondRead.get(2L, TimeUnit.SECONDS);
-            write.get(2L, TimeUnit.SECONDS);
+            firstRead.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            secondRead.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            write.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } finally {
             releaseReads.countDown();
             fileSystem.close();
@@ -91,7 +108,7 @@ public final class ArkivoFileSystemConcurrencyTest {
 
         try {
             Future<Integer> read = executor.submit(() -> channel.read(ByteBuffer.allocate(1)));
-            assertTrue(readEntered.await(2L, TimeUnit.SECONDS));
+            assertTrue(readEntered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
             Future<Void> close = executor.submit(() -> {
                 fileSystem.close();
                 return null;
@@ -99,8 +116,8 @@ public final class ArkivoFileSystemConcurrencyTest {
             assertThrows(TimeoutException.class, () -> close.get(100L, TimeUnit.MILLISECONDS));
 
             releaseRead.countDown();
-            read.get(2L, TimeUnit.SECONDS);
-            close.get(2L, TimeUnit.SECONDS);
+            read.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            close.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
             assertTrue(delegate.isOpen());
             assertFalse(channel.isOpen());
@@ -127,7 +144,7 @@ public final class ArkivoFileSystemConcurrencyTest {
                 fileSystem.readAndCloseManagedInput(delegate);
                 return null;
             });
-            operation.get(2L, TimeUnit.SECONDS);
+            operation.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             assertFalse(delegate.isOpen());
         } finally {
             fileSystem.close();
@@ -167,6 +184,35 @@ public final class ArkivoFileSystemConcurrencyTest {
         assertThrows(ClosedFileSystemException.class, iterator::hasNext);
     }
 
+    /// Verifies strict close aggregates initial resource failures while retrying them after lock acquisition.
+    @Test
+    public void strictCloseAggregatesAndRetriesResourceFailures() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
+        TrackingInputStream firstDelegate = new TrackingInputStream("first close failure", 1);
+        TrackingInputStream secondDelegate = new TrackingInputStream("second close failure", 1);
+        InputStream first = fileSystem.managedInputStream(firstDelegate);
+        InputStream second = fileSystem.managedInputStream(secondDelegate);
+
+        IOException failure = assertThrows(IOException.class, fileSystem::close);
+
+        assertEquals(1, failure.getSuppressed().length);
+        assertEquals(
+                Set.of("first close failure", "second close failure"),
+                Set.of(failure.getMessage(), failure.getSuppressed()[0].getMessage())
+        );
+        assertFalse(fileSystem.isOpen());
+        assertFalse(firstDelegate.isOpen());
+        assertFalse(secondDelegate.isOpen());
+        assertEquals(2, firstDelegate.closeCalls());
+        assertEquals(2, secondDelegate.closeCalls());
+        assertThrows(IOException.class, first::read);
+        assertThrows(IOException.class, second::read);
+
+        fileSystem.close();
+        assertEquals(2, firstDelegate.closeCalls());
+        assertEquals(2, secondDelegate.closeCalls());
+    }
+
     /// Verifies that strict close terminates a blocking interruptible read before waiting for its operation lock.
     @Test
     public void strictCloseReleasesBlockingInterruptibleRead() throws Exception {
@@ -180,16 +226,16 @@ public final class ArkivoFileSystemConcurrencyTest {
 
         try {
             Future<Integer> read = executor.submit(() -> channel.read(ByteBuffer.allocate(1)));
-            assertTrue(readEntered.await(2L, TimeUnit.SECONDS));
+            assertTrue(readEntered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
             Future<Void> close = executor.submit(() -> {
                 fileSystem.close();
                 return null;
             });
 
-            close.get(2L, TimeUnit.SECONDS);
+            close.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             ExecutionException readFailure = assertThrows(
                     ExecutionException.class,
-                    () -> read.get(2L, TimeUnit.SECONDS)
+                    () -> read.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             );
             assertInstanceOf(AsynchronousCloseException.class, readFailure.getCause());
             assertFalse(delegate.isOpen());
@@ -222,25 +268,123 @@ public final class ArkivoFileSystemConcurrencyTest {
         }
     }
 
+    /// Verifies managed resources delegate their complete mutable operation surfaces and enforce terminal state.
+    @Test
+    public void managedResourcesDelegateCompleteOperationSurface() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
+        try {
+            Path path = temporaryDirectory.resolve("managed.bin");
+            try (SeekableByteChannel channel = fileSystem.managedWriteChannel(Files.newByteChannel(
+                    path,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.READ,
+                    StandardOpenOption.WRITE
+            ))) {
+                assertEquals(4, channel.write(ByteBuffer.wrap(new byte[]{1, 2, 3, 4})));
+                assertEquals(4L, channel.position());
+                assertEquals(4L, channel.size());
+                assertSame(channel, channel.position(1L));
+                ByteBuffer target = ByteBuffer.allocate(2);
+                assertEquals(2, channel.read(target));
+                assertArrayEquals(new byte[]{2, 3}, target.array());
+                assertSame(channel, channel.truncate(3L));
+                assertEquals(3L, channel.size());
+            }
+
+            ByteArrayInputStream inputDelegate = new ByteArrayInputStream(new byte[]{10, 11, 12, 13, 14});
+            InputStream input = fileSystem.managedInputStream(inputDelegate);
+            assertTrue(input.markSupported());
+            assertEquals(10, input.read());
+            input.mark(5);
+            byte[] inputTarget = new byte[4];
+            assertEquals(2, input.read(inputTarget, 1, 2));
+            assertArrayEquals(new byte[]{0, 11, 12, 0}, inputTarget);
+            input.reset();
+            assertEquals(1L, input.skip(1L));
+            assertEquals(3, input.available());
+            assertEquals(12, input.read());
+            input.close();
+            input.close();
+            assertThrows(IOException.class, input::read);
+            assertThrows(IOException.class, input::reset);
+            assertThrows(IllegalStateException.class, () -> input.mark(1));
+
+            ByteArrayOutputStream outputDelegate = new ByteArrayOutputStream();
+            OutputStream output = fileSystem.managedOutputStream(outputDelegate);
+            output.write(1);
+            output.write(new byte[]{2, 3, 4}, 1, 2);
+            output.flush();
+            output.close();
+            output.close();
+            assertArrayEquals(new byte[]{1, 3, 4}, outputDelegate.toByteArray());
+            assertThrows(IOException.class, () -> output.write(5));
+            assertThrows(IOException.class, output::flush);
+
+            Path first = Path.of("first");
+            Path second = Path.of("second");
+            MutableDirectoryStream directoryDelegate = new MutableDirectoryStream(List.of(first, second));
+            DirectoryStream<Path> directory = fileSystem.managedDirectoryStream(directoryDelegate);
+            Iterator<Path> iterator = directory.iterator();
+            assertTrue(iterator.hasNext());
+            assertEquals(first, iterator.next());
+            iterator.remove();
+            assertEquals(List.of(second), directoryDelegate.entries());
+            assertEquals(second, iterator.next());
+            assertFalse(iterator.hasNext());
+            directory.close();
+            directory.close();
+            assertFalse(directoryDelegate.isOpen());
+            assertThrows(ClosedDirectoryStreamException.class, directory::iterator);
+        } finally {
+            fileSystem.close();
+        }
+    }
+
+    /// Verifies the no-argument constructor selects concurrent-read coordination.
+    @Test
+    public void defaultStrategyUsesConcurrentReads() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem();
+        try {
+            assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, fileSystem.threadSafety());
+            TrackingReadableByteChannel delegate = new TrackingReadableByteChannel();
+            try (ReadableByteChannel managed = fileSystem.managedReadableChannel(delegate)) {
+                assertNotSame(delegate, managed);
+            }
+        } finally {
+            fileSystem.close();
+        }
+    }
+
     /// Verifies that the none strategy returns raw resources and adds no close behavior.
     @Test
     public void noneStrategyDoesNotWrapResources() throws IOException {
         TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.NONE);
-        TrackingSeekableByteChannel channel = new TrackingSeekableByteChannel();
+        TrackingSeekableByteChannel readChannel = new TrackingSeekableByteChannel();
+        TrackingSeekableByteChannel writeChannel = new TrackingSeekableByteChannel();
+        TrackingReadableByteChannel readableChannel = new TrackingReadableByteChannel();
         TrackingInputStream input = new TrackingInputStream();
+        TrackingOutputStream output = new TrackingOutputStream();
         TrackingDirectoryStream directory = new TrackingDirectoryStream();
 
-        assertSame(channel, fileSystem.managedReadChannel(channel));
+        assertSame(readChannel, fileSystem.managedReadChannel(readChannel));
+        assertSame(writeChannel, fileSystem.managedWriteChannel(writeChannel));
+        assertSame(readableChannel, fileSystem.managedReadableChannel(readableChannel));
         assertSame(input, fileSystem.managedInputStream(input));
+        assertSame(output, fileSystem.managedOutputStream(output));
         assertSame(directory, fileSystem.managedDirectoryStream(directory));
 
         fileSystem.close();
 
-        assertTrue(channel.isOpen());
+        assertTrue(readChannel.isOpen());
+        assertTrue(writeChannel.isOpen());
+        assertTrue(readableChannel.isOpen());
         assertTrue(input.isOpen());
+        assertTrue(output.isOpen());
         assertTrue(directory.isOpen());
-        channel.read(ByteBuffer.allocate(1));
+        readChannel.read(ByteBuffer.allocate(1));
+        readableChannel.read(ByteBuffer.allocate(1));
         input.read();
+        output.write(1);
         directory.iterator().hasNext();
     }
 
@@ -249,6 +393,10 @@ public final class ArkivoFileSystemConcurrencyTest {
     private static final class TestFileSystem extends ArkivoFileSystem {
         /// Whether this test file system remains open.
         private volatile boolean open = true;
+
+        /// Creates a test file system with the default strategy.
+        private TestFileSystem() {
+        }
 
         /// Creates a test file system with the requested strategy.
         private TestFileSystem(ArkivoFileSystemThreadSafety threadSafety) {
@@ -286,6 +434,11 @@ public final class ArkivoFileSystemConcurrencyTest {
         /// Exposes read-only seekable channel management.
         private SeekableByteChannel managedReadChannel(SeekableByteChannel channel) {
             return manageReadChannel(channel);
+        }
+
+        /// Exposes writable seekable channel management.
+        private SeekableByteChannel managedWriteChannel(SeekableByteChannel channel) {
+            return manageWriteChannel(channel);
         }
 
         /// Exposes input stream management.
@@ -602,8 +755,28 @@ public final class ArkivoFileSystemConcurrencyTest {
     /// Provides an input stream that records close state.
     @NotNullByDefault
     private static final class TrackingInputStream extends InputStream {
+        /// Failure reported while configured close attempts remain.
+        private final IOException closeFailure;
+
+        /// Number of close failures still scheduled.
+        private int closeFailuresRemaining;
+
+        /// Number of close calls received.
+        private int closeCalls;
+
         /// Whether this stream remains open.
         private boolean open = true;
+
+        /// Creates a stream whose close always succeeds.
+        private TrackingInputStream() {
+            this("close failure", 0);
+        }
+
+        /// Creates a stream with the requested initial close failures.
+        private TrackingInputStream(String closeFailureMessage, int closeFailuresRemaining) {
+            this.closeFailure = new IOException(closeFailureMessage);
+            this.closeFailuresRemaining = closeFailuresRemaining;
+        }
 
         /// Reports end of input while open.
         @Override
@@ -614,13 +787,23 @@ public final class ArkivoFileSystemConcurrencyTest {
 
         /// Closes this stream.
         @Override
-        public void close() {
+        public void close() throws IOException {
+            closeCalls++;
+            if (closeFailuresRemaining > 0) {
+                closeFailuresRemaining--;
+                throw closeFailure;
+            }
             open = false;
         }
 
         /// Returns whether this stream remains open.
         private boolean isOpen() {
             return open;
+        }
+
+        /// Returns the number of close calls received.
+        private int closeCalls() {
+            return closeCalls;
         }
 
         /// Requires this stream to remain open.
@@ -684,6 +867,46 @@ public final class ArkivoFileSystemConcurrencyTest {
         }
 
         /// Returns whether this stream remains open.
+        private boolean isOpen() {
+            return open;
+        }
+    }
+
+    /// Provides a mutable directory stream for exercising iterator traversal and removal.
+    @NotNullByDefault
+    private static final class MutableDirectoryStream implements DirectoryStream<Path> {
+        /// Mutable directory entries returned by the iterator.
+        private final ArrayList<Path> entries;
+
+        /// Whether this directory stream remains open.
+        private boolean open = true;
+
+        /// Creates a directory stream over copied entries.
+        private MutableDirectoryStream(List<Path> entries) {
+            this.entries = new ArrayList<>(entries);
+        }
+
+        /// Returns a mutable iterator while this stream is open.
+        @Override
+        public Iterator<Path> iterator() {
+            if (!open) {
+                throw new ClosedDirectoryStreamException();
+            }
+            return entries.iterator();
+        }
+
+        /// Closes this directory stream.
+        @Override
+        public void close() {
+            open = false;
+        }
+
+        /// Returns an immutable snapshot of current entries.
+        private List<Path> entries() {
+            return List.copyOf(entries);
+        }
+
+        /// Returns whether this directory stream remains open.
         private boolean isOpen() {
             return open;
         }

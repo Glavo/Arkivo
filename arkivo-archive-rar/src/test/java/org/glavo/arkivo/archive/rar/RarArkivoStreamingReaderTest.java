@@ -911,6 +911,9 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(true, Files.isDirectory(existingFile));
 
             Path file = fileSystem.getPath("/dir/hello.txt");
+            assertEquals(true, Files.isReadable(file));
+            assertEquals(false, Files.isWritable(file));
+            assertEquals(false, Files.isExecutable(file));
             RarArkivoEntryAttributes fileAttributes = Files.readAttributes(file, RarArkivoEntryAttributes.class);
             RarArkivoEntryAttributeView rarView = Objects.requireNonNull(Files.getFileAttributeView(
                     file,

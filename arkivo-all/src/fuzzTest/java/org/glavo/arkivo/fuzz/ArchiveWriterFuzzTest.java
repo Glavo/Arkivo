@@ -22,6 +22,9 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -42,8 +45,9 @@ public final class ArchiveWriterFuzzTest {
 
     /// Generates a bounded archive and verifies every committed entry through the corresponding public reader.
     ///
-    /// Control bytes select entry count, write chunking, channel or stream bodies, body-free entries, and whether the
-    /// final pending handle is completed implicitly by writer close. Every generated path is unique and archive-local.
+    /// Control bytes select entry count, regular files, directories, symbolic links, channel or stream bodies,
+    /// body-free files, and whether the final pending handle is completed implicitly by writer close. Every generated
+    /// path is unique and archive-local.
     ///
     /// @param data state controls followed by arbitrary entry content
     /// @throws IOException if a valid writer sequence or its round trip unexpectedly fails
@@ -66,7 +70,11 @@ public final class ArchiveWriterFuzzTest {
         try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(formatName, archive)) {
             for (int index = 0; index < expectedEntries.size(); index++) {
                 ExpectedEntry expected = expectedEntries.get(index);
-                ArkivoStreamingWriter.Entry entry = writer.beginFile(expected.path());
+                ArkivoStreamingWriter.Entry entry = switch (expected.kind()) {
+                    case FILE -> writer.beginFile(expected.path());
+                    case DIRECTORY -> writer.beginDirectory(expected.path());
+                    case SYMBOLIC_LINK -> writer.beginSymbolicLink(expected.path(), expected.linkTarget());
+                };
                 if (!expected.hasBody()) {
                     if (index + 1 < expectedEntries.size() || (globalControl & 0x20) == 0) {
                         entry.close();
@@ -91,8 +99,8 @@ public final class ArchiveWriterFuzzTest {
             }
         }
 
-        if ("7z".equals(formatName)) {
-            verifyFileSystem(archive.toByteArray(), expectedEntries);
+        if ("7z".equals(formatName) || "zip".equals(formatName)) {
+            verifyFileSystem(formatName, archive.toByteArray(), expectedEntries);
         } else {
             verifyStreaming(formatName, archive.toByteArray(), expectedEntries);
         }
@@ -112,11 +120,17 @@ public final class ArchiveWriterFuzzTest {
             int entryControl = payloadSize == 0
                     ? globalControl + index
                     : Byte.toUnsignedInt(data[HEADER_SIZE + index % payloadSize]);
-            boolean hasBody = (entryControl & 1) == 0;
+            EntryKind kind = switch ((entryControl >>> 2) % 3) {
+                case 0 -> EntryKind.FILE;
+                case 1 -> EntryKind.DIRECTORY;
+                default -> EntryKind.SYMBOLIC_LINK;
+            };
+            boolean hasBody = kind == EntryKind.FILE && (entryControl & 1) == 0;
             boolean useChannel = (entryControl & 2) == 0;
-            byte[] content = hasBody ? Arrays.copyOfRange(data, start, end) : new byte[0];
+            byte @Unmodifiable [] content = hasBody ? Arrays.copyOfRange(data, start, end) : new byte[0];
             String path = "entry-" + index + '-' + Integer.toHexString(entryControl) + ".bin";
-            result.add(new ExpectedEntry(path, content, hasBody, useChannel));
+            String linkTarget = "target-" + index + '-' + Integer.toHexString(entryControl) + ".txt";
+            result.add(new ExpectedEntry(path, content, kind, hasBody, useChannel, linkTarget));
         }
         return result;
     }
@@ -173,12 +187,23 @@ public final class ArchiveWriterFuzzTest {
                 }
                 ExpectedEntry expected = expectedEntries.get(index++);
                 ArchiveEntryAttributes attributes = reader.readAttributes();
-                if (!expected.path().equals(attributes.path()) || !attributes.isRegularFile()) {
+                String actualPath = attributes.path();
+                boolean pathMatches = expected.path().equals(actualPath)
+                        || expected.kind() == EntryKind.DIRECTORY
+                        && (expected.path() + '/').equals(actualPath);
+                boolean kindMatches = switch (expected.kind()) {
+                    case FILE -> attributes.isRegularFile();
+                    case DIRECTORY -> attributes.isDirectory();
+                    case SYMBOLIC_LINK -> attributes.isSymbolicLink();
+                };
+                if (!pathMatches || !kindMatches) {
                     throw new AssertionError("Archive writer changed generated entry metadata");
                 }
-                try (InputStream body = reader.openInputStream()) {
-                    if (!Arrays.equals(expected.content(), body.readAllBytes())) {
-                        throw new AssertionError("Archive writer changed generated entry content");
+                if (expected.kind() == EntryKind.FILE) {
+                    try (InputStream body = reader.openInputStream()) {
+                        if (!Arrays.equals(expected.content(), body.readAllBytes())) {
+                            throw new AssertionError("Archive writer changed generated entry content");
+                        }
                     }
                 }
             }
@@ -188,29 +213,54 @@ public final class ArchiveWriterFuzzTest {
         }
     }
 
-    /// Verifies generated 7z entries through its indexed file system.
+    /// Verifies generated ZIP or 7z entries through its indexed file system.
     private static void verifyFileSystem(
+            String formatName,
             byte @Unmodifiable [] archive,
             List<ExpectedEntry> expectedEntries
     ) throws IOException {
-        try (ReadOnlyByteArrayChannel source = new ReadOnlyByteArrayChannel(archive);
-             ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(
-                     "7z",
-                     source,
-                     FuzzSupport.ARCHIVE_READ_OPTIONS
-             )) {
+        ReadOnlyByteArrayChannel source = new ReadOnlyByteArrayChannel(archive);
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(
+                formatName,
+                source,
+                FuzzSupport.ARCHIVE_READ_OPTIONS
+        )) {
             for (ExpectedEntry expected : expectedEntries) {
-                byte[] actual = Files.readAllBytes(fileSystem.getPath("/" + expected.path()));
-                if (!Arrays.equals(expected.content(), actual)) {
-                    throw new AssertionError("7z writer changed generated entry content");
+                Path path = fileSystem.getPath("/" + expected.path());
+                BasicFileAttributes attributes = Files.readAttributes(
+                        path,
+                        BasicFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
+                switch (expected.kind()) {
+                    case FILE -> {
+                        if (!attributes.isRegularFile()
+                                || !Arrays.equals(expected.content(), Files.readAllBytes(path))) {
+                            throw new AssertionError("Archive writer changed generated file content");
+                        }
+                    }
+                    case DIRECTORY -> {
+                        if (!attributes.isDirectory()) {
+                            throw new AssertionError("Archive writer changed a generated directory");
+                        }
+                    }
+                    case SYMBOLIC_LINK -> {
+                        if (!attributes.isSymbolicLink()
+                                || !expected.linkTarget().equals(Files.readSymbolicLink(path).toString())) {
+                            throw new AssertionError("Archive writer changed a generated symbolic link");
+                        }
+                    }
                 }
             }
             try (Stream<java.nio.file.Path> paths = Files.walk(fileSystem.getPath("/"))) {
-                long actualEntryCount = paths.filter(Files::isRegularFile).count();
+                long actualEntryCount = paths.skip(1L).count();
                 if (actualEntryCount != expectedEntries.size()) {
-                    throw new AssertionError("7z writer emitted an unexpected number of entries");
+                    throw new AssertionError("Archive writer emitted an unexpected number of entries");
                 }
             }
+        }
+        if (source.isOpen()) {
+            throw new AssertionError("Archive file system did not close its owned source");
         }
     }
 
@@ -219,24 +269,48 @@ public final class ArchiveWriterFuzzTest {
     /// @return deterministic archive-writer seed arguments
     private static Stream<Arguments> archiveWriterSeeds() {
         return java.util.stream.IntStream.range(0, FuzzSupport.STREAMING_WRITER_FORMATS.size())
-                .mapToObj(index -> Arguments.of((Object) FuzzSupport.prefix(
-                        new byte[]{(byte) index, 3, 7, 0x60},
-                        FuzzSupport.SEED_CONTENT
-                )));
+                .boxed()
+                .flatMap(index -> Stream.of(
+                        Arguments.of((Object) FuzzSupport.prefix(
+                                new byte[]{index.byteValue(), 3, 7, 0, 0},
+                                FuzzSupport.SEED_CONTENT
+                        )),
+                        Arguments.of((Object) FuzzSupport.prefix(
+                                new byte[]{index.byteValue(), 3, 1, 0x60, 0, 4, 8},
+                                FuzzSupport.SEED_CONTENT
+                        ))
+                ));
     }
 
-    /// Describes one generated regular-file entry and its selected body transport.
+    /// Identifies a generated portable archive entry kind.
+    @NotNullByDefault
+    private enum EntryKind {
+        /// A regular file that may expose an explicit body.
+        FILE,
+
+        /// A metadata-only directory.
+        DIRECTORY,
+
+        /// A metadata-only symbolic link.
+        SYMBOLIC_LINK
+    }
+
+    /// Describes one generated entry and its selected body transport.
     ///
     /// @param path the unique archive-local path
     /// @param content the expected entry bytes
+    /// @param kind the portable entry kind
     /// @param hasBody whether the entry body is explicitly opened
     /// @param useChannel whether an explicitly opened body uses a channel rather than a stream
+    /// @param linkTarget the symbolic-link target, retained for every kind to avoid nullable model state
     @NotNullByDefault
     private record ExpectedEntry(
             String path,
             byte @Unmodifiable [] content,
+            EntryKind kind,
             boolean hasBody,
-            boolean useChannel
+            boolean useChannel,
+            String linkTarget
     ) {
     }
 }

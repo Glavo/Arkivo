@@ -44,7 +44,7 @@ val downloadXZTestSources = tasks.register<DownloadVerifiedFile>("downloadXZTest
 
 val prepareXZTestCorpus = tasks.register<Sync>("prepareXZTestCorpus") {
     group = "verification"
-    description = "Extracts the pinned official XZ and LZMA decoder corpus."
+    description = "Extracts the pinned official XZ, LZMA, and lzip decoder corpus."
     dependsOn(downloadXZTestSources)
 
     from(downloadXZTestSources.flatMap { it.destination }.map { archive ->
@@ -74,5 +74,6 @@ tasks.named<Test>("tier2Test") {
     description = "Runs XZ and LZMA tests against the pinned official decoder corpus."
     dependsOn(prepareXZTestCorpus)
     shouldRunAfter(tasks.test)
+    inputs.dir(xzTestDataDirectory)
     systemProperty("arkivo.xz.testDataDirectory", xzTestDataDirectory.get().asFile.absolutePath)
 }

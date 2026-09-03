@@ -3,6 +3,7 @@ import java.util.Properties
 import org.glavo.arkivo.gradle.DownloadVerifiedFile
 import org.gradle.api.file.RelativePath
 import org.gradle.api.plugins.jvm.JvmTestSuite
+import org.gradle.api.tasks.GradleBuild
 import org.gradle.testing.base.TestingExtension
 
 plugins {
@@ -108,6 +109,18 @@ subprojects {
 }
 
 apply(from = "gradle/publishing.gradle.kts")
+
+val buildLogicTest = tasks.register<GradleBuild>("buildLogicTest") {
+    group = "verification"
+    description = "Runs the build logic unit tests."
+    buildName = "arkivo-build-logic-tests"
+    dir = file("buildSrc")
+    tasks = listOf("test")
+}
+
+tasks.named("check") {
+    dependsOn(buildLogicTest)
+}
 
 tasks.register<Delete>("cleanTestDataCache") {
     group = "build"
@@ -384,6 +397,8 @@ val localFuzzTasks = mapOf(
     "fuzzCompressionConfigurations" to "Fuzzes non-default compression configuration combinations.",
     "fuzzZstdSeekableRoundTrip" to "Fuzzes Zstandard seekable frame maps and random logical reads.",
     "fuzzZstdSeekableIndex" to "Fuzzes Zstandard seek-table parsing and indexed frame decoding.",
+    "fuzzTarOuterCompression" to "Fuzzes TAR round trips through every signed outer compression format.",
+    "fuzzTarOuterCompressionUpdate" to "Fuzzes compressed TAR preservation, removal, and transcoding updates.",
     "fuzzArchiveStreaming" to "Fuzzes forward-only archive readers.",
     "fuzzArchiveFileSystem" to "Fuzzes random-access archive file systems.",
     "fuzzArchiveFileSystemMutations" to "Fuzzes writable archive file-system mutations and volume publication.",

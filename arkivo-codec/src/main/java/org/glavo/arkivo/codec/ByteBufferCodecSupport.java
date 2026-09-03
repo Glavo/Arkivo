@@ -111,7 +111,11 @@ final class ByteBufferCodecSupport {
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
-        return decodeAllocating(codec, source, allocatingMaximumOutputSize(codec), true);
+        int maximumOutputSize = allocatingMaximumOutputSize(codec);
+        if (!source.hasRemaining()) {
+            return ByteBuffer.allocate(0);
+        }
+        return decodeAllocating(codec, source, maximumOutputSize, true);
     }
 
     /// Decompresses one frame into the fixed caller-owned target.
@@ -127,6 +131,9 @@ final class ByteBufferCodecSupport {
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         validateBuffers(source, target);
+        if (!source.hasRemaining()) {
+            return;
+        }
         decode(codec, source, target, true);
     }
 

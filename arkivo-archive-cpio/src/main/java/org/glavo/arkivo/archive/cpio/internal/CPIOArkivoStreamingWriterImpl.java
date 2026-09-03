@@ -1095,7 +1095,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
             requireNonNegative(size, "size");
             entry.ensurePending();
             if (size > maximumBodySize()) {
-                throw new IOException("CPIO size field is out of range");
+                throw new IllegalArgumentException("size exceeds the configured CPIO dialect range");
             }
             if (entry.fixedBody != null && size != entry.fixedBodySize()) {
                 throw new IOException("CPIO entry body size does not match configured size for " + entry.path);

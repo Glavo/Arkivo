@@ -46,6 +46,18 @@ final class PPMdCodecTest {
         assertEquals(4, configured.maximumOrder());
         assertEquals(1L << 20, configured.memorySize());
         assertEquals(PPMdCodec.DEFAULT_MAXIMUM_ORDER, codec.maximumOrder());
+        assertEquals(2, codec.withMaximumOrder(2).maximumOrder());
+        assertEquals(64, codec.withMaximumOrder(64).maximumOrder());
+        assertEquals(2L << 10, codec.withMemorySize(2L << 10).memorySize());
+        assertEquals(256L << 20, codec.withMemorySize(256L << 20).memorySize());
+        assertEquals(0L, codec.withDecodedSize(0L).decodedSize());
+        assertEquals(Long.MAX_VALUE, codec.withDecodedSize(Long.MAX_VALUE).decodedSize());
+        assertSame(codec, codec.withDecodedSize(PPMdCodec.UNKNOWN_SIZE));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOrder(1));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOrder(65));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMemorySize((2L << 10) - 1L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMemorySize((256L << 20) + 1L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withDecodedSize(-2L));
         assertSame(
                 CompressionFormats.require(PPMdFormat.NAME),
                 CompressionFormats.require("ppmd7")

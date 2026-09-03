@@ -5,6 +5,9 @@ package org.glavo.arkivo.all;
 
 import org.apache.commons.compress.archivers.ar.ArArchiveEntry;
 import org.apache.commons.compress.archivers.ar.ArArchiveOutputStream;
+import org.apache.commons.compress.archivers.cpio.CpioArchiveEntry;
+import org.apache.commons.compress.archivers.cpio.CpioArchiveOutputStream;
+import org.apache.commons.compress.archivers.cpio.CpioConstants;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
@@ -28,12 +31,15 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.zip.GZIPOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -51,12 +57,21 @@ final class ArchiveReadLimitsTest {
     /// The second entry body.
     private static final byte @Unmodifiable [] SECOND_CONTENT = {4, 5, 6, 7};
 
+    /// Fixture formats whose readers expose a random-access file system.
+    private static final @Unmodifiable Set<String> FILE_SYSTEM_FORMATS = Set.of("ar", "tar", "zip", "7z", "rar");
+
+    /// Fixture formats whose readers can operate without random access.
+    private static final @Unmodifiable Set<String> STREAMING_FORMATS = Set.of("ar", "cpio", "tar", "zip", "rar");
+
     /// Verifies entry-count, per-entry-size, and total-size limits across random-access file systems.
     @Test
     void fileSystemsEnforceCommonReadLimits() throws IOException {
         List<Fixture> fixtures = createFixtures();
         try {
             for (Fixture fixture : fixtures) {
+                if (!FILE_SYSTEM_FORMATS.contains(fixture.format())) {
+                    continue;
+                }
                 assertFileSystemLimit(
                         fixture,
                         ArchiveReadLimits.builder().maximumEntryCount(1L).build(),
@@ -87,13 +102,13 @@ final class ArchiveReadLimitsTest {
         }
     }
 
-    /// Verifies entry-count limits across forward-only AR, TAR, and ZIP readers.
+    /// Verifies entry-count limits across every forward-only archive reader.
     @Test
     void streamingReadersEnforceEntryCount() throws IOException {
         List<Fixture> fixtures = createFixtures();
         try {
             for (Fixture fixture : fixtures) {
-                if (fixture.format().equals("7z")) {
+                if (!STREAMING_FORMATS.contains(fixture.format())) {
                     continue;
                 }
                 try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
@@ -110,6 +125,43 @@ final class ArchiveReadLimitsTest {
                             reader::next
                     );
                     assertLimit(exception, ArkivoReadLimitKind.ENTRY_COUNT, 1L, 2L, null);
+                }
+            }
+        } finally {
+            deleteFixtures(fixtures);
+        }
+    }
+
+    /// Verifies readers with declared entry sizes reject per-entry and cumulative excess at the next header.
+    @Test
+    void streamingReadersEnforceDeclaredEntryAndTotalSizes() throws IOException {
+        List<Fixture> fixtures = createFixtures();
+        try {
+            for (Fixture fixture : fixtures) {
+                if (!STREAMING_FORMATS.contains(fixture.format()) || fixture.format().equals("zip")) {
+                    continue;
+                }
+
+                try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
+                        fixture.format(),
+                        fixture.path(),
+                        readOptions(ArchiveReadLimits.builder().maximumEntrySize(3L).build())
+                )) {
+                    assertTrue(reader.next());
+                    assertArrayEquals(FIRST_CONTENT, readCurrentEntry(reader));
+                    ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+                    assertLimit(exception, ArkivoReadLimitKind.ENTRY_SIZE, 3L, 4L, "second.bin");
+                }
+
+                try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
+                        fixture.format(),
+                        fixture.path(),
+                        readOptions(ArchiveReadLimits.builder().maximumTotalEntrySize(6L).build())
+                )) {
+                    assertTrue(reader.next());
+                    assertArrayEquals(FIRST_CONTENT, readCurrentEntry(reader));
+                    ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+                    assertLimit(exception, ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, 6L, 7L, "second.bin");
                 }
             }
         } finally {
@@ -160,6 +212,9 @@ final class ArchiveReadLimitsTest {
         List<Fixture> fixtures = createFixtures();
         try {
             for (Fixture fixture : fixtures) {
+                if (!FILE_SYSTEM_FORMATS.contains(fixture.format())) {
+                    continue;
+                }
                 long maximum = switch (fixture.format()) {
                     case "ar" -> 7L;
                     case "tar" -> 511L;
@@ -185,18 +240,19 @@ final class ArchiveReadLimitsTest {
         }
     }
 
-    /// Verifies forward-only AR, TAR, and ZIP readers enforce metadata before exposing an entry.
+    /// Verifies every forward-only reader enforces metadata limits before exposing an entry.
     @Test
     void streamingReadersEnforceMetadataSize() throws IOException {
         List<Fixture> fixtures = createFixtures();
         try {
             for (Fixture fixture : fixtures) {
-                if (fixture.format().equals("7z")) {
+                if (!STREAMING_FORMATS.contains(fixture.format())) {
                     continue;
                 }
                 long maximum = switch (fixture.format()) {
                     case "ar" -> 7L;
                     case "tar" -> 511L;
+                    case "cpio", "rar" -> 1L;
                     default -> 30L;
                 };
                 try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
@@ -333,14 +389,16 @@ final class ArchiveReadLimitsTest {
         return bytes.toByteArray();
     }
 
-    /// Creates one independently generated fixture for each writable test format.
+    /// Creates one independently generated fixture for every supported archive read model.
     private static List<Fixture> createFixtures() throws IOException {
         ArrayList<Fixture> fixtures = new ArrayList<>();
         try {
             fixtures.add(createArFixture());
+            fixtures.add(createCpioFixture());
             fixtures.add(createTarFixture());
             fixtures.add(createZipFixture());
             fixtures.add(createSevenZipFixture());
+            fixtures.add(createRarFixture());
             return List.copyOf(fixtures);
         } catch (IOException | RuntimeException | Error exception) {
             deleteFixtures(fixtures);
@@ -361,6 +419,34 @@ final class ArchiveReadLimitsTest {
     /// Writes one AR fixture entry.
     private static void writeArEntry(ArArchiveOutputStream output, String name, byte[] content) throws IOException {
         output.putArchiveEntry(new ArArchiveEntry(name, content.length));
+        output.write(content);
+        output.closeArchiveEntry();
+    }
+
+    /// Creates a new-ASCII CPIO fixture with two regular files.
+    private static Fixture createCpioFixture() throws IOException {
+        Path path = Files.createTempFile("arkivo-read-limits-", ".cpio");
+        try (CpioArchiveOutputStream output = new CpioArchiveOutputStream(
+                Files.newOutputStream(path),
+                CpioConstants.FORMAT_NEW,
+                CpioConstants.BLOCK_SIZE,
+                StandardCharsets.UTF_8.name()
+        )) {
+            writeCpioEntry(output, "first.bin", FIRST_CONTENT);
+            writeCpioEntry(output, "second.bin", SECOND_CONTENT);
+        }
+        return new Fixture("cpio", path);
+    }
+
+    /// Writes one new-ASCII CPIO fixture entry.
+    private static void writeCpioEntry(
+            CpioArchiveOutputStream output,
+            String name,
+            byte @Unmodifiable [] content
+    ) throws IOException {
+        CpioArchiveEntry entry = new CpioArchiveEntry(CpioConstants.FORMAT_NEW, name, content.length);
+        entry.setMode(0100644);
+        output.putArchiveEntry(entry);
         output.write(content);
         output.closeArchiveEntry();
     }
@@ -424,6 +510,16 @@ final class ArchiveReadLimitsTest {
         output.putArchiveEntry(entry);
         output.write(content);
         output.closeArchiveEntry();
+    }
+
+    /// Creates a source-generated stored RAR4 fixture with two regular files.
+    private static Fixture createRarFixture() throws IOException {
+        Path path = Files.createTempFile("arkivo-read-limits-", ".rar");
+        LinkedHashMap<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("first.bin", FIRST_CONTENT);
+        entries.put("second.bin", SECOND_CONTENT);
+        Files.write(path, ArchiveTestFixtures.createRar4Archive(entries));
+        return new Fixture("rar", path);
     }
 
     /// Deletes every fixture path while preserving the first cleanup failure.

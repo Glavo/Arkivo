@@ -38,6 +38,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.CopyOption;
@@ -1000,9 +1001,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             return;
         }
         requireNode(path);
+        Objects.requireNonNull(modes, "modes");
         for (AccessMode mode : modes) {
+            Objects.requireNonNull(mode, "mode");
             if (mode != AccessMode.READ) {
-                throw new ReadOnlyFileSystemException();
+                throw new AccessDeniedException(path.toString());
             }
         }
     }

@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,6 +21,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,6 +33,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies independent logical views over one owned seekable channel.
 @NotNullByDefault
 final class SharedSeekableChannelSourceTest {
+    /// Maximum time allowed for one concurrent logical-channel read to complete.
+    private static final long CONCURRENT_READ_TIMEOUT_SECONDS = 10L;
+
     /// Verifies logical origin, size, position isolation, and view-only closure.
     @Test
     void exposesIndependentViewsFromCurrentPosition() throws IOException {
@@ -92,8 +98,11 @@ final class SharedSeekableChannelSourceTest {
             SeekableByteChannel view = source.openChannel();
             assertThrows(ReadOnlyBufferException.class, () -> view.read(ByteBuffer.allocate(1).asReadOnlyBuffer()));
             assertEquals(0L, view.position());
-            assertThrows(UnsupportedOperationException.class, () -> view.write(ByteBuffer.allocate(1)));
-            assertThrows(UnsupportedOperationException.class, () -> view.truncate(0L));
+            ByteBuffer sourceBuffer = ByteBuffer.wrap(new byte[]{3});
+            assertThrows(NonWritableChannelException.class, () -> view.write(sourceBuffer));
+            assertEquals(0, sourceBuffer.position());
+            assertThrows(IllegalArgumentException.class, () -> view.truncate(-1L));
+            assertThrows(NonWritableChannelException.class, () -> view.truncate(0L));
             assertThrows(IllegalArgumentException.class, () -> view.position(-1L));
             view.position(3L);
             assertEquals(-1, view.read(ByteBuffer.allocate(1)));
@@ -187,10 +196,10 @@ final class SharedSeekableChannelSourceTest {
         }
     }
 
-    /// Returns a completed future value while preserving its original failure type.
+    /// Waits for one future with a bounded timeout while preserving its original failure type.
     private static byte @Unmodifiable [] get(Future<byte[]> future) throws Exception {
         try {
-            return future.get();
+            return future.get(CONCURRENT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (ExecutionException exception) {
             Throwable cause = exception.getCause();
             if (cause instanceof Exception checked) {
@@ -200,6 +209,8 @@ final class SharedSeekableChannelSourceTest {
                 throw error;
             }
             throw exception;
+        } catch (TimeoutException exception) {
+            throw new AssertionError("Concurrent shared-channel read timed out", exception);
         }
     }
 

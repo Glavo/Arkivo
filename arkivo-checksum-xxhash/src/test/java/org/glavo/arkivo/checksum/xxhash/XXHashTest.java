@@ -15,8 +15,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies XXHash vectors, configuration, and accumulator lifecycle.
 @NotNullByDefault
@@ -75,6 +77,70 @@ public final class XXHashTest {
             accumulator.reset();
             accumulator.update(input);
             assertEquals(expected, accumulator.finish(), algorithm.name());
+        }
+    }
+
+    /// Verifies seeded algorithms expose complete immutable value semantics and diagnostic metadata.
+    @Test
+    public void seededAlgorithmsHaveValueSemantics() {
+        XXHash32 hash32 = new XXHash32(-1);
+        assertEquals(-1, hash32.seed());
+        assertEquals("XXH32", hash32.name());
+        assertEquals(Integer.SIZE, hash32.bitSize());
+        assertEquals(Integer.BYTES, hash32.checksumSize());
+        assertEquals("XXH32[seed=0xffffffff]", hash32.toString());
+        assertTrue(hash32.equals(hash32));
+        assertSame(hash32, hash32.withSeed(-1));
+        assertEquals(hash32, new XXHash32(-1));
+        assertEquals(hash32.hashCode(), new XXHash32(-1).hashCode());
+        assertNotEquals(hash32, hash32.withSeed(0));
+        assertNotEquals(hash32, XXHash64.DEFAULT);
+        assertNotEquals(hash32, null);
+
+        XXHash64 hash64 = new XXHash64(-1L);
+        assertEquals(-1L, hash64.seed());
+        assertEquals("XXH64", hash64.name());
+        assertEquals(Long.SIZE, hash64.bitSize());
+        assertEquals(Long.BYTES, hash64.checksumSize());
+        assertEquals("XXH64[seed=0xffffffffffffffff]", hash64.toString());
+        assertTrue(hash64.equals(hash64));
+        assertSame(hash64, hash64.withSeed(-1L));
+        assertEquals(hash64, new XXHash64(-1L));
+        assertEquals(hash64.hashCode(), new XXHash64(-1L).hashCode());
+        assertNotEquals(hash64, hash64.withSeed(0L));
+        assertNotEquals(hash64, hash32);
+        assertNotEquals(hash64, null);
+    }
+
+    /// Verifies single-byte updates and one-shot buffer methods cross every stripe boundary without retaining buffers.
+    @Test
+    public void byteUpdatesAndBufferComputationsCrossStripes() {
+        byte[] input = new byte[97];
+        for (int index = 0; index < input.length; index++) {
+            input[index] = (byte) (index * 37 + 11);
+        }
+
+        @Unmodifiable List<ChecksumAlgorithm.UpTo64Bits> algorithms = List.of(
+                new XXHash32(0x1357_9bdf),
+                new XXHash64(0x1357_9bdf_2468_ace0L)
+        );
+        for (ChecksumAlgorithm.UpTo64Bits algorithm : algorithms) {
+            long expected = algorithm.computeLong(input);
+            ChecksumAccumulator.UpTo64Bits accumulator = algorithm.newAccumulator();
+            for (byte value : input) {
+                accumulator.update(value);
+            }
+            assertEquals(expected, accumulator.finishLong(), algorithm.name());
+
+            ByteBuffer direct = ByteBuffer.allocateDirect(input.length + 6);
+            direct.position(3).put(input).limit(input.length + 3).position(3);
+            ByteBuffer readOnly = direct.asReadOnlyBuffer();
+            assertEquals(expected, algorithm.computeLong(readOnly), algorithm.name());
+            assertEquals(readOnly.limit(), readOnly.position(), algorithm.name());
+
+            ByteBuffer empty = ByteBuffer.allocate(4).position(2).limit(2);
+            assertEquals(algorithm.computeLong(new byte[0]), algorithm.computeLong(empty), algorithm.name());
+            assertEquals(empty.limit(), empty.position(), algorithm.name());
         }
     }
 }

@@ -5,20 +5,25 @@ package org.glavo.arkivo.codec.compress;
 
 import org.apache.commons.compress.compressors.z.ZCompressorInputStream;
 import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -35,6 +40,11 @@ public final class UnixCompressCodecTest {
     @Test
     public void exposesFormatMetadataAndConfiguration() {
         UnixCompressFormat format = UnixCompressFormat.instance();
+        assertEquals(UnixCompressFormat.NAME, format.name());
+        assertEquals(List.of("z", "unix-compress"), format.aliases());
+        assertEquals(List.of("Z", "taz"), format.fileExtensions());
+        assertEquals(3, format.probeSize());
+        assertSame(UnixCompressCodec.DEFAULT, format.defaultCodec());
         assertSame(format, UnixCompressCodec.DEFAULT.format());
         assertSame(format, CompressionFormats.require("compress"));
         assertSame(format, CompressionFormats.require("z"));
@@ -58,7 +68,41 @@ public final class UnixCompressCodecTest {
         assertTrue(format.matches(prefix));
         assertEquals(position, prefix.position());
         assertFalse(format.matches(ByteBuffer.wrap(new byte[]{0x1f})));
+        assertFalse(format.matches(ByteBuffer.wrap(new byte[]{0x1e, (byte) 0x9d})));
         assertFalse(format.matches(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x9c})));
+        assertThrows(NullPointerException.class, () -> format.matches(null));
+
+        UnixCompressCodec defaults = new UnixCompressCodec();
+        assertEquals(UnixCompressCodec.DEFAULT_MAXIMUM_CODE_WIDTH, defaults.maximumCodeWidth());
+        assertEquals(UnixCompressCodec.DEFAULT_BLOCK_MODE, defaults.blockMode());
+        assertEquals(CompressionCodec.UNLIMITED_SIZE, defaults.maximumOutputSize());
+        assertEquals(CompressionCodec.UNLIMITED_SIZE, defaults.maximumWindowSize());
+        assertEquals(CompressionCodec.UNLIMITED_SIZE, defaults.maximumMemorySize());
+    }
+
+    /// Verifies limit configurations remain immutable and compressed-size bounds handle numeric extremes.
+    @Test
+    public void configuresLimitsAndSizeBounds() {
+        UnixCompressCodec codec = new UnixCompressCodec(12, false)
+                .withMaximumOutputSize(100L)
+                .withMaximumWindowSize(200L)
+                .withMaximumMemorySize(300L);
+        assertEquals(12, codec.maximumCodeWidth());
+        assertFalse(codec.blockMode());
+        assertEquals(100L, codec.maximumOutputSize());
+        assertEquals(200L, codec.maximumWindowSize());
+        assertEquals(300L, codec.maximumMemorySize());
+        assertSame(codec, codec.withMaximumOutputSize(100L));
+        assertSame(codec, codec.withMaximumWindowSize(200L));
+        assertSame(codec, codec.withMaximumMemorySize(300L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOutputSize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumWindowSize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumMemorySize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> codec.maxCompressedSize(-1L));
+        assertEquals(3L, codec.maxCompressedSize(0L));
+        assertTrue(codec.maxCompressedSize(1L) >= 4L);
+        assertEquals(Long.MAX_VALUE, codec.maxCompressedSize(Long.MAX_VALUE));
+        assertThrows(NullPointerException.class, () -> codec.newEncoder(null));
     }
 
     /// Round-trips empty, repetitive, and random data across supported code-width and block-mode combinations.
@@ -94,6 +138,73 @@ public final class UnixCompressCodecTest {
         assertArrayEquals(input, decodeOneByteAtATime(codec, encoded));
     }
 
+    /// Verifies completed engines can be reset for another stream and reject use after closure.
+    @Test
+    public void resetsAndClosesEngines() throws IOException {
+        UnixCompressCodec codec = new UnixCompressCodec(12, true);
+        byte[] first = "first stream".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "second stream after reset".getBytes(StandardCharsets.UTF_8);
+
+        CompressionEncoder encoder = codec.newEncoder(EncodingOptions.DEFAULT);
+        assertArrayEquals(first, decode(codec, encodeSession(encoder, first), first.length));
+        assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(0)));
+        assertThrows(
+                IllegalStateException.class,
+                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
+        );
+        encoder.reset();
+        assertArrayEquals(second, decode(codec, encodeSession(encoder, second), second.length));
+        encoder.close();
+        encoder.close();
+        assertThrows(IllegalStateException.class, encoder::reset);
+        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(0)));
+
+        CompressionDecoder decoder = codec.newDecoder();
+        assertArrayEquals(first, decodeSession(decoder, encode(codec, first)));
+        assertEquals(
+                CodecOutcome.FINISHED,
+                decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
+        );
+        assertEquals(
+                CodecOutcome.FINISHED,
+                decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
+        );
+        decoder.reset();
+        assertArrayEquals(second, decodeSession(decoder, encode(codec, second)));
+        decoder.close();
+        decoder.close();
+        assertThrows(IllegalStateException.class, decoder::reset);
+        assertThrows(
+                IllegalStateException.class,
+                () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
+        );
+    }
+
+    /// Verifies stream finalization immediately before, at, and after LZW code-width transitions.
+    @Test
+    public void roundTripsAtCodeWidthTransitionBoundaries() throws IOException {
+        byte[] corpus = randomBytes(1_300);
+        for (TransitionRange range : new TransitionRange[]{
+                new TransitionRange(10, 220, 340),
+                new TransitionRange(11, 900, 1_150)
+        }) {
+            for (boolean blockMode : new boolean[]{false, true}) {
+                UnixCompressCodec codec = new UnixCompressCodec(range.maximumCodeWidth(), blockMode);
+                for (int length = range.minimumInputSize(); length <= range.maximumInputSize(); length++) {
+                    byte[] input = Arrays.copyOf(corpus, length);
+                    byte[] encoded = encode(codec, input);
+                    String context = range.maximumCodeWidth() + "-bit blockMode=" + blockMode
+                            + " length=" + length;
+                    assertArrayEquals(input, decode(codec, encoded, input.length), context);
+                    try (ZCompressorInputStream decoder =
+                                 new ZCompressorInputStream(new ByteArrayInputStream(encoded))) {
+                        assertArrayEquals(input, decoder.readAllBytes(), context);
+                    }
+                }
+            }
+        }
+    }
+
     /// Verifies Apache Commons Compress independently decodes output from every width transition.
     @Test
     public void commonsCompressDecodesArkivoOutput() throws IOException {
@@ -122,6 +233,28 @@ public final class UnixCompressCodecTest {
                 "ABXY".getBytes(StandardCharsets.US_ASCII),
                 decode(UnixCompressCodec.DEFAULT, packNineBitCodes(true, withClear), 32)
         );
+    }
+
+    /// Verifies temporary input exhaustion becomes truncation when a partial terminal code reaches physical EOF.
+    @Test
+    public void rejectsIncompleteTerminalCode() throws IOException {
+        byte[] truncated = {
+                0x1f,
+                (byte) 0x9d,
+                (byte) 0x90,
+                0x41
+        };
+        try (CompressionDecoder decoder = UnixCompressCodec.DEFAULT.newDecoder()) {
+            ByteBuffer source = ByteBuffer.wrap(truncated);
+            ByteBuffer target = ByteBuffer.allocate(8);
+            assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(source, target));
+            assertFalse(source.hasRemaining());
+            assertEquals(0, target.position());
+            assertThrows(
+                    EOFException.class,
+                    () -> decoder.finish(ByteBuffer.allocate(0), target)
+            );
+        }
     }
 
     /// Verifies malformed headers, invalid codes, truncation, and operation-scoped limits are rejected.
@@ -192,6 +325,50 @@ public final class UnixCompressCodecTest {
             }
         }
         return encoded.toByteArray();
+    }
+
+    /// Encodes one complete stream through an existing reusable encoder.
+    private static byte[] encodeSession(CompressionEncoder encoder, byte[] input) throws IOException {
+        ByteBuffer source = ByteBuffer.wrap(input);
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        while (source.hasRemaining()) {
+            ByteBuffer target = ByteBuffer.allocate(7);
+            CodecOutcome outcome = encoder.encode(source, target);
+            drain(target, encoded);
+            assertTrue(outcome == CodecOutcome.NEEDS_INPUT || outcome == CodecOutcome.NEEDS_OUTPUT);
+        }
+        while (true) {
+            ByteBuffer target = ByteBuffer.allocate(7);
+            CodecOutcome outcome = encoder.finish(target);
+            drain(target, encoded);
+            if (outcome == CodecOutcome.FINISHED) {
+                return encoded.toByteArray();
+            }
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome);
+        }
+    }
+
+    /// Decodes one complete stream through an existing reusable decoder.
+    private static byte[] decodeSession(CompressionDecoder decoder, byte[] input) throws IOException {
+        ByteBuffer source = ByteBuffer.wrap(input);
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+        boolean endOfInput = false;
+        while (true) {
+            ByteBuffer target = ByteBuffer.allocate(7);
+            CodecOutcome outcome = endOfInput
+                    ? decoder.finish(source, target)
+                    : decoder.decode(source, target);
+            drain(target, decoded);
+            if (outcome == CodecOutcome.FINISHED) {
+                return decoded.toByteArray();
+            }
+            if (outcome == CodecOutcome.NEEDS_INPUT) {
+                assertFalse(source.hasRemaining());
+                endOfInput = true;
+            } else {
+                assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome);
+            }
+        }
     }
 
     /// Decodes one compressed source byte and one target byte per engine call.
@@ -265,5 +442,18 @@ public final class UnixCompressCodecTest {
         byte[] bytes = new byte[size];
         new Random(0x5a17_c0deL + size).nextBytes(bytes);
         return bytes;
+    }
+
+    /// Defines one dense input-length range around an LZW code-width transition.
+    ///
+    /// @param maximumCodeWidth maximum width encoded in the stream header
+    /// @param minimumInputSize inclusive first source length
+    /// @param maximumInputSize inclusive final source length
+    @NotNullByDefault
+    private record TransitionRange(
+            int maximumCodeWidth,
+            int minimumInputSize,
+            int maximumInputSize
+    ) {
     }
 }

@@ -435,6 +435,9 @@ public final class CompressionFormats {
 
     /// Creates a compressing output stream for the named format using options and explicit target ownership.
     ///
+    /// Calling `flush()` propagates codec and target flushing. Closing the returned stream finalizes the encoding and
+    /// flushes a borrowed target; an owned target is closed after finalization.
+    ///
     /// @param formatName the stable name or alias of an installed format
     /// @param target     the stream receiving compressed bytes
     /// @param options    the parameters for this encoding session
@@ -458,7 +461,9 @@ public final class CompressionFormats {
                         StreamChannelAdapters.writableChannel(target),
                         options,
                         ownership
-                )
+                ),
+                target,
+                ownership
         );
     }
 

@@ -16,6 +16,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests bounded 7z archive slice channel behavior.
@@ -45,9 +46,11 @@ public final class SevenZipFileSliceChannelTest {
                 0,
                 1
         )) {
-            channel.position(1);
+            assertSame(channel, channel.position(Long.MAX_VALUE));
 
             assertEquals(0, channel.read(ByteBuffer.allocate(0)));
+            assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+            assertEquals(Long.MAX_VALUE, channel.position());
         }
     }
 
@@ -61,8 +64,11 @@ public final class SevenZipFileSliceChannelTest {
         );
 
         assertEquals(true, channel.isOpen());
-        assertThrows(UnsupportedOperationException.class, () -> channel.write(ByteBuffer.allocate(1)));
-        assertThrows(UnsupportedOperationException.class, () -> channel.truncate(0));
+        ByteBuffer writeSource = ByteBuffer.wrap(new byte[]{4});
+        assertThrows(NonWritableChannelException.class, () -> channel.write(writeSource));
+        assertEquals(0, writeSource.position());
+        assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1L));
+        assertThrows(NonWritableChannelException.class, () -> channel.truncate(0L));
 
         channel.close();
 

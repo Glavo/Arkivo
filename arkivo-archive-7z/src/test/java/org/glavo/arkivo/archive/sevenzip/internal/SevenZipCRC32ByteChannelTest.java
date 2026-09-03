@@ -53,6 +53,29 @@ public final class SevenZipCRC32ByteChannelTest {
         channel.close();
     }
 
+    /// Verifies the validating wrapper preserves standard read-only seekable-channel behavior.
+    @Test
+    public void preservesReadOnlySeekableChannelContract() throws IOException {
+        byte[] content = "read-only entry".getBytes(StandardCharsets.UTF_8);
+        SevenZipCRC32ByteChannel channel = new SevenZipCRC32ByteChannel(
+                new MemorySeekableByteChannel(content),
+                content.length,
+                crc32(content)
+        );
+
+        channel.position(content.length + 17L);
+        assertEquals(content.length + 17L, channel.position());
+        assertEquals(0, channel.read(ByteBuffer.allocate(0)));
+        assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+
+        ByteBuffer source = ByteBuffer.wrap(new byte[]{1});
+        assertThrows(NonWritableChannelException.class, () -> channel.write(source));
+        assertEquals(0, source.position());
+        assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1L));
+        assertThrows(NonWritableChannelException.class, () -> channel.truncate(0L));
+        channel.close();
+    }
+
     /// Verifies that closing reports CRC-32 mismatches after draining the full channel.
     @Test
     public void closeRejectsCrc32Mismatch() {

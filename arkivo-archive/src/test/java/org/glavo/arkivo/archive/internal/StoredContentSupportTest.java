@@ -7,17 +7,24 @@ import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.nio.file.Files;
 import java.nio.file.OpenOption;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -68,6 +75,125 @@ final class StoredContentSupportTest {
         StoredContentSupport.closeAfterOpenFailure(storage, ownedContents, new IOException("open failed"));
         assertThrows(IOException.class, source::size);
         assertThrows(IOException.class, destination::size);
+    }
+
+    /// Verifies memory-backed stored content follows NIO positioning, EOF, access-mode, and progress contracts.
+    @Test
+    void exposesContractCompliantMemoryChannels() throws IOException {
+        try (ArkivoEditStorage storage = ArkivoEditStorage.memory();
+             ArkivoStoredContent content = storage.createContent("memory", 0L)) {
+            try (SeekableByteChannel writer = content.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                assertEquals(3, writer.write(ByteBuffer.wrap(new byte[]{1, 2, 3})));
+                assertSame(writer, writer.position(Long.MAX_VALUE));
+                assertEquals(0, writer.write(ByteBuffer.allocate(0)));
+
+                ByteBuffer rejected = ByteBuffer.wrap(new byte[]{4});
+                IOException exception = assertThrows(IOException.class, () -> writer.write(rejected));
+                assertEquals("Memory stored content exceeds the maximum array size", exception.getMessage());
+                assertEquals(0, rejected.position());
+                assertEquals(Long.MAX_VALUE, writer.position());
+
+                assertSame(writer, writer.truncate(Long.MAX_VALUE));
+                assertEquals(Long.MAX_VALUE, writer.position());
+                assertSame(writer, writer.truncate(100L));
+                assertEquals(100L, writer.position());
+                assertEquals(3L, writer.size());
+                assertSame(writer, writer.truncate(2L));
+                assertEquals(2L, writer.position());
+                assertEquals(2L, writer.size());
+            }
+
+            SeekableByteChannel reader = content.openChannel(Set.of(StandardOpenOption.READ));
+            assertSame(reader, reader.position(2L));
+            assertEquals(0, reader.read(ByteBuffer.allocate(0)));
+            assertEquals(-1, reader.read(ByteBuffer.allocate(1)));
+            assertSame(reader, reader.position(Long.MAX_VALUE));
+            assertEquals(Long.MAX_VALUE, reader.position());
+            assertThrows(IllegalArgumentException.class, () -> reader.position(-1L));
+            assertEquals(Long.MAX_VALUE, reader.position());
+
+            ByteBuffer writeSource = ByteBuffer.wrap(new byte[]{9});
+            assertThrows(NonWritableChannelException.class, () -> reader.write(writeSource));
+            assertEquals(0, writeSource.position());
+            assertThrows(NonWritableChannelException.class, () -> reader.truncate(0L));
+            assertEquals(2L, content.size());
+
+            reader.close();
+            assertFalse(reader.isOpen());
+            assertThrows(ClosedChannelException.class, reader::position);
+            assertThrows(ClosedChannelException.class, () -> reader.read(ByteBuffer.allocate(1)));
+        }
+    }
+
+    /// Verifies every built-in storage preserves already-open channels after its content handle is closed.
+    @Test
+    void preservesIndependentChannelLifecycles(@TempDir Path directory) {
+        assertAll(
+                () -> verifyIndependentChannelLifecycle(
+                        ArkivoEditStorage.temporaryFiles(directory.resolve("temporary")),
+                        ArkivoEditStorage.UNKNOWN_SIZE,
+                        directory.resolve("temporary")
+                ),
+                () -> verifyIndependentChannelLifecycle(
+                        ArkivoEditStorage.hybrid(4L, directory.resolve("hybrid-file")),
+                        8L,
+                        directory.resolve("hybrid-file")
+                ),
+                () -> verifyIndependentChannelLifecycle(
+                        ArkivoEditStorage.memory(),
+                        ArkivoEditStorage.UNKNOWN_SIZE,
+                        directory.resolve("memory")
+                ),
+                () -> verifyIndependentChannelLifecycle(
+                        ArkivoEditStorage.hybrid(8L, directory.resolve("hybrid-memory")),
+                        8L,
+                        directory.resolve("hybrid-memory")
+                )
+        );
+    }
+
+    /// Verifies one storage retains channel-owned state while releasing its closed content handle.
+    private static void verifyIndependentChannelLifecycle(
+            ArkivoEditStorage storage,
+            long expectedSize,
+            Path temporaryDirectory
+    ) throws IOException {
+        try (storage; ArkivoStoredContent content = storage.createContent("entry", expectedSize)) {
+            SeekableByteChannel writer = content.openChannel(Set.of(
+                    StandardOpenOption.READ,
+                    StandardOpenOption.WRITE
+            ));
+            assertEquals(4, writer.write(ByteBuffer.wrap(new byte[]{1, 2, 3, 4})));
+            SeekableByteChannel reader = content.openChannel(Set.of(StandardOpenOption.READ));
+
+            content.close();
+            content.close();
+            assertThrows(IOException.class, content::size);
+            assertThrows(
+                    IOException.class,
+                    () -> content.openChannel(Set.of(StandardOpenOption.READ))
+            );
+
+            writer.position(1L);
+            assertEquals(2, writer.write(ByteBuffer.wrap(new byte[]{9, 8})));
+            reader.position(0L);
+            ByteBuffer actual = ByteBuffer.allocate(4);
+            assertEquals(4, reader.read(actual));
+            assertArrayEquals(new byte[]{1, 9, 8, 4}, actual.array());
+
+            writer.close();
+            reader.position(3L);
+            ByteBuffer tail = ByteBuffer.allocate(1);
+            assertEquals(1, reader.read(tail));
+            assertEquals(4, Byte.toUnsignedInt(tail.array()[0]));
+            reader.close();
+        }
+
+        if (Files.exists(temporaryDirectory)) {
+            try (var children = Files.list(temporaryDirectory)) {
+                assertEquals(0L, children.count());
+            }
+        }
     }
 
     /// Verifies failed stores retain content whose first cleanup fails and suppress all cleanup failures.

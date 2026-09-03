@@ -114,6 +114,76 @@ public final class PPMdBufferEngineTest {
         }
     }
 
+    /// Verifies the external decoded-size declaration is the raw stream's only logical boundary.
+    @Test
+    public void usesExternallyDeclaredDecodedSizeAsOnlyBoundary() throws IOException {
+        byte[] content = patternedData(4_097);
+        byte[] encoded = encodeFragmented(content, 17, 5);
+
+        try (CompressionDecoder decoder = CODEC.withDecodedSize(content.length + 1L).newDecoder()) {
+            ByteBuffer source = ByteBuffer.wrap(encoded);
+            ByteBuffer target = ByteBuffer.allocate(content.length + 1);
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
+            assertEquals(content.length + 1, target.position());
+            assertArrayEquals(content, Arrays.copyOf(target.array(), content.length));
+        }
+
+        try (CompressionDecoder decoder = CODEC.withDecodedSize(content.length + 4_096L).newDecoder()) {
+            ByteBuffer source = ByteBuffer.wrap(encoded);
+            ByteBuffer target = ByteBuffer.allocate(content.length + 4_096);
+            assertThrows(EOFException.class, () -> decoder.finish(source, target));
+            assertTrue(target.position() >= content.length);
+            assertArrayEquals(content, Arrays.copyOf(target.array(), content.length));
+        }
+
+        try (CompressionDecoder decoder = CODEC.withDecodedSize(content.length - 1L).newDecoder()) {
+            ByteBuffer source = ByteBuffer.wrap(encoded);
+            ByteBuffer target = ByteBuffer.allocate(content.length);
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
+            target.flip();
+            byte[] actual = new byte[target.remaining()];
+            target.get(actual);
+            assertArrayEquals(Arrays.copyOf(content, content.length - 1), actual);
+            assertTrue(source.position() <= encoded.length);
+        }
+
+        byte[] empty = encodeFragmented(new byte[0], 1, 1);
+        byte[] tail = {11, 22, 33};
+        ByteBuffer source = ByteBuffer.wrap(concatenate(empty, tail));
+        try (CompressionDecoder decoder = CODEC.withDecodedSize(0L).newDecoder()) {
+            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, ByteBuffer.allocate(0)));
+        }
+        assertEquals(empty.length, source.position());
+        byte[] remaining = new byte[source.remaining()];
+        source.get(remaining);
+        assertArrayEquals(tail, remaining);
+    }
+
+    /// Verifies the smallest arena and minimum and maximum context orders remain fully operational.
+    @Test
+    public void roundTripsAtModelParameterBoundaries() throws IOException {
+        byte[] content = patternedData(16_385);
+        for (int maximumOrder : new int[]{2, 64}) {
+            for (long memorySize : new long[]{2L << 10, 1L << 20}) {
+                PPMdCodec codec = new PPMdCodec()
+                        .withMaximumOrder(maximumOrder)
+                        .withMemorySize(memorySize);
+                ByteBuffer compressed = codec.compress(ByteBuffer.wrap(content));
+                ByteBuffer decoded = codec
+                        .withDecodedSize(content.length)
+                        .withMaximumOutputSize(content.length)
+                        .decompress(compressed);
+                byte[] actual = new byte[decoded.remaining()];
+                decoded.get(actual);
+                assertArrayEquals(
+                        content,
+                        actual,
+                        "maximumOrder=" + maximumOrder + " memorySize=" + memorySize
+                );
+            }
+        }
+    }
+
     /// Encodes one source through fresh fragments and fresh caller-owned targets.
     private static byte[] encodeFragmented(
             byte[] content,
@@ -227,6 +297,16 @@ public final class PPMdBufferEngineTest {
         byte[] bytes = new byte[target.remaining()];
         target.get(bytes);
         output.writeBytes(bytes);
+    }
+
+    /// Concatenates two byte arrays.
+    private static byte @Unmodifiable [] concatenate(
+            byte @Unmodifiable [] first,
+            byte @Unmodifiable [] second
+    ) {
+        byte[] result = Arrays.copyOf(first, first.length + second.length);
+        System.arraycopy(second, 0, result, first.length, second.length);
+        return result;
     }
 
     /// Returns deterministic content that exercises literals, repetitions, and changing suffix contexts.

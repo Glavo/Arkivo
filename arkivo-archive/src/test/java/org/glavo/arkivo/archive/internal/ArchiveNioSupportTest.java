@@ -47,7 +47,15 @@ final class ArchiveNioSupportTest {
         assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
         channel.position(8L);
         assertEquals(8L, channel.position());
-        assertThrows(NonWritableChannelException.class, () -> channel.write(ByteBuffer.allocate(1)));
+        channel.position(Long.MAX_VALUE);
+        assertEquals(Long.MAX_VALUE, channel.position());
+        assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+        assertThrows(IllegalArgumentException.class, () -> channel.position(-1L));
+        assertEquals(Long.MAX_VALUE, channel.position());
+        ByteBuffer writeSource = ByteBuffer.wrap(new byte[]{4});
+        assertThrows(NonWritableChannelException.class, () -> channel.write(writeSource));
+        assertEquals(0, writeSource.position());
+        assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1L));
         assertThrows(NonWritableChannelException.class, () -> channel.truncate(0L));
 
         channel.close();

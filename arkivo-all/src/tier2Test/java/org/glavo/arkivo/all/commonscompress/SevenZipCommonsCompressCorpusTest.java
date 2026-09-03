@@ -37,6 +37,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -56,6 +57,9 @@ final class SevenZipCommonsCompressCorpusTest {
 
     /// The total independent archive reads used by the COMPRESS-679 regression.
     private static final int CONCURRENT_READ_COUNT = 30;
+
+    /// Maximum time allowed for each concurrent archive read and executor shutdown.
+    private static final long CONCURRENT_READ_TIMEOUT_SECONDS = 30L;
 
     /// The bounded logical output accepted by the ordinary Tier 2 compatibility sweep.
     private static final long TIER2_MAXIMUM_ENTRY_SIZE = 64L * 1024L * 1024L;
@@ -242,10 +246,14 @@ final class SevenZipCommonsCompressCorpusTest {
                 }));
             }
             for (Future<Long> future : futures) {
-                assertEquals(expectedCrc32, future.get().longValue());
+                assertEquals(
+                        expectedCrc32,
+                        future.get(CONCURRENT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS).longValue()
+                );
             }
         } finally {
             executor.shutdownNow();
+            assertTrue(executor.awaitTermination(CONCURRENT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         }
     }
 

@@ -18,6 +18,9 @@ final class ReadOnlyByteArrayChannel implements SeekableByteChannel {
     /// The immutable channel content.
     private final byte @Unmodifiable [] content;
 
+    /// The largest positive byte count returned by one read.
+    private final int maximumReadSize;
+
     /// The current logical position, which may be beyond end-of-input.
     private long position;
 
@@ -28,7 +31,19 @@ final class ReadOnlyByteArrayChannel implements SeekableByteChannel {
     ///
     /// @param bytes the content retained for the lifetime of this channel
     ReadOnlyByteArrayChannel(byte @Unmodifiable [] bytes) {
+        this(bytes, Integer.MAX_VALUE);
+    }
+
+    /// Creates a channel over the supplied immutable fuzz input with bounded short reads.
+    ///
+    /// @param bytes the content retained for the lifetime of this channel
+    /// @param maximumReadSize the positive maximum byte count returned by one read
+    ReadOnlyByteArrayChannel(byte @Unmodifiable [] bytes, int maximumReadSize) {
+        if (maximumReadSize <= 0) {
+            throw new IllegalArgumentException("maximumReadSize must be positive");
+        }
         content = bytes;
+        this.maximumReadSize = maximumReadSize;
     }
 
     /// Reads available bytes into the target.
@@ -39,10 +54,16 @@ final class ReadOnlyByteArrayChannel implements SeekableByteChannel {
     @Override
     public int read(ByteBuffer target) throws IOException {
         requireOpen();
+        if (!target.hasRemaining()) {
+            return 0;
+        }
         if (position >= content.length) {
             return -1;
         }
-        int count = Math.min(content.length - Math.toIntExact(position), target.remaining());
+        int count = Math.min(
+                Math.min(content.length - Math.toIntExact(position), target.remaining()),
+                maximumReadSize
+        );
         target.put(content, Math.toIntExact(position), count);
         position += count;
         return count;

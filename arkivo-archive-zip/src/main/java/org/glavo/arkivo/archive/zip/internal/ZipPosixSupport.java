@@ -135,8 +135,10 @@ final class ZipPosixSupport {
                         PosixFilePermission.OWNER_WRITE,
                         PosixFilePermission.OWNER_EXECUTE,
                         PosixFilePermission.GROUP_READ,
+                        PosixFilePermission.GROUP_WRITE,
                         PosixFilePermission.GROUP_EXECUTE,
                         PosixFilePermission.OTHERS_READ,
+                        PosixFilePermission.OTHERS_WRITE,
                         PosixFilePermission.OTHERS_EXECUTE
                 );
         return externalAttributes(PosixModes.SYMBOLIC_LINK_FILE_TYPE, linkPermissions, 0L);

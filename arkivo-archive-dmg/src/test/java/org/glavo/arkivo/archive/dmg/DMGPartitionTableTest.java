@@ -24,6 +24,7 @@ import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.sector;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.writeRawImage;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -75,6 +76,92 @@ final class DMGPartitionTableTest {
         Path invalidTablePath = writeRawImage(temporaryDirectory.resolve("gpt-table-crc.dmg"), invalidTable);
         IOException tableException = assertThrows(IOException.class, () -> DMGImage.open(invalidTablePath));
         assertTrue(tableException.getMessage().contains("GPT partition-table CRC32 mismatch"));
+    }
+
+    /// Rejects unsupported GPT revisions and malformed header geometry before reading entries.
+    @Test
+    void rejectsMalformedGUIDPartitionTableHeader() throws IOException {
+        byte[] unsupportedRevision = createGPTDisk();
+        ByteArrayAccess.writeIntLittleEndian(unsupportedRevision, SECTOR_SIZE + 8, 0x0002_0000);
+        rewriteGPTHeaderChecksum(unsupportedRevision);
+        assertRejected(
+                unsupportedRevision,
+                "gpt-revision.dmg",
+                "Unsupported or malformed GPT header"
+        );
+
+        byte[] shortHeader = createGPTDisk();
+        ByteArrayAccess.writeIntLittleEndian(shortHeader, SECTOR_SIZE + 12, 91);
+        assertRejected(
+                shortHeader,
+                "gpt-short-header.dmg",
+                "Unsupported or malformed GPT header"
+        );
+
+        byte[] wrongCurrentLBA = createGPTDisk();
+        ByteArrayAccess.writeLongLittleEndian(wrongCurrentLBA, SECTOR_SIZE + 24, 2L);
+        rewriteGPTHeaderChecksum(wrongCurrentLBA);
+        assertRejected(
+                wrongCurrentLBA,
+                "gpt-current-lba.dmg",
+                "Unsupported or malformed GPT partition-entry array"
+        );
+    }
+
+    /// Rejects unsupported GPT entry counts, entry sizes, and table locations.
+    @Test
+    void rejectsMalformedGUIDPartitionEntryArray() throws IOException {
+        byte[] excessiveCount = createGPTDisk();
+        ByteArrayAccess.writeIntLittleEndian(excessiveCount, SECTOR_SIZE + 80, 1_048_577);
+        rewriteGPTHeaderChecksum(excessiveCount);
+        assertRejected(
+                excessiveCount,
+                "gpt-entry-count.dmg",
+                "Unsupported or malformed GPT partition-entry array"
+        );
+
+        byte[] shortEntry = createGPTDisk();
+        ByteArrayAccess.writeIntLittleEndian(shortEntry, SECTOR_SIZE + 84, 120);
+        rewriteGPTHeaderChecksum(shortEntry);
+        assertRejected(
+                shortEntry,
+                "gpt-entry-size.dmg",
+                "Unsupported or malformed GPT partition-entry array"
+        );
+
+        byte[] tableOutsideDisk = createGPTDisk();
+        ByteArrayAccess.writeLongLittleEndian(tableOutsideDisk, SECTOR_SIZE + 72, 6L);
+        rewriteGPTHeaderChecksum(tableOutsideDisk);
+        assertRejected(
+                tableOutsideDisk,
+                "gpt-table-range.dmg",
+                "GPT partition table range exceeds the disk image"
+        );
+    }
+
+    /// Rejects inverted, unsupported unsigned, and out-of-disk GPT partition ranges.
+    @Test
+    void rejectsInvalidGUIDPartitionRanges() throws IOException {
+        byte[] inverted = createGPTDisk();
+        ByteArrayAccess.writeLongLittleEndian(inverted, 2 * SECTOR_SIZE + 32, 4L);
+        ByteArrayAccess.writeLongLittleEndian(inverted, 2 * SECTOR_SIZE + 40, 3L);
+        rewriteGPTChecksums(inverted);
+        assertRejected(inverted, "gpt-inverted-range.dmg", "GPT partition has an inverted LBA range");
+
+        byte[] unsigned = createGPTDisk();
+        ByteArrayAccess.writeLongLittleEndian(unsigned, 2 * SECTOR_SIZE + 32, Long.MIN_VALUE);
+        rewriteGPTChecksums(unsigned);
+        assertRejected(
+                unsigned,
+                "gpt-unsigned-range.dmg",
+                "GPT partition first LBA exceeds the supported signed 64-bit range"
+        );
+
+        byte[] outsideDisk = createGPTDisk();
+        ByteArrayAccess.writeLongLittleEndian(outsideDisk, 2 * SECTOR_SIZE + 32, 5L);
+        ByteArrayAccess.writeLongLittleEndian(outsideDisk, 2 * SECTOR_SIZE + 40, 6L);
+        rewriteGPTChecksums(outsideDisk);
+        assertRejected(outsideDisk, "gpt-partition-range.dmg", "GPT partition range exceeds the disk image");
     }
 
     /// Reads APM metadata using Macintosh Roman and omits zero-length map slots.
@@ -134,6 +221,58 @@ final class DMGPartitionTableTest {
 
         IOException exception = assertThrows(IOException.class, () -> DMGImage.open(path));
         assertTrue(exception.getMessage().contains("Malformed Apple Partition Map entry 1"));
+    }
+
+    /// Rejects invalid APM driver block sizes, entry counts, and table ranges.
+    @Test
+    void rejectsInvalidApplePartitionMapGeometry() throws IOException {
+        byte[] smallBlock = createApplePartitionMapDisk();
+        ByteArrayAccess.writeShortBigEndian(smallBlock, 2, (short) 256);
+        assertRejected(smallBlock, "apm-small-block.dmg", "Invalid Apple Partition Map block size: 256");
+
+        byte[] nonPowerOfTwoBlock = createApplePartitionMapDisk();
+        ByteArrayAccess.writeShortBigEndian(nonPowerOfTwoBlock, 2, (short) 768);
+        assertRejected(
+                nonPowerOfTwoBlock,
+                "apm-non-power-of-two-block.dmg",
+                "Invalid Apple Partition Map block size: 768"
+        );
+
+        byte[] emptyMap = createApplePartitionMapDisk();
+        ByteArrayAccess.writeIntBigEndian(emptyMap, SECTOR_SIZE + 4, 0);
+        assertRejected(emptyMap, "apm-empty.dmg", "Invalid Apple Partition Map entry count: 0");
+
+        byte[] tableOutsideDisk = createApplePartitionMapDisk();
+        ByteArrayAccess.writeIntBigEndian(tableOutsideDisk, SECTOR_SIZE + 4, 7);
+        assertRejected(
+                tableOutsideDisk,
+                "apm-table-range.dmg",
+                "Apple partition map range exceeds the disk image"
+        );
+    }
+
+    /// Rejects an APM partition whose declared block range extends beyond the decoded disk.
+    @Test
+    void rejectsApplePartitionOutsideDisk() throws IOException {
+        byte[] disk = createApplePartitionMapDisk();
+        ByteArrayAccess.writeIntBigEndian(disk, 2 * SECTOR_SIZE + 8, 5);
+        ByteArrayAccess.writeIntBigEndian(disk, 2 * SECTOR_SIZE + 12, 2);
+
+        assertRejected(disk, "apm-partition-range.dmg", "Apple partition range exceeds the disk image");
+    }
+
+    /// Maps empty APM name and type fields to absent partition metadata.
+    @Test
+    void mapsEmptyApplePartitionMapStringsToNull() throws IOException {
+        byte[] disk = createApplePartitionMapDisk();
+        Arrays.fill(disk, 2 * SECTOR_SIZE + 16, 2 * SECTOR_SIZE + 80, (byte) 0);
+        Path path = writeRawImage(temporaryDirectory.resolve("apm-empty-strings.dmg"), disk);
+
+        try (DMGImage image = DMGImage.open(path)) {
+            DMGPartition partition = image.partitions().get(1);
+            assertNull(partition.name());
+            assertNull(partition.type());
+        }
     }
 
     /// Creates a six-sector disk containing one present and one unused GPT entry.
@@ -225,6 +364,36 @@ final class DMGPartitionTableTest {
         CRC32 checksum = new CRC32();
         checksum.update(bytes, offset, length);
         return (int) checksum.getValue();
+    }
+
+    /// Rewrites the GPT entry-array and header checksums after mutating an entry.
+    private static void rewriteGPTChecksums(byte[] disk) {
+        int tableOffset = 2 * SECTOR_SIZE;
+        int tableLength = 2 * 128;
+        ByteArrayAccess.writeIntLittleEndian(
+                disk,
+                SECTOR_SIZE + 88,
+                crc32(disk, tableOffset, tableLength)
+        );
+        rewriteGPTHeaderChecksum(disk);
+    }
+
+    /// Rewrites the checksum of the generated 92-byte GPT header.
+    private static void rewriteGPTHeaderChecksum(byte[] disk) {
+        int headerOffset = SECTOR_SIZE;
+        ByteArrayAccess.writeIntLittleEndian(disk, headerOffset + 16, 0);
+        ByteArrayAccess.writeIntLittleEndian(
+                disk,
+                headerOffset + 16,
+                crc32(disk, headerOffset, 92)
+        );
+    }
+
+    /// Writes a mutated decoded disk and verifies that opening rejects it with the expected diagnostic.
+    private void assertRejected(byte[] disk, String fileName, String expectedMessage) throws IOException {
+        Path path = writeRawImage(temporaryDirectory.resolve(fileName), disk);
+        IOException exception = assertThrows(IOException.class, () -> DMGImage.open(path));
+        assertTrue(exception.getMessage().contains(expectedMessage), exception::getMessage);
     }
 
     /// Verifies the complete bytes exposed by one discovered partition.

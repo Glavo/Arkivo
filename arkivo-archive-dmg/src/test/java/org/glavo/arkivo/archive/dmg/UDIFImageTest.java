@@ -15,6 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
@@ -173,16 +174,8 @@ final class UDIFImageTest {
         assertTrue(image.isOpen());
         DMGPartition partition = image.partitions().get(0);
 
-        try (SeekableByteChannel channel = image.openChannel()) {
-            assertEquals(0, channel.read(ByteBuffer.allocate(0)));
-            assertSame(channel, channel.position(image.size()));
-            assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
-            assertSame(channel, channel.position(image.size() + 17L));
-            assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
-            assertThrows(IllegalArgumentException.class, () -> channel.position(-1L));
-            assertThrows(NonWritableChannelException.class, () -> channel.write(ByteBuffer.wrap(new byte[]{1})));
-            assertThrows(NonWritableChannelException.class, () -> channel.truncate(0L));
-        }
+        assertReadOnlyChannelLifecycle(image.openChannel(), image.size());
+        assertReadOnlyChannelLifecycle(image.openPartition(partition), partition.size());
 
         DMGPartition foreign = new DMGPartition(
                 partition.index(),
@@ -198,5 +191,38 @@ final class UDIFImageTest {
         assertFalse(image.isOpen());
         assertThrows(ClosedChannelException.class, image::openChannel);
         assertThrows(ClosedChannelException.class, () -> image.openPartition(partition));
+    }
+
+    /// Verifies one decoded disk or partition channel follows the complete read-only NIO lifecycle.
+    private static void assertReadOnlyChannelLifecycle(SeekableByteChannel channel, long size) throws IOException {
+        assertEquals(0, channel.read(ByteBuffer.allocate(0)));
+        assertSame(channel, channel.position(size));
+        assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+        assertSame(channel, channel.position(Long.MAX_VALUE));
+        assertEquals(0, channel.read(ByteBuffer.allocate(0)));
+        assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+        assertEquals(Long.MAX_VALUE, channel.position());
+        assertThrows(IllegalArgumentException.class, () -> channel.position(-1L));
+
+        assertSame(channel, channel.position(0L));
+        ByteBuffer readOnlyTarget = ByteBuffer.allocate(1).asReadOnlyBuffer();
+        assertThrows(ReadOnlyBufferException.class, () -> channel.read(readOnlyTarget));
+        assertEquals(0, readOnlyTarget.position());
+        assertEquals(0L, channel.position());
+
+        ByteBuffer source = ByteBuffer.wrap(new byte[]{1});
+        assertThrows(NonWritableChannelException.class, () -> channel.write(source));
+        assertEquals(0, source.position());
+        assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1L));
+        assertThrows(NonWritableChannelException.class, () -> channel.truncate(0L));
+
+        channel.close();
+        channel.close();
+        assertFalse(channel.isOpen());
+        assertThrows(ClosedChannelException.class, channel::position);
+        assertThrows(ClosedChannelException.class, channel::size);
+        assertThrows(ClosedChannelException.class, () -> channel.read(ByteBuffer.allocate(1)));
+        assertThrows(ClosedChannelException.class, () -> channel.write(ByteBuffer.allocate(1)));
+        assertThrows(ClosedChannelException.class, () -> channel.truncate(0L));
     }
 }

@@ -155,7 +155,7 @@ public final class SevenZipSplitVolumePaths {
         return builder.append(text).toString();
     }
 
-    /// Returns the numeric suffix value when the file name is a conventional 7z split volume path.
+    /// Returns the ASCII numeric suffix value when the file name is a conventional 7z split volume path.
     private static int splitVolumeNumber(String fileName) {
         int suffixStart = fileName.lastIndexOf('.') + 1;
         int suffixWidth = fileName.length() - suffixStart;
@@ -165,10 +165,11 @@ public final class SevenZipSplitVolumePaths {
 
         int number = 0;
         for (int index = suffixStart; index < fileName.length(); index++) {
-            int digit = Character.digit(fileName.charAt(index), 10);
-            if (digit < 0) {
+            char character = fileName.charAt(index);
+            if (character < '0' || character > '9') {
                 return NO_VOLUME_NUMBER;
             }
+            int digit = character - '0';
             if (number > (Integer.MAX_VALUE - digit) / 10) {
                 return NO_VOLUME_NUMBER;
             }
