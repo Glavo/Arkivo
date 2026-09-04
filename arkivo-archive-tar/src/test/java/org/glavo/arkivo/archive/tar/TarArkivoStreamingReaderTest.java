@@ -148,19 +148,19 @@ public final class TarArkivoStreamingReaderTest {
         byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
-            var writerEntry147 = writer.beginDirectory("dir");
-            writerEntry147.close();
+            var directoryEntry = writer.beginDirectory("dir");
+            directoryEntry.close();
 
-            var writerEntry150 = writer.beginFile("dir/hello.txt");
-            try (OutputStream body = writerEntry150.openOutputStream()) {
+            var helloEntry = writer.beginFile("dir/hello.txt");
+            try (OutputStream body = helloEntry.openOutputStream()) {
                 body.write(content);
             }
 
-            var writerEntry155 = writer.beginSymbolicLink("link", "dir/hello.txt");
-            writerEntry155.close();
+            var symbolicLinkEntry = writer.beginSymbolicLink("link", "dir/hello.txt");
+            symbolicLinkEntry.close();
 
-            var writerEntry158 = writer.beginHardLink("hard-link", "dir/hello.txt");
-            writerEntry158.close();
+            var hardLinkEntry = writer.beginHardLink("hard-link", "dir/hello.txt");
+            hardLinkEntry.close();
         }
 
         try (TarArkivoStreamingReader reader =
@@ -218,13 +218,13 @@ public final class TarArkivoStreamingReaderTest {
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
-            var writerEntry216 = writer.beginFile("meta.txt");
+            var metadataEntry = writer.beginFile("meta.txt");
             BasicFileAttributeView basicView =
-                    Objects.requireNonNull(writerEntry216.attributeView(BasicFileAttributeView.class));
+                    Objects.requireNonNull(metadataEntry.attributeView(BasicFileAttributeView.class));
             basicView.setTimes(lastModifiedTime, lastAccessTime, creationTime);
 
             PosixFileAttributeView posixView =
-                    Objects.requireNonNull(writerEntry216.attributeView(PosixFileAttributeView.class));
+                    Objects.requireNonNull(metadataEntry.attributeView(PosixFileAttributeView.class));
             posixView.setPermissions(Set.of(
                     PosixFilePermission.OWNER_READ,
                     PosixFilePermission.OWNER_WRITE,
@@ -232,7 +232,7 @@ public final class TarArkivoStreamingReaderTest {
             ));
 
             TarArkivoEntryAttributeView tarView =
-                    Objects.requireNonNull(writerEntry216.attributeView(TarArkivoEntryAttributeView.class));
+                    Objects.requireNonNull(metadataEntry.attributeView(TarArkivoEntryAttributeView.class));
             assertEquals("tar", tarView.name());
             tarView.setUserId(userId);
             tarView.setGroupId(groupId);
@@ -240,7 +240,7 @@ public final class TarArkivoStreamingReaderTest {
             tarView.setGroupName(groupName);
             tarView.setRecordedStatusChangeTime(statusChangeTime);
 
-            try (OutputStream body = writerEntry216.openOutputStream()) {
+            try (OutputStream body = metadataEntry.openOutputStream()) {
                 body.write(content);
             }
         }
@@ -294,29 +294,29 @@ public final class TarArkivoStreamingReaderTest {
         );
         try {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry288 = writer.beginDirectory("dir");
-                writerEntry288.close();
+                var directoryEntry = writer.beginDirectory("dir");
+                directoryEntry.close();
 
-                var writerEntry291 = writer.beginFile("dir/hello.txt");
+                var helloEntry = writer.beginFile("dir/hello.txt");
                 BasicFileAttributeView basicView =
-                        Objects.requireNonNull(writerEntry291.attributeView(BasicFileAttributeView.class));
+                        Objects.requireNonNull(helloEntry.attributeView(BasicFileAttributeView.class));
                 basicView.setTimes(FileTime.fromMillis(1_700_000_000_000L), null, null);
 
                 PosixFileAttributeView posixView =
-                        Objects.requireNonNull(writerEntry291.attributeView(PosixFileAttributeView.class));
+                        Objects.requireNonNull(helloEntry.attributeView(PosixFileAttributeView.class));
                 posixView.setOwner(() -> "fs-user");
                 posixView.setGroup(() -> "fs-group");
                 posixView.setPermissions(filePermissions);
                 TarArkivoEntryAttributeView tarView =
-                        Objects.requireNonNull(writerEntry291.attributeView(TarArkivoEntryAttributeView.class));
+                        Objects.requireNonNull(helloEntry.attributeView(TarArkivoEntryAttributeView.class));
                 tarView.setUserId(1234L);
                 tarView.setGroupId(5678L);
-                try (OutputStream body = writerEntry291.openOutputStream()) {
+                try (OutputStream body = helloEntry.openOutputStream()) {
                     body.write(content);
                 }
 
-                var writerEntry309 = writer.beginSymbolicLink("link", "dir/hello.txt");
-                writerEntry309.close();
+                var linkEntry = writer.beginSymbolicLink("link", "dir/hello.txt");
+                linkEntry.close();
             }
 
             TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath);
@@ -661,18 +661,18 @@ public final class TarArkivoStreamingReaderTest {
         try {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
                 writeStreamingFile(writer, "keep.txt", keepContent);
-                var writerEntry601 = writer.beginSymbolicLink("link", "keep.txt");
-                writerEntry601.close();
+                var linkEntry = writer.beginSymbolicLink("link", "keep.txt");
+                linkEntry.close();
                 writeStreamingFile(writer, "remove.txt", "remove".getBytes(StandardCharsets.UTF_8));
-                var writerEntry604 = writer.beginDirectory("dir");
-                writerEntry604.close();
+                var directoryEntry = writer.beginDirectory("dir");
+                directoryEntry.close();
                 writeStreamingFile(writer, "dir/child.txt", "child".getBytes(StandardCharsets.UTF_8));
                 writeStreamingFile(writer, "source.txt", linkedContent);
-                var writerEntry608 = writer.beginHardLink("hard.txt", "source.txt");
-                writerEntry608.close();
+                var hardLinkEntry = writer.beginHardLink("hard.txt", "source.txt");
+                hardLinkEntry.close();
                 writeStreamingFile(writer, "target.txt", "old-target".getBytes(StandardCharsets.UTF_8));
-                var writerEntry611 = writer.beginHardLink("target-hard.txt", "target.txt");
-                writerEntry611.close();
+                var targetHardLinkEntry = writer.beginHardLink("target-hard.txt", "target.txt");
+                targetHardLinkEntry.close();
                 writeStreamingFile(writer, "replacement.txt", "new-target".getBytes(StandardCharsets.UTF_8));
             }
 
@@ -983,8 +983,8 @@ public final class TarArkivoStreamingReaderTest {
         Path archivePath = createTemporaryArchivePath("tar-provider-");
         try {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry896 = writer.beginFile("dir/provider.txt");
-                try (OutputStream body = writerEntry896.openOutputStream()) {
+                var providerEntry = writer.beginFile("dir/provider.txt");
+                try (OutputStream body = providerEntry.openOutputStream()) {
                     body.write(content);
                 }
             }
@@ -1074,16 +1074,16 @@ public final class TarArkivoStreamingReaderTest {
                 + "-cannot-store-this-single-segment-without-an-extension.txt";
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
-            var writerEntry987 = writer.beginFile(path);
-            try (OutputStream body = writerEntry987.openOutputStream()) {
+            var fileEntry = writer.beginFile(path);
+            try (OutputStream body = fileEntry.openOutputStream()) {
                 body.write(content);
             }
 
-            var writerEntry992 = writer.beginSymbolicLink("long-link", target);
-            writerEntry992.close();
+            var symbolicLinkEntry = writer.beginSymbolicLink("long-link", target);
+            symbolicLinkEntry.close();
 
-            var writerEntry995 = writer.beginHardLink("long-hard-link", path);
-            writerEntry995.close();
+            var hardLinkEntry = writer.beginHardLink("long-hard-link", path);
+            hardLinkEntry.close();
         }
 
         try (TarArkivoStreamingReader reader =
@@ -2092,8 +2092,8 @@ public final class TarArkivoStreamingReaderTest {
             String path,
             byte @Unmodifiable [] content
     ) throws IOException {
-        var writerEntry1727 = writer.beginFile(path);
-        try (OutputStream output = writerEntry1727.openOutputStream()) {
+        var entry = writer.beginFile(path);
+        try (OutputStream output = entry.openOutputStream()) {
             output.write(content);
         }
     }

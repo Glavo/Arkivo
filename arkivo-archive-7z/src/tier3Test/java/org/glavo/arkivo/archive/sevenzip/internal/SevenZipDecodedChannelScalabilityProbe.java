@@ -62,8 +62,8 @@ public final class SevenZipDecodedChannelScalabilityProbe {
                         false
                 )
         )) {
-            var writerEntry57 = writer.beginFile(ENTRY_NAME);
-            try (OutputStream output = writerEntry57.openOutputStream()) {
+            var entry = writer.beginFile(ENTRY_NAME);
+            try (OutputStream output = entry.openOutputStream()) {
                 long remaining = ENTRY_SIZE;
                 while (remaining > 0L) {
                     int count = (int) Math.min(remaining, block.length);

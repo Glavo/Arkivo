@@ -41,12 +41,12 @@ public final class ArIndexedStorageTest {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(archive, storage)) {
-            var writerEntry40 = writer.beginFile("file.txt");
+            var entry = writer.beginFile("file.txt");
             ArArkivoEntryAttributeView attributes = Objects.requireNonNull(
-                    writerEntry40.attributeView(ArArkivoEntryAttributeView.class)
+                    entry.attributeView(ArArkivoEntryAttributeView.class)
             );
             attributes.setSize(expected.length);
-            try (OutputStream output = writerEntry40.openOutputStream()) {
+            try (OutputStream output = entry.openOutputStream()) {
                 output.write(expected);
             }
         }
@@ -62,8 +62,8 @@ public final class ArIndexedStorageTest {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         TrackingEditStorage storage = new TrackingEditStorage(true);
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(archive, storage)) {
-            var writerEntry61 = writer.beginFile("file.txt");
-            try (OutputStream output = writerEntry61.openOutputStream()) {
+            var entry = writer.beginFile("file.txt");
+            try (OutputStream output = entry.openOutputStream()) {
                 output.write(expected);
             }
         }
@@ -89,8 +89,8 @@ public final class ArIndexedStorageTest {
                 archive,
                 ArchiveCreateOptions.DEFAULT.withEditStorageFactory(() -> storage)
         )) {
-            var writerEntry88 = writer.beginFile("file.txt");
-            try (OutputStream output = writerEntry88.openOutputStream()) {
+            var entry = writer.beginFile("file.txt");
+            try (OutputStream output = entry.openOutputStream()) {
                 output.write("environment-storage".getBytes(StandardCharsets.UTF_8));
             }
         }
@@ -261,8 +261,8 @@ public final class ArIndexedStorageTest {
         Files.createDirectories(directory);
         Path archivePath = Files.createTempFile(directory, "indexed-storage-", ".a");
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
-            var writerEntry155 = writer.beginFile("file.txt");
-            try (OutputStream output = writerEntry155.openOutputStream()) {
+            var entry = writer.beginFile("file.txt");
+            try (OutputStream output = entry.openOutputStream()) {
                 output.write("stored-content".getBytes(StandardCharsets.UTF_8));
             }
         }

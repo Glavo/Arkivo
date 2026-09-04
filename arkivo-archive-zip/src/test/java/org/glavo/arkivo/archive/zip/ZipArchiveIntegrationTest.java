@@ -9,7 +9,6 @@ import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeChannel;
@@ -55,8 +54,6 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.FileSystemLoopException;
 import java.nio.file.FileStore;
-import java.nio.file.FileSystemAlreadyExistsException;
-import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NotLinkException;
@@ -102,9 +99,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Tests basic ZIP Arkivo file system behavior.
+/// Tests end-to-end ZIP reading, writing, updating, encryption, and volume handling.
 @NotNullByDefault
-public final class ZipArkivoFileSystemTest {
+public final class ZipArchiveIntegrationTest {
     /// The standards-compliant split size used by ZIP volume tests.
     private static final int TEST_SPLIT_SIZE = Math.toIntExact(ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE);
 
@@ -296,11 +293,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry353 = writer.beginFile("bzip2.txt");
-                ZipArkivoEntryAttributeView view = writerEntry353.attributeView(ZipArkivoEntryAttributeView.class);
+                var bzip2Entry = writer.beginFile("bzip2.txt");
+                ZipArkivoEntryAttributeView view = bzip2Entry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.BZIP2);
-                try (var output = writerEntry353.openOutputStream()) {
+                try (var output = bzip2Entry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -328,11 +325,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry385 = writer.beginFile("deflate64.txt");
-                ZipArkivoEntryAttributeView view = writerEntry385.attributeView(ZipArkivoEntryAttributeView.class);
+                var deflate64Entry = writer.beginFile("deflate64.txt");
+                ZipArkivoEntryAttributeView view = deflate64Entry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.DEFLATE64);
-                try (var output = writerEntry385.openOutputStream()) {
+                try (var output = deflate64Entry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -375,17 +372,17 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry432 = writer.beginFile("secret.txt");
-                ZipArkivoEntryAttributeView view = writerEntry432.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("secret.txt");
+                ZipArkivoEntryAttributeView view = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.DEFLATE64);
                 view.setEncryption(ZipEncryption.WINZIP_AES_256);
-                try (var output = writerEntry432.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(content);
                 }
 
-                var writerEntry441 = writer.beginFile("after.txt");
-                try (var output = writerEntry441.openOutputStream()) {
+                var followingEntry = writer.beginFile("after.txt");
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(after);
                 }
             }
@@ -413,11 +410,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry470 = writer.beginFile("zstandard.txt");
-                ZipArkivoEntryAttributeView view = writerEntry470.attributeView(ZipArkivoEntryAttributeView.class);
+                var zstandardEntry = writer.beginFile("zstandard.txt");
+                ZipArkivoEntryAttributeView view = zstandardEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.ZSTANDARD);
-                try (var output = writerEntry470.openOutputStream()) {
+                try (var output = zstandardEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -445,11 +442,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry502 = writer.beginFile("deprecated-zstandard.txt");
-                ZipArkivoEntryAttributeView view = writerEntry502.attributeView(ZipArkivoEntryAttributeView.class);
+                var deprecatedZstandardEntry = writer.beginFile("deprecated-zstandard.txt");
+                ZipArkivoEntryAttributeView view = deprecatedZstandardEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.DEPRECATED_ZSTANDARD);
-                try (var output = writerEntry502.openOutputStream()) {
+                try (var output = deprecatedZstandardEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -488,11 +485,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry545 = writer.beginFile("xz.txt");
-                ZipArkivoEntryAttributeView view = writerEntry545.attributeView(ZipArkivoEntryAttributeView.class);
+                var xzEntry = writer.beginFile("xz.txt");
+                ZipArkivoEntryAttributeView view = xzEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.XZ);
-                try (var output = writerEntry545.openOutputStream()) {
+                try (var output = xzEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -521,19 +518,19 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry578 = writer.beginFile("bzip2.txt");
-                ZipArkivoEntryAttributeView bzip2View = writerEntry578.attributeView(ZipArkivoEntryAttributeView.class);
+                var bzip2Entry = writer.beginFile("bzip2.txt");
+                ZipArkivoEntryAttributeView bzip2View = bzip2Entry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
                 bzip2View.setMethod(ZipMethod.BZIP2);
-                try (var output = writerEntry578.openOutputStream()) {
+                try (var output = bzip2Entry.openOutputStream()) {
                     output.write(bzip2Content);
                 }
 
-                var writerEntry586 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry586.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry586.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -572,11 +569,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry629 = writer.beginFile("lzma.txt");
-                ZipArkivoEntryAttributeView view = writerEntry629.attributeView(ZipArkivoEntryAttributeView.class);
+                var lzmaEntry = writer.beginFile("lzma.txt");
+                ZipArkivoEntryAttributeView view = lzmaEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.LZMA);
-                try (var output = writerEntry629.openOutputStream()) {
+                try (var output = lzmaEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -607,19 +604,19 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry664 = writer.beginFile("zstandard.txt");
-                ZipArkivoEntryAttributeView zstandardView = writerEntry664.attributeView(ZipArkivoEntryAttributeView.class);
+                var zstandardEntry = writer.beginFile("zstandard.txt");
+                ZipArkivoEntryAttributeView zstandardView = zstandardEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
                 zstandardView.setMethod(ZipMethod.ZSTANDARD);
-                try (var output = writerEntry664.openOutputStream()) {
+                try (var output = zstandardEntry.openOutputStream()) {
                     output.write(zstandardContent);
                 }
 
-                var writerEntry672 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry672.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry672.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -659,19 +656,19 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry716 = writer.beginFile("xz.txt");
-                ZipArkivoEntryAttributeView xzView = writerEntry716.attributeView(ZipArkivoEntryAttributeView.class);
+                var xzEntry = writer.beginFile("xz.txt");
+                ZipArkivoEntryAttributeView xzView = xzEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(xzView);
                 xzView.setMethod(ZipMethod.XZ);
-                try (var output = writerEntry716.openOutputStream()) {
+                try (var output = xzEntry.openOutputStream()) {
                     output.write(xzContent);
                 }
 
-                var writerEntry724 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry724.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry724.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -712,19 +709,19 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry769 = writer.beginFile("xz-descriptor-crc.txt");
-                ZipArkivoEntryAttributeView xzView = writerEntry769.attributeView(ZipArkivoEntryAttributeView.class);
+                var xzDescriptorEntry = writer.beginFile("xz-descriptor-crc.txt");
+                ZipArkivoEntryAttributeView xzView = xzDescriptorEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(xzView);
                 xzView.setMethod(ZipMethod.XZ);
-                try (var output = writerEntry769.openOutputStream()) {
+                try (var output = xzDescriptorEntry.openOutputStream()) {
                     output.write(xzContent);
                 }
 
-                var writerEntry777 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry777.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry777.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -764,19 +761,19 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry821 = writer.beginFile("lzma.txt");
-                ZipArkivoEntryAttributeView lzmaView = writerEntry821.attributeView(ZipArkivoEntryAttributeView.class);
+                var lzmaEntry = writer.beginFile("lzma.txt");
+                ZipArkivoEntryAttributeView lzmaView = lzmaEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(lzmaView);
                 lzmaView.setMethod(ZipMethod.LZMA);
-                try (var output = writerEntry821.openOutputStream()) {
+                try (var output = lzmaEntry.openOutputStream()) {
                     output.write(lzmaContent);
                 }
 
-                var writerEntry829 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry829.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry829.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -821,20 +818,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry878 = writer.beginFile("secret-xz.txt");
-                ZipArkivoEntryAttributeView xzView = writerEntry878.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("secret-xz.txt");
+                ZipArkivoEntryAttributeView xzView = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(xzView);
                 xzView.setMethod(ZipMethod.XZ);
                 xzView.setEncryption(ZipEncryption.ZIP_CRYPTO);
-                try (var output = writerEntry878.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(xzContent);
                 }
 
-                var writerEntry887 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry887.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry887.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -882,20 +879,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry939 = writer.beginFile("secret-lzma.txt");
-                ZipArkivoEntryAttributeView lzmaView = writerEntry939.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("secret-lzma.txt");
+                ZipArkivoEntryAttributeView lzmaView = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(lzmaView);
                 lzmaView.setMethod(ZipMethod.LZMA);
                 lzmaView.setEncryption(ZipEncryption.ZIP_CRYPTO);
-                try (var output = writerEntry939.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(lzmaContent);
                 }
 
-                var writerEntry948 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry948.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry948.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -943,20 +940,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1000 = writer.beginFile("aes-xz.txt");
-                ZipArkivoEntryAttributeView xzView = writerEntry1000.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("aes-xz.txt");
+                ZipArkivoEntryAttributeView xzView = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(xzView);
                 xzView.setMethod(ZipMethod.XZ);
                 xzView.setEncryption(ZipEncryption.WINZIP_AES_256);
-                try (var output = writerEntry1000.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(xzContent);
                 }
 
-                var writerEntry1009 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1009.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1009.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1001,19 +998,19 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry1058 = writer.beginFile("zstandard-descriptor-crc.txt");
-                ZipArkivoEntryAttributeView zstandardView = writerEntry1058.attributeView(ZipArkivoEntryAttributeView.class);
+                var zstandardEntry = writer.beginFile("zstandard-descriptor-crc.txt");
+                ZipArkivoEntryAttributeView zstandardView = zstandardEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
                 zstandardView.setMethod(ZipMethod.ZSTANDARD);
-                try (var output = writerEntry1058.openOutputStream()) {
+                try (var output = zstandardEntry.openOutputStream()) {
                     output.write(zstandardContent);
                 }
 
-                var writerEntry1066 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1066.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1066.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1057,20 +1054,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1114 = writer.beginFile("secret-zstandard.txt");
-                ZipArkivoEntryAttributeView zstandardView = writerEntry1114.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("secret-zstandard.txt");
+                ZipArkivoEntryAttributeView zstandardView = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
                 zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 zstandardView.setEncryption(ZipEncryption.ZIP_CRYPTO);
-                try (var output = writerEntry1114.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(zstandardContent);
                 }
 
-                var writerEntry1123 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1123.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1123.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1119,20 +1116,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1176 = writer.beginFile("secret-zstandard-descriptor-crc.txt");
-                ZipArkivoEntryAttributeView zstandardView = writerEntry1176.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("secret-zstandard-descriptor-crc.txt");
+                ZipArkivoEntryAttributeView zstandardView = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
                 zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 zstandardView.setEncryption(ZipEncryption.ZIP_CRYPTO);
-                try (var output = writerEntry1176.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(zstandardContent);
                 }
 
-                var writerEntry1185 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1185.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1185.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1181,20 +1178,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1238 = writer.beginFile("aes-lzma.txt");
-                ZipArkivoEntryAttributeView lzmaView = writerEntry1238.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("aes-lzma.txt");
+                ZipArkivoEntryAttributeView lzmaView = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(lzmaView);
                 lzmaView.setMethod(ZipMethod.LZMA);
                 lzmaView.setEncryption(ZipEncryption.WINZIP_AES_256);
-                try (var output = writerEntry1238.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(lzmaContent);
                 }
 
-                var writerEntry1247 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1247.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1247.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1378,20 +1375,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1451 = writer.beginFile("aes-zstandard.txt");
-                ZipArkivoEntryAttributeView zstandardView = writerEntry1451.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("aes-zstandard.txt");
+                ZipArkivoEntryAttributeView zstandardView = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
                 zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 zstandardView.setEncryption(ZipEncryption.WINZIP_AES_256);
-                try (var output = writerEntry1451.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(zstandardContent);
                 }
 
-                var writerEntry1460 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1460.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1460.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1440,20 +1437,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1513 = writer.beginFile("aes-zstandard-descriptor-crc.txt");
-                ZipArkivoEntryAttributeView zstandardView = writerEntry1513.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("aes-zstandard-descriptor-crc.txt");
+                ZipArkivoEntryAttributeView zstandardView = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
                 zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 zstandardView.setEncryption(ZipEncryption.WINZIP_AES_256);
-                try (var output = writerEntry1513.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(zstandardContent);
                 }
 
-                var writerEntry1522 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1522.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1522.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1499,19 +1496,19 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry1572 = writer.beginFile("bzip2-descriptor-crc.txt");
-                ZipArkivoEntryAttributeView bzip2View = writerEntry1572.attributeView(ZipArkivoEntryAttributeView.class);
+                var bzip2Entry = writer.beginFile("bzip2-descriptor-crc.txt");
+                ZipArkivoEntryAttributeView bzip2View = bzip2Entry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
                 bzip2View.setMethod(ZipMethod.BZIP2);
-                try (var output = writerEntry1572.openOutputStream()) {
+                try (var output = bzip2Entry.openOutputStream()) {
                     output.write(bzip2Content);
                 }
 
-                var writerEntry1580 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1580.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1580.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1555,20 +1552,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1628 = writer.beginFile("secret-bzip2.txt");
-                ZipArkivoEntryAttributeView bzip2View = writerEntry1628.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("secret-bzip2.txt");
+                ZipArkivoEntryAttributeView bzip2View = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
                 bzip2View.setMethod(ZipMethod.BZIP2);
                 bzip2View.setEncryption(ZipEncryption.ZIP_CRYPTO);
-                try (var output = writerEntry1628.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(bzip2Content);
                 }
 
-                var writerEntry1637 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1637.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1637.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1617,20 +1614,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1690 = writer.beginFile("secret-bzip2-descriptor-crc.txt");
-                ZipArkivoEntryAttributeView bzip2View = writerEntry1690.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("secret-bzip2-descriptor-crc.txt");
+                ZipArkivoEntryAttributeView bzip2View = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
                 bzip2View.setMethod(ZipMethod.BZIP2);
                 bzip2View.setEncryption(ZipEncryption.ZIP_CRYPTO);
-                try (var output = writerEntry1690.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(bzip2Content);
                 }
 
-                var writerEntry1699 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1699.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1699.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1679,20 +1676,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1752 = writer.beginFile("aes-bzip2.txt");
-                ZipArkivoEntryAttributeView bzip2View = writerEntry1752.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("aes-bzip2.txt");
+                ZipArkivoEntryAttributeView bzip2View = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
                 bzip2View.setMethod(ZipMethod.BZIP2);
                 bzip2View.setEncryption(ZipEncryption.WINZIP_AES_256);
-                try (var output = writerEntry1752.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(bzip2Content);
                 }
 
-                var writerEntry1761 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1761.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1761.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1741,20 +1738,20 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry1814 = writer.beginFile("aes-bzip2-descriptor-crc.txt");
-                ZipArkivoEntryAttributeView bzip2View = writerEntry1814.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("aes-bzip2-descriptor-crc.txt");
+                ZipArkivoEntryAttributeView bzip2View = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
                 bzip2View.setMethod(ZipMethod.BZIP2);
                 bzip2View.setEncryption(ZipEncryption.WINZIP_AES_256);
-                try (var output = writerEntry1814.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(bzip2Content);
                 }
 
-                var writerEntry1823 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry1823.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry1823.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -1819,10 +1816,10 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry1892 = writer.beginFile("dir/hello.txt");
-                BasicFileAttributeView basicView = writerEntry1892.attributeView(BasicFileAttributeView.class);
-                ZipArkivoEntryAttributeView zipView = writerEntry1892.attributeView(ZipArkivoEntryAttributeView.class);
-                PosixFileAttributeView posixView = writerEntry1892.attributeView(PosixFileAttributeView.class);
+                var helloEntry = writer.beginFile("dir/hello.txt");
+                BasicFileAttributeView basicView = helloEntry.attributeView(BasicFileAttributeView.class);
+                ZipArkivoEntryAttributeView zipView = helloEntry.attributeView(ZipArkivoEntryAttributeView.class);
+                PosixFileAttributeView posixView = helloEntry.attributeView(PosixFileAttributeView.class);
                 assertNotNull(basicView);
                 assertNotNull(zipView);
                 assertNotNull(posixView);
@@ -1859,7 +1856,7 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertEquals(permissions, attributes.permissions());
 
-                try (var output = writerEntry1892.openOutputStream()) {
+                try (var output = helloEntry.openOutputStream()) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
                 assertThrows(IllegalStateException.class, () -> zipView.setMethod(ZipMethod.STORED));
@@ -1898,15 +1895,15 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry1971 = writer.beginDirectory("meta");
-                ZipArkivoEntryAttributeView directoryView = writerEntry1971.attributeView(ZipArkivoEntryAttributeView.class);
+                var metadataDirectory = writer.beginDirectory("meta");
+                ZipArkivoEntryAttributeView directoryView = metadataDirectory.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(directoryView);
                 directoryView.setTimes(lastModifiedTime, null, null);
                 directoryView.setRawComment(rawComment);
-                writerEntry1971.close();
+                metadataDirectory.close();
 
-                var writerEntry1978 = writer.beginFile("meta/stored.bin");
-                ZipArkivoEntryAttributeView fileView = writerEntry1978.attributeView(ZipArkivoEntryAttributeView.class);
+                var storedEntry = writer.beginFile("meta/stored.bin");
+                ZipArkivoEntryAttributeView fileView = storedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(fileView);
                 fileView.setMethod(ZipMethod.STORED);
                 fileView.setTimes(lastModifiedTime, null, null);
@@ -1916,12 +1913,12 @@ public final class ZipArkivoFileSystemTest {
                 fileView.setLocalExtraData(localExtraData);
                 fileView.setCentralDirectoryExtraData(centralExtraData);
                 fileView.setRawComment(rawComment);
-                try (var output = writerEntry1978.openOutputStream()) {
+                try (var output = storedEntry.openOutputStream()) {
                     output.write(content);
                 }
 
-                var writerEntry1993 = writer.beginSymbolicLink("meta/link", "stored.bin");
-                writerEntry1993.close();
+                var linkEntry = writer.beginSymbolicLink("meta/link", "stored.bin");
+                linkEntry.close();
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
@@ -1982,14 +1979,14 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password, ZipEncryption.ZIP_CRYPTO)
             )) {
-                var writerEntry2059 = writer.beginDirectory("secure");
-                writerEntry2059.close();
+                var secureDirectory = writer.beginDirectory("secure");
+                secureDirectory.close();
 
-                var writerEntry2062 = writer.beginFile("secure/message.txt");
-                ZipArkivoEntryAttributeView view = writerEntry2062.attributeView(ZipArkivoEntryAttributeView.class);
+                var messageEntry = writer.beginFile("secure/message.txt");
+                ZipArkivoEntryAttributeView view = messageEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 assertEquals(ZipEncryption.ZIP_CRYPTO, view.readAttributes().encryption());
-                try (var output = writerEntry2062.openOutputStream()) {
+                try (var output = messageEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -2045,13 +2042,13 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry2125 = writer.beginFile("stored.bin");
-                ZipArkivoEntryAttributeView view = writerEntry2125.attributeView(ZipArkivoEntryAttributeView.class);
+                var storedEntry = writer.beginFile("stored.bin");
+                ZipArkivoEntryAttributeView view = storedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.STORED);
                 view.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 view.setUncompressedSizeAndCrc32(content.length, crc32);
-                try (var output = writerEntry2125.openOutputStream()) {
+                try (var output = storedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -2086,11 +2083,11 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password, ZipEncryption.WINZIP_AES_256)
             )) {
-                var writerEntry2170 = writer.beginFile("secure/aes.txt");
-                ZipArkivoEntryAttributeView view = writerEntry2170.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("secure/aes.txt");
+                ZipArkivoEntryAttributeView view = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 assertEquals(ZipEncryption.WINZIP_AES_256, view.readAttributes().encryption());
-                try (var output = writerEntry2170.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -2158,8 +2155,8 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password, ZipEncryption.WINZIP_AES_256)
             )) {
-                var writerEntry2246 = writer.beginFile("empty-password-aes.txt");
-                try (var output = writerEntry2246.openOutputStream()) {
+                var encryptedEntry = writer.beginFile("empty-password-aes.txt");
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -2207,13 +2204,13 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry2295 = writer.beginFile("stored-aes.bin");
-                ZipArkivoEntryAttributeView view = writerEntry2295.attributeView(ZipArkivoEntryAttributeView.class);
+                var storedEntry = writer.beginFile("stored-aes.bin");
+                ZipArkivoEntryAttributeView view = storedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.STORED);
                 view.setEncryption(ZipEncryption.WINZIP_AES_128);
                 view.setUncompressedSizeAndCrc32(content.length, crc32);
-                try (var output = writerEntry2295.openOutputStream()) {
+                try (var output = storedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -2265,12 +2262,12 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry2353 = writer.beginFile("stored-aes-descriptor.bin");
-                ZipArkivoEntryAttributeView view = writerEntry2353.attributeView(ZipArkivoEntryAttributeView.class);
+                var storedEntry = writer.beginFile("stored-aes-descriptor.bin");
+                ZipArkivoEntryAttributeView view = storedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.STORED);
                 view.setEncryption(ZipEncryption.WINZIP_AES_192);
-                try (var output = writerEntry2353.openOutputStream()) {
+                try (var output = storedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -2454,11 +2451,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath);
-            var writerEntry2542 = writer.beginFile("secret.txt");
-            ZipArkivoEntryAttributeView view = writerEntry2542.attributeView(ZipArkivoEntryAttributeView.class);
+            var secretEntry = writer.beginFile("secret.txt");
+            ZipArkivoEntryAttributeView view = secretEntry.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
             view.setEncryption(ZipEncryption.ZIP_CRYPTO);
-            IOException exception = assertThrows(IOException.class, writerEntry2542::openOutputStream);
+            IOException exception = assertThrows(IOException.class, secretEntry::openOutputStream);
             assertEquals(true, exception.getMessage().contains("requires a password"));
             IOException closeException = assertThrows(IOException.class, writer::close);
             assertEquals(true, closeException.getMessage().contains("requires a password"));
@@ -2475,11 +2472,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath);
-            var writerEntry2562 = writer.beginSymbolicLink("secret-link", "target");
-            ZipArkivoEntryAttributeView view = writerEntry2562.attributeView(ZipArkivoEntryAttributeView.class);
+            var linkEntry = writer.beginSymbolicLink("secret-link", "target");
+            ZipArkivoEntryAttributeView view = linkEntry.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
             view.setEncryption(ZipEncryption.WINZIP_AES_128);
-            IOException exception = assertThrows(IOException.class, writerEntry2562::close);
+            IOException exception = assertThrows(IOException.class, linkEntry::close);
             assertEquals(true, exception.getMessage().contains("requires a password"));
             IOException closeException = assertThrows(IOException.class, writer::close);
             assertEquals(true, closeException.getMessage().contains("requires a password"));
@@ -2497,11 +2494,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry2583 = writer.beginFile("bad-size.txt");
-                ZipArkivoEntryAttributeView view = writerEntry2583.attributeView(ZipArkivoEntryAttributeView.class);
+                var invalidEntry = writer.beginFile("bad-size.txt");
+                ZipArkivoEntryAttributeView view = invalidEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setUncompressedSizeAndCrc32(content.length + 1L, crc32(content));
-                var channel = writerEntry2583.openChannel();
+                var channel = invalidEntry.openChannel();
 
                 assertEquals(content.length, channel.write(ByteBuffer.wrap(content)));
                 IOException exception = assertThrows(IOException.class, channel::close);
@@ -2524,11 +2521,11 @@ public final class ZipArkivoFileSystemTest {
         byte[] content = "bad writer close size".getBytes(StandardCharsets.UTF_8);
 
         ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archiveOutput);
-        var writerEntry2609 = writer.beginFile("bad-size.txt");
-        ZipArkivoEntryAttributeView view = writerEntry2609.attributeView(ZipArkivoEntryAttributeView.class);
+        var invalidEntry = writer.beginFile("bad-size.txt");
+        ZipArkivoEntryAttributeView view = invalidEntry.attributeView(ZipArkivoEntryAttributeView.class);
         assertNotNull(view);
         view.setUncompressedSizeAndCrc32(content.length + 1L, crc32(content));
-        var entryOutput = writerEntry2609.openOutputStream();
+        var entryOutput = invalidEntry.openOutputStream();
         entryOutput.write(content);
 
         IOException exception = assertThrows(IOException.class, writer::close);
@@ -2812,11 +2809,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
-                var writerEntry2907 = writer.beginFile("hello.txt");
-                ZipArkivoEntryAttributeView attributeView = writerEntry2907.attributeView(ZipArkivoEntryAttributeView.class);
+                var helloEntry = writer.beginFile("hello.txt");
+                ZipArkivoEntryAttributeView attributeView = helloEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(attributeView);
                 attributeView.setTimes(lastModifiedTime, null, null);
-                try (OutputStream output = writerEntry2907.openOutputStream()) {
+                try (OutputStream output = helloEntry.openOutputStream()) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -2857,14 +2854,14 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
-                var writerEntry2962 = writer.beginDirectory("dir");
-                writerEntry2962.close();
-                var writerEntry2964 = writer.beginFile("dir/target.txt");
-                try (OutputStream output = writerEntry2964.openOutputStream()) {
+                var directoryEntry = writer.beginDirectory("dir");
+                directoryEntry.close();
+                var targetEntry = writer.beginFile("dir/target.txt");
+                try (OutputStream output = targetEntry.openOutputStream()) {
                     output.write("target".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry2968 = writer.beginSymbolicLink("dir/link", "target.txt");
-                writerEntry2968.close();
+                var linkEntry = writer.beginSymbolicLink("dir/link", "target.txt");
+                linkEntry.close();
             }
 
             try (ZipArkivoFileSystem sourceFileSystem = ZipArkivoFileSystem.open(sourcePath);
@@ -3036,8 +3033,8 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
-                var writerEntry3184 = writer.beginFile("before.txt");
-                try (OutputStream output = writerEntry3184.openOutputStream()) {
+                var beforeEntry = writer.beginFile("before.txt");
+                try (OutputStream output = beforeEntry.openOutputStream()) {
                     output.write("before".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -3074,12 +3071,12 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry3227 = writer.beginFile("before.txt");
-                try (OutputStream output = writerEntry3227.openOutputStream()) {
+                var beforeEntry = writer.beginFile("before.txt");
+                try (OutputStream output = beforeEntry.openOutputStream()) {
                     output.write("before".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry3231 = writer.beginFile("keep.txt");
-                try (OutputStream output = writerEntry3231.openOutputStream()) {
+                var keepEntry = writer.beginFile("keep.txt");
+                try (OutputStream output = keepEntry.openOutputStream()) {
                     output.write("keep".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -3115,12 +3112,12 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
-                var writerEntry3274 = writer.beginFile("before.txt");
-                try (OutputStream output = writerEntry3274.openOutputStream()) {
+                var beforeEntry = writer.beginFile("before.txt");
+                try (OutputStream output = beforeEntry.openOutputStream()) {
                     output.write("before".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry3278 = writer.beginFile("keep.txt");
-                try (OutputStream output = writerEntry3278.openOutputStream()) {
+                var keepEntry = writer.beginFile("keep.txt");
+                try (OutputStream output = keepEntry.openOutputStream()) {
                     output.write("keep".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -3153,20 +3150,20 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry3317 = writer.beginDirectory("dir");
-                writerEntry3317.close();
-                var writerEntry3319 = writer.beginFile("dir/child.txt");
-                try (OutputStream output = writerEntry3319.openOutputStream()) {
+                var directoryEntry = writer.beginDirectory("dir");
+                directoryEntry.close();
+                var childEntry = writer.beginFile("dir/child.txt");
+                try (OutputStream output = childEntry.openOutputStream()) {
                     output.write("child".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry3323 = writer.beginDirectory("empty");
-                writerEntry3323.close();
-                var writerEntry3325 = writer.beginFile("remove.txt");
-                try (OutputStream output = writerEntry3325.openOutputStream()) {
+                var emptyDirectoryEntry = writer.beginDirectory("empty");
+                emptyDirectoryEntry.close();
+                var removeEntry = writer.beginFile("remove.txt");
+                try (OutputStream output = removeEntry.openOutputStream()) {
                     output.write("remove".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry3329 = writer.beginFile("recreate.txt");
-                try (OutputStream output = writerEntry3329.openOutputStream()) {
+                var recreateEntry = writer.beginFile("recreate.txt");
+                try (OutputStream output = recreateEntry.openOutputStream()) {
                     output.write("before".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -3212,24 +3209,24 @@ public final class ZipArkivoFileSystemTest {
         byte[] rawComment = new byte[]{5, 6, 7};
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry3387 = writer.beginDirectory("dir");
-                writerEntry3387.close();
-                var writerEntry3389 = writer.beginFile("dir/child.txt");
-                ZipArkivoEntryAttributeView childView = writerEntry3389.attributeView(ZipArkivoEntryAttributeView.class);
+                var directoryEntry = writer.beginDirectory("dir");
+                directoryEntry.close();
+                var childEntry = writer.beginFile("dir/child.txt");
+                ZipArkivoEntryAttributeView childView = childEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(childView);
                 childView.setCentralDirectoryExtraData(extraData);
                 childView.setRawComment(rawComment);
-                try (OutputStream output = writerEntry3389.openOutputStream()) {
+                try (OutputStream output = childEntry.openOutputStream()) {
                     output.write("child".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry3397 = writer.beginSymbolicLink("dir/link", "child.txt");
-                writerEntry3397.close();
-                var writerEntry3399 = writer.beginFile("target.txt");
-                try (OutputStream output = writerEntry3399.openOutputStream()) {
+                var linkEntry = writer.beginSymbolicLink("dir/link", "child.txt");
+                linkEntry.close();
+                var targetEntry = writer.beginFile("target.txt");
+                try (OutputStream output = targetEntry.openOutputStream()) {
                     output.write("old-target".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry3403 = writer.beginFile("replacement.txt");
-                try (OutputStream output = writerEntry3403.openOutputStream()) {
+                var replacementEntry = writer.beginFile("replacement.txt");
+                try (OutputStream output = replacementEntry.openOutputStream()) {
                     output.write("new-target".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -3371,26 +3368,26 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password, ZipEncryption.ZIP_CRYPTO)
             )) {
-                var writerEntry3558 = writer.beginDirectory("dir");
-                writerEntry3558.close();
-                var writerEntry3560 = writer.beginFile("dir/existing.txt");
-                ZipArkivoEntryAttributeView existingWriteView = writerEntry3560.attributeView(
+                var directoryEntry = writer.beginDirectory("dir");
+                directoryEntry.close();
+                var existingEntry = writer.beginFile("dir/existing.txt");
+                ZipArkivoEntryAttributeView existingWriteView = existingEntry.attributeView(
                         ZipArkivoEntryAttributeView.class
                 );
                 assertNotNull(existingWriteView);
                 existingWriteView.setEncryption(ZipEncryption.NONE);
-                try (OutputStream output = writerEntry3560.openOutputStream()) {
+                try (OutputStream output = existingEntry.openOutputStream()) {
                     output.write("existing payload".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry3569 = writer.beginSymbolicLink("dir/link", "existing.txt");
-                writerEntry3569.close();
-                var writerEntry3571 = writer.beginFile("dir/encrypted.txt");
-                ZipArkivoEntryAttributeView encryptedWriteView = writerEntry3571.attributeView(
+                var linkEntry = writer.beginSymbolicLink("dir/link", "existing.txt");
+                linkEntry.close();
+                var encryptedEntry = writer.beginFile("dir/encrypted.txt");
+                ZipArkivoEntryAttributeView encryptedWriteView = encryptedEntry.attributeView(
                         ZipArkivoEntryAttributeView.class
                 );
                 assertNotNull(encryptedWriteView);
                 encryptedWriteView.setTimes(encryptedTime, null, null);
-                try (OutputStream output = writerEntry3571.openOutputStream()) {
+                try (OutputStream output = encryptedEntry.openOutputStream()) {
                     output.write("encrypted payload".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -3552,16 +3549,16 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchivePath("fs-update-");
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry3741 = writer.beginFile("replace.txt");
-                try (OutputStream output = writerEntry3741.openOutputStream()) {
+                var replaceEntry = writer.beginFile("replace.txt");
+                try (OutputStream output = replaceEntry.openOutputStream()) {
                     output.write("before".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry3745 = writer.beginFile("remove.txt");
-                try (OutputStream output = writerEntry3745.openOutputStream()) {
+                var removeEntry = writer.beginFile("remove.txt");
+                try (OutputStream output = removeEntry.openOutputStream()) {
                     output.write("remove".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry3749 = writer.beginFile("keep.txt");
-                try (OutputStream output = writerEntry3749.openOutputStream()) {
+                var keepEntry = writer.beginFile("keep.txt");
+                try (OutputStream output = keepEntry.openOutputStream()) {
                     output.write("keep".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -3854,12 +3851,12 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
-                var writerEntry4066 = writer.beginFile("remove.txt");
-                try (OutputStream output = writerEntry4066.openOutputStream()) {
+                var removeEntry = writer.beginFile("remove.txt");
+                try (OutputStream output = removeEntry.openOutputStream()) {
                     output.write("remove".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry4070 = writer.beginFile("keep.txt");
-                try (OutputStream output = writerEntry4070.openOutputStream()) {
+                var keepEntry = writer.beginFile("keep.txt");
+                try (OutputStream output = keepEntry.openOutputStream()) {
                     output.write("keep".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -3967,15 +3964,15 @@ public final class ZipArkivoFileSystemTest {
         TestVolumeTarget target = new TestVolumeTarget();
 
         try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, TEST_SPLIT_SIZE)) {
-            var writerEntry4188 = writer.beginFile("stream.txt");
-            try (OutputStream output = writerEntry4188.openOutputStream()) {
+            var streamEntry = writer.beginFile("stream.txt");
+            try (OutputStream output = streamEntry.openOutputStream()) {
                 output.write("split streaming writer".getBytes(StandardCharsets.UTF_8));
             }
-            var writerEntry4192 = writer.beginFile("padding.bin");
-            ZipArkivoEntryAttributeView view = writerEntry4192.attributeView(ZipArkivoEntryAttributeView.class);
+            var paddingEntry = writer.beginFile("padding.bin");
+            ZipArkivoEntryAttributeView view = paddingEntry.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
             view.setMethod(ZipMethod.STORED);
-            try (OutputStream output = writerEntry4192.openOutputStream()) {
+            try (OutputStream output = paddingEntry.openOutputStream()) {
                 output.write(splitTestContent(TEST_SPLIT_SIZE * 2));
             }
         }
@@ -3997,11 +3994,11 @@ public final class ZipArkivoFileSystemTest {
         TestVolumeTarget target = new TestVolumeTarget();
 
         try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, TEST_SPLIT_SIZE)) {
-            var writerEntry4221 = writer.beginFile("content.bin");
-            ZipArkivoEntryAttributeView view = writerEntry4221.attributeView(ZipArkivoEntryAttributeView.class);
+            var contentEntry = writer.beginFile("content.bin");
+            ZipArkivoEntryAttributeView view = contentEntry.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
             view.setMethod(ZipMethod.STORED);
-            try (OutputStream output = writerEntry4221.openOutputStream()) {
+            try (OutputStream output = contentEntry.openOutputStream()) {
                 output.write(content);
             }
         }
@@ -4180,11 +4177,11 @@ public final class ZipArkivoFileSystemTest {
         byte[] content = "invalid expected size".getBytes(StandardCharsets.UTF_8);
         TestVolumeTarget target = new TestVolumeTarget();
         ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, TEST_SPLIT_SIZE);
-        var writerEntry4404 = writer.beginFile("invalid.txt");
-        ZipArkivoEntryAttributeView view = writerEntry4404.attributeView(ZipArkivoEntryAttributeView.class);
+        var invalidEntry = writer.beginFile("invalid.txt");
+        ZipArkivoEntryAttributeView view = invalidEntry.attributeView(ZipArkivoEntryAttributeView.class);
         assertNotNull(view);
         view.setUncompressedSizeAndCrc32(content.length + 1L, crc32(content));
-        OutputStream outputStream = writerEntry4404.openOutputStream();
+        OutputStream outputStream = invalidEntry.openOutputStream();
         outputStream.write(content);
 
         IOException exception = assertThrows(IOException.class, writer::close);
@@ -4201,11 +4198,11 @@ public final class ZipArkivoFileSystemTest {
         byte[] content = splitTestContent(TEST_SPLIT_SIZE * 2);
         TestVolumeTarget target = new TestVolumeTarget(1);
         ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, TEST_SPLIT_SIZE);
-        var writerEntry4425 = writer.beginFile("content.bin");
-        ZipArkivoEntryAttributeView view = writerEntry4425.attributeView(ZipArkivoEntryAttributeView.class);
+        var contentEntry = writer.beginFile("content.bin");
+        ZipArkivoEntryAttributeView view = contentEntry.attributeView(ZipArkivoEntryAttributeView.class);
         assertNotNull(view);
         view.setMethod(ZipMethod.STORED);
-        OutputStream output = writerEntry4425.openOutputStream();
+        OutputStream output = contentEntry.openOutputStream();
 
         assertThrows(IOException.class, () -> output.write(content));
         assertThrows(IOException.class, writer::close);
@@ -5067,20 +5064,20 @@ public final class ZipArkivoFileSystemTest {
         }) {
             ByteArrayOutputStream archive = new ByteArrayOutputStream();
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, createOptions(password))) {
-                var writerEntry5234 = writer.beginFile("secret.txt");
-                ZipArkivoEntryAttributeView view = writerEntry5234.attributeView(ZipArkivoEntryAttributeView.class);
+                var secretEntry = writer.beginFile("secret.txt");
+                ZipArkivoEntryAttributeView view = secretEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.DEFLATE64);
                 view.setEncryption(encryption);
-                try (OutputStream output = writerEntry5234.openOutputStream()) {
+                try (OutputStream output = secretEntry.openOutputStream()) {
                     output.write(content);
                 }
 
-                var writerEntry5243 = writer.beginFile("after.txt");
-                view = writerEntry5243.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                view = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.STORED);
-                try (OutputStream output = writerEntry5243.openOutputStream()) {
+                try (OutputStream output = followingEntry.openOutputStream()) {
                     output.write(after);
                 }
             }
@@ -5209,11 +5206,11 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry5378 = writer.beginFile("stored.txt");
-                ZipArkivoEntryAttributeView view = writerEntry5378.attributeView(ZipArkivoEntryAttributeView.class);
+                var storedEntry = writer.beginFile("stored.txt");
+                ZipArkivoEntryAttributeView view = storedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry5378.openOutputStream()) {
+                try (var output = storedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -5327,19 +5324,19 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, createOptions(password, ZipEncryption.ZIP_CRYPTO))) {
-                var writerEntry5502 = writer.beginFile("encrypted-stored-descriptor-crc.txt");
-                ZipArkivoEntryAttributeView firstView = writerEntry5502.attributeView(ZipArkivoEntryAttributeView.class);
+                var encryptedEntry = writer.beginFile("encrypted-stored-descriptor-crc.txt");
+                ZipArkivoEntryAttributeView firstView = encryptedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(firstView);
                 firstView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry5502.openOutputStream()) {
+                try (var output = encryptedEntry.openOutputStream()) {
                     output.write(firstContent);
                 }
 
-                var writerEntry5510 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView secondView = writerEntry5510.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView secondView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(secondView);
                 secondView.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry5510.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(secondContent);
                 }
             }
@@ -5516,8 +5513,8 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry5655 = writer.beginFile("deflated.txt");
-                try (var output = writerEntry5655.openOutputStream()) {
+                var deflatedEntry = writer.beginFile("deflated.txt");
+                try (var output = deflatedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -5549,8 +5546,8 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry5688 = writer.beginFile("deflated.txt");
-                try (var output = writerEntry5688.openOutputStream()) {
+                var deflatedEntry = writer.beginFile("deflated.txt");
+                try (var output = deflatedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -5611,16 +5608,16 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, createOptions(password, ZipEncryption.ZIP_CRYPTO))) {
-                var writerEntry5756 = writer.beginFile("deflated.txt");
-                try (var output = writerEntry5756.openOutputStream()) {
+                var deflatedEntry = writer.beginFile("deflated.txt");
+                try (var output = deflatedEntry.openOutputStream()) {
                     output.write(deflatedContent);
                 }
 
-                var writerEntry5761 = writer.beginFile("stored.txt");
-                ZipArkivoEntryAttributeView view = writerEntry5761.attributeView(ZipArkivoEntryAttributeView.class);
+                var storedEntry = writer.beginFile("stored.txt");
+                ZipArkivoEntryAttributeView view = storedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.STORED);
-                try (var output = writerEntry5761.openOutputStream()) {
+                try (var output = storedEntry.openOutputStream()) {
                     output.write(storedContent);
                 }
             }
@@ -5670,22 +5667,22 @@ public final class ZipArkivoFileSystemTest {
                     archivePath,
                     createOptions(password)
             )) {
-                var writerEntry5815 = writer.beginFile("secret.txt");
-                ZipArkivoEntryAttributeView secretView = writerEntry5815.attributeView(ZipArkivoEntryAttributeView.class);
+                var secretEntry = writer.beginFile("secret.txt");
+                ZipArkivoEntryAttributeView secretView = secretEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(secretView);
                 secretView.setMethod(ZipMethod.STORED);
                 secretView.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 secretView.setUncompressedSizeAndCrc32(secretContent.length, crc32(secretContent));
-                try (var output = writerEntry5815.openOutputStream()) {
+                try (var output = secretEntry.openOutputStream()) {
                     output.write(secretContent);
                 }
 
-                var writerEntry5825 = writer.beginFile("after.txt");
-                ZipArkivoEntryAttributeView afterView = writerEntry5825.attributeView(ZipArkivoEntryAttributeView.class);
+                var followingEntry = writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
                 afterView.setMethod(ZipMethod.STORED);
                 afterView.setUncompressedSizeAndCrc32(afterContent.length, crc32(afterContent));
-                try (var output = writerEntry5825.openOutputStream()) {
+                try (var output = followingEntry.openOutputStream()) {
                     output.write(afterContent);
                 }
             }
@@ -5734,8 +5731,8 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, createOptions(password, ZipEncryption.ZIP_CRYPTO))) {
-                var writerEntry5885 = writer.beginFile("deflated.txt");
-                try (var output = writerEntry5885.openOutputStream()) {
+                var deflatedEntry = writer.beginFile("deflated.txt");
+                try (var output = deflatedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -7747,8 +7744,8 @@ public final class ZipArkivoFileSystemTest {
         try {
             Files.write(staleVolume, "stale".getBytes(StandardCharsets.UTF_8));
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry7734 = writer.beginFile("single.txt");
-                try (OutputStream output = writerEntry7734.openOutputStream()) {
+                var singleEntry = writer.beginFile("single.txt");
+                try (OutputStream output = singleEntry.openOutputStream()) {
                     output.write("single".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -7790,58 +7787,6 @@ public final class ZipArkivoFileSystemTest {
             assertEquals("close failed", exception.getSuppressed()[0].getMessage());
             assertEquals(1, volumes.firstCloseCount());
             assertEquals(1, volumes.secondCloseCount());
-        }
-    }
-
-    /// Verifies that a ZIP file system can be opened and resolved through provider URIs.
-    @Test
-    public void openUri() throws IOException {
-        Path archivePath = createDeflatedZipArchive();
-        ZipArkivoFileSystemProvider provider = new ZipArkivoFileSystemProvider();
-        URI fileSystemUri = URI.create(ZipArkivoFileSystemProvider.SCHEME + ":" + archivePath.toUri());
-        URI entryUri = URI.create(fileSystemUri + "!/dir/hello.txt");
-
-        try {
-            try (ArkivoFileSystem fileSystem = provider.newFileSystem(fileSystemUri, Map.of())) {
-                assertEquals(fileSystem, provider.getFileSystem(fileSystemUri));
-                Path entry = provider.getPath(entryUri);
-                assertEquals(entryUri, entry.toUri());
-                assertEquals("hello", Files.readString(entry, StandardCharsets.UTF_8));
-                assertThrows(
-                        FileSystemAlreadyExistsException.class,
-                        () -> provider.newFileSystem(fileSystemUri, Map.of())
-                );
-            }
-            assertThrows(FileSystemNotFoundException.class, () -> provider.getFileSystem(fileSystemUri));
-        } finally {
-            deleteTemporaryArchive(archivePath);
-        }
-    }
-
-    /// Verifies that closing a writable ZIP file system opened by URI unregisters it immediately.
-    @Test
-    public void writableUriCloseUnregistersFileSystem() throws IOException {
-        Path archivePath = createTemporaryArchivePath("uri-writable-close-");
-        ZipArkivoFileSystemProvider provider = new ZipArkivoFileSystemProvider();
-        URI fileSystemUri = URI.create(ZipArkivoFileSystemProvider.SCHEME + ":" + archivePath.toUri());
-        Map<String, Object> environment = Map.of(
-                "arkivo.openOptions",
-                Set.of(
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING,
-                        StandardOpenOption.WRITE
-                )
-        );
-
-        try {
-            ArkivoFileSystem fileSystem = provider.newFileSystem(fileSystemUri, environment);
-            assertEquals(fileSystem, provider.getFileSystem(fileSystemUri));
-
-            fileSystem.close();
-
-            assertThrows(FileSystemNotFoundException.class, () -> provider.getFileSystem(fileSystemUri));
-        } finally {
-            deleteTemporaryArchive(archivePath);
         }
     }
 
@@ -7917,12 +7862,12 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry7904 = writer.beginFile("stored.bin");
-                ZipArkivoEntryAttributeView view = writerEntry7904.attributeView(ZipArkivoEntryAttributeView.class);
+                var storedEntry = writer.beginFile("stored.bin");
+                ZipArkivoEntryAttributeView view = storedEntry.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
                 view.setMethod(ZipMethod.STORED);
                 view.setUncompressedSizeAndCrc32(content.length, crc32(content));
-                try (var output = writerEntry7904.openOutputStream()) {
+                try (var output = storedEntry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -9288,20 +9233,20 @@ public final class ZipArkivoFileSystemTest {
     ) throws IOException {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, createOptions(password))) {
-            var writerEntry9279 = writer.beginFile("deflated.txt");
-            ZipArkivoEntryAttributeView view = writerEntry9279.attributeView(ZipArkivoEntryAttributeView.class);
+            var deflatedEntry = writer.beginFile("deflated.txt");
+            ZipArkivoEntryAttributeView view = deflatedEntry.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
             view.setMethod(ZipMethod.DEFLATED);
             view.setEncryption(encryption);
-            try (OutputStream output = writerEntry9279.openOutputStream()) {
+            try (OutputStream output = deflatedEntry.openOutputStream()) {
                 output.write(content);
             }
 
-            var writerEntry9288 = writer.beginFile("after.txt");
-            view = writerEntry9288.attributeView(ZipArkivoEntryAttributeView.class);
+            var followingEntry = writer.beginFile("after.txt");
+            view = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
             view.setMethod(ZipMethod.STORED);
-            try (OutputStream output = writerEntry9288.openOutputStream()) {
+            try (OutputStream output = followingEntry.openOutputStream()) {
                 output.write(after);
             }
         }
@@ -9317,20 +9262,20 @@ public final class ZipArkivoFileSystemTest {
     ) throws IOException {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, createOptions(password))) {
-            var writerEntry9312 = writer.beginFile("lzma.txt");
-            ZipArkivoEntryAttributeView view = writerEntry9312.attributeView(ZipArkivoEntryAttributeView.class);
+            var lzmaEntry = writer.beginFile("lzma.txt");
+            ZipArkivoEntryAttributeView view = lzmaEntry.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
             view.setMethod(ZipMethod.LZMA);
             view.setEncryption(encryption);
-            try (OutputStream output = writerEntry9312.openOutputStream()) {
+            try (OutputStream output = lzmaEntry.openOutputStream()) {
                 output.write(content);
             }
 
-            var writerEntry9321 = writer.beginFile("after.txt");
-            view = writerEntry9321.attributeView(ZipArkivoEntryAttributeView.class);
+            var followingEntry = writer.beginFile("after.txt");
+            view = followingEntry.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
             view.setMethod(ZipMethod.STORED);
-            try (OutputStream output = writerEntry9321.openOutputStream()) {
+            try (OutputStream output = followingEntry.openOutputStream()) {
                 output.write(after);
             }
         }
@@ -10793,12 +10738,12 @@ public final class ZipArkivoFileSystemTest {
             String entryName,
             byte[] content
     ) throws IOException {
-        var writerEntry10777 = writer.beginFile(entryName);
-        ZipArkivoEntryAttributeView view = writerEntry10777.attributeView(ZipArkivoEntryAttributeView.class);
+        var entry = writer.beginFile(entryName);
+        ZipArkivoEntryAttributeView view = entry.attributeView(ZipArkivoEntryAttributeView.class);
         assertNotNull(view);
         view.setMethod(ZipMethod.STORED);
         view.setUncompressedSizeAndCrc32(content.length, crc32(content));
-        try (OutputStream output = writerEntry10777.openOutputStream()) {
+        try (OutputStream output = entry.openOutputStream()) {
             output.write(content);
         }
     }
@@ -10888,15 +10833,7 @@ public final class ZipArkivoFileSystemTest {
     /// Creates a temporary deflated ZIP archive under the module build directory.
     private static Path createDeflatedZipArchive() throws IOException {
         Path archivePath = createTemporaryArchivePath("real-zip-");
-        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-            var writerEntry10873 = writer.beginDirectory("dir");
-            writerEntry10873.close();
-            var writerEntry10875 = writer.beginFile("dir/hello.txt");
-            try (var output = writerEntry10875.openOutputStream()) {
-                output.write("hello".getBytes(StandardCharsets.UTF_8));
-            }
-        }
-        return archivePath;
+        return ZipTestArchiveFixtures.writeDeflatedArchive(archivePath);
     }
 
     /// Deletes a temporary archive file and its containing directory.

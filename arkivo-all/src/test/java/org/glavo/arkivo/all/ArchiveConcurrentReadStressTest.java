@@ -239,8 +239,8 @@ final class ArchiveConcurrentReadStressTest {
     /// Writes the deterministic stress entries through one streaming writer.
     private static void writeEntries(ArkivoStreamingWriter writer) throws IOException {
         for (int index = 0; index < ENTRY_COUNT; index++) {
-            var writerEntry245 = writer.beginFile(entryName(index));
-            try (OutputStream output = writerEntry245.openOutputStream()) {
+            var entry = writer.beginFile(entryName(index));
+            try (OutputStream output = entry.openOutputStream()) {
                 output.write(content(index));
             }
         }

@@ -160,8 +160,8 @@ final class TarArkivoCompressedStreamingTest {
         String entryName = "x\u0001value.txt";
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive)) {
-            var writerEntry167 = writer.beginFile(entryName);
-            try (OutputStream body = writerEntry167.openOutputStream()) {
+            var entry = writer.beginFile(entryName);
+            try (OutputStream body = entry.openOutputStream()) {
                 body.write(CONTENT);
             }
         }
@@ -198,8 +198,8 @@ final class TarArkivoCompressedStreamingTest {
 
     /// Writes one regular file entry.
     private static void writeEntry(TarArkivoStreamingWriter writer) throws IOException {
-        var writerEntry207 = writer.beginFile("value.txt");
-        try (OutputStream body = writerEntry207.openOutputStream()) {
+        var entry = writer.beginFile("value.txt");
+        try (OutputStream body = entry.openOutputStream()) {
             body.write(CONTENT);
         }
     }

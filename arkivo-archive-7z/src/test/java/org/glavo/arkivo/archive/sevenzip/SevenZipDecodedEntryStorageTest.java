@@ -110,8 +110,8 @@ final class SevenZipDecodedEntryStorageTest {
                         false
                 )
         )) {
-            var writerEntry107 = writer.beginFile("compressed.bin");
-            try (OutputStream output = writerEntry107.openOutputStream()) {
+            var entry = writer.beginFile("compressed.bin");
+            try (OutputStream output = entry.openOutputStream()) {
                 output.write(content);
             }
         }

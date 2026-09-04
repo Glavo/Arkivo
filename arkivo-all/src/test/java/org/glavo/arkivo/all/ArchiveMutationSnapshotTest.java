@@ -27,7 +27,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -207,8 +206,8 @@ final class ArchiveMutationSnapshotTest {
         try (ArkivoStreamingWriter writer =
                      ArkivoFormats.openStreamingWriter(format, Files.newOutputStream(archive))) {
             for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
-                var writerEntry218 = writer.beginFile(entry.getKey());
-                try (OutputStream output = writerEntry218.openOutputStream()) {
+                var archiveEntry = writer.beginFile(entry.getKey());
+                try (OutputStream output = archiveEntry.openOutputStream()) {
                     output.write(entry.getValue());
                 }
             }

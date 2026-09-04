@@ -1386,8 +1386,8 @@ final class StreamingAggregationTest {
             String entryPath,
             byte[] content
     ) throws IOException {
-        var writerEntry1550 = writer.beginFile(entryPath);
-        try (OutputStream body = writerEntry1550.openOutputStream()) {
+        var entry = writer.beginFile(entryPath);
+        try (OutputStream body = entry.openOutputStream()) {
             body.write(content);
         }
     }

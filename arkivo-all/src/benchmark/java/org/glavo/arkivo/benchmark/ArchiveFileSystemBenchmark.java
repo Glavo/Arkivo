@@ -151,8 +151,8 @@ public class ArchiveFileSystemBenchmark {
         byte[] content = content();
         try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archive)) {
             for (int index = 0; index < ENTRY_COUNT; index++) {
-                var writerEntry154 = writer.beginFile(entryName(index));
-                try (OutputStream output = writerEntry154.openOutputStream()) {
+                var entry = writer.beginFile(entryName(index));
+                try (OutputStream output = entry.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -168,8 +168,8 @@ public class ArchiveFileSystemBenchmark {
         try (SevenZipArkivoStreamingWriter writer =
                      SevenZipArkivoStreamingWriter.create(archive, options)) {
             for (int index = 0; index < ENTRY_COUNT; index++) {
-                var writerEntry172 = writer.beginFile(entryName(index));
-                try (OutputStream output = writerEntry172.openOutputStream()) {
+                var entry = writer.beginFile(entryName(index));
+                try (OutputStream output = entry.openOutputStream()) {
                     output.write(content);
                 }
             }

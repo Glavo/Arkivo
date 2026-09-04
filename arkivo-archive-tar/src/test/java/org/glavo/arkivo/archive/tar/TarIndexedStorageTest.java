@@ -35,8 +35,8 @@ public final class TarIndexedStorageTest {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         TrackingEditStorage storage = new TrackingEditStorage(true);
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, storage)) {
-            var writerEntry39 = writer.beginFile("file.txt");
-            try (OutputStream output = writerEntry39.openOutputStream()) {
+            var entry = writer.beginFile("file.txt");
+            try (OutputStream output = entry.openOutputStream()) {
                 output.write(expected);
             }
         }
@@ -64,8 +64,8 @@ public final class TarIndexedStorageTest {
                         ArchiveCreateOptions.DEFAULT.withEditStorageFactory(() -> storage)
                 )
         )) {
-            var writerEntry66 = writer.beginFile("file.txt");
-            try (OutputStream output = writerEntry66.openOutputStream()) {
+            var entry = writer.beginFile("file.txt");
+            try (OutputStream output = entry.openOutputStream()) {
                 output.write("environment-storage".getBytes(StandardCharsets.UTF_8));
             }
         }
@@ -135,13 +135,13 @@ public final class TarIndexedStorageTest {
         Files.createDirectories(directory);
         Path archivePath = Files.createTempFile(directory, "indexed-storage-", ".tar");
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
-            var writerEntry132 = writer.beginFile("file.txt");
-            try (OutputStream output = writerEntry132.openOutputStream()) {
+            var fileEntry = writer.beginFile("file.txt");
+            try (OutputStream output = fileEntry.openOutputStream()) {
                 output.write("shared-content".getBytes(StandardCharsets.UTF_8));
             }
             if (includeHardLink) {
-                var writerEntry137 = writer.beginHardLink("hard.txt", "file.txt");
-                writerEntry137.close();
+                var hardLinkEntry = writer.beginHardLink("hard.txt", "file.txt");
+                hardLinkEntry.close();
             }
         }
         return archivePath;

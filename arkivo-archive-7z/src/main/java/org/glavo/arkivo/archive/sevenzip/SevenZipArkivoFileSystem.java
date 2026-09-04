@@ -417,9 +417,6 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
 
     /// Opens a complete-rewrite update over explicit multi-volume input and output with options.
     ///
-    /// Archive open options, `SPLIT_SIZE`, and `COMMIT_TARGET` are determined by this factory and must not be supplied
-    /// in the options.
-    ///
     /// @param source    the owned ordered source volumes
     /// @param target    the caller-owned transactional output-volume factory
     /// @param splitSize the positive maximum number of bytes per output volume
@@ -475,8 +472,6 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     /// Creates a forward-only 7z file system over a transactional volume target with options.
     ///
     /// The complete archive is assembled in a local seekable temporary file before volumes are published.
-    ///
-    /// Archive open options and `SPLIT_SIZE` are determined by this factory and must not be supplied in the options.
     ///
     /// @param target    the caller-owned transactional output-volume factory
     /// @param splitSize the positive maximum number of bytes per output volume

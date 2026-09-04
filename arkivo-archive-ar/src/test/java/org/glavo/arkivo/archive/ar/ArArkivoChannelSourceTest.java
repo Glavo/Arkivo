@@ -244,8 +244,8 @@ final class ArArkivoChannelSourceTest {
     private static byte[] archiveBytes() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
-            var writerEntry264 = writer.beginFile("value.txt");
-            try (OutputStream body = writerEntry264.openOutputStream()) {
+            var entry = writer.beginFile("value.txt");
+            try (OutputStream body = entry.openOutputStream()) {
                 body.write("value".getBytes(StandardCharsets.UTF_8));
             }
         }

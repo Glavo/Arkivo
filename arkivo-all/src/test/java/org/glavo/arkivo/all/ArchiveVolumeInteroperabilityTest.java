@@ -118,12 +118,12 @@ final class ArchiveVolumeInteroperabilityTest {
                     new ArkivoPathVolumeTarget(new ZipVolumeLayout(archivePath)),
                     SPLIT_SIZE
             )) {
-                var writerEntry119 = writer.beginFile(ENTRY_PATH);
+                var entry = writer.beginFile(ENTRY_PATH);
                 ZipArkivoEntryAttributeView attributes = Objects.requireNonNull(
-                        writerEntry119.attributeView(ZipArkivoEntryAttributeView.class)
+                        entry.attributeView(ZipArkivoEntryAttributeView.class)
                 );
                 attributes.setMethod(ZipMethod.STORED);
-                try (OutputStream body = writerEntry119.openOutputStream()) {
+                try (OutputStream body = entry.openOutputStream()) {
                     body.write(CONTENT);
                 }
             }
@@ -204,8 +204,8 @@ final class ArchiveVolumeInteroperabilityTest {
                     SPLIT_SIZE,
                     options
             )) {
-                var writerEntry213 = writer.beginFile(ENTRY_PATH);
-                try (OutputStream body = writerEntry213.openOutputStream()) {
+                var entry = writer.beginFile(ENTRY_PATH);
+                try (OutputStream body = entry.openOutputStream()) {
                     body.write(CONTENT);
                 }
             }

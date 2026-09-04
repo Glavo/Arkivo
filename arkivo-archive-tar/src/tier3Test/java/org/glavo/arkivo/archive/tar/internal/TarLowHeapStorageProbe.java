@@ -59,8 +59,8 @@ public final class TarLowHeapStorageProbe {
     private static void createArchive(Path archivePath) throws IOException {
         byte[] buffer = new byte[BUFFER_SIZE];
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
-            var writerEntry62 = writer.beginFile("large.bin");
-            try (OutputStream output = writerEntry62.openOutputStream()) {
+            var entry = writer.beginFile("large.bin");
+            try (OutputStream output = entry.openOutputStream()) {
                 long remaining = ENTRY_SIZE;
                 while (remaining > 0L) {
                     int count = (int) Math.min(remaining, buffer.length);

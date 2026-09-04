@@ -107,14 +107,14 @@ final class ArchiveInteroperabilityTest {
                     "ar",
                     Files.newOutputStream(archive)
             )) {
-                var writerEntry110 = writer.beginFile(AR_PATH);
+                var arEntry = writer.beginFile(AR_PATH);
                 ArArkivoEntryAttributeView view = Objects.requireNonNull(
-                        writerEntry110.attributeView(ArArkivoEntryAttributeView.class)
+                        arEntry.attributeView(ArArkivoEntryAttributeView.class)
                 );
                 view.setUserId(321L);
                 view.setGroupId(654L);
                 view.setMode(0100600);
-                try (OutputStream body = writerEntry110.openOutputStream()) {
+                try (OutputStream body = arEntry.openOutputStream()) {
                     body.write(CONTENT);
                 }
             }
@@ -195,24 +195,24 @@ final class ArchiveInteroperabilityTest {
                     "tar",
                     Files.newOutputStream(archive)
             )) {
-                var writerEntry198 = writer.beginDirectory("directory");
-                writerEntry198.close();
+                var directoryEntry = writer.beginDirectory("directory");
+                directoryEntry.close();
 
-                var writerEntry201 = writer.beginFile(TAR_PATH);
+                var fileEntry = writer.beginFile(TAR_PATH);
                 TarArkivoEntryAttributeView view = Objects.requireNonNull(
-                        writerEntry201.attributeView(TarArkivoEntryAttributeView.class)
+                        fileEntry.attributeView(TarArkivoEntryAttributeView.class)
                 );
                 view.setMode(0640);
                 view.setUserId(321L);
                 view.setGroupId(654L);
                 view.setUserName("arkivo-user");
                 view.setGroupName("arkivo-group");
-                try (OutputStream body = writerEntry201.openOutputStream()) {
+                try (OutputStream body = fileEntry.openOutputStream()) {
                     body.write(CONTENT);
                 }
 
-                var writerEntry214 = writer.beginSymbolicLink("link", LINK_TARGET);
-                writerEntry214.close();
+                var linkEntry = writer.beginSymbolicLink("link", LINK_TARGET);
+                linkEntry.close();
             }
 
             try (TarArchiveInputStream input = new TarArchiveInputStream(Files.newInputStream(archive))) {
@@ -292,16 +292,16 @@ final class ArchiveInteroperabilityTest {
                     "zip",
                     Files.newOutputStream(archive)
             )) {
-                var writerEntry295 = writer.beginDirectory("directory");
-                writerEntry295.close();
+                var directoryEntry = writer.beginDirectory("directory");
+                directoryEntry.close();
 
-                var writerEntry298 = writer.beginFile(MODERN_PATH);
-                try (OutputStream body = writerEntry298.openOutputStream()) {
+                var fileEntry = writer.beginFile(MODERN_PATH);
+                try (OutputStream body = fileEntry.openOutputStream()) {
                     body.write(CONTENT);
                 }
 
-                var writerEntry303 = writer.beginSymbolicLink("link", LINK_TARGET);
-                writerEntry303.close();
+                var linkEntry = writer.beginSymbolicLink("link", LINK_TARGET);
+                linkEntry.close();
             }
 
             try (ZipFile zipFile = ZipFile.builder().setPath(archive).get()) {
@@ -376,11 +376,11 @@ final class ArchiveInteroperabilityTest {
                     "7z",
                     Files.newOutputStream(archive)
             )) {
-                var writerEntry379 = writer.beginDirectory("directory");
-                writerEntry379.close();
+                var directoryEntry = writer.beginDirectory("directory");
+                directoryEntry.close();
 
-                var writerEntry382 = writer.beginFile(MODERN_PATH);
-                try (OutputStream body = writerEntry382.openOutputStream()) {
+                var fileEntry = writer.beginFile(MODERN_PATH);
+                try (OutputStream body = fileEntry.openOutputStream()) {
                     body.write(CONTENT);
                 }
             }

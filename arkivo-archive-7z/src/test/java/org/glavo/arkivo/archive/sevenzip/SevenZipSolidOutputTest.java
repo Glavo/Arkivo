@@ -349,9 +349,9 @@ public final class SevenZipSolidOutputTest {
             @Nullable SevenZipCompression compression,
             @Nullable SevenZipFilterChain filters
     ) throws IOException {
-        var writerEntry326 = writer.beginFile(name);
+        var entry = writer.beginFile(name);
         SevenZipArkivoEntryAttributeView attributes = Objects.requireNonNull(
-                writerEntry326.attributeView(SevenZipArkivoEntryAttributeView.class)
+                entry.attributeView(SevenZipArkivoEntryAttributeView.class)
         );
         if (compression != null) {
             attributes.setCompression(compression);
@@ -359,7 +359,7 @@ public final class SevenZipSolidOutputTest {
         if (filters != null) {
             attributes.setFilters(filters);
         }
-        try (OutputStream output = writerEntry326.openOutputStream()) {
+        try (OutputStream output = entry.openOutputStream()) {
             output.write(content);
         }
     }

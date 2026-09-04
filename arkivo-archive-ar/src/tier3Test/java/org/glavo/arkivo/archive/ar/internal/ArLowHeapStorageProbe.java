@@ -64,8 +64,8 @@ public final class ArLowHeapStorageProbe {
     private static void createArchive(Path archivePath) throws IOException {
         byte[] buffer = new byte[BUFFER_SIZE];
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
-            var writerEntry67 = writer.beginFile("large.bin");
-            try (OutputStream output = writerEntry67.openOutputStream()) {
+            var entry = writer.beginFile("large.bin");
+            try (OutputStream output = entry.openOutputStream()) {
                 long remaining = ENTRY_SIZE;
                 while (remaining > 0L) {
                     int count = (int) Math.min(remaining, buffer.length);

@@ -379,8 +379,8 @@ final class AllAggregationTest {
     private static byte[] tarArchive() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
-            var writerEntry357 = writer.beginFile("value.txt");
-            try (OutputStream body = writerEntry357.openOutputStream()) {
+            var entry = writer.beginFile("value.txt");
+            try (OutputStream body = entry.openOutputStream()) {
                 body.write("value".getBytes(StandardCharsets.UTF_8));
             }
         }
@@ -419,8 +419,8 @@ final class AllAggregationTest {
 
     /// Writes one regular entry through a format-independent streaming writer.
     private static void writeStreamingEntry(ArkivoStreamingWriter writer, byte[] content) throws IOException {
-        var writerEntry397 = writer.beginFile("value.txt");
-        try (OutputStream body = writerEntry397.openOutputStream()) {
+        var entry = writer.beginFile("value.txt");
+        try (OutputStream body = entry.openOutputStream()) {
             body.write(content);
         }
     }
