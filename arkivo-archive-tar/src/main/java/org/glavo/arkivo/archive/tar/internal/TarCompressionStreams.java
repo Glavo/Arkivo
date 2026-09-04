@@ -191,7 +191,9 @@ public final class TarCompressionStreams {
         try {
             closeable.close();
         } catch (IOException | RuntimeException | Error exception) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
         }
     }
 }

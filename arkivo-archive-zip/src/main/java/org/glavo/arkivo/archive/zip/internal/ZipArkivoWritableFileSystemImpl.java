@@ -1493,7 +1493,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         Objects.requireNonNull(type, "type");
         ArkivoFileSystemProviderSupport.AttributeViewPath viewPath =
                 ArkivoFileSystemProviderSupport.attributeViewPath(path, options);
-        if (type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class) {
+        if (type == BasicFileAttributeView.class) {
+            return type.cast(new BasicEntryAttributeView(this, viewPath));
+        }
+        if (type == ZipArkivoEntryAttributeView.class) {
             return type.cast(new EntryAttributeView(this, viewPath));
         }
         if (type == FileOwnerAttributeView.class) {
@@ -5066,6 +5069,47 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 throw new IOException("ZIP64 extended information value is too large");
             }
             return value;
+        }
+    }
+
+    /// Implements the basic entry attribute view.
+    @NotNullByDefault
+    private static final class BasicEntryAttributeView implements BasicFileAttributeView {
+        /// The file system used to read and update attributes.
+        private final ZipArkivoWritableFileSystemImpl fileSystem;
+
+        /// The path whose attributes are exposed.
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
+
+        /// Creates a basic entry attribute view.
+        private BasicEntryAttributeView(
+                ZipArkivoWritableFileSystemImpl fileSystem,
+                ArkivoFileSystemProviderSupport.AttributeViewPath path
+        ) {
+            this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+            this.path = Objects.requireNonNull(path, "path");
+        }
+
+        /// Returns the standard basic attribute-view name.
+        @Override
+        public String name() {
+            return "basic";
+        }
+
+        /// Reads this path's basic attributes.
+        @Override
+        public BasicFileAttributes readAttributes() throws IOException {
+            return fileSystem.readZipAttributes(path.resolve());
+        }
+
+        /// Sets entry timestamps supported by complete-rewrite update sessions.
+        @Override
+        public void setTimes(
+                @Nullable FileTime lastModifiedTime,
+                @Nullable FileTime lastAccessTime,
+                @Nullable FileTime createTime
+        ) throws IOException {
+            fileSystem.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
         }
     }
 

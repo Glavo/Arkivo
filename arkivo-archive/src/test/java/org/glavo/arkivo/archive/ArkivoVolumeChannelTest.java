@@ -24,6 +24,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -203,6 +204,59 @@ final class ArkivoVolumeChannelTest {
         assertEquals(1, physical.closeAttempts);
     }
 
+    /// Verifies a retry skips a volume already closed by a failing call and completes only unfinished cleanup.
+    @Test
+    void retriesOnlyIncompleteCleanupAfterMixedFailures() throws IOException {
+        ClosingFailureChannel completed = new ClosingFailureChannel(openVolume(writeVolume("completed", "a")));
+        TrackingChannel incomplete = new TrackingChannel(
+                openVolume(writeVolume("incomplete", "b")),
+                false,
+                true
+        );
+        ArkivoVolumeChannel channel = ArkivoVolumeChannel.open(
+                new TrackingVolumeSource(List.of(completed, incomplete))
+        );
+
+        IOException failure = assertThrows(IOException.class, channel::close);
+        assertEquals("close failed after completion", failure.getMessage());
+        assertEquals(1, failure.getSuppressed().length);
+        assertEquals("close failure", failure.getSuppressed()[0].getMessage());
+        assertFalse(completed.isOpen());
+        assertTrue(incomplete.isOpen());
+
+        channel.close();
+
+        assertEquals(1, completed.closeAttempts);
+        assertEquals(2, incomplete.closeAttempts);
+        assertFalse(incomplete.isOpen());
+    }
+
+    /// Verifies unchecked physical close failures retain their concrete type and original identity.
+    @Test
+    void preservesUncheckedCloseFailures() throws IOException {
+        assertUncheckedCloseFailure(new IllegalStateException("runtime close failure"));
+        assertUncheckedCloseFailure(new AssertionError("error close failure"));
+    }
+
+    /// Verifies a shared unchecked failure is not illegally suppressed onto itself.
+    @Test
+    void avoidsSelfSuppressionForSharedCloseFailure() throws IOException {
+        IllegalStateException failure = new IllegalStateException("shared close failure");
+        DeclaredSizeChannel first = new DeclaredSizeChannel(0L, failure);
+        DeclaredSizeChannel second = new DeclaredSizeChannel(0L, failure);
+        ArkivoVolumeChannel channel = ArkivoVolumeChannel.open(
+                new TrackingVolumeSource(List.of(first, second))
+        );
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, channel::close);
+
+        assertSame(failure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertFalse(first.isOpen());
+        assertFalse(second.isOpen());
+        channel.close();
+    }
+
     /// Verifies a later zero-progress volume returns bytes already read during the same logical operation.
     @Test
     void returnsAccumulatedProgressBeforeZeroProgress() throws IOException {
@@ -263,6 +317,22 @@ final class ArkivoVolumeChannelTest {
         return value.getBytes(StandardCharsets.UTF_8);
     }
 
+    /// Verifies one unchecked physical close failure is propagated without wrapping or suppression.
+    private static <T extends Throwable> void assertUncheckedCloseFailure(T failure) throws IOException {
+        DeclaredSizeChannel physical = new DeclaredSizeChannel(0L, failure);
+        ArkivoVolumeChannel channel = ArkivoVolumeChannel.open(
+                new TrackingVolumeSource(List.of(physical))
+        );
+
+        Throwable thrown = assertThrows(failure.getClass(), channel::close);
+
+        assertSame(failure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertFalse(channel.isOpen());
+        assertFalse(physical.isOpen());
+        channel.close();
+    }
+
     /// Supplies a fixed sequence of tracking channels and records source closure.
     @NotNullByDefault
     private static final class TrackingVolumeSource implements ArkivoVolumeSource {
@@ -296,6 +366,9 @@ final class ArkivoVolumeChannelTest {
         /// The size reported during volume discovery.
         private final long declaredSize;
 
+        /// The optional unchecked failure reported after physical closure.
+        private final @Nullable Throwable closeFailure;
+
         /// The current channel position.
         private long position;
 
@@ -304,7 +377,18 @@ final class ArkivoVolumeChannelTest {
 
         /// Creates a channel with the given declared size.
         private DeclaredSizeChannel(long declaredSize) {
+            this(declaredSize, null);
+        }
+
+        /// Creates a channel with the given declared size and optional unchecked close failure.
+        private DeclaredSizeChannel(long declaredSize, @Nullable Throwable closeFailure) {
+            if (closeFailure != null
+                    && !(closeFailure instanceof RuntimeException)
+                    && !(closeFailure instanceof Error)) {
+                throw new IllegalArgumentException("closeFailure must be unchecked");
+            }
             this.declaredSize = declaredSize;
+            this.closeFailure = closeFailure;
         }
 
         /// Reports end of input for this metadata-only channel.
@@ -363,6 +447,12 @@ final class ArkivoVolumeChannelTest {
         @Override
         public void close() {
             open = false;
+            if (closeFailure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (closeFailure instanceof Error error) {
+                throw error;
+            }
         }
 
         /// Requires this channel to remain open.

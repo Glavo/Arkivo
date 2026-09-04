@@ -10,6 +10,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Objects;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -23,6 +24,19 @@ public final class ZipMethodTest {
         for (ZipMethod method : ZipMethod.values()) {
             assertSame(method, ZipMethod.fromId(method.id()));
         }
+    }
+
+    /// Verifies the stable display name of every recognized ZIP compression method.
+    @Test
+    public void displayNamesAreStable() {
+        assertEquals("stored", ZipMethod.STORED.toString());
+        assertEquals("deflated", ZipMethod.DEFLATED.toString());
+        assertEquals("deflate64", ZipMethod.DEFLATE64.toString());
+        assertEquals("bzip2", ZipMethod.BZIP2.toString());
+        assertEquals("lzma", ZipMethod.LZMA.toString());
+        assertEquals("zstandard-deprecated", ZipMethod.DEPRECATED_ZSTANDARD.toString());
+        assertEquals("zstandard", ZipMethod.ZSTANDARD.toString());
+        assertEquals("xz", ZipMethod.XZ.toString());
     }
 
     /// Verifies that valid but unrecognized ZIP compression method identifiers return no enum value.

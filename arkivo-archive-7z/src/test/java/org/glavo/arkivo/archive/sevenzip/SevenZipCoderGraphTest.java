@@ -45,6 +45,14 @@ public final class SevenZipCoderGraphTest {
             assertEquals(method, SevenZipCoderMethod.fromMethodId(method.methodId()));
         }
         assertThrows(IllegalArgumentException.class, () -> SevenZipCoderMethod.fromMethodId(new byte[]{0x7f}));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoder(SevenZipCoderMethod.COPY, new byte[0], 0, 1, 0, 0)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoder(SevenZipCoderMethod.COPY, new byte[0], 1, 1, -1, 0)
+        );
     }
 
     /// Verifies a valid linear graph exposes immutable stream topology and sizes.
@@ -118,6 +126,113 @@ public final class SevenZipCoderGraphTest {
                         new int[]{0, -1, -1},
                         new long[]{1, 1, 1},
                         0
+                )
+        );
+    }
+
+    /// Verifies public graph construction rejects malformed stream ranges, sources, and cyclic topology.
+    @Test
+    public void invalidGraphShapesAndTopologiesAreRejected() {
+        SevenZipCoder single = new SevenZipCoder(SevenZipCoderMethod.COPY, new byte[0], 1, 1, 0, 0);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(List.of(), new int[0], new int[0], new long[0], 0)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(
+                        List.of(new SevenZipCoder(SevenZipCoderMethod.COPY, new byte[0], 1, 1, 1, 0)),
+                        new int[]{-1},
+                        new int[]{0},
+                        new long[]{1L},
+                        0
+                )
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(List.of(single), new int[0], new int[0], new long[]{1L}, 0)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(List.of(single), new int[]{-1}, new int[]{0}, new long[0], 0)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(List.of(single), new int[]{-2}, new int[]{0}, new long[]{1L}, 0)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(List.of(single), new int[]{-1}, new int[]{1}, new long[]{1L}, 0)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(List.of(single), new int[]{0}, new int[]{0}, new long[]{1L}, 0)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(List.of(single), new int[]{-1}, new int[]{-1}, new long[]{1L}, 0)
+        );
+
+        SevenZipCoder twoInputTwoOutput = new SevenZipCoder(
+                SevenZipCoderMethod.COPY,
+                new byte[0],
+                2,
+                2,
+                0,
+                0
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(
+                        List.of(twoInputTwoOutput),
+                        new int[]{0, 0},
+                        new int[]{-1, -1},
+                        new long[]{1L, 1L},
+                        1
+                )
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(
+                        List.of(new SevenZipCoder(
+                                SevenZipCoderMethod.COPY,
+                                new byte[0],
+                                1,
+                                2,
+                                0,
+                                0
+                        )),
+                        new int[]{0},
+                        new int[]{-1},
+                        new long[]{1L, 1L},
+                        1
+                )
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(
+                        List.of(new SevenZipCoder(
+                                SevenZipCoderMethod.COPY,
+                                new byte[0],
+                                3,
+                                2,
+                                0,
+                                0
+                        )),
+                        new int[]{-1, -1, 0},
+                        new int[]{0, 2, -1},
+                        new long[]{1L, 1L},
+                        1
+                )
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SevenZipCoderGraph(
+                        List.of(twoInputTwoOutput),
+                        new int[]{0, -1},
+                        new int[]{-1, 0},
+                        new long[]{1L, 1L},
+                        1
                 )
         );
     }

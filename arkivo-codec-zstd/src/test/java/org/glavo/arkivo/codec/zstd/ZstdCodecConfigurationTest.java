@@ -86,6 +86,20 @@ public final class ZstdCodecConfigurationTest {
         assertEquals(203L, changed.maximumMemorySize());
     }
 
+    /// Verifies the byte-array builder overload retains an immutable dictionary snapshot.
+    @Test
+    public void builderCopiesDictionaryBytes() {
+        byte[] source = {1, 2, 3, 4, 5, 6, 7, 8};
+        ZstdCodec codec = ZstdCodec.builder().dictionary(source).build();
+
+        source[0] = 99;
+
+        assertArrayEquals(
+                new byte[]{1, 2, 3, 4, 5, 6, 7, 8},
+                java.util.Objects.requireNonNull(codec.dictionary()).bytes()
+        );
+    }
+
     /// Verifies no-op withers preserve identity while changed values produce independent configurations.
     @Test
     public void withersArePersistentAndCanonicalizeNoOps() {

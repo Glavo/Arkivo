@@ -25,6 +25,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
@@ -33,6 +34,7 @@ import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
 import java.nio.file.ReadOnlyFileSystemException;
@@ -417,6 +419,28 @@ public final class TarArkivoStreamingReaderTest {
                 assertEquals(true, basicNamedAttributes.get("isRegularFile"));
                 assertEquals(false, basicNamedAttributes.containsKey("mode"));
 
+                Map<String, Object> allBasicNamedAttributes = Files.readAttributes(file, "basic:*");
+                assertEquals(Set.of(
+                        "size",
+                        "lastModifiedTime",
+                        "lastAccessTime",
+                        "creationTime",
+                        "isDirectory",
+                        "isRegularFile",
+                        "isSymbolicLink",
+                        "isOther",
+                        "fileKey"
+                ), allBasicNamedAttributes.keySet());
+                assertEquals(fileAttributes.size(), allBasicNamedAttributes.get("size"));
+                assertEquals(fileAttributes.lastModifiedTime(), allBasicNamedAttributes.get("lastModifiedTime"));
+                assertEquals(fileAttributes.lastAccessTime(), allBasicNamedAttributes.get("lastAccessTime"));
+                assertEquals(fileAttributes.creationTime(), allBasicNamedAttributes.get("creationTime"));
+                assertEquals(fileAttributes.isDirectory(), allBasicNamedAttributes.get("isDirectory"));
+                assertEquals(fileAttributes.isRegularFile(), allBasicNamedAttributes.get("isRegularFile"));
+                assertEquals(fileAttributes.isSymbolicLink(), allBasicNamedAttributes.get("isSymbolicLink"));
+                assertEquals(fileAttributes.isOther(), allBasicNamedAttributes.get("isOther"));
+                assertEquals(fileAttributes.fileKey(), allBasicNamedAttributes.get("fileKey"));
+
                 Map<String, Object> tarNamedAttributes = Files.readAttributes(
                         file,
                         "tar:path,typeFlag,mode,userId,groupId,userName,groupName,size,linkName"
@@ -431,6 +455,21 @@ public final class TarArkivoStreamingReaderTest {
                 assertEquals((long) content.length, tarNamedAttributes.get("size"));
                 assertNull(tarNamedAttributes.get("linkName"));
 
+                Map<String, Object> allTarNamedAttributes = Files.readAttributes(file, "tar:*");
+                assertEquals(21, allTarNamedAttributes.size());
+                assertEquals("dir/hello.txt", allTarNamedAttributes.get("path"));
+                assertEquals((byte) '0', allTarNamedAttributes.get("typeFlag"));
+                assertEquals(0640, allTarNamedAttributes.get("mode"));
+                assertEquals(1234L, allTarNamedAttributes.get("userId"));
+                assertEquals(5678L, allTarNamedAttributes.get("groupId"));
+                assertEquals("fs-user", allTarNamedAttributes.get("userName"));
+                assertEquals("fs-group", allTarNamedAttributes.get("groupName"));
+                assertNull(allTarNamedAttributes.get("linkName"));
+                assertNull(allTarNamedAttributes.get("recordedLastAccessTime"));
+                assertNull(allTarNamedAttributes.get("recordedStatusChangeTime"));
+                assertNull(allTarNamedAttributes.get("recordedCreationTime"));
+                assertEquals(false, allTarNamedAttributes.get("isHardLink"));
+
                 Map<String, Object> ownerNamedAttributes = Files.readAttributes(file, "owner:owner");
                 assertEquals("fs-user", ((UserPrincipal) ownerNamedAttributes.get("owner")).getName());
 
@@ -440,6 +479,13 @@ public final class TarArkivoStreamingReaderTest {
                 assertEquals("fs-group", ((GroupPrincipal) posixNamedAttributes.get("group")).getName());
                 assertEquals(filePermissions, posixNamedAttributes.get("permissions"));
                 assertEquals(true, posixNamedAttributes.get("isRegularFile"));
+
+                Map<String, Object> allPosixNamedAttributes = Files.readAttributes(file, "posix:*");
+                assertEquals(12, allPosixNamedAttributes.size());
+                assertEquals("fs-user", ((UserPrincipal) allPosixNamedAttributes.get("owner")).getName());
+                assertEquals("fs-group", ((GroupPrincipal) allPosixNamedAttributes.get("group")).getName());
+                assertEquals(filePermissions, allPosixNamedAttributes.get("permissions"));
+                assertEquals(fileAttributes.size(), allPosixNamedAttributes.get("size"));
 
                 try (SeekableByteChannel channel = Files.newByteChannel(file, StandardOpenOption.READ)) {
                     assertEquals(content.length, channel.size());
@@ -503,6 +549,21 @@ public final class TarArkivoStreamingReaderTest {
                 Path file = fileSystem.getPath("/dir/hello.txt");
                 Files.write(file, content);
                 assertThrows(FileAlreadyExistsException.class, () -> Files.write(file, content));
+                fileSystem.provider().checkAccess(file);
+                fileSystem.provider().checkAccess(file, AccessMode.WRITE);
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> fileSystem.provider().checkAccess(file, AccessMode.READ)
+                );
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> fileSystem.provider().checkAccess(file, AccessMode.EXECUTE)
+                );
+                assertThrows(
+                        NoSuchFileException.class,
+                        () -> fileSystem.provider().checkAccess(fileSystem.getPath("/missing"), AccessMode.WRITE)
+                );
+                assertEquals(archivePath.toString(), Files.getFileStore(file).name());
 
                 Path channelFile = fileSystem.getPath("/channel.bin");
                 try (SeekableByteChannel channel =

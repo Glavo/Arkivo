@@ -138,4 +138,43 @@ public final class ArchiveReadLimitsTest {
                         new ArchiveReadLimits(unlimited, unlimited, unlimited, unlimited, unlimited, unlimited, unlimited, invalid))
         );
     }
+
+    /// Verifies read-limit failures require a category and an observation strictly beyond a nonnegative maximum.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    public void readLimitExceptionRejectsInvalidConstruction() {
+        assertAll(
+                () -> assertThrows(
+                        NullPointerException.class,
+                        () -> new ArkivoReadLimitException(null, 0L, 1L, null)
+                ),
+                () -> assertThrows(
+                        IllegalArgumentException.class,
+                        () -> new ArkivoReadLimitException(
+                                ArkivoReadLimitKind.ENTRY_SIZE,
+                                -1L,
+                                0L,
+                                "entry.bin"
+                        )
+                ),
+                () -> assertThrows(
+                        IllegalArgumentException.class,
+                        () -> new ArkivoReadLimitException(
+                                ArkivoReadLimitKind.ENTRY_SIZE,
+                                2L,
+                                2L,
+                                "entry.bin"
+                        )
+                ),
+                () -> assertThrows(
+                        IllegalArgumentException.class,
+                        () -> new ArkivoReadLimitException(
+                                ArkivoReadLimitKind.ENTRY_SIZE,
+                                2L,
+                                1L,
+                                "entry.bin"
+                        )
+                )
+        );
+    }
 }

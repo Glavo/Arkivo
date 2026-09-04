@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.rar;
 
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -17,7 +18,6 @@ import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.Objects;
@@ -57,11 +57,9 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
 
     /// The option for the detector used to select charsets for legacy non-Unicode RAR4 entry names.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
-            ArchiveOption.of(
+            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
                     "arkivo.rar",
-                    "legacyCharsetDetector",
-                    ArchiveMetadataCharsetDetector.class,
-                    RarArkivoFileSystem::legacyCharsetDetectorOptionValue
+                    "legacyCharsetDetector"
             );
 
     /// Creates a RAR archive file system base instance.
@@ -182,20 +180,4 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
                 : result.with(PASSWORD_PROVIDER, options.passwordProvider());
     }
 
-    /// Converts a raw legacy charset detector option value.
-    private static ArchiveMetadataCharsetDetector legacyCharsetDetectorOptionValue(Object value) {
-        if (value instanceof ArchiveMetadataCharsetDetector detector) {
-            return detector;
-        }
-        if (value instanceof Charset charset) {
-            return ArchiveMetadataCharsetDetector.fixed(charset);
-        }
-        if (value instanceof String stringValue) {
-            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(stringValue));
-        }
-        throw new IllegalArgumentException(
-                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: "
-                        + LEGACY_CHARSET_DETECTOR.key()
-        );
-    }
 }

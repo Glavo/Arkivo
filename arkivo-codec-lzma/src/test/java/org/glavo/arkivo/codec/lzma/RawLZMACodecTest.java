@@ -60,6 +60,8 @@ public final class RawLZMACodecTest {
                 LZMA2Codec.class,
                 CompressionFormats.require(LZMA2Format.NAME).defaultCodec()
         );
+        assertEquals(java.util.List.of("raw-lzma"), RawLZMAFormat.instance().aliases());
+        assertEquals(java.util.List.of(), RawLZMAFormat.instance().fileExtensions());
     }
 
     /// Verifies Arkivo's EOS-terminated raw LZMA output with XZ for Java.

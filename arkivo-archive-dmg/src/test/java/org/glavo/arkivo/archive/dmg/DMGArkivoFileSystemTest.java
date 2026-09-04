@@ -362,7 +362,7 @@ final class DMGArkivoFileSystemTest {
             assertThrows(NoSuchFileException.class, () -> Files.isHidden(missing));
 
             Path copiedFile = temporaryDirectory.resolve("copied-file.txt");
-            Files.copy(file, copiedFile, StandardCopyOption.COPY_ATTRIBUTES);
+            fileSystem.provider().copy(file, copiedFile, StandardCopyOption.COPY_ATTRIBUTES);
             assertEquals("hello", Files.readString(copiedFile));
             assertEquals(Files.getLastModifiedTime(file), Files.getLastModifiedTime(copiedFile));
             assertThrows(FileAlreadyExistsException.class, () -> Files.copy(file, copiedFile));

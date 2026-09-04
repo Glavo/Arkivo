@@ -290,11 +290,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             output.close();
             outputClosed = true;
         } catch (IOException exception) {
-            if (failure != null) {
-                failure.addSuppressed(exception);
-            } else {
-                failure = exception;
-            }
+            failure = combine(failure, exception);
         }
 
         failure = closeBodyStorage(failure);
@@ -346,11 +342,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
                 content.close();
                 iterator.remove();
             } catch (IOException exception) {
-                if (failure != null) {
-                    failure.addSuppressed(exception);
-                } else {
-                    failure = exception;
-                }
+                failure = combine(failure, exception);
             }
         }
         if (!bodyStorageClosed) {
@@ -358,12 +350,19 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
                 bodyStorage.close();
                 bodyStorageClosed = true;
             } catch (IOException exception) {
-                if (failure != null) {
-                    failure.addSuppressed(exception);
-                } else {
-                    failure = exception;
-                }
+                failure = combine(failure, exception);
             }
+        }
+        return failure;
+    }
+
+    /// Combines one cleanup failure with an earlier failure without suppressing an exception onto itself.
+    private static IOException combine(@Nullable IOException failure, IOException next) {
+        if (failure == null) {
+            return next;
+        }
+        if (failure != next) {
+            failure.addSuppressed(next);
         }
         return failure;
     }
@@ -715,11 +714,15 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
                 throw new IllegalArgumentException("mode must not be negative");
             }
             member.ensurePending();
-            if (member.kind() == MemberKind.DIRECTORY && !PosixModes.isDirectory(mode)) {
-                throw new IllegalArgumentException("mode must describe an AR directory");
-            }
-            if (member.kind() == MemberKind.SYMBOLIC_LINK && !PosixModes.isSymbolicLink(mode)) {
-                throw new IllegalArgumentException("mode must describe an AR symbolic link");
+            boolean matchingType = switch (member.kind()) {
+                case REGULAR_FILE -> PosixModes.isRegularFile(mode);
+                case DIRECTORY -> PosixModes.isDirectory(mode);
+                case SYMBOLIC_LINK -> PosixModes.isSymbolicLink(mode);
+            };
+            if (!matchingType) {
+                throw new IllegalArgumentException(
+                        "mode must describe an AR " + member.kind().description()
+                );
             }
             this.mode = mode;
         }
@@ -727,8 +730,8 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         /// Sets the expected member data size before the body stream is opened.
         @Override
         public void setSize(long size) throws IOException {
-            if (size < 0L) {
-                throw new IllegalArgumentException("size must not be negative");
+            if (size < 0L || size > MAX_MEMBER_SIZE) {
+                throw new IllegalArgumentException("size must be between 0 and " + MAX_MEMBER_SIZE);
             }
             member.ensurePending();
             if (member.hasFixedBody() && size != member.fixedBodySize()) {

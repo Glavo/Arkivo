@@ -153,7 +153,9 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
         try {
             forceClose();
         } catch (IOException | RuntimeException | Error exception) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
         }
     }
 

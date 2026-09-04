@@ -78,6 +78,7 @@ import java.util.zip.CRC32;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -274,6 +275,17 @@ public final class RarArkivoStreamingReaderTest {
                 }
             }
         }
+        return output.toByteArray();
+    }
+
+    /// Reads one entry body without invoking a bulk input operation.
+    private static byte[] readOneByteAtATime(InputStream input) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        int value;
+        while ((value = input.read()) >= 0) {
+            output.write(value);
+        }
+        assertEquals(-1, input.read());
         return output.toByteArray();
     }
 
@@ -658,6 +670,48 @@ public final class RarArkivoStreamingReaderTest {
         }
 
         assertEquals(List.of("dir/", "dir/hello.txt", "link"), paths);
+    }
+
+    /// Verifies stored and compressed RAR5 bodies preserve integrity and EOF through single-byte reads.
+    @Test
+    public void readsStoredAndCompressedRar5EntriesOneByteAtATime() throws IOException {
+        byte[] storedContent = "stored single-byte body".repeat(32).getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(
+                storedFile(
+                        "stored.bin",
+                        1_700_000_000L,
+                        0100644,
+                        storedContent,
+                        null
+                ),
+                splitCompressedFilePart(
+                        "compressed.bin",
+                        1_700_000_001L,
+                        0100644,
+                        RAR5_COMPRESSED_CONTENT.length,
+                        crc32(RAR5_COMPRESSED_CONTENT),
+                        RAR5_COMPRESSED_BODY,
+                        blake2spHash(RAR5_COMPRESSED_BLAKE2SP),
+                        false,
+                        false
+                )
+        );
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertTrue(reader.next());
+            assertEquals("stored.bin", reader.readAttributes().path());
+            try (InputStream input = reader.openInputStream()) {
+                assertArrayEquals(storedContent, readOneByteAtATime(input));
+            }
+
+            assertTrue(reader.next());
+            assertEquals("compressed.bin", reader.readAttributes().path());
+            try (InputStream input = reader.openInputStream()) {
+                assertArrayEquals(RAR5_COMPRESSED_CONTENT, readOneByteAtATime(input));
+            }
+
+            assertFalse(reader.next());
+        }
     }
 
     /// Verifies that stored RAR5 entries split across file parts are exposed as one logical entry.
@@ -1121,6 +1175,57 @@ public final class RarArkivoStreamingReaderTest {
         Files.deleteIfExists(existingFile);
         Files.deleteIfExists(copiedDirectory);
         deleteTemporaryArchive(archivePath);
+    }
+
+    /// Verifies stored entry streams implement bounded reads, skips, availability, and close-time draining.
+    @Test
+    public void storedEntryStreamPreservesBoundariesAcrossPartialConsumption() throws IOException {
+        byte[] first = {1, 2, 3, 4, 5};
+        byte[] second = {6, 7, 8, 9};
+        byte[] third = {10, 11};
+        byte[] archive = archive(
+                storedFile("first.bin", 0L, 0100644, first, null),
+                storedFile("second.bin", 0L, 0100644, second, null),
+                storedFile("third.bin", 0L, 0100644, third, null)
+        );
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive)
+        )) {
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                int initialAvailable = body.available();
+                assertTrue(initialAvailable >= 0 && initialAvailable <= first.length);
+                assertEquals(0, body.read(new byte[0], 0, 0));
+                assertEquals(0L, body.skip(0L));
+                assertEquals(0L, body.skip(-1L));
+                assertThrows(NullPointerException.class, () -> body.read(null, 0, 1));
+                assertThrows(IndexOutOfBoundsException.class, () -> body.read(new byte[1], 1, 1));
+
+                assertEquals(1, body.read());
+                assertEquals(2L, body.skip(2L));
+                int remainingAvailable = body.available();
+                assertTrue(remainingAvailable >= 0 && remainingAvailable <= 2);
+                byte[] tail = new byte[4];
+                assertEquals(2, body.read(tail, 1, 2));
+                assertArrayEquals(new byte[]{0, 4, 5, 0}, tail);
+                assertEquals(0, body.available());
+                assertEquals(-1, body.read());
+                assertEquals(0L, body.skip(Long.MAX_VALUE));
+            }
+
+            assertTrue(reader.next());
+            InputStream partiallyRead = reader.openInputStream();
+            assertEquals(6, partiallyRead.read());
+            partiallyRead.close();
+            partiallyRead.close();
+
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals(third, body.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
     }
 
     /// Verifies that a repeatable seekable channel source supports random-access RAR file system operations.

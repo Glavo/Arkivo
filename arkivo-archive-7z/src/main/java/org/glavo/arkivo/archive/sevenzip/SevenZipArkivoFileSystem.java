@@ -3,12 +3,9 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
-import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
@@ -20,7 +17,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Objects;
 
 /// Opens 7z archives as NIO file systems.
@@ -60,100 +56,6 @@ import java.util.Objects;
 /// unchanged update closes without rewriting the source.
 @NotNullByDefault
 public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem permits SevenZipArkivoFileSystemImpl {
-    /// The option for an `ArkivoPasswordProvider` value.
-    ///
-    /// Read operations use the provider to decrypt encrypted data and headers. Write operations request one archive
-    /// password, strictly interpret its bytes as UTF-16LE, and encrypt every non-empty entry data stream with
-    /// 7z AES-256/SHA-256. Content encryption does not hide entry names or other header metadata.
-    private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
-            ArchiveOption.of("arkivo.7z", "passwordProvider", ArkivoPasswordProvider.class);
-
-    /// The option for the default `SevenZipCompression` used by non-empty output entries.
-    ///
-    /// Complete-rewrite updates use this compression for surviving entries unless an entry attribute view overrides it.
-    ///
-    /// Values may be a complete compression object, a `SevenZipCompressionMethod`, or a stable method name string.
-    /// The default remains `SevenZipCompression.copy()`.
-    private static final ArchiveOption<SevenZipCompression> COMPRESSION =
-            ArchiveOption.of(
-                    "arkivo.7z",
-                    "compression",
-                    SevenZipCompression.class,
-                    SevenZipArkivoFileSystem::compressionOptionValue
-            );
-
-
-    /// The option for an optional `SevenZipFilter` applied before output compression.
-    ///
-    /// Complete-rewrite updates use this filter for surviving entries unless an entry attribute view overrides it.
-    ///
-    /// Values may be a complete filter object, a `SevenZipFilterMethod`, or a stable method name string. BCJ2 creates
-    /// four physical folder streams whose MAIN, CALL, and JUMP branches use the selected compression. No filter is
-    /// applied by default.
-    private static final ArchiveOption<SevenZipFilter> FILTER =
-            ArchiveOption.of(
-                    "arkivo.7z",
-                    "filter",
-                    SevenZipFilter.class,
-                    SevenZipArkivoFileSystem::filterOptionValue
-            );
-
-
-    /// The option for an immutable preprocessing filter chain applied before output compression.
-    ///
-    /// Filters run in list order. Complete-rewrite updates use this chain for surviving entries unless an entry
-    /// attribute view overrides it. Values may be a SevenZipFilterChain, a list of SevenZipFilter values, or any
-    /// single value accepted by FILTER. An empty chain disables preprocessing. BCJ2 must be the sole chain element.
-    /// FILTER and FILTERS are mutually exclusive.
-    private static final ArchiveOption<SevenZipFilterChain> FILTERS =
-            ArchiveOption.of(
-                    "arkivo.7z",
-                    "filters",
-                    SevenZipFilterChain.class,
-                    SevenZipArkivoFileSystem::filterChainOptionValue
-            );
-
-
-    /// The option for the maximum number of non-empty files encoded into one solid folder.
-    ///
-    /// A value of `1` disables solid grouping and preserves independent compression streams. Larger values let
-    /// consecutive files with equal compression and filter settings share one coder pipeline. A setting change starts
-    /// a new folder even before this limit is reached. The default is `1`.
-    private static final ArchiveOption<Integer> SOLID_FILE_COUNT =
-            ArchiveOption.of(
-                    "arkivo.7z",
-                    "solidFileCount",
-                    Integer.class,
-                    SevenZipArkivoFileSystem::solidFileCountOptionValue
-            );
-
-    /// The option for the maximum `Long` byte size of each numbered output volume.
-    ///
-    /// Path-backed split output requires a conventional first-volume path such as `archive.7z.001`. Updates preserve
-    /// an existing split archive's first-volume size when this option is absent; `-1` explicitly rewrites it as a
-    /// single-volume archive.
-    private static final ArchiveOption<Long> SPLIT_SIZE =
-            ArchiveOption.of(
-                    "arkivo.7z",
-                    "splitSize",
-                    Long.class,
-                    SevenZipArkivoFileSystem::splitSizeOptionValue
-            );
-
-
-    /// The option for whether new archives should encrypt metadata headers.
-    ///
-    /// Header encryption requires `PASSWORD_PROVIDER` and hides entry names and other metadata in an AES-encrypted
-    /// encoded header. Non-empty entry data remains encrypted by the same password provider.
-    private static final ArchiveOption<Boolean> ENCRYPT_HEADERS =
-            ArchiveOption.of(
-                    "arkivo.7z",
-                    "encryptHeaders",
-                    Boolean.class,
-                    SevenZipArkivoFileSystem::booleanOptionValue
-            );
-
-
     /// Creates a 7z archive file system base instance.
     ///
     /// @param threadSafety the concurrency and managed-resource close policy
@@ -370,7 +272,11 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromCreateOptions(options);
-        return SeekableChannelSources.open(target, source -> openConfiguredSource(source, config));
+        return SevenZipArkivoFileSystemImpl.createOnOwnedChannel(
+                SevenZipArkivoFileSystemProvider.instance(),
+                target,
+                config
+        );
     }
 
     /// Opens one owned seekable channel for complete-rewrite update with explicit publication options.
@@ -622,112 +528,6 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     ///
     /// @return the unsigned 32-bit next-header CRC-32 value
     public abstract long nextHeaderCrc32();
-
-    /// Converts a raw split size option value.
-    private static Long splitSizeOptionValue(Object value) {
-        if (value instanceof Long longValue) {
-            return longValue;
-        }
-        if (value instanceof Byte || value instanceof Short || value instanceof Integer) {
-            return ((Number) value).longValue();
-        }
-        if (value instanceof String stringValue) {
-            return Long.parseLong(stringValue);
-        }
-        throw new IllegalArgumentException(
-                "Expected Long, compatible integral number, or String for key: " + SPLIT_SIZE.key()
-        );
-    }
-
-
-    /// Converts a raw compression option value.
-    private static SevenZipCompression compressionOptionValue(Object value) {
-        if (value instanceof SevenZipCompression compression) {
-            return compression;
-        }
-        if (value instanceof SevenZipCompressionMethod method) {
-            return SevenZipCompression.of(method);
-        }
-        if (value instanceof String stringValue) {
-            return SevenZipCompression.of(SevenZipCompressionMethod.parse(stringValue));
-        }
-        throw new IllegalArgumentException(
-                "Expected SevenZipCompression, SevenZipCompressionMethod, or String for key: " + COMPRESSION.key()
-        );
-    }
-
-
-    /// Converts a raw filter option value.
-    private static SevenZipFilter filterOptionValue(Object value) {
-        if (value instanceof SevenZipFilter filter) {
-            return filter;
-        }
-        if (value instanceof SevenZipFilterMethod method) {
-            return SevenZipFilter.of(method);
-        }
-        if (value instanceof String stringValue) {
-            return SevenZipFilter.of(SevenZipFilterMethod.parse(stringValue));
-        }
-        throw new IllegalArgumentException(
-                "Expected SevenZipFilter, SevenZipFilterMethod, or String for key: " + FILTER.key()
-        );
-    }
-
-
-    /// Converts a raw filter-chain option value.
-    private static SevenZipFilterChain filterChainOptionValue(Object value) {
-        if (value instanceof SevenZipFilterChain chain) {
-            return chain;
-        }
-        if (value instanceof Iterable<?> values) {
-            ArrayList<SevenZipFilter> filters = new ArrayList<>();
-            for (Object item : values) {
-                if (!(item instanceof SevenZipFilter filter)) {
-                    throw new IllegalArgumentException(
-                            "Expected only SevenZipFilter values for key: " + FILTERS.key()
-                    );
-                }
-                filters.add(filter);
-            }
-            return filters.isEmpty() ? SevenZipFilterChain.EMPTY : new SevenZipFilterChain(filters);
-        }
-        return SevenZipFilterChain.of(filterOptionValue(value));
-    }
-
-
-    /// Converts and validates a raw solid file-count option value.
-    private static Integer solidFileCountOptionValue(Object value) {
-        int count;
-        if (value instanceof Byte || value instanceof Short || value instanceof Integer) {
-            count = ((Number) value).intValue();
-        } else if (value instanceof Long longValue) {
-            if (longValue < Integer.MIN_VALUE || longValue > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException("7z solid file count is outside the Integer range");
-            }
-            count = longValue.intValue();
-        } else if (value instanceof String stringValue) {
-            count = Integer.parseInt(stringValue);
-        } else {
-            throw new IllegalArgumentException(
-                    "Expected Integer, compatible integral number, or String for key: " + SOLID_FILE_COUNT.key()
-            );
-        }
-        if (count <= 0) {
-            throw new IllegalArgumentException("7z solid file count must be positive");
-        }
-        return count;
-    }
-
-    /// Converts a raw boolean option value.
-    private static Boolean booleanOptionValue(Object value) {
-        if (value instanceof Boolean booleanValue) {
-            return booleanValue;
-        }
-        if (value instanceof String stringValue) {
-            return Boolean.parseBoolean(stringValue);
-        }
-        throw new IllegalArgumentException("Expected Boolean or String for key: " + ENCRYPT_HEADERS.key());
-    }
 
     /// Closes a channel source after option validation fails and suppresses any cleanup failure.
     private static void closeSourceAfterOpenFailure(ArkivoSeekableChannelSource source, Throwable failure) {

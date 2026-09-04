@@ -90,6 +90,42 @@ import java.util.Set;
 /// Implements a 7z archive file system backed by a read/update index or a forward-only writer.
 @NotNullByDefault
 public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem {
+    /// Creates a forward-only file system that truncates and owns one seekable output channel.
+    ///
+    /// @param provider the provider exposed by the returned file system and its paths
+    /// @param target the channel to truncate, populate, and close
+    /// @param config the validated forward-only write configuration
+    /// @return a writable file system that finalizes the channel on close
+    /// @throws IOException if the target cannot be prepared or seekable staging cannot be initialized
+    public static SevenZipArkivoFileSystemImpl createOnOwnedChannel(
+            SevenZipArkivoFileSystemProvider provider,
+            SeekableByteChannel target,
+            SevenZipArkivoFileSystemConfig config
+    ) throws IOException {
+        Objects.requireNonNull(provider, "provider");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(config, "config");
+        try {
+            target.position(0L);
+            target.truncate(0L);
+            return new SevenZipArkivoFileSystemImpl(
+                    provider,
+                    new SevenZipSingleVolumeTarget(target),
+                    Long.MAX_VALUE,
+                    config
+            );
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
+                target.close();
+            } catch (IOException | RuntimeException | Error closeException) {
+                if (exception != closeException) {
+                    exception.addSuppressed(closeException);
+                }
+            }
+            throw exception;
+        }
+    }
+
     /// The maximum decoded entry size retained in memory by default.
     private static final long DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD = 1024L * 1024L;
 

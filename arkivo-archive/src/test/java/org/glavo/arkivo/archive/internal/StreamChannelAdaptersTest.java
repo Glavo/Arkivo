@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 
@@ -33,6 +34,8 @@ final class StreamChannelAdaptersTest {
             ByteBuffer target = ByteBuffer.allocate(4);
             assertEquals(2, heapChannel.read(target));
             assertEquals(2, target.position());
+            assertEquals(-1, heapChannel.read(target));
+            assertEquals(2, target.position());
         }
 
         try (ReadableByteChannel directChannel = StreamChannelAdapters.readableChannel(
@@ -40,6 +43,8 @@ final class StreamChannelAdaptersTest {
         )) {
             ByteBuffer target = ByteBuffer.allocateDirect(4);
             assertEquals(2, directChannel.read(target));
+            assertEquals(2, target.position());
+            assertEquals(-1, directChannel.read(target));
             assertEquals(2, target.position());
         }
     }
@@ -50,7 +55,26 @@ final class StreamChannelAdaptersTest {
         try (ReadableByteChannel channel =
                      StreamChannelAdapters.readableChannel(new ZeroProgressInputStream())) {
             assertEquals(0, channel.read(ByteBuffer.allocate(1)));
+            assertEquals(0, channel.read(ByteBuffer.allocateDirect(1)));
         }
+    }
+
+    /// Verifies channel adapters validate nulls, accept empty buffers, and reject access after closure.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    void validatesChannelArgumentsAndClosedState() throws IOException {
+        ReadableByteChannel input = StreamChannelAdapters.readableChannel(
+                new ByteArrayInputStream(new byte[]{1})
+        );
+        assertThrows(NullPointerException.class, () -> input.read(null));
+        assertEquals(0, input.read(ByteBuffer.allocate(0)));
+        input.close();
+        assertThrows(ClosedChannelException.class, () -> input.read(ByteBuffer.allocate(1)));
+
+        WritableByteChannel output = StreamChannelAdapters.writableChannel(new ByteArrayOutputStream());
+        assertThrows(NullPointerException.class, () -> output.write(null));
+        output.close();
+        assertThrows(ClosedChannelException.class, () -> output.write(ByteBuffer.allocate(1)));
     }
 
     /// Verifies a read-only target is rejected before the input stream is consumed.
@@ -95,6 +119,68 @@ final class StreamChannelAdaptersTest {
         try (OutputStream output = StreamChannelAdapters.outputStream(new ZeroProgressWritableChannel())) {
             IOException failure = assertThrows(IOException.class, () -> output.write(new byte[]{1}));
             assertEquals("Writable channel made no progress", failure.getMessage());
+        }
+    }
+
+    /// Verifies channel-backed streams implement single-byte, empty-request, and closed-state behavior.
+    @Test
+    void adaptsSingleByteStreamOperations() throws IOException {
+        ReadableByteChannel source = StreamChannelAdapters.readableChannel(
+                new ByteArrayInputStream(new byte[]{(byte) 0xfe})
+        );
+        InputStream input = StreamChannelAdapters.inputStream(source);
+        assertEquals(0, input.read(new byte[0], 0, 0));
+        assertEquals(0xfe, input.read());
+        assertEquals(-1, input.read());
+        input.close();
+        assertFalse(source.isOpen());
+        assertEquals("Stream closed", assertThrows(IOException.class, input::read).getMessage());
+        assertEquals(
+                "Stream closed",
+                assertThrows(IOException.class, () -> input.read(new byte[1])).getMessage()
+        );
+        assertEquals("Stream closed", assertThrows(IOException.class, () -> input.skip(1L)).getMessage());
+
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        WritableByteChannel target = StreamChannelAdapters.writableChannel(bytes);
+        OutputStream output = StreamChannelAdapters.outputStream(target);
+        output.write(0x101);
+        output.write(new byte[0]);
+        output.close();
+        assertFalse(target.isOpen());
+        assertArrayEquals(new byte[]{1}, bytes.toByteArray());
+        assertEquals("Stream closed", assertThrows(IOException.class, () -> output.write(2)).getMessage());
+        assertEquals(
+                "Stream closed",
+                assertThrows(IOException.class, () -> output.write(new byte[]{2})).getMessage()
+        );
+    }
+
+    /// Verifies skip uses channel positioning when available and bounded reads otherwise.
+    @Test
+    void skipsSeekableAndStreamingSources() throws IOException {
+        ReadOnlyByteArrayChannel seekableSource = new ReadOnlyByteArrayChannel(new byte[]{1, 2, 3, 4});
+        try (InputStream input = StreamChannelAdapters.inputStream(seekableSource)) {
+            assertEquals(0L, input.skip(0L));
+            assertEquals(0L, input.skip(-1L));
+            assertEquals(1, input.read());
+            assertEquals(2L, input.skip(2L));
+            assertEquals(4, input.read());
+            assertEquals(0L, input.skip(Long.MAX_VALUE));
+
+            seekableSource.position(10L);
+            assertEquals(0L, input.skip(3L));
+            assertEquals(10L, seekableSource.position());
+        }
+
+        ReadableByteChannel streamingSource = StreamChannelAdapters.readableChannel(
+                new ByteArrayInputStream(new byte[]{5, 6, 7, 8})
+        );
+        try (InputStream input = StreamChannelAdapters.inputStream(streamingSource)) {
+            assertEquals(2L, input.skip(2L));
+            assertEquals(7, input.read());
+            assertEquals(1L, input.skip(Long.MAX_VALUE));
+            assertEquals(-1, input.read());
         }
     }
 

@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.ar;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
@@ -38,6 +40,7 @@ import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.DosFileAttributes;
 import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.GroupPrincipal;
@@ -47,6 +50,7 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -1279,6 +1283,229 @@ public final class ArArkivoStreamingReaderTest {
         reader.close();
 
         assertEquals(2, source.closeCount());
+    }
+
+    /// Verifies global and fixed-width member headers fail deterministically at every structural boundary.
+    @Test
+    public void rejectsMalformedGlobalAndMemberHeaders() throws IOException {
+        byte[] globalHeader = "!<arch>\n".getBytes(StandardCharsets.US_ASCII);
+        for (int length = 0; length < globalHeader.length; length++) {
+            assertNextFailure(
+                    Arrays.copyOf(globalHeader, length),
+                    "Unexpected end of AR global header"
+            );
+        }
+
+        byte[] invalidGlobalHeader = globalHeader.clone();
+        invalidGlobalHeader[0] = '?';
+        assertNextFailure(invalidGlobalHeader, "Invalid AR global header");
+
+        byte[] validArchive = archive(member("file/", 0, 0, 0, 0100644, new byte[0]));
+        for (int headerLength : new int[]{1, 59}) {
+            assertNextFailure(
+                    Arrays.copyOf(validArchive, globalHeader.length + headerLength),
+                    "Unexpected end of AR member header"
+            );
+        }
+
+        byte[] invalidFirstTrailerByte = validArchive.clone();
+        invalidFirstTrailerByte[globalHeader.length + 58] = '?';
+        assertNextFailure(invalidFirstTrailerByte, "Invalid AR member header trailer");
+
+        byte[] invalidSecondTrailerByte = validArchive.clone();
+        invalidSecondTrailerByte[globalHeader.length + 59] = '?';
+        assertNextFailure(invalidSecondTrailerByte, "Invalid AR member header trailer");
+    }
+
+    /// Verifies blank, negative, and malformed fixed-width numeric fields are interpreted consistently.
+    @Test
+    public void validatesFixedWidthNumericFields() throws IOException {
+        byte[] validArchive = archive(member("file/", 1, 2, 3, 0100644, new byte[0]));
+        byte[] blankTimestamp = withFirstMemberField(validArchive, 16, 12, "");
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(blankTimestamp)
+        )) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals(0L, reader.readAttributes().lastModifiedTime().toMillis());
+        }
+
+        assertNextFailure(
+                withFirstMemberField(validArchive, 16, 12, "-1"),
+                "AR timestamp must not be negative"
+        );
+        assertNextFailure(
+                withFirstMemberField(validArchive, 16, 12, "invalid"),
+                "Invalid AR timestamp: invalid"
+        );
+        assertNextFailure(
+                withFirstMemberField(validArchive, 40, 8, "8"),
+                "Invalid AR mode: 8"
+        );
+        assertNextFailure(
+                withFirstMemberField(validArchive, 48, 10, "-1"),
+                "AR size must not be negative"
+        );
+    }
+
+    /// Verifies malformed GNU and BSD extended-name forms are rejected before body exposure.
+    @Test
+    public void rejectsMalformedExtendedNames() throws IOException {
+        assertNextFailure(
+                archive(member("/0", 0, 0, 0, 0100644, new byte[0])),
+                "AR GNU long name table is missing"
+        );
+
+        byte[] gnuTable = "name/\n".getBytes(StandardCharsets.US_ASCII);
+        assertNextFailure(
+                archive(
+                        member("//", 0, 0, 0, 0, gnuTable),
+                        member("/6", 0, 0, 0, 0100644, new byte[0])
+                ),
+                "AR GNU long name offset is out of range"
+        );
+        assertNextFailure(
+                archive(member("/-1", 0, 0, 0, 0100644, new byte[0])),
+                "AR GNU long name offset must not be negative"
+        );
+        assertNextFailure(
+                archive(member("/2147483648", 0, 0, 0, 0100644, new byte[0])),
+                "AR GNU long name offset is out of range"
+        );
+        assertNextFailure(
+                archive(
+                        member("//", 0, 0, 0, 0, "/\n".getBytes(StandardCharsets.US_ASCII)),
+                        member("/0", 0, 0, 0, 0100644, new byte[0])
+                ),
+                "AR member is missing a path"
+        );
+
+        assertNextFailure(
+                archive(member("#1/0", 0, 0, 0, 0100644, new byte[0])),
+                "AR BSD long name length is out of range"
+        );
+        assertNextFailure(
+                archive(member("#1/x", 0, 0, 0, 0100644, new byte[0])),
+                "Invalid AR BSD long name length: x"
+        );
+        assertNextFailure(
+                archive(member("#1/5", 0, 0, 0, 0100644, new byte[4])),
+                "AR BSD long name exceeds member size"
+        );
+
+        byte[] oversizedTable = archive(member("//", 0, 0, 0, 0, new byte[0]));
+        assertNextFailure(
+                withFirstMemberField(oversizedTable, 48, 10, "2147483648"),
+                "AR member is too large to buffer"
+        );
+    }
+
+    /// Verifies decoder fallback and strict name decoding for ordinary and BSD identifiers.
+    @Test
+    public void appliesNameDecodingFallbackAndRejectsMalformedInput() throws IOException {
+        ArchiveMetadataCharsetDetector unknownDetector = bytes -> null;
+        byte[] fallbackArchive = archive(member("fallback.txt/", 0, 0, 0, 0100644, new byte[0]));
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(fallbackArchive),
+                ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(unknownDetector)
+        )) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("fallback.txt", reader.readAttributes().path());
+        }
+
+        assertNextFailure(
+                archiveWithRawIdentifier(new byte[0], new byte[0]),
+                "AR member is missing a path"
+        );
+        assertNextFailure(
+                archiveWithRawIdentifier("\\absolute/".getBytes(StandardCharsets.US_ASCII), new byte[0]),
+                "AR member path must be relative"
+        );
+        assertNextFailure(
+                archive(member("#1/1", 0, 0, 0, 0100644, new byte[]{(byte) 0x80})),
+                "Failed to decode AR member name"
+        );
+    }
+
+    /// Verifies entry streams drain unread bodies, preserve padding, and reject use after close.
+    @Test
+    public void enforcesEntryInputStreamLifecycle() throws IOException {
+        byte[] archive = archive(
+                member("first/", 0, 0, 0, 0100644, new byte[]{1, 2, 3}),
+                member("second/", 0, 0, 0, 0100644, new byte[]{4})
+        );
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            var first = reader.openInputStream();
+            assertEquals(1, first.read());
+            first.close();
+            first.close();
+            assertThrows(IOException.class, first::read);
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> reader.readAttributes(DosFileAttributes.class)
+            );
+            try (var second = reader.openInputStream()) {
+                assertEquals(0, second.read(new byte[0]));
+                assertEquals(4, second.read());
+                assertEquals(-1, second.read());
+                assertEquals(-1, second.read());
+            }
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies truncation is reported both while reading member data and while consuming alignment padding.
+    @Test
+    public void reportsTruncatedEntryBodiesAndPadding() throws IOException {
+        byte[] completeBodyArchive = archive(member("body/", 0, 0, 0, 0100644, new byte[]{1, 2}));
+        byte[] truncatedBodyArchive = Arrays.copyOf(completeBodyArchive, completeBodyArchive.length - 1);
+        ArArkivoStreamingReader bodyReader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(truncatedBodyArchive)
+        );
+        org.junit.jupiter.api.Assertions.assertTrue(bodyReader.next());
+        var body = bodyReader.openInputStream();
+        assertEquals(1, body.read());
+        EOFException readFailure = assertThrows(EOFException.class, body::read);
+        assertEquals("Unexpected end of AR member body", readFailure.getMessage());
+        EOFException bodyCloseFailure = assertThrows(EOFException.class, body::close);
+        assertEquals("Unexpected end of AR member body", bodyCloseFailure.getMessage());
+        bodyReader.close();
+
+        byte[] completePaddingArchive = archive(member("padding/", 0, 0, 0, 0100644, new byte[]{3}));
+        byte[] truncatedPaddingArchive = Arrays.copyOf(completePaddingArchive, completePaddingArchive.length - 1);
+        ArArkivoStreamingReader paddingReader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(truncatedPaddingArchive)
+        );
+        org.junit.jupiter.api.Assertions.assertTrue(paddingReader.next());
+        var paddingBody = paddingReader.openInputStream();
+        assertEquals(3, paddingBody.read());
+        EOFException paddingFailure = assertThrows(EOFException.class, paddingBody::close);
+        assertEquals("Unexpected end of AR member body", paddingFailure.getMessage());
+        paddingReader.close();
+    }
+
+    /// Asserts that advancing one archive fails with the expected message.
+    private static void assertNextFailure(byte[] archive, String expectedMessage) throws IOException {
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+            assertEquals(expectedMessage, exception.getMessage());
+        }
+    }
+
+    /// Returns a copy with one fixed-width field of the first member replaced and space-padded.
+    private static byte[] withFirstMemberField(byte[] archive, int offset, int width, String value) {
+        byte[] replacement = value.getBytes(StandardCharsets.US_ASCII);
+        if (replacement.length > width) {
+            throw new IllegalArgumentException("replacement field is too wide");
+        }
+        byte[] result = archive.clone();
+        int start = 8 + offset;
+        Arrays.fill(result, start, start + width, (byte) ' ');
+        System.arraycopy(replacement, 0, result, start, replacement.length);
+        return result;
     }
 
     /// Writes one streaming AR member with the given body.

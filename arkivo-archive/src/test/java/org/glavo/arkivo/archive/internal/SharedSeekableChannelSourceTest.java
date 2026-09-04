@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
@@ -27,6 +28,7 @@ import java.util.concurrent.TimeoutException;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -135,6 +137,25 @@ final class SharedSeekableChannelSourceTest {
         assertEquals(1, invalid.closeCount());
     }
 
+    /// Verifies a construction failure repeated by cleanup is propagated without illegal self-suppression.
+    @Test
+    void preservesSharedConstructionAndCleanupFailure() throws IOException {
+        IOException failure = new IOException("shared failure");
+        TrackingSeekableByteChannel backing = new TrackingSeekableByteChannel(new byte[0]);
+        backing.repeatedFailure = failure;
+
+        IOException exception = assertThrows(IOException.class, () -> ArkivoSeekableChannelSource.of(backing));
+
+        assertSame(failure, exception);
+        assertEquals(0, exception.getSuppressed().length);
+        assertEquals(1, backing.closeCount());
+        assertTrue(backing.isOpen());
+
+        backing.repeatedFailure = null;
+        backing.close();
+        assertFalse(backing.isOpen());
+    }
+
     /// Verifies archive opener failures close the owned channel without hiding cleanup failures.
     @Test
     void closesOwnedChannelAfterArchiveOpenFailure() throws IOException {
@@ -162,7 +183,58 @@ final class SharedSeekableChannelSourceTest {
         assertEquals("close failed", failureWithCleanup.getSuppressed()[0].getMessage());
         assertTrue(closeFailing.isOpen());
         closeFailing.close();
+
+        IOException sharedFailure = new IOException("shared open failure");
+        TrackingSeekableByteChannel sharedCloseFailure = new TrackingSeekableByteChannel(new byte[0]);
+        sharedCloseFailure.repeatedFailure = sharedFailure;
+        IOException sharedThrown = assertThrows(
+                IOException.class,
+                () -> SeekableChannelSources.open(sharedCloseFailure, source -> {
+                    throw sharedFailure;
+                })
+        );
+        assertSame(sharedFailure, sharedThrown);
+        assertEquals(0, sharedThrown.getSuppressed().length);
+        assertTrue(sharedCloseFailure.isOpen());
+        sharedCloseFailure.repeatedFailure = null;
+        sharedCloseFailure.close();
     }
+
+    /// Verifies argument validation precedes ownership transfer and null opener results release the owned source.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    void validatesSingleChannelArchiveOpenContract() throws IOException {
+        TrackingSeekableByteChannel accepted = new TrackingSeekableByteChannel(new byte[]{1, 2, 3});
+        ArkivoSeekableChannelSource opened = SeekableChannelSources.open(accepted, source -> source);
+        assertTrue(accepted.isOpen());
+        try (SeekableByteChannel view = opened.openChannel()) {
+            assertArrayEquals(new byte[]{1, 2, 3}, read(view, 3));
+        }
+        opened.close();
+        assertFalse(accepted.isOpen());
+        assertEquals(1, accepted.closeCount());
+
+        TrackingSeekableByteChannel rejected = new TrackingSeekableByteChannel(new byte[0]);
+        assertThrows(NullPointerException.class, () -> SeekableChannelSources.open(rejected, null));
+        assertTrue(rejected.isOpen());
+        assertEquals(0, rejected.closeCount());
+        rejected.close();
+
+        assertThrows(
+                NullPointerException.class,
+                () -> SeekableChannelSources.open(null, source -> source)
+        );
+
+        TrackingSeekableByteChannel emptyResult = new TrackingSeekableByteChannel(new byte[0]);
+        NullPointerException failure = assertThrows(
+                NullPointerException.class,
+                () -> SeekableChannelSources.open(emptyResult, source -> null)
+        );
+        assertEquals("opened archive", failure.getMessage());
+        assertFalse(emptyResult.isOpen());
+        assertEquals(1, emptyResult.closeCount());
+    }
+
     /// Reads at most one target-sized chunk from a channel.
     private static byte @Unmodifiable [] read(SeekableByteChannel channel, int size) throws IOException {
         ByteBuffer target = ByteBuffer.allocate(size);
@@ -232,6 +304,9 @@ final class SharedSeekableChannelSourceTest {
         /// Whether querying the position fails.
         private boolean failPositionQuery;
 
+        /// One exception optionally repeated by position lookup and the first close attempt.
+        private @Nullable IOException repeatedFailure;
+
         /// Number of close attempts.
         private int closeCount;
 
@@ -279,6 +354,9 @@ final class SharedSeekableChannelSourceTest {
             beginAccess();
             try {
                 ensureOpen();
+                if (repeatedFailure != null) {
+                    throw repeatedFailure;
+                }
                 if (failPositionQuery) {
                     throw new IOException("position failed");
                 }
@@ -332,6 +410,9 @@ final class SharedSeekableChannelSourceTest {
         @Override
         public void close() throws IOException {
             closeCount++;
+            if (repeatedFailure != null && closeCount == 1) {
+                throw repeatedFailure;
+            }
             if (failFirstClose && closeCount == 1) {
                 throw new IOException("close failed");
             }

@@ -6,13 +6,16 @@ package org.glavo.arkivo.archive.internal;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
@@ -34,6 +37,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared indexed-content transfer and lifecycle behavior.
 @NotNullByDefault
 final class StoredContentSupportTest {
+    /// Verifies configured factories and both default-storage entry points return usable owned storage.
+    @Test
+    void selectsConfiguredAndDefaultStorage() throws IOException {
+        ArkivoEditStorage configured = ArkivoEditStorage.memory();
+        assertSame(configured, StoredContentSupport.openStorage(() -> configured));
+        configured.close();
+
+        try (ArkivoEditStorage selected = StoredContentSupport.selectStorage(ArchiveOptions.EMPTY);
+             ArkivoStoredContent content = selected.createContent("selected", 0L)) {
+            assertEquals(0L, content.size());
+        }
+        try (ArkivoEditStorage opened = StoredContentSupport.openStorage(null);
+             ArkivoStoredContent content = opened.createContent("opened", 0L)) {
+            assertEquals(0L, content.size());
+        }
+    }
+
     /// Verifies configured storage selection, successful input storage, copying, and empty-body adapters.
     @Test
     void storesAndCopiesIndexedContent() throws IOException {
@@ -234,6 +254,184 @@ final class StoredContentSupportTest {
         assertEquals("Stored content channel made no write progress", exception.getMessage());
         output.close();
         assertFalse(output.isOpen());
+    }
+
+    /// Verifies a transient zero-length stream read falls back to one byte and physical EOF remains empty.
+    @Test
+    void handlesZeroProgressInputStreams() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (WritableByteChannel channel = Channels.newChannel(output)) {
+            StoredContentSupport.copyInput(new ZeroThenDataInputStream(new byte[]{1, 2, 3}), channel);
+        }
+        assertArrayEquals(new byte[]{1, 2, 3}, output.toByteArray());
+
+        ByteArrayOutputStream emptyOutput = new ByteArrayOutputStream();
+        try (WritableByteChannel channel = Channels.newChannel(emptyOutput)) {
+            StoredContentSupport.copyInput(new ZeroThenDataInputStream(new byte[0]), channel);
+        }
+        assertEquals(0, emptyOutput.size());
+    }
+
+    /// Verifies absent source content still truncates an existing destination body.
+    @Test
+    void truncatesDestinationForAbsentContent() throws IOException {
+        try (ArkivoEditStorage storage = ArkivoEditStorage.memory();
+             ArkivoStoredContent destination = storage.createContent("destination", 3L)) {
+            try (SeekableByteChannel output = destination.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                assertEquals(3, output.write(ByteBuffer.wrap(new byte[]{1, 2, 3})));
+            }
+            assertEquals(3L, destination.size());
+
+            StoredContentSupport.copyContent(null, destination);
+            assertEquals(0L, destination.size());
+        }
+    }
+
+    /// Verifies content and storage cleanup failures are both retained behind the primary failure.
+    @Test
+    void suppressesAllOpenCleanupFailures() throws IOException {
+        RetryCloseStorage storage = new RetryCloseStorage(true);
+        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+        ownedContents.add(storage.content);
+        IOException failure = new IOException("open failed");
+
+        StoredContentSupport.closeAfterOpenFailure(storage, ownedContents, failure);
+
+        assertEquals(2, failure.getSuppressed().length);
+        assertEquals("content close failed", failure.getSuppressed()[0].getMessage());
+        assertEquals("storage close failed", failure.getSuppressed()[1].getMessage());
+        assertEquals(1, storage.content.closeAttempts);
+        assertTrue(storage.content.delegateOpen());
+        assertTrue(storage.closed);
+        storage.content.close();
+    }
+
+    /// Verifies a cleanup failure identical to the primary failure is not self-suppressed.
+    @Test
+    void avoidsSelfSuppressionDuringCleanup() throws IOException {
+        IOException failure = new IOException("shared failure");
+        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+        ownedContents.add(new SameFailureContent(failure));
+
+        StoredContentSupport.closeAfterOpenFailure(ArkivoEditStorage.memory(), ownedContents, failure);
+
+        assertEquals(0, failure.getSuppressed().length);
+    }
+
+    /// Verifies shared storage helpers reject null mandatory arguments before allocating or transferring content.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    void validatesArguments() throws IOException {
+        ArkivoEditStorage storage = ArkivoEditStorage.memory();
+        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+        IOException failure = new IOException("failure");
+        InputStream input = InputStream.nullInputStream();
+        WritableByteChannel output = Channels.newChannel(new ByteArrayOutputStream());
+
+        try (storage; input; output) {
+            assertThrows(NullPointerException.class, () -> StoredContentSupport.selectStorage(null));
+            assertThrows(
+                    NullPointerException.class,
+                    () -> StoredContentSupport.closeAfterOpenFailure(null, ownedContents, failure)
+            );
+            assertThrows(
+                    NullPointerException.class,
+                    () -> StoredContentSupport.closeAfterOpenFailure(storage, null, failure)
+            );
+            assertThrows(
+                    NullPointerException.class,
+                    () -> StoredContentSupport.closeAfterOpenFailure(storage, ownedContents, null)
+            );
+            assertThrows(
+                    NullPointerException.class,
+                    () -> StoredContentSupport.storeInput(null, ownedContents, "entry", 0L, input)
+            );
+            assertThrows(
+                    NullPointerException.class,
+                    () -> StoredContentSupport.storeInput(storage, null, "entry", 0L, input)
+            );
+            assertThrows(
+                    NullPointerException.class,
+                    () -> StoredContentSupport.storeInput(storage, ownedContents, null, 0L, input)
+            );
+            assertThrows(
+                    NullPointerException.class,
+                    () -> StoredContentSupport.storeInput(storage, ownedContents, "entry", 0L, null)
+            );
+            assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(null, output));
+            assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(input, null));
+            assertThrows(NullPointerException.class, () -> StoredContentSupport.copyContent(null, null));
+        }
+    }
+
+    /// Returns zero once from bulk reads, then supplies fixed bytes through ordinary reads.
+    @NotNullByDefault
+    private static final class ZeroThenDataInputStream extends InputStream {
+        /// Immutable bytes remaining to be returned.
+        private final byte @Unmodifiable [] content;
+
+        /// Current content offset.
+        private int position;
+
+        /// Whether the first bulk read still needs to report zero progress.
+        private boolean zeroPending = true;
+
+        /// Creates a stream over a defensive copy of the supplied bytes.
+        private ZeroThenDataInputStream(byte[] content) {
+            this.content = content.clone();
+        }
+
+        /// Returns one byte or physical end of input.
+        @Override
+        public int read() {
+            return position < content.length ? Byte.toUnsignedInt(content[position++]) : -1;
+        }
+
+        /// Returns zero once and then supplies all remaining bytes.
+        @Override
+        public int read(byte[] bytes, int offset, int length) {
+            if (zeroPending) {
+                zeroPending = false;
+                return 0;
+            }
+            if (position >= content.length) {
+                return -1;
+            }
+            int count = Math.min(length, content.length - position);
+            System.arraycopy(content, position, bytes, offset, count);
+            position += count;
+            return count;
+        }
+    }
+
+    /// Throws one caller-supplied exception whenever cleanup is attempted.
+    @NotNullByDefault
+    private static final class SameFailureContent implements ArkivoStoredContent {
+        /// Exception shared with the primary operation failure.
+        private final IOException failure;
+
+        /// Creates a content handle that reports the supplied close failure.
+        private SameFailureContent(IOException failure) {
+            this.failure = failure;
+        }
+
+        /// Rejects channel creation because this handle exists only for cleanup testing.
+        @Override
+        public SeekableByteChannel openChannel(Set<? extends OpenOption> options) {
+            throw new UnsupportedOperationException();
+        }
+
+        /// Reports an empty logical body.
+        @Override
+        public long size() {
+            return 0L;
+        }
+
+        /// Throws the exact shared failure instance.
+        @Override
+        public void close() throws IOException {
+            throw failure;
+        }
     }
 
     /// Produces a deterministic checked read failure.

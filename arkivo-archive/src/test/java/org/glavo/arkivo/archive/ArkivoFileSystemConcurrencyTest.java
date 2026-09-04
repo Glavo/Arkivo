@@ -132,6 +132,56 @@ public final class ArkivoFileSystemConcurrencyTest {
         }
     }
 
+    /// Verifies concurrent close callers serialize and restore interruption observed while waiting for the owner.
+    @Test
+    public void concurrentCloseCallersWaitAndRestoreInterruption() throws Exception {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch closeEntered = new CountDownLatch(1);
+        CountDownLatch releaseClose = new CountDownLatch(1);
+        CountDownLatch waiterStarted = new CountDownLatch(1);
+
+        try {
+            Future<Void> owner = executor.submit(() -> {
+                fileSystem.holdClose(closeEntered, releaseClose);
+                return null;
+            });
+            assertTrue(closeEntered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+
+            Future<Boolean> waiter = executor.submit(() -> {
+                Thread.currentThread().interrupt();
+                waiterStarted.countDown();
+                fileSystem.close();
+                return Thread.currentThread().isInterrupted();
+            });
+            assertTrue(waiterStarted.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertThrows(TimeoutException.class, () -> waiter.get(100L, TimeUnit.MILLISECONDS));
+
+            releaseClose.countDown();
+            owner.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            assertTrue(waiter.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertFalse(fileSystem.isOpen());
+        } finally {
+            releaseClose.countDown();
+            fileSystem.close();
+            executor.shutdownNow();
+        }
+    }
+
+    /// Verifies one close token is idempotent while a nested close on its owning thread is rejected.
+    @Test
+    public void enforcesCloseTokenLifecycle() throws IOException {
+        TestFileSystem reentrant = new TestFileSystem(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
+        IllegalStateException failure = assertThrows(IllegalStateException.class, reentrant::runReentrantClose);
+        assertEquals("Reentrant archive file system close is not supported", failure.getMessage());
+        assertFalse(reentrant.isOpen());
+
+        TestFileSystem repeatedToken = new TestFileSystem(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
+        repeatedToken.closeWithRepeatedToken();
+        assertFalse(repeatedToken.isOpen());
+        repeatedToken.close();
+    }
+
     /// Verifies that a temporary read resource can close inside an enclosing shared operation.
     @Test
     public void readResourceCanCloseInsideReadOperation() throws Exception {
@@ -213,6 +263,13 @@ public final class ArkivoFileSystemConcurrencyTest {
         assertEquals(2, secondDelegate.closeCalls());
     }
 
+    /// Verifies strict close preserves unchecked resource failures and avoids suppressing an exception onto itself.
+    @Test
+    public void strictClosePreservesUncheckedResourceFailures() {
+        assertStrictCloseFailure(new IllegalStateException("runtime close failure"));
+        assertStrictCloseFailure(new AssertionError("error close failure"));
+    }
+
     /// Verifies that strict close terminates a blocking interruptible read before waiting for its operation lock.
     @Test
     public void strictCloseReleasesBlockingInterruptibleRead() throws Exception {
@@ -257,15 +314,44 @@ public final class ArkivoFileSystemConcurrencyTest {
         BlockingInterruptibleReadableByteChannel readable =
                 new BlockingInterruptibleReadableByteChannel(ignoredEntered, ignoredRelease);
         InterruptibleTrackingSeekableByteChannel seekable = new InterruptibleTrackingSeekableByteChannel();
+        TrackingSeekableByteChannel plainWritable = new TrackingSeekableByteChannel();
 
         try (ReadableByteChannel managedReadable = fileSystem.managedReadableChannel(readable);
-             SeekableByteChannel managedSeekable = fileSystem.managedReadChannel(seekable)) {
+             SeekableByteChannel managedSeekable = fileSystem.managedReadChannel(seekable);
+             SeekableByteChannel managedPlainWritable = fileSystem.managedWriteChannel(plainWritable)) {
             assertInstanceOf(InterruptibleChannel.class, managedReadable);
             assertInstanceOf(InterruptibleChannel.class, managedSeekable);
+            assertFalse(managedPlainWritable instanceof InterruptibleChannel);
         } finally {
             ignoredRelease.countDown();
             fileSystem.close();
         }
+    }
+
+    /// Verifies stream wrappers retain delegate ownership but map coordinated file system closure to stream failures.
+    @Test
+    public void concurrentReadStreamsMapFileSystemClosure() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
+        TrackingInputStream inputDelegate = new TrackingInputStream();
+        TrackingOutputStream outputDelegate = new TrackingOutputStream();
+        InputStream input = fileSystem.managedInputStream(inputDelegate);
+        OutputStream output = fileSystem.managedOutputStream(outputDelegate);
+
+        fileSystem.close();
+
+        assertTrue(inputDelegate.isOpen());
+        assertTrue(outputDelegate.isOpen());
+        IOException inputFailure = assertThrows(IOException.class, input::read);
+        assertEquals("Managed archive input stream is closed", inputFailure.getMessage());
+        assertInstanceOf(ClosedFileSystemException.class, inputFailure.getCause());
+        IOException outputFailure = assertThrows(IOException.class, () -> output.write(1));
+        assertEquals("Managed archive output stream is closed", outputFailure.getMessage());
+        assertInstanceOf(ClosedFileSystemException.class, outputFailure.getCause());
+
+        input.close();
+        output.close();
+        assertFalse(inputDelegate.isOpen());
+        assertFalse(outputDelegate.isOpen());
     }
 
     /// Verifies managed resources delegate their complete mutable operation surfaces and enforce terminal state.
@@ -373,6 +459,8 @@ public final class ArkivoFileSystemConcurrencyTest {
         assertSame(output, fileSystem.managedOutputStream(output));
         assertSame(directory, fileSystem.managedDirectoryStream(directory));
 
+        fileSystem.runRead();
+        fileSystem.runWrite();
         fileSystem.close();
 
         assertTrue(readChannel.isOpen());
@@ -386,6 +474,22 @@ public final class ArkivoFileSystemConcurrencyTest {
         input.read();
         output.write(1);
         directory.iterator().hasNext();
+        fileSystem.runRead();
+        fileSystem.runWrite();
+    }
+
+    /// Verifies one strict close failure retains its concrete type and original identity.
+    private static <T extends Throwable> void assertStrictCloseFailure(T failure) {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
+        UncheckedCloseInputStream delegate = new UncheckedCloseInputStream(failure);
+        fileSystem.managedInputStream(delegate);
+
+        Throwable thrown = assertThrows(failure.getClass(), fileSystem::close);
+
+        assertSame(failure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(2, delegate.closeCalls());
+        assertFalse(fileSystem.isOpen());
     }
 
     /// Provides a minimal file system that exposes the shared coordination primitives to tests.
@@ -411,11 +515,45 @@ public final class ArkivoFileSystemConcurrencyTest {
             }
         }
 
+        /// Runs one shared operation.
+        private void runRead() {
+            try (Operation ignored = beginReadOperation()) {
+                // The token lifecycle is the behavior under test.
+            }
+        }
+
         /// Runs one exclusive operation.
         private void runWrite() {
             try (Operation ignored = beginWriteOperation()) {
                 // The lock acquisition is the behavior under test.
             }
+        }
+
+        /// Holds an exclusive close transition until the release latch opens.
+        private void holdClose(CountDownLatch entered, CountDownLatch release) throws InterruptedException, IOException {
+            try (CloseOperation ignored = beginCloseOperation()) {
+                open = false;
+                entered.countDown();
+                release.await();
+            }
+        }
+
+        /// Attempts a nested close while the current thread owns the close transition.
+        private void runReentrantClose() throws IOException {
+            try (CloseOperation ignored = beginCloseOperation()) {
+                open = false;
+                try (CloseOperation nested = beginCloseOperation()) {
+                    // The nested operation is expected to be rejected before this scope is entered.
+                }
+            }
+        }
+
+        /// Closes one lifecycle token twice to verify token-level idempotence.
+        private void closeWithRepeatedToken() throws IOException {
+            CloseOperation operation = beginCloseOperation();
+            open = false;
+            operation.close();
+            operation.close();
         }
 
         /// Opens and closes a managed input stream inside one shared operation.
@@ -811,6 +949,45 @@ public final class ArkivoFileSystemConcurrencyTest {
             if (!open) {
                 throw new IOException("Test input stream is closed");
             }
+        }
+    }
+
+    /// Provides an input stream that reports the same unchecked failure from every close attempt.
+    @NotNullByDefault
+    private static final class UncheckedCloseInputStream extends InputStream {
+        /// Unchecked failure reported by every close attempt.
+        private final Throwable failure;
+
+        /// Number of close calls received.
+        private int closeCalls;
+
+        /// Creates a stream that reports the supplied runtime exception or error.
+        private UncheckedCloseInputStream(Throwable failure) {
+            if (!(failure instanceof RuntimeException) && !(failure instanceof Error)) {
+                throw new IllegalArgumentException("failure must be unchecked");
+            }
+            this.failure = failure;
+        }
+
+        /// Reports physical end of input.
+        @Override
+        public int read() {
+            return -1;
+        }
+
+        /// Reports the configured unchecked failure.
+        @Override
+        public void close() {
+            closeCalls++;
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            throw (Error) failure;
+        }
+
+        /// Returns the number of close calls received.
+        private int closeCalls() {
+            return closeCalls;
         }
     }
 

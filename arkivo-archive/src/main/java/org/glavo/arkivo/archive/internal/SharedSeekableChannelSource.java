@@ -46,7 +46,9 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
             try {
                 channel.close();
             } catch (IOException | RuntimeException | Error closeException) {
-                exception.addSuppressed(closeException);
+                if (exception != closeException) {
+                    exception.addSuppressed(closeException);
+                }
             }
             throw exception;
         }

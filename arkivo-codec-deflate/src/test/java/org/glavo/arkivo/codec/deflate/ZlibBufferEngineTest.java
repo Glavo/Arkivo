@@ -13,6 +13,7 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -240,6 +241,121 @@ public final class ZlibBufferEngineTest {
 
     }
 
+    /// Verifies reset discards an outstanding dictionary request and restores a completed decoder for reuse.
+    @Test
+    public void decoderResetRestoresDictionaryAndCompletedStates() throws IOException {
+        byte[] dictionaryBytes = dictionaryData();
+        ZlibDictionary dictionary = ZlibDictionary.of(dictionaryBytes);
+        byte[] dictionaryInput = Arrays.copyOfRange(
+                dictionaryBytes,
+                dictionaryBytes.length - 2048,
+                dictionaryBytes.length
+        );
+        byte[] dictionaryEncoded = encodeInFragments(dictionaryInput, CODEC.withDictionary(dictionary), 19, 3);
+        byte[] regularInput = testData();
+        byte[] regularEncoded = encodeInFragments(regularInput, CODEC, 23, 5);
+        CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> decoder = CODEC.newDecoder();
+
+        try {
+            ByteBuffer dictionarySource = ByteBuffer.wrap(dictionaryEncoded);
+            ByteBuffer dictionaryTarget = ByteBuffer.allocate(1);
+            assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.finish(dictionarySource, dictionaryTarget));
+            assertEquals(0, dictionaryTarget.position());
+            assertEquals(dictionary.adler32(), decoder.dictionaryRequest().adler32());
+
+            decoder.reset();
+            assertThrows(IllegalStateException.class, decoder::dictionaryRequest);
+            assertArrayEquals(regularInput, decode(decoder, regularEncoded, 2));
+
+            decoder.reset();
+            assertArrayEquals(regularInput, decode(decoder, regularEncoded, 1));
+        } finally {
+            decoder.close();
+        }
+        assertThrows(IllegalStateException.class, decoder::reset);
+    }
+
+    /// Verifies fragmented metadata, truncated stream phases, dictionary waiting, and terminal decoder behavior.
+    @Test
+    public void decoderValidatesEveryStreamBoundaryState() throws IOException {
+        byte[] regularInput = "zlib boundary state".repeat(31).getBytes(StandardCharsets.UTF_8);
+        byte[] regularEncoded = encodeInFragments(regularInput, CODEC, 17, 3);
+        byte[] dictionaryBytes = dictionaryData();
+        ZlibDictionary dictionary = ZlibDictionary.of(dictionaryBytes);
+        byte[] dictionaryInput = Arrays.copyOfRange(
+                dictionaryBytes,
+                dictionaryBytes.length - 1024,
+                dictionaryBytes.length
+        );
+        byte[] dictionaryEncoded = encodeInFragments(dictionaryInput, CODEC.withDictionary(dictionary), 17, 3);
+        CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> decoder = CODEC.newDecoder();
+
+        try {
+            ByteBuffer partialHeader = ByteBuffer.wrap(regularEncoded, 0, 1).slice();
+            assertEquals(
+                    CodecOutcome.NEEDS_INPUT,
+                    decoder.decode(partialHeader, ByteBuffer.allocate(1))
+            );
+            assertFalse(partialHeader.hasRemaining());
+            EOFException truncatedHeader = assertThrows(
+                    EOFException.class,
+                    () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+            );
+            assertEquals("Unexpected end of zlib header", truncatedHeader.getMessage());
+
+            decoder.reset();
+            ByteBuffer partialIdentifier = ByteBuffer.wrap(dictionaryEncoded, 0, 3).slice();
+            assertEquals(
+                    CodecOutcome.NEEDS_INPUT,
+                    decoder.decode(partialIdentifier, ByteBuffer.allocate(1))
+            );
+            assertFalse(partialIdentifier.hasRemaining());
+            EOFException truncatedIdentifier = assertThrows(
+                    EOFException.class,
+                    () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+            );
+            assertEquals("Unexpected end of zlib dictionary identifier", truncatedIdentifier.getMessage());
+
+            decoder.reset();
+            ByteBuffer dictionarySource = ByteBuffer.wrap(dictionaryEncoded);
+            assertEquals(
+                    CodecOutcome.NEEDS_DICTIONARY,
+                    decoder.finish(dictionarySource, ByteBuffer.allocate(1))
+            );
+            assertEquals(
+                    CodecOutcome.NEEDS_DICTIONARY,
+                    decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+            );
+
+            decoder.reset();
+            assertThrows(IllegalStateException.class, () -> decoder.provideDictionary(dictionary));
+            EOFException truncatedBody = assertThrows(
+                    EOFException.class,
+                    () -> decoder.finish(
+                            ByteBuffer.wrap(Arrays.copyOf(regularEncoded, 2)),
+                            ByteBuffer.allocate(1)
+                    )
+            );
+            assertEquals("Unexpected end of zlib stream", truncatedBody.getMessage());
+
+            decoder.reset();
+            EOFException truncatedTrailer = assertThrows(
+                    EOFException.class,
+                    () -> decode(decoder, Arrays.copyOf(regularEncoded, regularEncoded.length - 1), 2)
+            );
+            assertEquals("Unexpected end of zlib stream trailer", truncatedTrailer.getMessage());
+
+            decoder.reset();
+            assertArrayEquals(regularInput, decode(decoder, regularEncoded, 2));
+            assertEquals(
+                    CodecOutcome.FINISHED,
+                    decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
+            );
+        } finally {
+            decoder.close();
+        }
+    }
+
     /// Encodes source fragments into one zlib stream.
     private static byte[] encodeInFragments(
             byte[] input,
@@ -297,18 +413,27 @@ public final class ZlibBufferEngineTest {
             int targetSize,
             ZlibCodec codec
     ) throws IOException {
+        try (CompressionDecoder decoder = codec.newDecoder()) {
+            return decode(decoder, encoded, targetSize);
+        }
+    }
+
+    /// Decodes one complete stream with a reusable decoder and bounded target buffers.
+    private static byte[] decode(
+            CompressionDecoder decoder,
+            byte[] encoded,
+            int targetSize
+    ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         ByteBuffer source = ByteBuffer.wrap(encoded);
-        try (CompressionDecoder decoder = codec.newDecoder()) {
-            CodecOutcome outcome;
-            do {
-                ByteBuffer target = ByteBuffer.allocate(targetSize);
-                outcome = decoder.finish(source, target);
-                drain(target, decoded);
-            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FINISHED, outcome);
-            assertFalse(source.hasRemaining());
-        }
+        CodecOutcome outcome;
+        do {
+            ByteBuffer target = ByteBuffer.allocate(targetSize);
+            outcome = decoder.finish(source, target);
+            drain(target, decoded);
+        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+        assertEquals(CodecOutcome.FINISHED, outcome);
+        assertFalse(source.hasRemaining());
         return decoded.toByteArray();
     }
 

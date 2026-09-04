@@ -1627,7 +1627,9 @@ public final class ArkivoFormats {
             channel.position(position);
         } catch (IOException | RuntimeException | Error exception) {
             if (failure != null) {
-                failure.addSuppressed(exception);
+                if (failure != exception) {
+                    failure.addSuppressed(exception);
+                }
                 return;
             }
             throw exception;

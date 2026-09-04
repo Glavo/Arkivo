@@ -180,6 +180,61 @@ public final class UnixCompressCodecTest {
         );
     }
 
+    /// Verifies reset discards partial headers, populated dictionaries, pending final bytes, and decoder input state.
+    @Test
+    public void resetsEveryPartialEnginePhase() throws IOException {
+        UnixCompressCodec codec = new UnixCompressCodec(12, true);
+        byte[] content = randomBytes(4_097);
+        byte[] encoded;
+
+        try (CompressionEncoder encoder = codec.newEncoder()) {
+            ByteBuffer headerSource = ByteBuffer.wrap(content);
+            ByteBuffer partialHeader = ByteBuffer.allocate(1);
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.encode(headerSource, partialHeader));
+            assertEquals(0, headerSource.position());
+            assertEquals(1, partialHeader.position());
+            encoder.reset();
+
+            ByteBuffer dictionarySource = ByteBuffer.wrap(Arrays.copyOf(content, 997));
+            ByteBuffer dictionaryOutput = ByteBuffer.allocate(4_096);
+            assertEquals(CodecOutcome.NEEDS_INPUT, encoder.encode(dictionarySource, dictionaryOutput));
+            assertFalse(dictionarySource.hasRemaining());
+            assertTrue(dictionaryOutput.position() > 3);
+            encoder.reset();
+
+            ByteBuffer finishingSource = ByteBuffer.wrap(new byte[]{42});
+            assertEquals(
+                    CodecOutcome.NEEDS_INPUT,
+                    encoder.encode(finishingSource, ByteBuffer.allocate(8))
+            );
+            assertFalse(finishingSource.hasRemaining());
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.finish(ByteBuffer.allocate(0)));
+            encoder.reset();
+
+            encoded = encodeSession(encoder, content);
+        }
+
+        try (CompressionDecoder decoder = codec.newDecoder()) {
+            ByteBuffer partialHeader = ByteBuffer.wrap(encoded, 0, 2);
+            assertEquals(
+                    CodecOutcome.NEEDS_INPUT,
+                    decoder.decode(partialHeader, ByteBuffer.allocate(content.length + 1))
+            );
+            assertFalse(partialHeader.hasRemaining());
+            decoder.reset();
+
+            ByteBuffer partialCodes = ByteBuffer.wrap(Arrays.copyOf(encoded, encoded.length - 1));
+            assertEquals(
+                    CodecOutcome.NEEDS_INPUT,
+                    decoder.decode(partialCodes, ByteBuffer.allocate(content.length + 1))
+            );
+            assertFalse(partialCodes.hasRemaining());
+            decoder.reset();
+
+            assertArrayEquals(content, decodeSession(decoder, encoded));
+        }
+    }
+
     /// Verifies stream finalization immediately before, at, and after LZW code-width transitions.
     @Test
     public void roundTripsAtCodeWidthTransitionBoundaries() throws IOException {
@@ -235,6 +290,43 @@ public final class UnixCompressCodecTest {
         );
     }
 
+    /// Verifies the first not-yet-defined code expands to the previous phrase followed by its first byte.
+    @Test
+    public void decodesKwKwKSelfReferencesAcrossModes() throws IOException {
+        assertArrayEquals(
+                "AAA".getBytes(StandardCharsets.US_ASCII),
+                decode(UnixCompressCodec.DEFAULT, packNineBitCodes(false, 'A', 256), 3)
+        );
+        assertArrayEquals(
+                "AAA".getBytes(StandardCharsets.US_ASCII),
+                decode(UnixCompressCodec.DEFAULT, packNineBitCodes(true, 'A', 257), 3)
+        );
+    }
+
+    /// Verifies clear-code alignment can pause at an input boundary without losing buffered bits or output.
+    @Test
+    public void preservesClearCodeAlignmentAcrossSourceBoundaries() throws IOException {
+        byte[] encoded = packNineBitCodes(true, 'A', 'B', 256, 0, 0, 0, 0, 0, 'X');
+        int split = 7;
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+
+        try (CompressionDecoder decoder = UnixCompressCodec.DEFAULT.newDecoder()) {
+            ByteBuffer first = ByteBuffer.wrap(encoded, 0, split);
+            ByteBuffer firstTarget = ByteBuffer.allocateDirect(8);
+            assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(first, firstTarget));
+            assertEquals(split, first.position());
+            drain(firstTarget, decoded);
+
+            ByteBuffer second = ByteBuffer.wrap(encoded, split, encoded.length - split).slice();
+            ByteBuffer secondTarget = ByteBuffer.allocateDirect(8);
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(second, secondTarget));
+            assertFalse(second.hasRemaining());
+            drain(secondTarget, decoded);
+        }
+
+        assertArrayEquals("ABX".getBytes(StandardCharsets.US_ASCII), decoded.toByteArray());
+    }
+
     /// Verifies temporary input exhaustion becomes truncation when a partial terminal code reaches physical EOF.
     @Test
     public void rejectsIncompleteTerminalCode() throws IOException {
@@ -269,7 +361,17 @@ public final class UnixCompressCodecTest {
                 () -> decode(codec, new byte[]{0x1f, (byte) 0x9d, (byte) 0xf0}, 32));
         assertThrows(IOException.class,
                 () -> decode(codec, new byte[]{0x1f, (byte) 0x9d, (byte) 0x88}, 32));
-        assertThrows(IOException.class, () -> decode(codec, packNineBitCodes(true, 257), 32));
+        IOException invalidFirstCode = assertThrows(
+                IOException.class,
+                () -> decode(codec, packNineBitCodes(true, 257), 32)
+        );
+        assertEquals("The first Unix compress LZW code is not a literal: 257", invalidFirstCode.getMessage());
+
+        IOException futureCode = assertThrows(
+                IOException.class,
+                () -> decode(codec, packNineBitCodes(true, 'A', 258), 32)
+        );
+        assertEquals("Invalid Unix compress LZW code: 258", futureCode.getMessage());
 
         byte[] encoded = encode(codec, randomBytes(4096));
         assertThrows(

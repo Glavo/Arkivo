@@ -1549,7 +1549,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 try {
                     storageChannel.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
             }
             releaseStoredContent(pendingContent);
@@ -2191,14 +2193,18 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         try {
             source.close();
         } catch (IOException | RuntimeException | Error exception) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
         }
     }
 
     /// Adds a secondary failure as suppressed when a primary failure already exists.
     private static Throwable appendFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure != null) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
             return failure;
         }
         return exception;

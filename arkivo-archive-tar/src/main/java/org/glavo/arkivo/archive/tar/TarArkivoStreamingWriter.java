@@ -300,7 +300,9 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         try {
             resource.close();
         } catch (Exception | Error cleanupFailure) {
-            failure.addSuppressed(cleanupFailure);
+            if (failure != cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
         }
     }
 

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.internal;
 
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
@@ -10,6 +11,7 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.nio.charset.Charset;
 import java.nio.file.OpenOption;
 import java.util.Collection;
 import java.util.LinkedHashSet;
@@ -52,6 +54,24 @@ public final class ArchiveEnvironmentOptions {
     private ArchiveEnvironmentOptions() {
     }
 
+    /// Returns a format-specific option that normalizes metadata charset detectors, charsets, and charset names.
+    ///
+    /// @param namespace the non-blank option namespace
+    /// @param name the non-blank local option name
+    /// @return an option whose raw values may be an [ArchiveMetadataCharsetDetector], [Charset], or charset-name string
+    /// @throws IllegalArgumentException if `namespace` or `name` is invalid
+    public static ArchiveOption<ArchiveMetadataCharsetDetector> metadataCharsetDetectorOption(
+            String namespace,
+            String name
+    ) {
+        return ArchiveOption.of(
+                namespace,
+                name,
+                ArchiveMetadataCharsetDetector.class,
+                value -> metadataCharsetDetectorValue(value, namespace + "." + name)
+        );
+    }
+
     /// Converts a raw thread-safety value.
     private static ArkivoFileSystemThreadSafety threadSafetyValue(Object value) {
         if (value instanceof ArkivoFileSystemThreadSafety strategy) {
@@ -61,6 +81,22 @@ public final class ArchiveEnvironmentOptions {
             return ArkivoFileSystemThreadSafety.parse(name);
         }
         throw new IllegalArgumentException("Expected ArkivoFileSystemThreadSafety or String for key: arkivo.threadSafety");
+    }
+
+    /// Converts a raw metadata charset-detector value.
+    private static ArchiveMetadataCharsetDetector metadataCharsetDetectorValue(Object value, String key) {
+        if (value instanceof ArchiveMetadataCharsetDetector detector) {
+            return detector;
+        }
+        if (value instanceof Charset charset) {
+            return ArchiveMetadataCharsetDetector.fixed(charset);
+        }
+        if (value instanceof String charsetName) {
+            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(charsetName));
+        }
+        throw new IllegalArgumentException(
+                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: " + key
+        );
     }
 
     /// Converts raw NIO open options.

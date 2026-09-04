@@ -20,6 +20,7 @@ import java.nio.channels.WritableByteChannel;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies byte-transform wrappers can retry failed endpoint closure.
@@ -80,6 +81,73 @@ final class TransformCloseRetryTest {
         input.close();
         input.close();
         assertEquals(2, source.closeCount());
+    }
+
+    /// Verifies one failure repeated by final output and close remains the reported stream failure.
+    @Test
+    void preservesSharedFinishAndCloseFailure() throws IOException {
+        IOException failure = new IOException("shared failure");
+        SharedFailureOutputStream target = new SharedFailureOutputStream(failure);
+        TransformingOutputStream output = new TransformingOutputStream(target, (buffer, offset, length) -> 0);
+        output.write(1);
+
+        IOException exception = assertThrows(IOException.class, output::close);
+
+        assertSame(failure, exception);
+        assertEquals(0, exception.getSuppressed().length);
+        assertEquals(1, target.writeCount());
+        assertEquals(1, target.closeCount());
+    }
+
+    /// Implements an output stream that reports one shared failure from writes and closure.
+    @NotNullByDefault
+    private static final class SharedFailureOutputStream extends OutputStream {
+        /// The shared failure reported by every operation.
+        private final IOException failure;
+
+        /// Number of bulk write attempts.
+        private int writeCount;
+
+        /// Number of close attempts.
+        private int closeCount;
+
+        /// Creates a stream that reports the supplied failure.
+        private SharedFailureOutputStream(IOException failure) {
+            this.failure = failure;
+        }
+
+        /// Reports the shared failure for a single-byte write.
+        @Override
+        public void write(int value) throws IOException {
+            throw failure;
+        }
+
+        /// Accepts an empty write or records a nonempty bulk write attempt and reports the shared failure.
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            if (length == 0) {
+                return;
+            }
+            writeCount++;
+            throw failure;
+        }
+
+        /// Records a close attempt and reports the shared failure.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            throw failure;
+        }
+
+        /// Returns the number of nonempty bulk write attempts.
+        private int writeCount() {
+            return writeCount;
+        }
+
+        /// Returns the number of close attempts.
+        private int closeCount() {
+            return closeCount;
+        }
     }
 
     /// Implements a writable channel that fails its first close attempt.

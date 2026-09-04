@@ -10,19 +10,35 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.URI;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.file.AccessMode;
+import java.nio.file.CopyOption;
+import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
+import java.nio.file.FileSystemLoopException;
+import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.NotLinkException;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.ProviderMismatchException;
 import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.FileAttributeView;
+import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -87,6 +103,7 @@ final class AbstractArkivoPathTest {
         assertThrows(IllegalArgumentException.class, () -> path.subpath(0, 0));
         assertThrows(IllegalArgumentException.class, () -> path.subpath(2, 2));
         assertThrows(IllegalArgumentException.class, () -> path.subpath(2, 4));
+        assertThrows(IllegalArgumentException.class, () -> path.subpath(3, 3));
     }
 
     /// Verifies dot normalization, absolute replacement, empty resolution, and sibling composition.
@@ -105,6 +122,7 @@ final class AbstractArkivoPathTest {
         assertEquals(fileSystem.getPath("/a/b/c/d"), base.resolve("c/d"));
         assertEquals(fileSystem.getPath("/a/c"), base.resolveSibling("c"));
         assertEquals(fileSystem.getPath("sibling"), fileSystem.getPath("single").resolveSibling("sibling"));
+        assertEquals(fileSystem.getPath("child"), fileSystem.getPath("", "child"));
         assertSame(base, base.toAbsolutePath());
         assertEquals(fileSystem.getPath("/relative/path"), fileSystem.getPath("relative/path").toAbsolutePath());
     }
@@ -119,11 +137,14 @@ final class AbstractArkivoPathTest {
         assertTrue(path.startsWith("/a/b"));
         assertFalse(path.startsWith("a"));
         assertFalse(path.startsWith("/a/c"));
+        assertFalse(path.startsWith("/a/b/c/d"));
         assertTrue(path.endsWith(fileSystem.getPath("b/c")));
         assertTrue(path.endsWith("c"));
         assertTrue(path.endsWith("/a/b/c"));
         assertFalse(path.endsWith("/b/c"));
         assertFalse(path.endsWith("a/b"));
+        assertFalse(path.endsWith("a/b/c/d"));
+        assertFalse(fileSystem.getPath("a/b/c").endsWith("/a/b/c"));
 
         TestFileSystem otherFileSystem = new TestFileSystem(null);
         assertFalse(path.startsWith(otherFileSystem.getPath("/a")));
@@ -156,9 +177,13 @@ final class AbstractArkivoPathTest {
         TestPath other = otherFileSystem.getPath("/a/b");
 
         assertEquals(path, same);
+        assertTrue(path.equals(path));
         assertEquals(path.hashCode(), same.hashCode());
         assertEquals(0, path.compareTo(same));
+        assertFalse(path.equals(null));
         assertFalse(path.equals(other));
+        assertFalse(path.equals(fileSystem.getPath("a/b")));
+        assertFalse(path.equals(fileSystem.getPath("/a/c")));
         assertFalse(path.equals(Path.of("/a/b")));
         assertThrows(ProviderMismatchException.class, () -> path.resolve(other));
         assertThrows(ProviderMismatchException.class, () -> path.relativize(other));
@@ -184,6 +209,60 @@ final class AbstractArkivoPathTest {
         assertThrows(UnsupportedOperationException.class, () -> new TestFileSystem(null).getPath("entry").toUri());
     }
 
+    /// Verifies real paths expand relative, absolute, and chained symbolic-link targets with remaining names.
+    @Test
+    void resolvesRealPathsThroughSymbolicLinks() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(null);
+        fileSystem.addFile("/target/leaf");
+        fileSystem.addFile("/destination/tail");
+        fileSystem.addFile("/final");
+        fileSystem.addSymbolicLink("/root/relative", "../target");
+        fileSystem.addSymbolicLink("/absolute", "/destination");
+        fileSystem.addSymbolicLink("/chain-a", "chain-b");
+        fileSystem.addSymbolicLink("/chain-b", "/final");
+
+        assertEquals(
+                fileSystem.getPath("/target/leaf"),
+                fileSystem.getPath("/root/relative/leaf").toRealPath()
+        );
+        assertEquals(
+                fileSystem.getPath("/destination/tail"),
+                fileSystem.getPath("/absolute/tail").toRealPath()
+        );
+        assertEquals(fileSystem.getPath("/final"), fileSystem.getPath("chain-a").toRealPath());
+    }
+
+    /// Verifies no-follow lookup, missing targets, option validation, and symbolic-link loop detection.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    void enforcesRealPathValidationAndLinkLimit() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(null);
+        fileSystem.addSymbolicLink("/links/value", "../missing");
+
+        assertEquals(
+                fileSystem.getPath("/links/value"),
+                fileSystem.getPath("links/./value").toRealPath(LinkOption.NOFOLLOW_LINKS)
+        );
+        assertThrows(NoSuchFileException.class, () -> fileSystem.getPath("/links/value").toRealPath());
+        assertThrows(NoSuchFileException.class, () -> fileSystem.getPath("/absent").toRealPath());
+        assertThrows(
+                NullPointerException.class,
+                () -> fileSystem.getPath("/").toRealPath((LinkOption[]) null)
+        );
+        assertThrows(
+                NullPointerException.class,
+                () -> fileSystem.getPath("/").toRealPath(new LinkOption[]{null})
+        );
+
+        fileSystem.addSymbolicLink("/loop-a", "/loop-b");
+        fileSystem.addSymbolicLink("/loop-b", "/loop-a");
+        FileSystemLoopException failure = assertThrows(
+                FileSystemLoopException.class,
+                () -> fileSystem.getPath("/loop-a").toRealPath()
+        );
+        assertEquals("/loop-a", failure.getFile());
+    }
+
     /// Verifies parsed component lists are copied and archive paths reject watch registration.
     @Test
     void snapshotsNamesAndRejectsWatchRegistration() {
@@ -205,18 +284,32 @@ final class AbstractArkivoPathTest {
         /// Backing archive URI exposed by paths, or `null` when URI conversion is unavailable.
         private final @Nullable URI archiveUri;
 
+        /// Provider implementing controlled real-path lookups for this file system.
+        private final TestProvider provider;
+
         /// Whether this test file system remains open.
         private boolean open = true;
 
         /// Creates a file system with an optional backing archive URI.
         private TestFileSystem(@Nullable URI archiveUri) {
             this.archiveUri = archiveUri;
+            this.provider = new TestProvider(this);
         }
 
-        /// Returns the default provider because provider I/O is outside these lexical tests.
+        /// Returns the provider used by path operations.
         @Override
         public FileSystemProvider provider() {
-            return java.nio.file.FileSystems.getDefault().provider();
+            return provider;
+        }
+
+        /// Adds one existing regular file for real-path validation.
+        private void addFile(String path) {
+            provider.addFile(path);
+        }
+
+        /// Adds one symbolic link and its target for real-path validation.
+        private void addSymbolicLink(String path, String target) {
+            provider.addSymbolicLink(path, target);
         }
 
         /// Closes this test file system.
@@ -283,6 +376,251 @@ final class AbstractArkivoPathTest {
         @Override
         public WatchService newWatchService() {
             throw new UnsupportedOperationException("Test watch services are not supported");
+        }
+    }
+
+    /// Provides controlled symbolic-link and existence lookups for test paths.
+    @NotNullByDefault
+    private static final class TestProvider extends FileSystemProvider {
+        /// File system served by this provider.
+        private final TestFileSystem fileSystem;
+
+        /// Existing normalized absolute paths.
+        private final Set<String> existingPaths = new HashSet<>();
+
+        /// Symbolic-link targets keyed by normalized absolute link path.
+        private final Map<String, TestPath> symbolicLinks = new HashMap<>();
+
+        /// Creates a provider for one test file system.
+        private TestProvider(TestFileSystem fileSystem) {
+            this.fileSystem = fileSystem;
+        }
+
+        /// Adds one existing regular file.
+        private void addFile(String path) {
+            existingPaths.add(normalizedPath(fileSystem.getPath(path)));
+        }
+
+        /// Adds one existing symbolic link.
+        private void addSymbolicLink(String path, String target) {
+            String normalizedPath = normalizedPath(fileSystem.getPath(path));
+            existingPaths.add(normalizedPath);
+            symbolicLinks.put(normalizedPath, fileSystem.getPath(target));
+        }
+
+        /// Returns one normalized absolute test path as text.
+        private String normalizedPath(Path path) {
+            return TestPath.checked(path, fileSystem).toAbsolutePath().normalize().toString();
+        }
+
+        /// Returns the synthetic provider scheme.
+        @Override
+        public String getScheme() {
+            return "arkivo-test";
+        }
+
+        /// Rejects URI-based file-system creation.
+        @Override
+        public FileSystem newFileSystem(URI uri, Map<String, ?> environment) {
+            throw unsupported();
+        }
+
+        /// Rejects URI-based file-system lookup.
+        @Override
+        public FileSystem getFileSystem(URI uri) {
+            throw unsupported();
+        }
+
+        /// Rejects URI-based path lookup.
+        @Override
+        public Path getPath(URI uri) {
+            throw unsupported();
+        }
+
+        /// Rejects channel creation.
+        @Override
+        public SeekableByteChannel newByteChannel(
+                Path path,
+                Set<? extends OpenOption> options,
+                FileAttribute<?>... attributes
+        ) {
+            throw unsupported();
+        }
+
+        /// Rejects directory iteration.
+        @Override
+        public DirectoryStream<Path> newDirectoryStream(
+                Path directory,
+                DirectoryStream.Filter<? super Path> filter
+        ) {
+            throw unsupported();
+        }
+
+        /// Rejects directory creation.
+        @Override
+        public void createDirectory(Path directory, FileAttribute<?>... attributes) {
+            throw unsupported();
+        }
+
+        /// Rejects deletion.
+        @Override
+        public void delete(Path path) {
+            throw unsupported();
+        }
+
+        /// Rejects copying.
+        @Override
+        public void copy(Path source, Path target, CopyOption... options) {
+            throw unsupported();
+        }
+
+        /// Rejects moving.
+        @Override
+        public void move(Path source, Path target, CopyOption... options) {
+            throw unsupported();
+        }
+
+        /// Rejects file-identity lookup.
+        @Override
+        public boolean isSameFile(Path first, Path second) {
+            throw unsupported();
+        }
+
+        /// Rejects hidden-state lookup.
+        @Override
+        public boolean isHidden(Path path) {
+            throw unsupported();
+        }
+
+        /// Rejects file-store lookup.
+        @Override
+        public FileStore getFileStore(Path path) {
+            throw unsupported();
+        }
+
+        /// Rejects generic access checks.
+        @Override
+        public void checkAccess(Path path, AccessMode... modes) {
+            throw unsupported();
+        }
+
+        /// Returns no attribute views because real-path lookup requests attributes directly.
+        @Override
+        public <V extends FileAttributeView> @Nullable V getFileAttributeView(
+                Path path,
+                Class<V> type,
+                LinkOption... options
+        ) {
+            return null;
+        }
+
+        /// Returns fixed basic attributes for a known path.
+        @Override
+        public <A extends BasicFileAttributes> A readAttributes(
+                Path path,
+                Class<A> type,
+                LinkOption... options
+        ) throws IOException {
+            if (type != BasicFileAttributes.class) {
+                throw unsupported();
+            }
+            String normalizedPath = normalizedPath(path);
+            if (!existingPaths.contains(normalizedPath)) {
+                throw new NoSuchFileException(normalizedPath);
+            }
+            return type.cast(TestBasicFileAttributes.INSTANCE);
+        }
+
+        /// Rejects string-based attribute lookup.
+        @Override
+        public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) {
+            throw unsupported();
+        }
+
+        /// Rejects generic attribute mutation.
+        @Override
+        public void setAttribute(Path path, String attribute, Object value, LinkOption... options) {
+            throw unsupported();
+        }
+
+        /// Returns the configured target for a symbolic link.
+        @Override
+        public Path readSymbolicLink(Path link) throws IOException {
+            String normalizedPath = normalizedPath(link);
+            TestPath target = symbolicLinks.get(normalizedPath);
+            if (target == null) {
+                throw new NotLinkException(normalizedPath);
+            }
+            return target;
+        }
+
+        /// Creates the standard unsupported-operation failure for unused provider methods.
+        private static UnsupportedOperationException unsupported() {
+            return new UnsupportedOperationException("Operation is outside the real-path test fixture");
+        }
+    }
+
+    /// Supplies fixed metadata for paths known by the real-path test provider.
+    @NotNullByDefault
+    private enum TestBasicFileAttributes implements BasicFileAttributes {
+        /// Shared immutable attribute instance.
+        INSTANCE;
+
+        /// Epoch timestamp returned by every time accessor.
+        private static final FileTime EPOCH = FileTime.fromMillis(0L);
+
+        /// Returns the epoch modification time.
+        @Override
+        public FileTime lastModifiedTime() {
+            return EPOCH;
+        }
+
+        /// Returns the epoch access time.
+        @Override
+        public FileTime lastAccessTime() {
+            return EPOCH;
+        }
+
+        /// Returns the epoch creation time.
+        @Override
+        public FileTime creationTime() {
+            return EPOCH;
+        }
+
+        /// Returns that the synthetic path is a regular file.
+        @Override
+        public boolean isRegularFile() {
+            return true;
+        }
+
+        /// Returns that the synthetic path is not a directory.
+        @Override
+        public boolean isDirectory() {
+            return false;
+        }
+
+        /// Returns that the synthetic attributes do not classify the path as a symbolic link.
+        @Override
+        public boolean isSymbolicLink() {
+            return false;
+        }
+
+        /// Returns that the synthetic path has no other file type.
+        @Override
+        public boolean isOther() {
+            return false;
+        }
+
+        /// Returns an empty synthetic file size.
+        @Override
+        public long size() {
+            return 0L;
+        }
+
+        /// Returns no synthetic file key.
+        @Override
+        public @Nullable Object fileKey() {
+            return null;
         }
     }
 

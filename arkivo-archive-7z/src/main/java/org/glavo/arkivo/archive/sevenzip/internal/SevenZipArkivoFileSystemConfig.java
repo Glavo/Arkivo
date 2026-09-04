@@ -12,17 +12,19 @@ import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
-import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
-import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCompressionMethod;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
+import org.glavo.arkivo.archive.sevenzip.SevenZipFilterMethod;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.OpenOption;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.Set;
@@ -36,27 +38,57 @@ public final class SevenZipArkivoFileSystemConfig {
 
     /// The NIO environment key for compression.
     private static final ArchiveOption<SevenZipCompression> COMPRESSION =
-            ArchiveOption.of("arkivo.7z", "compression", SevenZipCompression.class);
+            ArchiveOption.of(
+                    "arkivo.7z",
+                    "compression",
+                    SevenZipCompression.class,
+                    SevenZipArkivoFileSystemConfig::compressionOptionValue
+            );
 
     /// The NIO environment key for one filter.
     private static final ArchiveOption<SevenZipFilter> FILTER =
-            ArchiveOption.of("arkivo.7z", "filter", SevenZipFilter.class);
+            ArchiveOption.of(
+                    "arkivo.7z",
+                    "filter",
+                    SevenZipFilter.class,
+                    SevenZipArkivoFileSystemConfig::filterOptionValue
+            );
 
     /// The NIO environment key for a filter chain.
     private static final ArchiveOption<SevenZipFilterChain> FILTERS =
-            ArchiveOption.of("arkivo.7z", "filters", SevenZipFilterChain.class);
+            ArchiveOption.of(
+                    "arkivo.7z",
+                    "filters",
+                    SevenZipFilterChain.class,
+                    SevenZipArkivoFileSystemConfig::filterChainOptionValue
+            );
 
     /// The NIO environment key for solid grouping.
     private static final ArchiveOption<Integer> SOLID_FILE_COUNT =
-            ArchiveOption.of("arkivo.7z", "solidFileCount", Integer.class);
+            ArchiveOption.of(
+                    "arkivo.7z",
+                    "solidFileCount",
+                    Integer.class,
+                    SevenZipArkivoFileSystemConfig::solidFileCountOptionValue
+            );
 
     /// The NIO environment key for split output.
     private static final ArchiveOption<Long> SPLIT_SIZE =
-            ArchiveOption.of("arkivo.7z", "splitSize", Long.class);
+            ArchiveOption.of(
+                    "arkivo.7z",
+                    "splitSize",
+                    Long.class,
+                    SevenZipArkivoFileSystemConfig::splitSizeOptionValue
+            );
 
     /// The NIO environment key for header encryption.
     private static final ArchiveOption<Boolean> ENCRYPT_HEADERS =
-            ArchiveOption.of("arkivo.7z", "encryptHeaders", Boolean.class);
+            ArchiveOption.of(
+                    "arkivo.7z",
+                    "encryptHeaders",
+                    Boolean.class,
+                    SevenZipArkivoFileSystemConfig::booleanOptionValue
+            );
 
     /// The split size value used when split output is disabled.
     public static final long NO_SPLIT_SIZE = -1L;
@@ -549,6 +581,108 @@ public final class SevenZipArkivoFileSystemConfig {
     /// @return the complete immutable read-limit policy
     public ArchiveReadLimits readLimits() {
         return readLimits;
+    }
+
+    /// Converts a raw split-size environment value.
+    private static Long splitSizeOptionValue(Object value) {
+        if (value instanceof Long longValue) {
+            return longValue;
+        }
+        if (value instanceof Byte || value instanceof Short || value instanceof Integer) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof String stringValue) {
+            return Long.parseLong(stringValue);
+        }
+        throw new IllegalArgumentException(
+                "Expected Long, compatible integral number, or String for key: " + SPLIT_SIZE.key()
+        );
+    }
+
+    /// Converts a raw compression environment value.
+    private static SevenZipCompression compressionOptionValue(Object value) {
+        if (value instanceof SevenZipCompression compression) {
+            return compression;
+        }
+        if (value instanceof SevenZipCompressionMethod method) {
+            return SevenZipCompression.of(method);
+        }
+        if (value instanceof String stringValue) {
+            return SevenZipCompression.of(SevenZipCompressionMethod.parse(stringValue));
+        }
+        throw new IllegalArgumentException(
+                "Expected SevenZipCompression, SevenZipCompressionMethod, or String for key: " + COMPRESSION.key()
+        );
+    }
+
+    /// Converts a raw preprocessing-filter environment value.
+    private static SevenZipFilter filterOptionValue(Object value) {
+        if (value instanceof SevenZipFilter filter) {
+            return filter;
+        }
+        if (value instanceof SevenZipFilterMethod method) {
+            return SevenZipFilter.of(method);
+        }
+        if (value instanceof String stringValue) {
+            return SevenZipFilter.of(SevenZipFilterMethod.parse(stringValue));
+        }
+        throw new IllegalArgumentException(
+                "Expected SevenZipFilter, SevenZipFilterMethod, or String for key: " + FILTER.key()
+        );
+    }
+
+    /// Converts a raw preprocessing-filter-chain environment value.
+    private static SevenZipFilterChain filterChainOptionValue(Object value) {
+        if (value instanceof SevenZipFilterChain chain) {
+            return chain;
+        }
+        if (value instanceof Iterable<?> values) {
+            ArrayList<SevenZipFilter> filters = new ArrayList<>();
+            for (Object item : values) {
+                if (!(item instanceof SevenZipFilter filter)) {
+                    throw new IllegalArgumentException(
+                            "Expected only SevenZipFilter values for key: " + FILTERS.key()
+                    );
+                }
+                filters.add(filter);
+            }
+            return filters.isEmpty() ? SevenZipFilterChain.EMPTY : new SevenZipFilterChain(filters);
+        }
+        return SevenZipFilterChain.of(filterOptionValue(value));
+    }
+
+    /// Converts and validates a raw solid-file-count environment value.
+    private static Integer solidFileCountOptionValue(Object value) {
+        int count;
+        if (value instanceof Byte || value instanceof Short || value instanceof Integer) {
+            count = ((Number) value).intValue();
+        } else if (value instanceof Long longValue) {
+            if (longValue < Integer.MIN_VALUE || longValue > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("7z solid file count is outside the Integer range");
+            }
+            count = longValue.intValue();
+        } else if (value instanceof String stringValue) {
+            count = Integer.parseInt(stringValue);
+        } else {
+            throw new IllegalArgumentException(
+                    "Expected Integer, compatible integral number, or String for key: " + SOLID_FILE_COUNT.key()
+            );
+        }
+        if (count <= 0) {
+            throw new IllegalArgumentException("7z solid file count must be positive");
+        }
+        return count;
+    }
+
+    /// Converts a raw encrypted-header environment value.
+    private static Boolean booleanOptionValue(Object value) {
+        if (value instanceof Boolean booleanValue) {
+            return booleanValue;
+        }
+        if (value instanceof String stringValue) {
+            return Boolean.parseBoolean(stringValue);
+        }
+        throw new IllegalArgumentException("Expected Boolean or String for key: " + ENCRYPT_HEADERS.key());
     }
 
     /// Parses the password provider from archive options.

@@ -553,7 +553,9 @@ public final class CompressionFormats {
         try {
             source.close();
         } catch (IOException | RuntimeException | Error exception) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
         }
     }
 
@@ -567,7 +569,9 @@ public final class CompressionFormats {
             channel.position(position);
         } catch (IOException | RuntimeException | Error exception) {
             if (failure != null) {
-                failure.addSuppressed(exception);
+                if (failure != exception) {
+                    failure.addSuppressed(exception);
+                }
                 return;
             }
             throw exception;

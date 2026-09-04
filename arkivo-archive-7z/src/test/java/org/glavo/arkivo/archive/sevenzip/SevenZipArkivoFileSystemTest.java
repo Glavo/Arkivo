@@ -64,9 +64,13 @@ import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.AccessMode;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -507,6 +511,20 @@ public final class SevenZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/dir/hello.txt");
                 Files.write(file, content);
                 assertThrows(FileAlreadyExistsException.class, () -> Files.write(file, content));
+                fileSystem.provider().checkAccess(file);
+                fileSystem.provider().checkAccess(file, AccessMode.WRITE);
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> fileSystem.provider().checkAccess(file, AccessMode.READ)
+                );
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> fileSystem.provider().checkAccess(file, AccessMode.EXECUTE)
+                );
+                assertThrows(
+                        NoSuchFileException.class,
+                        () -> fileSystem.provider().checkAccess(fileSystem.getPath("/missing"), AccessMode.WRITE)
+                );
 
                 Path channelFile = fileSystem.getPath("/channel.bin");
                 try (SeekableByteChannel channel =
@@ -578,6 +596,317 @@ public final class SevenZipArkivoFileSystemTest {
                 assertArrayEquals(content, Files.readAllBytes(link));
             }
         } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies read-only and update file systems enforce their documented access-mode matrices.
+    @Test
+    public void enforcesIndexedFileSystemAccessModes() throws IOException {
+        Path archivePath = createTemporaryArchivePath("access-modes-7z-");
+        Files.write(archivePath, archiveWithCopyFile("access".getBytes(StandardCharsets.UTF_8)));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = openFileSystem(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                fileSystem.provider().checkAccess(file);
+                fileSystem.provider().checkAccess(file, AccessMode.READ);
+                assertThrows(
+                        AccessDeniedException.class,
+                        () -> fileSystem.provider().checkAccess(file, AccessMode.WRITE)
+                );
+                assertThrows(
+                        AccessDeniedException.class,
+                        () -> fileSystem.provider().checkAccess(file, AccessMode.EXECUTE)
+                );
+                assertThrows(
+                        NoSuchFileException.class,
+                        () -> fileSystem.provider().checkAccess(fileSystem.getPath("/missing"), AccessMode.READ)
+                );
+            }
+
+            Map<TestOption, Object> environment = Map.of(
+                    TestOption.OPEN_OPTIONS,
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (SevenZipArkivoFileSystem fileSystem = openFileSystem(archivePath, testOptions(environment))) {
+                Path file = fileSystem.getPath("/hello.txt");
+                fileSystem.provider().checkAccess(file, AccessMode.READ, AccessMode.WRITE);
+                assertThrows(
+                        AccessDeniedException.class,
+                        () -> fileSystem.provider().checkAccess(file, AccessMode.EXECUTE)
+                );
+                assertThrows(
+                        NoSuchFileException.class,
+                        () -> fileSystem.provider().checkAccess(fileSystem.getPath("/missing"), AccessMode.WRITE)
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies update moves enforce archive-tree structure and persist successful replacements.
+    @Test
+    public void enforcesUpdateMoveStructure() throws IOException {
+        Path archivePath = createTemporaryArchivePath("move-structure-7z-");
+        Set<PosixFilePermission> directoryPermissions = PosixFilePermissions.fromString("rwxr-x---");
+        Set<PosixFilePermission> linkPermissions = PosixFilePermissions.fromString("rwxr-xr--");
+        Files.deleteIfExists(archivePath);
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(archivePath)) {
+                Path sourceDirectory = fileSystem.getPath("/source");
+                Files.createDirectory(sourceDirectory);
+                Files.writeString(sourceDirectory.resolve("child.txt"), "child", StandardCharsets.UTF_8);
+                Files.createDirectory(fileSystem.getPath("/empty"));
+                Path occupiedDirectory = fileSystem.getPath("/occupied");
+                Files.createDirectory(occupiedDirectory);
+                Files.writeString(occupiedDirectory.resolve("child.txt"), "occupied", StandardCharsets.UTF_8);
+                Files.writeString(fileSystem.getPath("/file.txt"), "file", StandardCharsets.UTF_8);
+                Files.writeString(fileSystem.getPath("/target.txt"), "target", StandardCharsets.UTF_8);
+            }
+
+            Map<TestOption, Object> environment = Map.of(
+                    TestOption.OPEN_OPTIONS,
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (SevenZipArkivoFileSystem fileSystem = openFileSystem(archivePath, testOptions(environment))) {
+                Path root = fileSystem.getPath("/");
+                Path sourceDirectory = fileSystem.getPath("/source");
+                Path emptyDirectory = fileSystem.getPath("/empty");
+                Path occupiedDirectory = fileSystem.getPath("/occupied");
+                Path file = fileSystem.getPath("/file.txt");
+                Path target = fileSystem.getPath("/target.txt");
+
+                assertThrows(FileSystemException.class, () -> Files.delete(root));
+                assertThrows(DirectoryNotEmptyException.class, () -> Files.delete(sourceDirectory));
+                assertThrows(NoSuchFileException.class, () -> Files.delete(fileSystem.getPath("/missing")));
+                Files.move(file, file);
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> Files.move(file, fileSystem.getPath("/renamed.txt"), LinkOption.NOFOLLOW_LINKS)
+                );
+                assertThrows(FileSystemException.class, () -> Files.move(root, fileSystem.getPath("/root-moved")));
+                assertThrows(FileSystemException.class, () -> Files.move(file, root));
+                assertThrows(
+                        FileSystemException.class,
+                        () -> Files.move(sourceDirectory, sourceDirectory.resolve("nested"))
+                );
+                assertThrows(
+                        NoSuchFileException.class,
+                        () -> Files.move(file, fileSystem.getPath("/missing-parent/file.txt"))
+                );
+                assertThrows(FileAlreadyExistsException.class, () -> Files.move(file, target));
+                assertThrows(
+                        FileSystemException.class,
+                        () -> Files.move(file, emptyDirectory, StandardCopyOption.REPLACE_EXISTING)
+                );
+                Files.delete(emptyDirectory);
+                assertThrows(
+                        DirectoryNotEmptyException.class,
+                        () -> Files.move(sourceDirectory, occupiedDirectory, StandardCopyOption.REPLACE_EXISTING)
+                );
+
+                Files.move(file, target, StandardCopyOption.REPLACE_EXISTING);
+                Files.move(sourceDirectory, fileSystem.getPath("/moved"), StandardCopyOption.ATOMIC_MOVE);
+                Path createdDirectory = fileSystem.getPath("/created");
+                Files.createDirectory(
+                        createdDirectory,
+                        PosixFilePermissions.asFileAttribute(directoryPermissions)
+                );
+                Files.createSymbolicLink(
+                        createdDirectory.resolve("link"),
+                        Path.of("../target.txt"),
+                        PosixFilePermissions.asFileAttribute(linkPermissions)
+                );
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = openFileSystem(archivePath)) {
+                assertEquals(false, Files.exists(fileSystem.getPath("/file.txt")));
+                assertEquals("file", Files.readString(fileSystem.getPath("/target.txt"), StandardCharsets.UTF_8));
+                assertEquals(false, Files.exists(fileSystem.getPath("/source")));
+                assertEquals(
+                        "child",
+                        Files.readString(fileSystem.getPath("/moved/child.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(
+                        "occupied",
+                        Files.readString(fileSystem.getPath("/occupied/child.txt"), StandardCharsets.UTF_8)
+                );
+                Path createdDirectory = fileSystem.getPath("/created");
+                Path link = createdDirectory.resolve("link");
+                assertEquals(
+                        directoryPermissions,
+                        Files.readAttributes(createdDirectory, PosixFileAttributes.class).permissions()
+                );
+                assertEquals(fileSystem.getPath("../target.txt"), Files.readSymbolicLink(link));
+                assertEquals("file", Files.readString(link, StandardCharsets.UTF_8));
+                assertEquals(
+                        linkPermissions,
+                        Files.readAttributes(link, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS).permissions()
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies update entry channels validate options and commit staged content only when closed.
+    @Test
+    public void enforcesUpdateChannelOptionsAndCommitLifecycle() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-channel-options-7z-");
+        Set<PosixFilePermission> permissions = PosixFilePermissions.fromString("rw-r-----");
+
+        try {
+            createUpdateFixture(archivePath);
+            Map<TestOption, Object> environment = Map.of(
+                    TestOption.OPEN_OPTIONS,
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (SevenZipArkivoFileSystem fileSystem = openFileSystem(archivePath, testOptions(environment))) {
+                Path root = fileSystem.getPath("/");
+                Path directory = fileSystem.getPath("/dir");
+                Path keep = fileSystem.getPath("/keep.txt");
+                Path missing = fileSystem.getPath("/missing.txt");
+
+                assertThrows(
+                        FileSystemException.class,
+                        () -> Files.newByteChannel(root, Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE))
+                );
+                assertThrows(
+                        FileSystemException.class,
+                        () -> Files.newByteChannel(directory, Set.of(StandardOpenOption.WRITE))
+                );
+                assertThrows(
+                        NoSuchFileException.class,
+                        () -> Files.newByteChannel(missing, Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE))
+                );
+                assertThrows(
+                        FileAlreadyExistsException.class,
+                        () -> Files.newByteChannel(keep, Set.of(
+                                StandardOpenOption.CREATE_NEW,
+                                StandardOpenOption.WRITE
+                        ))
+                );
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> Files.newByteChannel(missing, Set.of(StandardOpenOption.CREATE))
+                );
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> Files.newByteChannel(keep, Set.of(
+                                StandardOpenOption.APPEND,
+                                StandardOpenOption.READ
+                        ))
+                );
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> Files.newByteChannel(keep, Set.of(
+                                StandardOpenOption.APPEND,
+                                StandardOpenOption.TRUNCATE_EXISTING
+                        ))
+                );
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> Files.newByteChannel(keep, Set.of(
+                                StandardOpenOption.DELETE_ON_CLOSE,
+                                StandardOpenOption.WRITE
+                        ))
+                );
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> Files.newOutputStream(keep, StandardOpenOption.READ)
+                );
+
+                Path created = fileSystem.getPath("/created.bin");
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        created,
+                        Set.of(
+                                StandardOpenOption.CREATE_NEW,
+                                StandardOpenOption.READ,
+                                StandardOpenOption.WRITE
+                        ),
+                        PosixFilePermissions.asFileAttribute(permissions)
+                )) {
+                    assertEquals(0L, channel.size());
+                    assertEquals(3, channel.write(ByteBuffer.wrap(new byte[]{1, 2, 3})));
+                    channel.position(0L);
+                    ByteBuffer target = ByteBuffer.allocate(3);
+                    assertEquals(3, channel.read(target));
+                    assertArrayEquals(new byte[]{1, 2, 3}, target.array());
+                    assertEquals(false, Files.exists(created));
+                    assertThrows(
+                            FileSystemException.class,
+                            () -> Files.newByteChannel(keep, Set.of(StandardOpenOption.WRITE))
+                    );
+                    assertThrows(FileSystemException.class, () -> Files.delete(keep));
+                }
+
+                assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(created));
+                assertEquals(
+                        permissions,
+                        Files.readAttributes(created, PosixFileAttributes.class).permissions()
+                );
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        created,
+                        Set.of(StandardOpenOption.APPEND)
+                )) {
+                    assertEquals(3L, channel.position());
+                    assertEquals(1, channel.write(ByteBuffer.wrap(new byte[]{4})));
+                }
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        keep,
+                        Set.of(StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
+                )) {
+                    assertEquals(0L, channel.size());
+                    assertEquals(5, channel.write(ByteBuffer.wrap("reset".getBytes(StandardCharsets.UTF_8))));
+                }
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = openFileSystem(archivePath)) {
+                assertArrayEquals(new byte[]{1, 2, 3, 4}, Files.readAllBytes(fileSystem.getPath("/created.bin")));
+                assertEquals(
+                        permissions,
+                        Files.readAttributes(fileSystem.getPath("/created.bin"), PosixFileAttributes.class).permissions()
+                );
+                assertEquals(
+                        "reset",
+                        Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies the default seekable-channel creation factory owns its target and finalizes readable output.
+    @Test
+    public void createsArchiveInOwnedSeekableChannelWithDefaultOptions() throws IOException {
+        Path archivePath = createTemporaryArchivePath("owned-channel-create-7z-");
+        Files.write(archivePath, new byte[4096]);
+        SeekableByteChannel target = Files.newByteChannel(
+                archivePath,
+                StandardOpenOption.READ,
+                StandardOpenOption.WRITE
+        );
+        target.position(17L);
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(target)) {
+                Files.writeString(fileSystem.getPath("/channel.txt"), "owned channel", StandardCharsets.UTF_8);
+            }
+
+            assertEquals(false, target.isOpen());
+            assertEquals(true, Files.size(archivePath) < 4096L);
+            try (SevenZipArkivoFileSystem fileSystem = openFileSystem(archivePath)) {
+                assertEquals(
+                        "owned channel",
+                        Files.readString(fileSystem.getPath("/channel.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            target.close();
             deleteTemporaryArchive(archivePath);
         }
     }
@@ -1374,6 +1703,37 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies an explicit path update can replace a complete archive with bounded numbered volumes.
+    @Test
+    public void updateCanSelectExplicitPathSplitSize() throws IOException {
+        Path firstVolume = createTemporaryArchivePath("update-explicit-split-7z-")
+                .resolveSibling("sample.7z.001");
+        Path secondVolume = firstVolume.resolveSibling("sample.7z.002");
+        byte[] expected = new byte[384];
+        Arrays.fill(expected, (byte) 0x5a);
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(firstVolume)) {
+                Files.writeString(fileSystem.getPath("/value.txt"), "before", StandardCharsets.UTF_8);
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.update(
+                    firstVolume,
+                    96L,
+                    SevenZipArchiveOptions.UPDATE_DEFAULTS
+            )) {
+                Files.write(fileSystem.getPath("/value.bin"), expected);
+            }
+
+            assertEquals(true, Files.exists(secondVolume));
+            try (SevenZipArkivoFileSystem fileSystem = openFileSystem(firstVolume)) {
+                assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/value.bin")));
+            }
+        } finally {
+            deleteTemporaryArchiveDirectory(firstVolume);
+        }
+    }
+
     /// Verifies that an explicit no-split update merges existing numbered volumes transactionally.
     @Test
     public void updateCanMergePathBackedSplitOutput() throws IOException {
@@ -1398,14 +1758,8 @@ public final class SevenZipArkivoFileSystemTest {
             }
             assertEquals(true, Files.exists(secondVolume));
 
-            Map<TestOption, Object> updateEnvironment = Map.of(
-                    TestOption.OPEN_OPTIONS,
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    TestOption.SPLIT_SIZE,
-                    SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE
-            );
             try (SevenZipArkivoFileSystem fileSystem =
-                         openFileSystem(firstVolume, testOptions(updateEnvironment))) {
+                         SevenZipArkivoFileSystem.updateSingleVolume(firstVolume)) {
                 Files.writeString(fileSystem.getPath("/new.txt"), "merged", StandardCharsets.UTF_8);
             }
 

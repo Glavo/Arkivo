@@ -12,13 +12,10 @@ import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -59,29 +56,17 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     /// Raw NIO environment values may be a policy, a `CompressionCodec`, or a stable compression format name. A codec or
     /// format name selects [TarCompression.Codec].
     private static final ArchiveOption<TarCompression> COMPRESSION =
-            ArchiveOption.of(
-                    "arkivo.tar",
-                    "compression",
-                    TarCompression.class,
-                    TarArkivoFileSystem::compressionOptionValue
-            );
+            ArchiveOption.of("arkivo.tar", "compression", TarCompression.class);
 
     /// The option for decoding compression of an existing archive during an update.
     private static final ArchiveOption<TarCompression> SOURCE_COMPRESSION =
-            ArchiveOption.of(
-                    "arkivo.tar",
-                    "sourceCompression",
-                    TarCompression.class,
-                    TarArkivoFileSystem::compressionOptionValue
-            );
+            ArchiveOption.of("arkivo.tar", "sourceCompression", TarCompression.class);
 
     /// The option for the detector used to select charsets for TAR metadata without an authoritative encoding.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
-            ArchiveOption.of(
+            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
                     "arkivo.tar",
-                    "metadataCharsetDetector",
-                    ArchiveMetadataCharsetDetector.class,
-                    TarArkivoFileSystem::metadataCharsetDetectorOptionValue
+                    "metadataCharsetDetector"
             );
 
     /// Creates a TAR archive file system base instance.
@@ -291,36 +276,4 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
                 .with(COMPRESSION, options.targetCompression());
     }
 
-    /// Converts a raw metadata charset detector option value.
-    private static ArchiveMetadataCharsetDetector metadataCharsetDetectorOptionValue(Object value) {
-        if (value instanceof ArchiveMetadataCharsetDetector detector) {
-            return detector;
-        }
-        if (value instanceof Charset charset) {
-            return ArchiveMetadataCharsetDetector.fixed(charset);
-        }
-        if (value instanceof String stringValue) {
-            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(stringValue));
-        }
-        throw new IllegalArgumentException(
-                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: "
-                        + METADATA_CHARSET_DETECTOR.key()
-        );
-    }
-
-    /// Converts a raw compression option value.
-    private static TarCompression compressionOptionValue(Object value) {
-        if (value instanceof TarCompression compression) {
-            return compression;
-        }
-        if (value instanceof CompressionCodec<?> codec) {
-            return TarCompression.using(codec);
-        }
-        if (value instanceof String name) {
-            return TarCompression.using(CompressionFormats.require(name).defaultCodec());
-        }
-        throw new IllegalArgumentException(
-                "Expected TarCompression, CompressionCodec, or String for key: " + COMPRESSION.key()
-        );
-    }
 }

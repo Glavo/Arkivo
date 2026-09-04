@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -49,10 +50,9 @@ import java.util.zip.CRC32;
 public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader {
     /// The internal NIO environment key for legacy name detection.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
-            ArchiveOption.of(
+            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
                     "arkivo.rar",
-                    "legacyCharsetDetector",
-                    ArchiveMetadataCharsetDetector.class
+                    "legacyCharsetDetector"
             );
     /// The maximum self-extracting stub size searched before the RAR signature.
     private static final int MAX_SFX_SIZE = 1024 * 1024;

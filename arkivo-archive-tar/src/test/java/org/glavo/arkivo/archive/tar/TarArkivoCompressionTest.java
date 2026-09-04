@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.tar;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
@@ -19,9 +20,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -38,6 +42,95 @@ final class TarArkivoCompressionTest {
         assertSame(TarCompression.UNCOMPRESSED, TarArchiveOptions.CREATE_DEFAULTS.compression());
         assertSame(TarCompression.DETECT, TarArchiveOptions.UPDATE_DEFAULTS.sourceCompression());
         assertSame(TarCompression.PRESERVE, TarArchiveOptions.UPDATE_DEFAULTS.targetCompression());
+    }
+
+    /// Verifies NIO environments normalize compression policies, codecs, format names, and update roles.
+    @Test
+    void acceptsRawEnvironmentCompressionRepresentations() throws IOException {
+        CompressionCodec<?> gzip = CompressionFormats.require("gzip").defaultCodec();
+        Object[] representations = {
+                TarCompression.using(gzip),
+                gzip,
+                "gzip"
+        };
+        TarArkivoFileSystemProvider provider = new TarArkivoFileSystemProvider();
+
+        for (int index = 0; index < representations.length; index++) {
+            Path archivePath = Files.createTempFile("arkivo-tar-environment-" + index + "-", ".tar.gz");
+            Files.delete(archivePath);
+            try {
+                try (TarArkivoFileSystem fileSystem = provider.newFileSystem(
+                        archivePath,
+                        Map.of(
+                                "arkivo.openOptions",
+                                Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW),
+                                "arkivo.tar.compression",
+                                representations[index]
+                        )
+                )) {
+                    Files.writeString(fileSystem.getPath("/value.txt"), "initial", StandardCharsets.UTF_8);
+                }
+                try (TarArkivoFileSystem fileSystem = provider.newFileSystem(
+                        archivePath,
+                        Map.of("arkivo.tar.compression", representations[index])
+                )) {
+                    assertEquals("initial", Files.readString(fileSystem.getPath("/value.txt")));
+                }
+            } finally {
+                Files.deleteIfExists(archivePath);
+            }
+        }
+
+        Path updatePath = Files.createTempFile("arkivo-tar-environment-update-", ".tar.gz");
+        try {
+            createCompressedArchive(updatePath, "gzip");
+            try (TarArkivoFileSystem fileSystem = provider.newFileSystem(
+                    updatePath,
+                    Map.of(
+                            "arkivo.openOptions",
+                            Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                            "arkivo.tar.sourceCompression",
+                            "gzip",
+                            "arkivo.tar.compression",
+                            gzip
+                    )
+            )) {
+                Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);
+            }
+            try (TarArkivoFileSystem fileSystem = provider.newFileSystem(
+                    updatePath,
+                    Map.of("arkivo.tar.compression", "gzip")
+            )) {
+                assertEquals("updated", Files.readString(fileSystem.getPath("/value.txt")));
+            }
+
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> provider.newFileSystem(updatePath, Map.of("arkivo.tar.compression", new Object()))
+            );
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> provider.newFileSystem(updatePath, Map.of("arkivo.tar.compression", TarCompression.PRESERVE))
+            );
+        } finally {
+            Files.deleteIfExists(updatePath);
+        }
+
+        Path invalidCreatePath = Files.createTempFile("arkivo-tar-invalid-environment-", ".tar");
+        Files.delete(invalidCreatePath);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> provider.newFileSystem(
+                        invalidCreatePath,
+                        Map.of(
+                                "arkivo.openOptions",
+                                Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW),
+                                "arkivo.tar.compression",
+                                TarCompression.DETECT
+                        )
+                )
+        );
+        assertFalse(Files.exists(invalidCreatePath));
     }
 
     /// Verifies gzip creation, automatic read detection, and compression-preserving update.

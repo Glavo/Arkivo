@@ -22,9 +22,11 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -42,6 +44,8 @@ final class PPMdCodecTest {
         assertEquals(PPMdCodec.DEFAULT_MAXIMUM_ORDER, codec.maximumOrder());
         assertEquals(PPMdCodec.DEFAULT_MEMORY_SIZE, codec.memorySize());
         assertEquals(PPMdCodec.UNKNOWN_SIZE, codec.decodedSize());
+        assertSame(codec, codec.withMaximumOrder(codec.maximumOrder()));
+        assertSame(codec, codec.withMemorySize(codec.memorySize()));
         PPMdCodec configured = codec.withMaximumOrder(4).withMemorySize(1L << 20);
         assertEquals(4, configured.maximumOrder());
         assertEquals(1L << 20, configured.memorySize());
@@ -53,15 +57,31 @@ final class PPMdCodecTest {
         assertEquals(0L, codec.withDecodedSize(0L).decodedSize());
         assertEquals(Long.MAX_VALUE, codec.withDecodedSize(Long.MAX_VALUE).decodedSize());
         assertSame(codec, codec.withDecodedSize(PPMdCodec.UNKNOWN_SIZE));
+        PPMdCodec limited = codec
+                .withMaximumOutputSize(123L)
+                .withMaximumWindowSize(456L)
+                .withMaximumMemorySize(789L);
+        assertEquals(123L, limited.maximumOutputSize());
+        assertEquals(456L, limited.maximumWindowSize());
+        assertEquals(789L, limited.maximumMemorySize());
+        assertSame(limited, limited.withMaximumOutputSize(123L));
+        assertSame(limited, limited.withMaximumWindowSize(456L));
+        assertSame(limited, limited.withMaximumMemorySize(789L));
         assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOrder(1));
         assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOrder(65));
         assertThrows(IllegalArgumentException.class, () -> codec.withMemorySize((2L << 10) - 1L));
         assertThrows(IllegalArgumentException.class, () -> codec.withMemorySize((256L << 20) + 1L));
         assertThrows(IllegalArgumentException.class, () -> codec.withDecodedSize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOutputSize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumWindowSize(-2L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumMemorySize(-2L));
         assertSame(
                 CompressionFormats.require(PPMdFormat.NAME),
                 CompressionFormats.require("ppmd7")
         );
+        assertEquals(List.of(), codec.format().fileExtensions());
+        assertSame(codec.format(), codec.format().defaultCodec().format());
+        assertThrows(NullPointerException.class, () -> codec.newEncoder(null));
     }
 
     /// Round-trips empty, repetitive, full-alphabet, and randomized data through channel contexts.
@@ -213,6 +233,14 @@ final class PPMdCodecTest {
         assertEquals(maximumMemorySize, exception.maximumMemorySize());
         assertEquals(codec.memorySize(), exception.requiredMemorySize());
         assertEquals(DecompressionLimitException.Kind.MEMORY_SIZE, exception.kind());
+
+        assertThrows(
+                DecompressionLimitException.class,
+                () -> codec.withDecodedSize(2L).withMaximumOutputSize(1L).newDecoder()
+        );
+        assertDoesNotThrow(
+                () -> codec.withDecodedSize(1L).withMaximumOutputSize(1L).newDecoder().close()
+        );
     }
 
     /// Creates a valid raw PPMd7 configuration for the given exact decoded size.

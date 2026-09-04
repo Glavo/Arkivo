@@ -49,11 +49,9 @@ public final class ZipArkivoFileSystemConfig {
 
     /// The NIO environment key for legacy metadata charset detection.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
-            ArchiveOption.of(
+            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
                     "arkivo.zip",
-                    "legacyCharsetDetector",
-                    ArchiveMetadataCharsetDetector.class,
-                    ZipArkivoFileSystemConfig::legacyCharsetDetectorValue
+                    "legacyCharsetDetector"
             );
 
     /// The split size value used when split output is disabled.
@@ -467,22 +465,6 @@ public final class ZipArkivoFileSystemConfig {
             }
         }
         throw new IllegalArgumentException("Expected integral value for key: arkivo.zip.splitSize");
-    }
-
-    /// Converts a raw NIO legacy charset detector value.
-    private static ArchiveMetadataCharsetDetector legacyCharsetDetectorValue(Object value) {
-        if (value instanceof ArchiveMetadataCharsetDetector detector) {
-            return detector;
-        }
-        if (value instanceof Charset charset) {
-            return ArchiveMetadataCharsetDetector.fixed(charset);
-        }
-        if (value instanceof String name) {
-            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(name));
-        }
-        throw new IllegalArgumentException(
-                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: arkivo.zip.legacyCharsetDetector"
-        );
     }
 
     /// Parses open options from archive options.

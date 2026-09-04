@@ -9,8 +9,11 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -85,6 +88,7 @@ final class TarArkivoSparseTest {
                 assertEquals(dataOffset, body.skip(dataOffset));
                 assertEquals('x', body.read());
                 assertEquals(0, body.read());
+                assertEquals(0L, body.skip(1L));
                 assertEquals(-1, body.read());
             }
             org.junit.jupiter.api.Assertions.assertFalse(reader.next());
@@ -123,6 +127,170 @@ final class TarArkivoSparseTest {
                 assertArrayEquals("next".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
             }
             org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies direct channel reads preserve sparse expansion across small buffers and the following entry boundary.
+    @Test
+    void readsSparseBodyThroughDirectChannel() throws IOException {
+        byte[] archive = paxSparseArchive(
+                List.of(
+                        Map.entry("GNU.sparse.size", "12"),
+                        Map.entry("GNU.sparse.numblocks", "2"),
+                        Map.entry("GNU.sparse.name", "value.bin"),
+                        Map.entry("GNU.sparse.map", "2,3,8,2")
+                ),
+                PACKED_CONTENT,
+                true
+        );
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive)
+        )) {
+            assertTrue(reader.next());
+            ByteArrayOutputStream actual = new ByteArrayOutputStream();
+            try (ReadableByteChannel body = reader.openChannel()) {
+                assertEquals(0, body.read(ByteBuffer.allocateDirect(0)));
+                while (true) {
+                    ByteBuffer target = ByteBuffer.allocateDirect(3);
+                    int count = body.read(target);
+                    if (count < 0) {
+                        break;
+                    }
+                    assertTrue(count > 0);
+                    target.flip();
+                    byte[] bytes = new byte[target.remaining()];
+                    target.get(bytes);
+                    actual.writeBytes(bytes);
+                }
+            }
+            assertArrayEquals(EXPANDED_CONTENT, actual.toByteArray());
+
+            assertTrue(reader.next());
+            assertEquals("next.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals("next".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies sparse stream navigation crosses holes and packed extents without exposing packed layout details.
+    @Test
+    void navigatesSparseInputStreamBoundaries() throws IOException {
+        byte[] archive = paxSparseArchive(
+                List.of(
+                        Map.entry("GNU.sparse.size", "12"),
+                        Map.entry("GNU.sparse.numblocks", "2"),
+                        Map.entry("GNU.sparse.name", "value.bin"),
+                        Map.entry("GNU.sparse.map", "2,3,8,2")
+                ),
+                PACKED_CONTENT,
+                true
+        );
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive)
+        )) {
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertEquals(0, body.read());
+                assertEquals(0L, body.skip(-1L));
+                assertEquals(0L, body.skip(0L));
+
+                assertEquals(2L, body.skip(2L));
+                assertEquals('b', body.read());
+
+                assertEquals(4L, body.skip(4L));
+                assertEquals(1L, body.skip(1L));
+                assertEquals('e', body.read());
+
+                assertEquals(2L, body.skip(Long.MAX_VALUE));
+                assertEquals(0L, body.skip(1L));
+                assertEquals(-1, body.read());
+            }
+
+            assertTrue(reader.next());
+            assertEquals("next.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals("next".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies skipping packed sparse data reports physical truncation after a logical hole.
+    @Test
+    void reportsTruncatedSparsePackedSkip() throws IOException {
+        byte[] archive = paxSparseArchive(
+                List.of(
+                        Map.entry("GNU.sparse.size", "12"),
+                        Map.entry("GNU.sparse.numblocks", "2"),
+                        Map.entry("GNU.sparse.name", "value.bin"),
+                        Map.entry("GNU.sparse.map", "2,3,8,2")
+                ),
+                PACKED_CONTENT,
+                false
+        );
+        int bodyOffset = findSequence(archive, PACKED_CONTENT);
+        byte[] truncated = Arrays.copyOf(archive, bodyOffset);
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(truncated)
+        )) {
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertEquals(2L, body.skip(2L));
+                EOFException failure = assertThrows(EOFException.class, () -> body.skip(1L));
+                assertEquals("Unexpected end of GNU sparse entry data", failure.getMessage());
+            }
+        }
+    }
+
+    /// Verifies sparse channel reads distinguish transient zero progress from truncated packed data.
+    @Test
+    void reportsSparsePackedDataFailures() throws IOException {
+        byte[] archive = paxSparseArchive(
+                List.of(
+                        Map.entry("GNU.sparse.size", "12"),
+                        Map.entry("GNU.sparse.numblocks", "2"),
+                        Map.entry("GNU.sparse.name", "value.bin"),
+                        Map.entry("GNU.sparse.map", "2,3,8,2")
+                ),
+                PACKED_CONTENT,
+                false
+        );
+
+        ZeroProgressInputStream zeroProgressSource = new ZeroProgressInputStream(archive);
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(zeroProgressSource)) {
+            assertTrue(reader.next());
+            try (ReadableByteChannel body = reader.openChannel()) {
+                assertDirectRead(body, new byte[]{0, 0});
+                zeroProgressSource.returnZeroFromNextBulkRead();
+                IOException stalled = assertThrows(
+                        IOException.class,
+                        () -> body.read(ByteBuffer.allocateDirect(1))
+                );
+                assertEquals("Readable channel made no progress", stalled.getMessage());
+                assertDirectRead(body, new byte[]{'a', 'b', 'c'});
+            }
+        }
+
+        int bodyOffset = findSequence(archive, PACKED_CONTENT);
+        byte[] truncated = Arrays.copyOf(archive, bodyOffset + 2);
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(truncated)
+        )) {
+            assertTrue(reader.next());
+            try (ReadableByteChannel body = reader.openChannel()) {
+                assertDirectRead(body, new byte[]{0, 0});
+                assertDirectRead(body, new byte[]{'a', 'b'});
+                IOException failure = assertThrows(
+                        IOException.class,
+                        () -> body.read(ByteBuffer.allocateDirect(1))
+                );
+                assertEquals("Unexpected end of GNU sparse entry data", failure.getMessage());
+            }
         }
     }
 
@@ -399,6 +567,33 @@ final class TarArkivoSparseTest {
         }
     }
 
+    /// Reads and verifies one exact direct-buffer fragment from a sparse entry channel.
+    private static void assertDirectRead(ReadableByteChannel channel, byte[] expected) throws IOException {
+        ByteBuffer target = ByteBuffer.allocateDirect(expected.length);
+        assertEquals(expected.length, channel.read(target));
+        target.flip();
+        byte[] actual = new byte[target.remaining()];
+        target.get(actual);
+        assertArrayEquals(expected, actual);
+    }
+
+    /// Returns the first byte offset at which one nonempty sequence occurs.
+    private static int findSequence(byte[] source, byte[] sequence) {
+        if (sequence.length == 0) {
+            throw new IllegalArgumentException("sequence must not be empty");
+        }
+        outer:
+        for (int offset = 0; offset <= source.length - sequence.length; offset++) {
+            for (int index = 0; index < sequence.length; index++) {
+                if (source[offset + index] != sequence[index]) {
+                    continue outer;
+                }
+            }
+            return offset;
+        }
+        throw new AssertionError("Sequence is absent from generated TAR fixture");
+    }
+
     /// Advances one reader to its first entry.
     private static void readFirstEntry(byte[] archive) throws IOException {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
@@ -629,6 +824,33 @@ final class TarArkivoSparseTest {
             if (offset < 0L || size < 0L) {
                 throw new IllegalArgumentException("Sparse block values must not be negative");
             }
+        }
+    }
+
+    /// Provides an in-memory archive stream that can report one armed zero-progress bulk read.
+    @NotNullByDefault
+    private static final class ZeroProgressInputStream extends ByteArrayInputStream {
+        /// Whether the next nonempty bulk read must return zero.
+        private boolean zeroProgressPending;
+
+        /// Creates a stream over the supplied archive bytes.
+        private ZeroProgressInputStream(byte[] archive) {
+            super(archive);
+        }
+
+        /// Arms one zero-progress result for the next nonempty bulk read.
+        private void returnZeroFromNextBulkRead() {
+            zeroProgressPending = true;
+        }
+
+        /// Returns zero once when armed, otherwise delegates to the in-memory source.
+        @Override
+        public synchronized int read(byte[] buffer, int offset, int length) {
+            if (zeroProgressPending && length > 0) {
+                zeroProgressPending = false;
+                return 0;
+            }
+            return super.read(buffer, offset, length);
         }
     }
 }

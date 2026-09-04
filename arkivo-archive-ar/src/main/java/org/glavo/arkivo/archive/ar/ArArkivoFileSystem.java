@@ -16,7 +16,6 @@ import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -48,11 +47,9 @@ import java.util.Objects;
 public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits ArArkivoFileSystemImpl {
     /// The option for the detector used to select charsets for AR member names.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
-            ArchiveOption.of(
+            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
                     "arkivo.ar",
-                    "metadataCharsetDetector",
-                    ArchiveMetadataCharsetDetector.class,
-                    ArArkivoFileSystem::metadataCharsetDetectorOptionValue
+                    "metadataCharsetDetector"
             );
 
     /// Creates an AR archive file system base instance.
@@ -245,20 +242,4 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
                 .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector());
     }
 
-    /// Converts a raw metadata charset detector option value.
-    private static ArchiveMetadataCharsetDetector metadataCharsetDetectorOptionValue(Object value) {
-        if (value instanceof ArchiveMetadataCharsetDetector detector) {
-            return detector;
-        }
-        if (value instanceof Charset charset) {
-            return ArchiveMetadataCharsetDetector.fixed(charset);
-        }
-        if (value instanceof String stringValue) {
-            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(stringValue));
-        }
-        throw new IllegalArgumentException(
-                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: "
-                        + METADATA_CHARSET_DETECTOR.key()
-        );
-    }
 }

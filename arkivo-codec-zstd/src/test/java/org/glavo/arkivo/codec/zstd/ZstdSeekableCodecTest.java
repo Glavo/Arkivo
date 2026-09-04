@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.zstd;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.SeekableEncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -124,7 +125,9 @@ public final class ZstdSeekableCodecTest {
                 encoder.encode(ByteBuffer.wrap(source, 0, 250));
                 encoder.flush();
                 encoder.finishFrame();
+                encoder.startFrame(EncodingOptions.ofSourceSize(source.length - 250L));
                 encoder.encode(ByteBuffer.wrap(source, 250, source.length - 250));
+                encoder.finish();
             }
 
             CompressionCodec.Seekable.Index index;

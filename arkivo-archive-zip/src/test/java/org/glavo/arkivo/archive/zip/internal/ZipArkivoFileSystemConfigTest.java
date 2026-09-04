@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
@@ -52,6 +54,26 @@ public final class ZipArkivoFileSystemConfigTest {
                 config.legacyCharsetDetector().detect(ByteBuffer.allocate(0))
         );
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
+    }
+
+    /// Verifies every supported legacy metadata-charset representation reaches the effective ZIP detector.
+    @Test
+    public void legacyCharsetDetectorRepresentations() throws Exception {
+        ArchiveMetadataCharsetDetector direct = ArchiveMetadataCharsetDetector.fixed(StandardCharsets.US_ASCII);
+        assertSame(
+                direct,
+                fromEnvironment(Map.of("arkivo.zip.legacyCharsetDetector", direct)).legacyCharsetDetector()
+        );
+        assertEquals(
+                StandardCharsets.UTF_16LE,
+                fromEnvironment(Map.of("arkivo.zip.legacyCharsetDetector", StandardCharsets.UTF_16LE))
+                        .legacyCharsetDetector()
+                        .detect(ByteBuffer.allocate(0))
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> fromEnvironment(Map.of("arkivo.zip.legacyCharsetDetector", 1))
+        );
     }
 
     /// Verifies that ZIP encryption configuration rejects unrecognized identifiers.

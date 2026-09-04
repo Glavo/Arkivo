@@ -18,6 +18,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -79,6 +80,71 @@ public final class CPIOWireFormatRobustnessTest {
                 }
             }
         }
+    }
+
+    /// Verifies names must be terminated, NUL-free, and valid in the selected fallback charset.
+    @Test
+    public void rejectsMalformedNameTerminationAndEncoding() throws IOException {
+        byte[] archive = writeArchive(CPIODialect.NEW_ASCII_CRC, CPIOBinaryByteOrder.BIG_ENDIAN, 1);
+        int nameOffset = headerSize(CPIODialect.NEW_ASCII_CRC);
+
+        byte[] unterminated = archive.clone();
+        unterminated[nameOffset + "payload.bin".length()] = (byte) 'x';
+        assertFirstEntryRejected(unterminated, "unterminated entry name");
+
+        byte[] embeddedNul = archive.clone();
+        embeddedNul[nameOffset + 3] = 0;
+        assertFirstEntryRejected(embeddedNul, "embedded NUL entry name");
+
+        byte[] malformedUtf8 = archive.clone();
+        malformedUtf8[nameOffset] = (byte) 0xff;
+        assertFirstEntryRejected(malformedUtf8, "malformed UTF-8 entry name");
+    }
+
+    /// Verifies out-of-range modes and semantically invalid trailer fields are rejected.
+    @Test
+    public void rejectsInvalidModesAndTrailerMetadata() throws IOException {
+        byte[] archive = writeArchive(CPIODialect.NEW_ASCII_CRC, CPIOBinaryByteOrder.BIG_ENDIAN, 1);
+
+        byte[] invalidMagic = archive.clone();
+        invalidMagic[0] = (byte) 'x';
+        assertFirstEntryRejected(invalidMagic, "unrecognized header magic");
+
+        byte[] invalidMode = archive.clone();
+        Arrays.fill(invalidMode, 14, 22, (byte) 'f');
+        assertFirstEntryRejected(invalidMode, "mode wider than a signed int");
+
+        int trailerNameOffset = indexOf(archive, "TRAILER!!!".getBytes(StandardCharsets.US_ASCII));
+        assertTrue(trailerNameOffset >= headerSize(CPIODialect.NEW_ASCII_CRC));
+        int trailerHeaderOffset = trailerNameOffset - headerSize(CPIODialect.NEW_ASCII_CRC);
+
+        byte[] nonEmptyTrailer = archive.clone();
+        writeAsciiNumber(nonEmptyTrailer, trailerHeaderOffset + 54, 8, 1, 16);
+        assertArchiveRejected(nonEmptyTrailer, "trailer body");
+
+        byte[] checksummedTrailer = archive.clone();
+        writeAsciiNumber(checksummedTrailer, trailerHeaderOffset + 102, 8, 1, 16);
+        assertArchiveRejected(checksummedTrailer, "trailer checksum");
+    }
+
+    /// Verifies metadata-only root entries are skipped while root entries with bodies are rejected.
+    @Test
+    public void handlesConventionalRootEntries() throws IOException {
+        byte[] rootName = "./././././.".getBytes(StandardCharsets.US_ASCII);
+        assertEquals("payload.bin".length(), rootName.length);
+
+        byte[] emptyRoot = writeEmptyArchive(CPIODialect.NEW_ASCII, 0100644);
+        System.arraycopy(rootName, 0, emptyRoot, headerSize(CPIODialect.NEW_ASCII), rootName.length);
+        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
+                new ByteArrayInputStream(emptyRoot)
+        )) {
+            assertFalse(reader.next());
+            assertFalse(reader.next());
+        }
+
+        byte[] nonEmptyRoot = writeArchive(CPIODialect.NEW_ASCII, CPIOBinaryByteOrder.BIG_ENDIAN, 1);
+        System.arraycopy(rootName, 0, nonEmptyRoot, headerSize(CPIODialect.NEW_ASCII), rootName.length);
+        assertArchiveRejected(nonEmptyRoot, "non-empty root entry");
     }
 
     /// Verifies that raw unsafe entry names are rejected for every dialect before publication.
@@ -221,6 +287,25 @@ public final class CPIOWireFormatRobustnessTest {
         )) {
             assertThrows(IOException.class, reader::next, description);
         }
+    }
+
+    /// Requires an archive to fail before reaching its logical trailer boundary.
+    private static void assertArchiveRejected(byte[] archive, String description) {
+        assertThrows(IOException.class, () -> readEntireArchive(archive), description);
+    }
+
+    /// Returns the first offset of a byte sequence, or `-1` when it is absent.
+    private static int indexOf(byte[] source, byte[] target) {
+        outer:
+        for (int offset = 0; offset <= source.length - target.length; offset++) {
+            for (int index = 0; index < target.length; index++) {
+                if (source[offset + index] != target[index]) {
+                    continue outer;
+                }
+            }
+            return offset;
+        }
+        return -1;
     }
 
     /// Writes one non-negative fixed-width ASCII integer into an archive header.

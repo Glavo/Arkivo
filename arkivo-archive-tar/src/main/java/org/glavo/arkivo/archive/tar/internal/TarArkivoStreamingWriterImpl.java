@@ -366,11 +366,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             output.close();
             outputClosed = true;
         } catch (IOException exception) {
-            if (failure != null) {
-                failure.addSuppressed(exception);
-            } else {
-                failure = exception;
-            }
+            failure = combine(failure, exception);
         }
 
         failure = closeBodyStorage(failure);
@@ -524,11 +520,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 content.close();
                 iterator.remove();
             } catch (IOException exception) {
-                if (failure != null) {
-                    failure.addSuppressed(exception);
-                } else {
-                    failure = exception;
-                }
+                failure = combine(failure, exception);
             }
         }
         if (!bodyStorageClosed) {
@@ -536,12 +528,19 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 bodyStorage.close();
                 bodyStorageClosed = true;
             } catch (IOException exception) {
-                if (failure != null) {
-                    failure.addSuppressed(exception);
-                } else {
-                    failure = exception;
-                }
+                failure = combine(failure, exception);
             }
+        }
+        return failure;
+    }
+
+    /// Combines one cleanup failure with an earlier failure without suppressing an exception onto itself.
+    private static IOException combine(@Nullable IOException failure, IOException next) {
+        if (failure == null) {
+            return next;
+        }
+        if (failure != next) {
+            failure.addSuppressed(next);
         }
         return failure;
     }

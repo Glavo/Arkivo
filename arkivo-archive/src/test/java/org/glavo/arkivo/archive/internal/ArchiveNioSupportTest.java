@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -78,6 +79,9 @@ final class ArchiveNioSupportTest {
         assertEquals(5L, channel.size());
         assertEquals(channel, channel.position(5L));
         assertEquals(channel, channel.truncate(5L));
+        assertThrows(IllegalArgumentException.class, () -> channel.position(-1L));
+        assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1L));
+        assertEquals(5L, channel.position());
         assertThrows(NonReadableChannelException.class, () -> channel.read(ByteBuffer.allocate(1)));
         assertThrows(UnsupportedOperationException.class, () -> channel.position(4L));
         assertThrows(UnsupportedOperationException.class, () -> channel.truncate(4L));
@@ -111,6 +115,10 @@ final class ArchiveNioSupportTest {
     /// Verifies filtering, checked failure wrapping, snapshotting, and single-iterator semantics.
     @Test
     void exposesFixedDirectoryStreams() {
+        FixedDirectoryStream<String> unfiltered = new FixedDirectoryStream<>(List.of("one", "two"));
+        assertEquals(List.of("one", "two"), streamEntries(unfiltered));
+        unfiltered.close();
+
         FixedDirectoryStream<String> stream = new FixedDirectoryStream<>(
                 List.of("one", "two", "three"),
                 entry -> entry.length() == 3
@@ -155,9 +163,12 @@ final class ArchiveNioSupportTest {
                             completions.incrementAndGet();
                         }
                 );
+                assertEquals(3L, channel.size());
+                assertEquals(3L, channel.position());
                 channel.position(0L);
                 assertEquals(1, channel.write(ByteBuffer.wrap(new byte[]{4})));
                 assertEquals(4L, channel.position());
+                assertEquals(4L, channel.size());
                 channel.position(0L);
                 ByteBuffer contents = ByteBuffer.allocate(4);
                 assertEquals(4, channel.read(contents));
@@ -234,6 +245,35 @@ final class ArchiveNioSupportTest {
         }
     }
 
+    /// Verifies zero-byte writes and nonshrinking truncation do not mark staged content as changed.
+    @Test
+    void ignoresNoOpStagedMutations() throws IOException {
+        Path path = Files.createTempFile("arkivo-staged-no-op", ".bin");
+        try {
+            Files.write(path, new byte[]{1, 2, 3});
+            AtomicBoolean commit = new AtomicBoolean(true);
+            StagedSeekableByteChannel channel = new StagedSeekableByteChannel(
+                    Files.newByteChannel(path, Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)),
+                    true,
+                    true,
+                    false,
+                    false,
+                    (completed, shouldCommit) -> commit.set(shouldCommit)
+            );
+
+            assertEquals(0, channel.write(ByteBuffer.allocate(0)));
+            assertEquals(channel, channel.truncate(3L));
+            assertEquals(channel, channel.truncate(4L));
+            assertEquals(3L, channel.size());
+            channel.close();
+
+            assertFalse(commit.get());
+            assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(path));
+        } finally {
+            Files.deleteIfExists(path);
+        }
+    }
+
     /// Verifies that storage close failures prevent commits and retain completion failures as suppressed exceptions.
     @Test
     void preservesStagedChannelCloseFailures() throws IOException {
@@ -264,6 +304,39 @@ final class ArchiveNioSupportTest {
         } finally {
             Files.deleteIfExists(path);
         }
+    }
+
+    /// Verifies completion failures preserve their unchecked type and identity after storage closes successfully.
+    @Test
+    void preservesUncheckedStagedCompletionFailures() throws IOException {
+        assertUncheckedCompletionFailure(new IllegalStateException("runtime completion failure"));
+        assertUncheckedCompletionFailure(new AssertionError("error completion failure"));
+    }
+
+    /// Verifies one unchecked completion failure is propagated without wrapping or suppression.
+    private static <T extends Throwable> void assertUncheckedCompletionFailure(T failure) throws IOException {
+        StagedSeekableByteChannel channel = new StagedSeekableByteChannel(
+                new ReadOnlyByteArrayChannel(new byte[0]),
+                true,
+                false,
+                false,
+                false,
+                (completed, commit) -> {
+                    assertFalse(completed.isOpen());
+                    assertFalse(commit);
+                    if (failure instanceof RuntimeException exception) {
+                        throw exception;
+                    }
+                    throw (Error) failure;
+                }
+        );
+
+        Throwable thrown = assertThrows(failure.getClass(), channel::close);
+
+        assertSame(failure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertFalse(channel.isOpen());
+        channel.close();
     }
 
     /// Collects all entries returned by one fixed directory stream.

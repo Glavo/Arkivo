@@ -90,6 +90,13 @@ public final class LZ4FrameWireRobustnessTest {
         byte[] emptyWithWrongSize = emptyStandardFrame(BASIC_FLAGS | 0x08, 0x40, 1L);
         assertThrows(IOException.class, () -> decompress(new LZ4Codec(), emptyWithWrongSize));
 
+        byte[] outputExceedsDeclaredSize = uncompressedStandardFrame(1L, new byte[]{1, 2});
+        IOException excessiveOutput = assertThrows(
+                IOException.class,
+                () -> decompress(new LZ4Codec(), outputExceedsDeclaredSize)
+        );
+        assertEquals("LZ4 frame content size mismatch", excessiveOutput.getMessage());
+
         byte[] unrepresentableContentSize = emptyStandardFrame(
                 BASIC_FLAGS | 0x08,
                 0x40,
@@ -197,6 +204,18 @@ public final class LZ4FrameWireRobustnessTest {
                     XXHash32.DEFAULT.computeInt(new byte[0])
             );
         }
+        return frame;
+    }
+
+    /// Creates a standard frame containing one independently encoded uncompressed block.
+    private static byte[] uncompressedStandardFrame(long declaredContentSize, byte[] content) {
+        byte[] header = standardHeader(BASIC_FLAGS | 0x08, 0x40, declaredContentSize);
+        byte[] frame = Arrays.copyOf(
+                header,
+                header.length + Integer.BYTES + content.length + Integer.BYTES
+        );
+        ByteArrayAccess.writeIntLittleEndian(frame, header.length, Integer.MIN_VALUE | content.length);
+        System.arraycopy(content, 0, frame, header.length + Integer.BYTES, content.length);
         return frame;
     }
 

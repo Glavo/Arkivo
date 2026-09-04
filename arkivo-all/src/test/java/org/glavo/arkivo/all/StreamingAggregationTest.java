@@ -1218,7 +1218,7 @@ final class StreamingAggregationTest {
         TrackingSeekableSource source = new TrackingSeekableSource(archive);
         try (ArkivoFileSystem fileSystem = format == null
                 ? ArkivoFormats.openFileSystem(source)
-                : ArkivoFormats.openFileSystem(format, source, ArchiveReadOptions.DEFAULT)) {
+                : ArkivoFormats.openFileSystem(format, source)) {
             if (empty) {
                 assertTrue(fileSystem.isOpen());
             } else {

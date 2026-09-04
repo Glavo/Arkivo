@@ -141,6 +141,27 @@ public final class ArkivoStreamingStateTest {
         assertEquals(2, reader.readerCloseAttempts);
     }
 
+    /// Verifies one shared body and reader cleanup failure is propagated without self-suppression.
+    @Test
+    void readerClosePreservesSharedCleanupFailure() throws Exception {
+        java.io.IOException failure = new java.io.IOException("shared reader close failure");
+        TestReader reader = new TestReader(failure, failure);
+        assertTrue(reader.next());
+        ReadableByteChannel body = reader.openChannel();
+
+        java.io.IOException thrown = assertThrows(java.io.IOException.class, reader::close);
+
+        assertSame(failure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertTrue(body.isOpen());
+        assertEquals(1, reader.readerCloseAttempts);
+
+        reader.close();
+        assertFalse(body.isOpen());
+        assertTrue(reader.closed);
+        assertEquals(2, reader.readerCloseAttempts);
+    }
+
     /// Verifies failed duplicate begins preserve the pending handle and commits invalidate it.
     @Test
     void writerHandlesTrackThePendingEntry() throws Exception {
@@ -277,6 +298,26 @@ public final class ArkivoStreamingStateTest {
         assertEquals(2, writer.writerCloseAttempts);
     }
 
+    /// Verifies one shared entry and writer cleanup failure is propagated without self-suppression.
+    @Test
+    void writerClosePreservesSharedCleanupFailure() throws Exception {
+        java.io.IOException failure = new java.io.IOException("shared writer close failure");
+        TestWriter writer = new TestWriter(failure, failure);
+        ArkivoStreamingWriter.Entry entry = writer.beginDirectory("pending");
+
+        java.io.IOException thrown = assertThrows(java.io.IOException.class, writer::close);
+
+        assertSame(failure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(1, writer.entryFinishAttempts);
+        assertEquals(1, writer.writerCloseAttempts);
+        assertThrows(ClosedChannelException.class, entry::openChannel);
+
+        writer.close();
+        assertTrue(writer.closed);
+        assertEquals(2, writer.writerCloseAttempts);
+    }
+
     /// Verifies symbolic links, configurable attributes, and stream-backed file bodies use the scoped entry lifecycle.
     @Test
     void writerSupportsSymbolicLinksAttributesAndOutputStreams() throws Exception {
@@ -360,8 +401,8 @@ public final class ArkivoStreamingStateTest {
         /// Whether this reader has closed.
         private boolean closed;
 
-        /// Whether the first body close attempt must fail.
-        private final boolean failFirstBodyClose;
+        /// Failure thrown by the first body close attempt, or null when body cleanup succeeds.
+        private final @Nullable Throwable firstBodyCloseFailure;
 
         /// Failure thrown by the first format-reader close attempt, or null when cleanup succeeds.
         private final @Nullable Throwable firstReaderCloseFailure;
@@ -371,28 +412,28 @@ public final class ArkivoStreamingStateTest {
 
         /// Creates a reader whose cleanup operations succeed.
         private TestReader() {
-            this(false, null);
+            this(null, null);
         }
 
         /// Creates a reader with independently configurable first-close failures.
         private TestReader(boolean failFirstBodyClose, boolean failFirstReaderClose) {
             this(
-                    failFirstBodyClose,
+                    failFirstBodyClose ? new java.io.IOException("body close failed") : null,
                     failFirstReaderClose ? new java.io.IOException("reader close failed") : null
             );
         }
 
         /// Creates a reader whose first format-reader close throws the supplied unchecked failure.
         private TestReader(Throwable firstReaderCloseFailure) {
-            this(false, Objects.requireNonNull(firstReaderCloseFailure, "firstReaderCloseFailure"));
+            this(null, Objects.requireNonNull(firstReaderCloseFailure, "firstReaderCloseFailure"));
         }
 
         /// Creates a reader with independently configurable body and format-reader failures.
         private TestReader(
-                boolean failFirstBodyClose,
+                @Nullable Throwable firstBodyCloseFailure,
                 @Nullable Throwable firstReaderCloseFailure
         ) {
-            this.failFirstBodyClose = failFirstBodyClose;
+            this.firstBodyCloseFailure = firstBodyCloseFailure;
             this.firstReaderCloseFailure = firstReaderCloseFailure;
         }
 
@@ -420,7 +461,7 @@ public final class ArkivoStreamingStateTest {
             TrackingReadableByteChannel channel =
                     new TrackingReadableByteChannel(
                             new byte[]{(byte) (index + 1)},
-                            failFirstBodyClose && index == 0
+                            index == 0 ? firstBodyCloseFailure : null
                     );
             bodyChannel = channel;
             return channel;
@@ -443,21 +484,21 @@ public final class ArkivoStreamingStateTest {
         /// In-memory readable delegate.
         private final ReadableByteChannel delegate;
 
-        /// Whether the first close attempt must fail without closing the delegate.
-        private final boolean failFirstClose;
+        /// Failure thrown by the first close attempt, or null when cleanup succeeds.
+        private final @Nullable Throwable firstCloseFailure;
 
         /// Number of close attempts.
         private int closeAttempts;
 
         /// Creates an open channel over the supplied bytes.
         private TrackingReadableByteChannel(byte[] bytes) {
-            this(bytes, false);
+            this(bytes, null);
         }
 
         /// Creates an open channel with optional first-close failure.
-        private TrackingReadableByteChannel(byte[] bytes, boolean failFirstClose) {
+        private TrackingReadableByteChannel(byte[] bytes, @Nullable Throwable firstCloseFailure) {
             delegate = Channels.newChannel(new ByteArrayInputStream(Objects.requireNonNull(bytes, "bytes")));
-            this.failFirstClose = failFirstClose;
+            this.firstCloseFailure = firstCloseFailure;
         }
 
         /// Reads bytes from the in-memory delegate.
@@ -476,8 +517,8 @@ public final class ArkivoStreamingStateTest {
         @Override
         public void close() throws java.io.IOException {
             closeAttempts++;
-            if (failFirstClose && closeAttempts == 1) {
-                throw new java.io.IOException("body close failed");
+            if (firstCloseFailure != null && closeAttempts == 1) {
+                throwInjectedFailure(firstCloseFailure);
             }
             delegate.close();
         }
@@ -506,8 +547,8 @@ public final class ArkivoStreamingStateTest {
         /// Most recently supplied symbolic-link target, or null before a symbolic link begins.
         private @Nullable String lastSymbolicLinkTarget;
 
-        /// Whether the first metadata-only entry completion must fail.
-        private final boolean failFirstEntryFinish;
+        /// Failure thrown by the first metadata-only entry completion attempt, or null when completion succeeds.
+        private final @Nullable Throwable firstEntryFinishFailure;
 
         /// Whether the first body close attempt must fail.
         private final boolean failFirstBodyClose;
@@ -550,7 +591,29 @@ public final class ArkivoStreamingStateTest {
                 boolean failFirstBodyClose,
                 @Nullable Throwable firstWriterCloseFailure
         ) {
-            this.failFirstEntryFinish = failFirstEntryFinish;
+            this(
+                    failFirstEntryFinish ? new java.io.IOException("entry finish failed") : null,
+                    failFirstBodyClose,
+                    firstWriterCloseFailure
+            );
+        }
+
+        /// Creates a writer whose first entry and writer cleanup attempts throw the supplied failures.
+        private TestWriter(Throwable firstEntryFinishFailure, Throwable firstWriterCloseFailure) {
+            this(
+                    Objects.requireNonNull(firstEntryFinishFailure, "firstEntryFinishFailure"),
+                    false,
+                    Objects.requireNonNull(firstWriterCloseFailure, "firstWriterCloseFailure")
+            );
+        }
+
+        /// Creates a writer with independently configurable entry, body, and format-writer failures.
+        private TestWriter(
+                @Nullable Throwable firstEntryFinishFailure,
+                boolean failFirstBodyClose,
+                @Nullable Throwable firstWriterCloseFailure
+        ) {
+            this.firstEntryFinishFailure = firstEntryFinishFailure;
             this.failFirstBodyClose = failFirstBodyClose;
             this.firstWriterCloseFailure = firstWriterCloseFailure;
         }
@@ -589,8 +652,8 @@ public final class ArkivoStreamingStateTest {
         @Override
         protected void finishCurrentEntry() throws java.io.IOException {
             entryFinishAttempts++;
-            if (failFirstEntryFinish && entryFinishAttempts == 1) {
-                throw new java.io.IOException("entry finish failed");
+            if (firstEntryFinishFailure != null && entryFinishAttempts == 1) {
+                throwInjectedFailure(firstEntryFinishFailure);
             }
             committedPaths.add(requireCurrentPath());
             currentPath = null;

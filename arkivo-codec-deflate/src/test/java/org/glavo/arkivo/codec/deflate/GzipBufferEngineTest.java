@@ -7,12 +7,14 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -133,6 +135,93 @@ public final class GzipBufferEngineTest {
         assertThrows(IOException.class, () -> decodeFragments(member, 1, 2));
     }
 
+    /// Verifies malformed fixed headers, body truncation, reserved blocks, and both trailer integrity fields.
+    @Test
+    public void rejectsMalformedHeadersBodiesAndTrailers() throws IOException {
+        byte[] content = "gzip defensive parsing".repeat(29).getBytes(StandardCharsets.UTF_8);
+        byte[] member = gzip(content);
+        byte[][] invalidHeaders = {member.clone(), member.clone(), member.clone(), member.clone()};
+        invalidHeaders[0][0] = 0;
+        invalidHeaders[1][1] = 0;
+        invalidHeaders[2][2] = 0;
+        invalidHeaders[3][3] = 0x20;
+        String[] headerMessages = {
+                "Invalid gzip member signature",
+                "Invalid gzip member signature",
+                "Unsupported gzip compression method",
+                "Gzip member uses reserved flags"
+        };
+        for (int index = 0; index < invalidHeaders.length; index++) {
+            byte[] invalidHeader = invalidHeaders[index];
+            String expectedMessage = headerMessages[index];
+            IOException failure = assertThrows(
+                    IOException.class,
+                    () -> decodeFragments(invalidHeader, 1, 2)
+            );
+            assertEquals(expectedMessage, failure.getMessage());
+        }
+
+        for (int length = 0; length < 10; length++) {
+            byte[] truncatedHeader = Arrays.copyOf(member, length);
+            EOFException failure = assertThrows(
+                    EOFException.class,
+                    () -> decodeFragments(truncatedHeader, 1, 2)
+            );
+            assertEquals("Unexpected end of gzip member header", failure.getMessage());
+        }
+
+        byte[] reservedBlock = member.clone();
+        reservedBlock[10] = (byte) (reservedBlock[10] & ~0x06 | 0x06);
+        IOException invalidBody = assertThrows(IOException.class, () -> decodeFragments(reservedBlock, 2, 3));
+        assertEquals("Invalid gzip deflate data", invalidBody.getMessage());
+
+        byte[] truncatedBody = Arrays.copyOf(member, member.length - 9);
+        EOFException truncatedBodyFailure = assertThrows(
+                EOFException.class,
+                () -> decodeFragments(truncatedBody, 2, 3)
+        );
+        assertEquals("Unexpected end of gzip member data", truncatedBodyFailure.getMessage());
+
+        byte[] sizeMismatch = member.clone();
+        sizeMismatch[sizeMismatch.length - 4] ^= 1;
+        IOException invalidSize = assertThrows(IOException.class, () -> decodeFragments(sizeMismatch, 2, 3));
+        assertEquals("Gzip member size mismatch", invalidSize.getMessage());
+
+        assertArrayEquals(content, decodeFragments(withEmptyExtraField(member), 1, 2));
+    }
+
+    /// Verifies finished decoding is idempotent and every stateful operation rejects a closed decoder.
+    @Test
+    public void decoderFinishedAndClosedStates() throws IOException {
+        byte[] content = "finished gzip decoder".getBytes(StandardCharsets.UTF_8);
+        byte[] member = gzip(content);
+        CompressionDecoder decoder = CODEC.newDecoder();
+        try {
+            ByteBuffer source = ByteBuffer.wrap(member);
+            ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+            CodecOutcome outcome;
+            do {
+                ByteBuffer target = ByteBuffer.allocate(2);
+                outcome = decoder.finish(source, target);
+                drain(target, decoded);
+            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+            assertEquals(CodecOutcome.FINISHED, outcome);
+            assertArrayEquals(content, decoded.toByteArray());
+            assertEquals(CodecOutcome.FINISHED, decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(0)));
+        } finally {
+            decoder.close();
+        }
+        assertThrows(IllegalStateException.class, decoder::reset);
+        assertThrows(
+                IllegalStateException.class,
+                () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
+        );
+        assertThrows(
+                IllegalStateException.class,
+                () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
+        );
+    }
+
     /// Verifies trailer corruption, truncation, reset, and terminal lifecycle behavior.
     @Test
     public void validationAndLifecycle() throws IOException {
@@ -177,6 +266,110 @@ public final class GzipBufferEngineTest {
             assertEquals(0, terminal.position());
             assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(32)));
         }
+    }
+
+    /// Verifies an explicit member boundary can be followed by another explicitly configured gzip member.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    public void startsExplicitConcatenatedMembers() throws IOException {
+        byte[] first = "first explicit gzip member".repeat(17).getBytes(StandardCharsets.UTF_8);
+        byte[] second = "second explicit gzip member".repeat(19).getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+
+        try (CompressionEncoder.FlushableFramed encoder = CODEC.newEncoder()) {
+            assertThrows(IllegalStateException.class, () -> encoder.startFrame(EncodingOptions.DEFAULT));
+            encodeSource(encoder, ByteBuffer.wrap(first), encoded, 3);
+            finishFrame(encoder, encoded, 1);
+
+            assertThrows(NullPointerException.class, () -> encoder.startFrame(null));
+            encoder.startFrame(EncodingOptions.ofSourceSize(second.length));
+            assertThrows(IllegalStateException.class, () -> encoder.startFrame(EncodingOptions.DEFAULT));
+            encodeSource(encoder, ByteBuffer.wrap(second), encoded, 2);
+            finish(encoder, encoded, 1);
+        }
+
+        byte[] expected = new byte[first.length + second.length];
+        System.arraycopy(first, 0, expected, 0, first.length);
+        System.arraycopy(second, 0, expected, first.length, second.length);
+        try (GZIPInputStream input = new GZIPInputStream(new ByteArrayInputStream(encoded.toByteArray()))) {
+            assertArrayEquals(expected, input.readAllBytes());
+        }
+    }
+
+    /// Verifies flush, terminal finish, and member finish cannot overlap and preserve their resumable states.
+    @Test
+    public void rejectsOverlappingEncoderBoundaryOperations() throws IOException {
+        CompressionEncoder.FlushableFramed flushing = CODEC.newEncoder();
+        try {
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, flushing.flush(ByteBuffer.allocate(0)));
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> flushing.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+            );
+            assertThrows(IllegalStateException.class, () -> flushing.finish(ByteBuffer.allocate(1)));
+            assertThrows(IllegalStateException.class, () -> flushing.finishFrame(ByteBuffer.allocate(1)));
+
+            CodecOutcome outcome;
+            do {
+                outcome = flushing.flush(ByteBuffer.allocate(1));
+            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+            assertEquals(CodecOutcome.FLUSHED, outcome);
+        } finally {
+            flushing.close();
+        }
+
+        CompressionEncoder.FlushableFramed finishing = CODEC.newEncoder();
+        ByteArrayOutputStream terminalOutput = new ByteArrayOutputStream();
+        try {
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, finishing.finish(ByteBuffer.allocate(0)));
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> finishing.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+            );
+            assertThrows(IllegalStateException.class, () -> finishing.flush(ByteBuffer.allocate(1)));
+            assertThrows(IllegalStateException.class, () -> finishing.finishFrame(ByteBuffer.allocate(1)));
+            finish(finishing, terminalOutput, 1);
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> finishing.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+            );
+            assertThrows(IllegalStateException.class, () -> finishing.flush(ByteBuffer.allocate(1)));
+        } finally {
+            finishing.close();
+        }
+
+        CompressionEncoder.FlushableFramed finishingFrame = CODEC.newEncoder();
+        ByteArrayOutputStream framedOutput = new ByteArrayOutputStream();
+        try {
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, finishingFrame.finishFrame(ByteBuffer.allocate(0)));
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> finishingFrame.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+            );
+            assertThrows(IllegalStateException.class, () -> finishingFrame.flush(ByteBuffer.allocate(1)));
+            assertThrows(IllegalStateException.class, () -> finishingFrame.finish(ByteBuffer.allocate(1)));
+            finishFrame(finishingFrame, framedOutput, 1);
+            assertEquals(
+                    CodecOutcome.BOUNDARY_REACHED,
+                    finishingFrame.finishFrame(ByteBuffer.allocate(0))
+            );
+            assertEquals(
+                    CodecOutcome.NEEDS_INPUT,
+                    finishingFrame.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+            );
+            assertEquals(CodecOutcome.FLUSHED, finishingFrame.flush(ByteBuffer.allocate(0)));
+            assertEquals(CodecOutcome.FINISHED, finishingFrame.finish(ByteBuffer.allocate(0)));
+        } finally {
+            finishingFrame.close();
+        }
+    }
+
+    /// Verifies gzip XFL records the fastest and maximum-compression level hints.
+    @Test
+    public void recordsCompressionLevelInExtraFlags() throws IOException {
+        assertEquals(4, Byte.toUnsignedInt(emptyMember(CODEC.withCompressionLevel(1))[8]));
+        assertEquals(0, Byte.toUnsignedInt(emptyMember(CODEC)[8]));
+        assertEquals(2, Byte.toUnsignedInt(emptyMember(CODEC.withCompressionLevel(9))[8]));
     }
 
     /// Encodes source fragments into one gzip member.
@@ -237,6 +430,30 @@ public final class GzipBufferEngineTest {
             drain(target, encoded);
         } while (outcome == CodecOutcome.NEEDS_OUTPUT);
         assertEquals(CodecOutcome.FINISHED, outcome);
+    }
+
+    /// Drains a nonterminal member boundary with bounded target buffers.
+    private static void finishFrame(
+            CompressionEncoder.FlushableFramed encoder,
+            ByteArrayOutputStream encoded,
+            int targetSize
+    ) throws IOException {
+        CodecOutcome outcome;
+        do {
+            ByteBuffer target = ByteBuffer.allocate(targetSize);
+            outcome = encoder.finishFrame(target);
+            drain(target, encoded);
+        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+        assertEquals(CodecOutcome.BOUNDARY_REACHED, outcome);
+    }
+
+    /// Encodes one empty member with the supplied codec configuration.
+    private static byte[] emptyMember(GzipCodec codec) throws IOException {
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        try (CompressionEncoder.FlushableFramed encoder = codec.newEncoder()) {
+            finish(encoder, encoded, 1);
+        }
+        return encoded.toByteArray();
     }
 
     /// Decodes one complete member with bounded target buffers.
@@ -326,6 +543,15 @@ public final class GzipBufferEngineTest {
         header.write(headerChecksum >>> 8);
         header.write(member, 10, member.length - 10);
         return header.toByteArray();
+    }
+
+    /// Returns a member whose optional extra field is present with zero payload bytes.
+    private static byte[] withEmptyExtraField(byte[] member) {
+        byte[] result = new byte[member.length + 2];
+        System.arraycopy(member, 0, result, 0, 10);
+        result[3] |= 0x04;
+        System.arraycopy(member, 10, result, 12, member.length - 10);
+        return result;
     }
 
     /// Encodes one gzip member through the JDK implementation.

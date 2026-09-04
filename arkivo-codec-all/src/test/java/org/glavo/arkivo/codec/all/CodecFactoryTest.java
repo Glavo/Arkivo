@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
+import org.glavo.arkivo.codec.CompressionProbeResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DictionaryRequiredException;
 import org.glavo.arkivo.codec.EncodingOptions;
@@ -18,6 +19,7 @@ import org.glavo.arkivo.codec.lz4.LZ4DictionaryRequest;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -29,6 +31,8 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -36,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -88,6 +93,89 @@ final class CodecFactoryTest {
                 () -> CompressionFormats.require("missing")
         );
         assertEquals("Unknown compression format: missing", exception.getMessage());
+    }
+
+    /// Verifies nullable lookup and path probing use the installed catalog without retaining path resources.
+    ///
+    /// @param directory the temporary directory used for the encoded probe source
+    @Test
+    void findsFormatsAndDetectsPaths(@TempDir Path directory) throws IOException {
+        CompressionFormat gzip = CompressionFormats.require("gzip");
+        assertSame(gzip, CompressionFormats.find("GZIP"));
+        assertNull(CompressionFormats.find("missing"));
+
+        Path encodedPath = Files.write(directory.resolve("payload.gz"), encode("gzip"));
+        assertSame(gzip, CompressionFormats.detect(encodedPath));
+    }
+
+    /// Verifies default probing and detected-channel overloads borrow their original channels.
+    @Test
+    void probesAndOpensDetectedChannelsWithDefaultOwnership() throws IOException {
+        byte[] encoded = encode("gzip");
+        CompressionFormat gzip = CompressionFormats.require("gzip");
+
+        TrackingReadableChannel probeSource = new TrackingReadableChannel(encoded);
+        try (CompressionProbeResult probe = CompressionFormats.probe(probeSource)) {
+            assertSame(gzip, probe.format());
+            try (ReadableByteChannel replay = probe.takeChannel()) {
+                assertArrayEquals(encoded, readAll(replay));
+            }
+        }
+        assertTrue(probeSource.isOpen());
+
+        TrackingReadableChannel decoderSource = new TrackingReadableChannel(encoded);
+        try (DecompressingReadableByteChannel decoder = CompressionFormats.newReadableByteChannel(decoderSource)) {
+            assertArrayEquals(CONTENT, readAll(decoder));
+        }
+        assertTrue(decoderSource.isOpen());
+
+        probeSource.close();
+        decoderSource.close();
+    }
+
+    /// Verifies default named and detected stream overloads round-trip data while borrowing their endpoints.
+    @Test
+    void opensStreamsWithDefaultOwnership() throws IOException {
+        TrackingOutputStream encodedTarget = new TrackingOutputStream();
+        try (OutputStream output = CompressionFormats.newOutputStream("gzip", encodedTarget)) {
+            output.write(CONTENT);
+        }
+        assertFalse(encodedTarget.closed());
+
+        TrackingInputStream namedSource = new TrackingInputStream(encodedTarget.bytes());
+        try (InputStream input = CompressionFormats.newInputStream("gzip", namedSource)) {
+            assertArrayEquals(CONTENT, input.readAllBytes());
+        }
+        assertFalse(namedSource.closed());
+
+        TrackingInputStream detectedSource = new TrackingInputStream(encodedTarget.bytes());
+        try (InputStream input = CompressionFormats.newInputStream(detectedSource)) {
+            assertArrayEquals(CONTENT, input.readAllBytes());
+        }
+        assertFalse(detectedSource.closed());
+
+        encodedTarget.close();
+        namedSource.close();
+        detectedSource.close();
+    }
+
+    /// Verifies the named decompression transfer overload reports exact progress and retains both channels.
+    @Test
+    void decompressesNamedChannelsWithDefaultConfiguration() throws IOException {
+        byte[] encoded = encode("gzip");
+        TrackingReadableChannel source = new TrackingReadableChannel(encoded);
+        TrackingWritableChannel target = new TrackingWritableChannel();
+
+        CodecTransferResult result = CompressionFormats.decompress("gzip", source, target);
+
+        assertEquals(encoded.length, result.inputBytes());
+        assertEquals(CONTENT.length, result.outputBytes());
+        assertArrayEquals(CONTENT, target.bytes());
+        assertTrue(source.isOpen());
+        assertTrue(target.isOpen());
+
+        source.close();
+        target.close();
     }
 
     /// Verifies convenience overloads accept aliases and retain caller-owned channels.
@@ -354,6 +442,18 @@ final class CodecFactoryTest {
         assertEquals("Unrecognized compression format", retainedDetectFailure.getMessage());
         assertTrue(retainedSource.isOpen());
 
+        TrackingReadableChannel retainedNamedSource = new TrackingReadableChannel(new byte[0]);
+        IllegalArgumentException retainedNamedFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> CompressionFormats.newReadableByteChannel(
+                        "missing",
+                        retainedNamedSource,
+                        ResourceOwnership.BORROWED
+                )
+        );
+        assertEquals("Unknown compression format: missing", retainedNamedFailure.getMessage());
+        assertTrue(retainedNamedSource.isOpen());
+
         TrackingReadableChannel ownedSource = new TrackingReadableChannel(new byte[]{1, 2, 3, 4});
         assertThrows(
                 IOException.class,
@@ -366,6 +466,7 @@ final class CodecFactoryTest {
 
         retainedTarget.close();
         retainedSource.close();
+        retainedNamedSource.close();
     }
 
     /// Verifies setup failures close owned endpoints and preserve close failures as suppressed exceptions.

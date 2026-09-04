@@ -61,6 +61,26 @@ public final class BZip2CodecTest {
         assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'h'})));
     }
 
+    /// Verifies prefix probing rejects every malformed signature field without consuming the buffer.
+    @Test
+    public void probesCanonicalHeaderWithoutConsumingPrefix() {
+        BZip2Format format = BZip2Format.instance();
+        ByteBuffer valid = ByteBuffer.wrap(new byte[]{0, 'B', 'Z', 'h', '1', 0});
+        valid.position(1);
+        valid.limit(5);
+
+        assertEquals(4, format.probeSize());
+        assertTrue(format.matches(valid));
+        assertEquals(1, valid.position());
+        assertEquals(5, valid.limit());
+
+        assertFalse(format.matches(ByteBuffer.wrap(new byte[]{'X', 'Z', 'h', '1'})));
+        assertFalse(format.matches(ByteBuffer.wrap(new byte[]{'B', 'X', 'h', '1'})));
+        assertFalse(format.matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'X', '1'})));
+        assertFalse(format.matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'h', '0'})));
+        assertFalse(format.matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'h', ':'})));
+    }
+
     /// Verifies direct channel I/O, compression-level mapping, counters, and ownership.
     @Test
     public void directChannelsExposeLevelCountersAndOwnership() throws IOException {
@@ -125,6 +145,7 @@ public final class BZip2CodecTest {
         assertEquals(9L, codec.maximumCompressionLevel());
         assertEquals(9L, codec.defaultCompressionLevel());
 
+        assertThrows(IllegalArgumentException.class, () -> codec.withCompressionLevel(0L));
         assertThrows(IllegalArgumentException.class, () -> codec.withCompressionLevel(10L));
     }
 

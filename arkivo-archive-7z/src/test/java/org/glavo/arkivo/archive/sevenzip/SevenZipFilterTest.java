@@ -80,5 +80,9 @@ public final class SevenZipFilterTest {
         assertEquals(SevenZipFilterMethod.BCJ_ARM64, SevenZipFilterMethod.parse("BCJ_ARM64"));
         assertEquals(SevenZipFilterMethod.BCJ_RISCV, SevenZipFilterMethod.parse("bcj-riscv"));
         assertThrows(IllegalArgumentException.class, () -> SevenZipFilterMethod.parse("bcj-mips"));
+
+        for (SevenZipFilterMethod method : SevenZipFilterMethod.values()) {
+            assertEquals(method.optionName(), method.toString());
+        }
     }
 }

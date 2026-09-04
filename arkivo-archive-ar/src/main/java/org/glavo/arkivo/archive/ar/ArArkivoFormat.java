@@ -245,7 +245,9 @@ public final class ArArkivoFormat implements
         try {
             storage.close();
         } catch (IOException | RuntimeException | Error cleanupFailure) {
-            failure.addSuppressed(cleanupFailure);
+            if (failure != cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
         }
     }
 }

@@ -18,6 +18,25 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies immutable strongly typed archive operation options.
 @NotNullByDefault
 public final class ArchiveOperationOptionsTest {
+    /// Verifies stable thread-safety names round-trip through the environment parser.
+    @Test
+    public void threadSafetyOptionNamesRoundTrip() {
+        assertEquals("none", ArkivoFileSystemThreadSafety.NONE.optionName());
+        assertEquals("concurrent-read", ArkivoFileSystemThreadSafety.CONCURRENT_READ.optionName());
+        assertEquals("strict", ArkivoFileSystemThreadSafety.STRICT.optionName());
+        for (ArkivoFileSystemThreadSafety threadSafety : ArkivoFileSystemThreadSafety.values()) {
+            assertSame(threadSafety, ArkivoFileSystemThreadSafety.parse(threadSafety.optionName()));
+        }
+        assertSame(
+                ArkivoFileSystemThreadSafety.CONCURRENT_READ,
+                ArkivoFileSystemThreadSafety.parse("  CONCURRENT_READ  ")
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFileSystemThreadSafety.parse("unsupported")
+        );
+    }
+
     /// Verifies reusable storage factories create independent operation-owned instances.
     @Test
     public void editStorageFactoriesAreReusable() throws IOException {

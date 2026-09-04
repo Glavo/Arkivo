@@ -77,6 +77,20 @@ public final class ArkivoPathMatchersTest {
         assertTrue(classLiterals.matches(path("/az.txt")));
     }
 
+    /// Verifies trailing hyphens remain literals and incomplete or separator-crossing ranges are rejected.
+    @Test
+    public void globCharacterClassRangeBoundaries() {
+        PathMatcher trailingHyphen = ArkivoPathMatchers.create("glob:/[a-].txt");
+        assertTrue(trailingHyphen.matches(path("/a.txt")));
+        assertTrue(trailingHyphen.matches(path("/-.txt")));
+        assertFalse(trailingHyphen.matches(path("/b.txt")));
+
+        assertThrows(PatternSyntaxException.class, () -> ArkivoPathMatchers.create("glob:["));
+        assertThrows(PatternSyntaxException.class, () -> ArkivoPathMatchers.create("glob:[a-"));
+        assertThrows(PatternSyntaxException.class, () -> ArkivoPathMatchers.create("glob:[--a]"));
+        assertThrows(PatternSyntaxException.class, () -> ArkivoPathMatchers.create("glob:[a-/]"));
+    }
+
     /// Verifies comma-separated glob groups select any complete alternative.
     @Test
     public void globGroupsSelectAlternatives() {

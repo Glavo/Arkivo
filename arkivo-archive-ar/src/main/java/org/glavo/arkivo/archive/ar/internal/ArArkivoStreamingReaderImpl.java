@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.ar.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
@@ -35,10 +36,9 @@ import java.util.Objects;
 public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// The internal NIO environment key for name detection.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
-            ArchiveOption.of(
+            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
                     "arkivo.ar",
-                    "metadataCharsetDetector",
-                    ArchiveMetadataCharsetDetector.class
+                    "metadataCharsetDetector"
             );
     /// The global AR archive signature.
     private static final byte @Unmodifiable [] GLOBAL_HEADER = "!<arch>\n".getBytes(StandardCharsets.US_ASCII);

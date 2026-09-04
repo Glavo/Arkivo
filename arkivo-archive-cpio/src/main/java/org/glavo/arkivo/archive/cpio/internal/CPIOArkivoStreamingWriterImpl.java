@@ -884,9 +884,9 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         }
 
         /// Requires this entry to remain pending and configurable.
-        private void ensurePending() {
+        private void ensurePending() throws IOException {
             if (committed || pendingEntry != this) {
-                throw new IllegalStateException("CPIO streaming entry has already been committed");
+                throw new IOException("CPIO streaming entry is no longer pending");
             }
         }
 
@@ -993,7 +993,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
+        ) throws IOException {
             entry.ensurePending();
             if (lastModifiedTime != null) {
                 this.lastModifiedTime = lastModifiedTime;
@@ -1002,7 +1002,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Sets the inode number.
         @Override
-        public void setInode(long inode) {
+        public void setInode(long inode) throws IOException {
             requireNonNegative(inode, "inode");
             entry.ensurePending();
             this.inode = inode;
@@ -1010,7 +1010,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Sets the numeric user identifier.
         @Override
-        public void setUserId(long userId) {
+        public void setUserId(long userId) throws IOException {
             requireNonNegative(userId, "userId");
             entry.ensurePending();
             this.userId = userId;
@@ -1018,7 +1018,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Sets the numeric group identifier.
         @Override
-        public void setGroupId(long groupId) {
+        public void setGroupId(long groupId) throws IOException {
             requireNonNegative(groupId, "groupId");
             entry.ensurePending();
             this.groupId = groupId;
@@ -1026,7 +1026,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Sets the positive link count.
         @Override
-        public void setLinkCount(long linkCount) {
+        public void setLinkCount(long linkCount) throws IOException {
             if (linkCount <= 0L) {
                 throw new IllegalArgumentException("linkCount must be positive");
             }
@@ -1036,7 +1036,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Sets the POSIX mode while preserving the entry kind selected by its begin operation.
         @Override
-        public void setMode(int mode) {
+        public void setMode(int mode) throws IOException {
             if (mode < 0) {
                 throw new IllegalArgumentException("mode must not be negative");
             }
@@ -1055,7 +1055,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Sets the old-format device field.
         @Override
-        public void setDevice(long device) {
+        public void setDevice(long device) throws IOException {
             requireNonNegative(device, "device");
             entry.ensurePending();
             this.device = device;
@@ -1063,7 +1063,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Sets the old-format remote-device field.
         @Override
-        public void setRemoteDevice(long remoteDevice) {
+        public void setRemoteDevice(long remoteDevice) throws IOException {
             requireNonNegative(remoteDevice, "remoteDevice");
             entry.ensurePending();
             this.remoteDevice = remoteDevice;
@@ -1071,7 +1071,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Sets the new-format device major and minor numbers.
         @Override
-        public void setDeviceNumbers(long major, long minor) {
+        public void setDeviceNumbers(long major, long minor) throws IOException {
             requireNonNegative(major, "major");
             requireNonNegative(minor, "minor");
             entry.ensurePending();
@@ -1081,7 +1081,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Sets the new-format remote-device major and minor numbers.
         @Override
-        public void setRemoteDeviceNumbers(long major, long minor) {
+        public void setRemoteDeviceNumbers(long major, long minor) throws IOException {
             requireNonNegative(major, "major");
             requireNonNegative(minor, "minor");
             entry.ensurePending();

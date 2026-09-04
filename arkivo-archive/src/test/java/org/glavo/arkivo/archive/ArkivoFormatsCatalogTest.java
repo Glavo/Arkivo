@@ -143,6 +143,21 @@ public final class ArkivoFormatsCatalogTest {
         assertSame(restorationFailure, exception.getSuppressed()[0]);
     }
 
+    /// Verifies one shared probe and restoration failure retains its original identity without self-suppression.
+    @Test
+    void defaultSeekableProbePreservesSharedFailure() {
+        TestFormat format = new TestFormat("marker", List.of(), 1, 0x22);
+        ProbeChannel source = new ProbeChannel(new byte[]{0x22});
+        IOException failure = new IOException("shared failure");
+        source.readFailure = failure;
+        source.failPositionSet(1, failure);
+
+        IOException exception = assertThrows(IOException.class, () -> format.matches(source));
+
+        assertSame(failure, exception);
+        assertEquals(0, exception.getSuppressed().length);
+    }
+
     /// Verifies the catalog defensively restores the same origin between nonconforming format probes.
     @Test
     void seekableCatalogRestoresPositionBetweenFormats() throws IOException {
@@ -178,6 +193,21 @@ public final class ArkivoFormatsCatalogTest {
         assertSame(probeFailure, exception);
         assertEquals(1, exception.getSuppressed().length);
         assertSame(restorationFailure, exception.getSuppressed()[0]);
+    }
+
+    /// Verifies catalog restoration does not suppress a repeated probe failure onto itself.
+    @Test
+    void seekableCatalogPreservesSharedFailure() {
+        IOException failure = new IOException("shared failure");
+        PositionMutatingFormat format = new PositionMutatingFormat("failing", 1, false, failure);
+        ArkivoFormats.Catalog catalog = ArkivoFormats.Catalog.of(List.of(format));
+        ProbeChannel source = new ProbeChannel(new byte[]{0x11, 0x22});
+        source.failPositionSet(2, failure);
+
+        IOException exception = assertThrows(IOException.class, () -> catalog.detect(source));
+
+        assertSame(failure, exception);
+        assertEquals(0, exception.getSuppressed().length);
     }
 
     /// Supplies immutable archive format metadata for catalog tests.

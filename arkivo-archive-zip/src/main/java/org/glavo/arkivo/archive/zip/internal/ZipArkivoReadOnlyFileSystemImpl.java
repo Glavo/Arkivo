@@ -612,7 +612,10 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         Objects.requireNonNull(type, "type");
         ArkivoFileSystemProviderSupport.AttributeViewPath viewPath =
                 ArkivoFileSystemProviderSupport.attributeViewPath(path, options);
-        if (type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class) {
+        if (type == BasicFileAttributeView.class) {
+            return type.cast(new BasicEntryAttributeView(this, viewPath));
+        }
+        if (type == ZipArkivoEntryAttributeView.class) {
             return type.cast(new EntryAttributeView(this, viewPath));
         }
         if (type == FileOwnerAttributeView.class) {
@@ -3250,6 +3253,47 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             return record != null
                     ? ZipPosixSupport.permissions(record.versionMadeBy, record.externalAttributes, record.directory)
                     : ZipPosixSupport.defaultPermissions(true);
+        }
+    }
+
+    /// Implements the basic entry attribute view.
+    @NotNullByDefault
+    private static final class BasicEntryAttributeView implements BasicFileAttributeView {
+        /// The file system used to read attributes.
+        private final ZipArkivoReadOnlyFileSystemImpl fileSystem;
+
+        /// The path whose attributes are exposed.
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
+
+        /// Creates a basic entry attribute view.
+        private BasicEntryAttributeView(
+                ZipArkivoReadOnlyFileSystemImpl fileSystem,
+                ArkivoFileSystemProviderSupport.AttributeViewPath path
+        ) {
+            this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+            this.path = Objects.requireNonNull(path, "path");
+        }
+
+        /// Returns the standard basic attribute-view name.
+        @Override
+        public String name() {
+            return "basic";
+        }
+
+        /// Reads this path's basic attributes.
+        @Override
+        public BasicFileAttributes readAttributes() throws IOException {
+            return fileSystem.readZipAttributes(path.resolve());
+        }
+
+        /// Rejects timestamp mutation because this file system is read-only.
+        @Override
+        public void setTimes(
+                @Nullable FileTime lastModifiedTime,
+                @Nullable FileTime lastAccessTime,
+                @Nullable FileTime createTime
+        ) {
+            throw new java.nio.file.ReadOnlyFileSystemException();
         }
     }
 

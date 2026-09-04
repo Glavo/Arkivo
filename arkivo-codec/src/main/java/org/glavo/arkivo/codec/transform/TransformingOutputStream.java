@@ -154,7 +154,7 @@ public final class TransformingOutputStream extends OutputStream {
             } catch (IOException | RuntimeException | Error exception) {
                 if (closeFailure == null) {
                     closeFailure = exception;
-                } else {
+                } else if (closeFailure != exception) {
                     closeFailure.addSuppressed(exception);
                 }
             }

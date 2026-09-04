@@ -5866,6 +5866,47 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies known-size WinZip AES entries for every additional compressed method through the streaming reader.
+    @Test
+    public void streamingReaderReadsKnownSizeWinZipAesCompressedMethods() throws IOException {
+        byte[] password = "known size AES password".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "known size AES compressed content".getBytes(StandardCharsets.UTF_8);
+        ZipMethod[] methods = {
+                ZipMethod.BZIP2,
+                ZipMethod.LZMA,
+                ZipMethod.XZ,
+                ZipMethod.DEFLATE64,
+                ZipMethod.ZSTANDARD
+        };
+        byte[][] compressedBodies = {
+                bzip2(content),
+                lzma(content),
+                xz(content),
+                deflate64StoredBlock(content),
+                zstandard(content)
+        };
+
+        for (int index = 0; index < methods.length; index++) {
+            ZipMethod method = methods[index];
+            byte[] archive = winZipAesArchive(password, content, method, compressedBodies[index]);
+
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive),
+                    readOptions(password)
+            )) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals(method, attributes.compressionMethod());
+                assertEquals(ZipEncryption.WINZIP_AES_256, attributes.encryption());
+                assertEquals(content.length, attributes.size());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+            }
+        }
+    }
+
     /// Verifies that WinZip AES authentication failures are rejected.
     @Test
     public void winZipAesAuthenticationFailureIsRejected() throws IOException {
@@ -5976,6 +6017,8 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(ZipEncryption.NONE, attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
                 assertEquals(true, exception.getMessage().contains("Unsupported ZIP compression method"));
+                IOException streamException = assertThrows(IOException.class, () -> Files.newInputStream(file));
+                assertEquals(true, streamException.getMessage().contains("Unsupported ZIP compression method"));
             }
 
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
@@ -6907,6 +6950,73 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that closing a partially consumed sequential stored-entry channel drains and validates the entry.
+    @Test
+    public void storedEntryChannelCloseValidatesUnreadSequentialData() throws IOException {
+        byte[] name = "stored-close-crc.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "stored close validation".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
+                name,
+                content,
+                ZipMethod.STORED.id(),
+                crc32(content) ^ 1L,
+                content.length,
+                content.length
+        ));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/stored-close-crc.txt"));
+                ByteBuffer prefix = ByteBuffer.allocate(5);
+                prefix.position(1);
+
+                assertEquals(4, channel.read(prefix));
+                assertEquals(4L, channel.position());
+                assertEquals(channel, channel.position(channel.position()));
+
+                IOException exception = assertThrows(IOException.class, channel::close);
+                assertEquals(true, exception.getMessage().contains(
+                        "ZIP entry data does not match central directory"
+                ));
+                assertEquals(false, channel.isOpen());
+                channel.close();
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that random access to a stored entry does not apply sequential CRC validation to reordered bytes.
+    @Test
+    public void storedEntryChannelSupportsRandomAccessWithoutFalseValidation() throws IOException {
+        byte[] content = "stored random access".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchiveContent(singleStoredZipArchive("stored-random.txt", content));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/stored-random.txt"));
+
+                assertEquals(content.length, channel.size());
+                assertEquals(channel, channel.position(7L));
+                ByteBuffer suffix = ByteBuffer.allocate(content.length - 7);
+                assertEquals(content.length - 7, channel.read(suffix));
+                assertArrayEquals(Arrays.copyOfRange(content, 7, content.length), suffix.array());
+
+                assertEquals(channel, channel.position(0L));
+                ByteBuffer complete = ByteBuffer.allocate(content.length);
+                assertEquals(content.length, channel.read(complete));
+                assertArrayEquals(content, complete.array());
+
+                assertEquals(channel, channel.position(content.length + 1L));
+                assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+                assertThrows(IllegalArgumentException.class, () -> channel.position(-1L));
+                assertClosedReadOnlyChannel(channel);
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that seekable ZIP file systems decode BZIP2-compressed entries.
     @Test
     public void readsSeekableBzip2Entry() throws IOException {
@@ -7130,6 +7240,63 @@ public final class ZipArkivoFileSystemTest {
             }
         } finally {
             deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that every supported non-Deflate compressed method is available through the input-stream API.
+    @Test
+    public void readsEverySupportedCompressedMethodThroughInputStream() throws IOException {
+        byte[] content = "compressed input stream contract".getBytes(StandardCharsets.UTF_8);
+        byte[] zstandard = zstandard(content);
+        String[] names = {
+                "deflate64.txt",
+                "bzip2.txt",
+                "zstandard.txt",
+                "deprecated-zstandard.txt",
+                "lzma.txt",
+                "xz.txt"
+        };
+        ZipMethod[] methods = {
+                ZipMethod.DEFLATE64,
+                ZipMethod.BZIP2,
+                ZipMethod.ZSTANDARD,
+                ZipMethod.DEPRECATED_ZSTANDARD,
+                ZipMethod.LZMA,
+                ZipMethod.XZ
+        };
+        byte[][] compressedBodies = {
+                deflate64StoredBlock(content),
+                bzip2(content),
+                zstandard,
+                zstandard,
+                lzma(content),
+                xz(content)
+        };
+        int[] flags = {0, 0, 0, 0, LZMA_EOS_MARKER_FLAG, 0};
+
+        for (int index = 0; index < methods.length; index++) {
+            byte[] name = names[index].getBytes(StandardCharsets.UTF_8);
+            Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
+                    name,
+                    compressedBodies[index],
+                    methods[index].id(),
+                    flags[index],
+                    crc32(content),
+                    compressedBodies[index].length,
+                    content.length
+            ));
+
+            try {
+                try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath);
+                     InputStream input = Files.newInputStream(
+                             fileSystem.getPath("/" + names[index]),
+                             StandardOpenOption.READ
+                     )) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+            } finally {
+                deleteTemporaryArchive(archivePath);
+            }
         }
     }
 
@@ -9812,10 +9979,21 @@ public final class ZipArkivoFileSystemTest {
 
     /// Returns a minimal ZIP archive containing one WinZip AES-256 entry.
     private static byte[] winZipAesArchive(byte[] password, byte[] content) throws IOException {
+        return winZipAesArchive(password, content, ZipMethod.DEFLATED, deflateRaw(content));
+    }
+
+    /// Returns a minimal ZIP archive containing one known-size WinZip AES-256 compressed entry.
+    private static byte[] winZipAesArchive(
+            byte[] password,
+            byte[] content,
+            ZipMethod compressionMethod,
+            byte[] compressedContent
+    ) throws IOException {
         byte[] name = "aes.txt".getBytes(StandardCharsets.UTF_8);
-        byte[] aesExtra = winZipAesExtraData();
-        byte[] encryptedBody = winZipAesEncryptedBody(password, deflateRaw(content));
+        byte[] aesExtra = winZipAesExtraData(2, compressionMethod.id());
+        byte[] encryptedBody = winZipAesEncryptedBody(password, compressedContent);
         int encryptedSize = encryptedBody.length;
+        int flags = 1 | (compressionMethod == ZipMethod.LZMA ? LZMA_EOS_MARKER_FLAG : 0);
         int localHeaderOffset = 0;
         int localHeaderSize = 30 + name.length + aesExtra.length;
         int centralDirectoryOffset = localHeaderSize + encryptedSize;
@@ -9830,7 +10008,7 @@ public final class ZipArkivoFileSystemTest {
 
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
-        buffer.putShort((short) 1);
+        buffer.putShort((short) flags);
         buffer.putShort((short) 99);
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
@@ -9846,7 +10024,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x02014b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 20);
-        buffer.putShort((short) 1);
+        buffer.putShort((short) flags);
         buffer.putShort((short) 99);
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);

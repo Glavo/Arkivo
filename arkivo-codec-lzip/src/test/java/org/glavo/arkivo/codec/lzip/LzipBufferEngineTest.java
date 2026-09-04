@@ -47,6 +47,34 @@ public final class LzipBufferEngineTest {
         assertArrayEquals(tail, Arrays.copyOfRange(withTail, result.consumedInput(), withTail.length));
     }
 
+    /// Verifies a member header can span calls without producing output or losing source progress.
+    @Test
+    public void fragmentedHeaderPreservesProgress() throws IOException {
+        byte[] content = patternedData(257);
+        byte[] encoded = encode(content, CODEC, EncodingOptions.DEFAULT, 37, 11);
+        ByteBuffer prefix = directBuffer(Arrays.copyOf(encoded, 3));
+        ByteBuffer suffix = directBuffer(Arrays.copyOfRange(encoded, 3, encoded.length));
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+
+        try (CompressionDecoder.Framed decoder = CODEC.newDecoder()) {
+            ByteBuffer initialTarget = ByteBuffer.allocateDirect(4);
+            assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(prefix, initialTarget));
+            assertFalse(prefix.hasRemaining());
+            assertEquals(0, initialTarget.position());
+
+            CodecOutcome outcome;
+            do {
+                ByteBuffer target = ByteBuffer.allocateDirect(17);
+                outcome = decoder.finish(suffix, target);
+                drain(target, decoded);
+                assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
+            } while (outcome != CodecOutcome.FINISHED);
+        }
+
+        assertFalse(suffix.hasRemaining());
+        assertArrayEquals(content, decoded.toByteArray());
+    }
+
     /// Verifies explicit frame options, tiny finalization targets, and independent member boundaries.
     @Test
     public void frameOptionsAndBoundaries() throws IOException {
@@ -123,6 +151,62 @@ public final class LzipBufferEngineTest {
         }
     }
 
+    /// Verifies reset discards partial header, payload, finalization, and trailer state before engine reuse.
+    @Test
+    public void resetDiscardsEveryPartialMemberPhase() throws IOException {
+        byte[] content = patternedData(4_097);
+        byte[] encoded;
+
+        try (CompressionEncoder.Framed encoder = CODEC.newEncoder()) {
+            ByteBuffer headerSource = directBuffer(content);
+            ByteBuffer partialHeader = ByteBuffer.allocateDirect(3);
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.encode(headerSource, partialHeader));
+            assertEquals(0, headerSource.position());
+            assertEquals(3, partialHeader.position());
+            encoder.reset();
+
+            encodeSource(
+                    encoder,
+                    directBuffer(Arrays.copyOf(content, 257)),
+                    new ByteArrayOutputStream(),
+                    17
+            );
+            encoder.reset();
+
+            ByteArrayOutputStream unfinished = new ByteArrayOutputStream();
+            encodeSource(encoder, directBuffer(content), unfinished, 31);
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.finish(ByteBuffer.allocate(0)));
+            encoder.reset();
+
+            ByteArrayOutputStream recovered = new ByteArrayOutputStream();
+            encodeSource(encoder, directBuffer(content), recovered, 23);
+            finish(encoder, recovered, 5);
+            encoded = recovered.toByteArray();
+        }
+
+        try (CompressionDecoder.Framed decoder = CODEC.newDecoder()) {
+            int[] cutOffsets = {
+                    3,
+                    LzipSupport.HEADER_SIZE + 1,
+                    encoded.length - LzipSupport.TRAILER_SIZE / 2
+            };
+            for (int cutOffset : cutOffsets) {
+                ByteBuffer prefix = directBuffer(Arrays.copyOf(encoded, cutOffset));
+                ByteBuffer target = ByteBuffer.allocateDirect(content.length + 1);
+                assertEquals(
+                        CodecOutcome.NEEDS_INPUT,
+                        decoder.decode(prefix, target),
+                        "cut at byte " + cutOffset
+                );
+                assertFalse(prefix.hasRemaining());
+
+                decoder.reset();
+                assertArrayEquals(content, decodeComplete(decoder, encoded));
+                decoder.reset();
+            }
+        }
+    }
+
     /// Verifies physical end-of-input distinguishes truncated headers, payloads, and trailers.
     @Test
     public void truncationAcrossMemberPhases() throws IOException {
@@ -190,6 +274,53 @@ public final class LzipBufferEngineTest {
         assertThrows(
                 IllegalStateException.class,
                 () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+    }
+
+    /// Verifies null arguments do not alter engine state and every operation rejects a closed engine.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    public void validatesArgumentsAndClosedState() throws IOException {
+        byte[] content = {1, 2, 3, 4};
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        CompressionEncoder.Framed encoder = CODEC.newEncoder();
+
+        assertThrows(NullPointerException.class, () -> encoder.encode(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> encoder.encode(ByteBuffer.allocate(0), null));
+        assertThrows(NullPointerException.class, () -> encoder.finishFrame(null));
+        assertThrows(NullPointerException.class, () -> encoder.finish(null));
+        assertThrows(NullPointerException.class, () -> encoder.startFrame(null));
+
+        encodeSource(encoder, directBuffer(content), encoded, 7);
+        finish(encoder, encoded, 3);
+        encoder.close();
+        encoder.close();
+        assertThrows(IllegalStateException.class, encoder::reset);
+        assertThrows(
+                IllegalStateException.class,
+                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+        assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
+        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
+        assertThrows(IllegalStateException.class, encoder::startFrame);
+
+        CompressionDecoder.Framed decoder = CODEC.newDecoder();
+        assertThrows(NullPointerException.class, () -> decoder.decode(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> decoder.decode(ByteBuffer.allocate(0), null));
+        assertThrows(NullPointerException.class, () -> decoder.finish(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> decoder.finish(ByteBuffer.allocate(0), null));
+        assertArrayEquals(content, decodeComplete(decoder, encoded.toByteArray()));
+
+        decoder.close();
+        decoder.close();
+        assertThrows(IllegalStateException.class, decoder::reset);
+        assertThrows(
+                IllegalStateException.class,
+                () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+        assertThrows(
+                IllegalStateException.class,
+                () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
         );
     }
 

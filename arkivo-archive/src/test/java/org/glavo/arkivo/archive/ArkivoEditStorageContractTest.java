@@ -22,6 +22,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -190,6 +191,43 @@ public final class ArkivoEditStorageContractTest {
             }
             assertEquals(0L, regularFileCount(directory));
         }
+    }
+
+    /// Verifies storage factories validate configuration and create independent usable storage instances.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    public void factoriesCreateIndependentConfiguredStorage() throws IOException {
+        ArkivoEditStorageFactory memoryFactory = ArkivoEditStorageFactory.memory();
+        try (ArkivoEditStorage first = memoryFactory.open();
+             ArkivoEditStorage second = memoryFactory.open()) {
+            assertNotSame(first, second);
+            first.close();
+            try (ArkivoStoredContent content = second.createContent("memory.bin", 1L);
+                 SeekableByteChannel channel = content.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                assertEquals(1, channel.write(ByteBuffer.wrap(new byte[]{1})));
+            }
+        }
+
+        Path fileDirectory = temporaryDirectory.resolve("factory-files");
+        ArkivoEditStorageFactory fileFactory = ArkivoEditStorageFactory.temporaryFiles(fileDirectory);
+        try (ArkivoEditStorage storage = fileFactory.open();
+             ArkivoStoredContent content = storage.createContent("file.bin", 1L)) {
+            assertTrue(Files.isDirectory(fileDirectory));
+            assertEquals(1L, regularFileCount(fileDirectory));
+        }
+        assertEquals(0L, regularFileCount(fileDirectory));
+
+        Path hybridDirectory = temporaryDirectory.resolve("factory-hybrid");
+        ArkivoEditStorageFactory hybridFactory = ArkivoEditStorageFactory.hybrid(1L, hybridDirectory);
+        try (ArkivoEditStorage storage = hybridFactory.open();
+             ArkivoStoredContent content = storage.createContent("large.bin", 2L)) {
+            assertEquals(1L, regularFileCount(hybridDirectory));
+        }
+        assertEquals(0L, regularFileCount(hybridDirectory));
+
+        assertThrows(NullPointerException.class, () -> ArkivoEditStorageFactory.temporaryFiles(null));
+        assertThrows(IllegalArgumentException.class, () -> ArkivoEditStorageFactory.hybrid(-1L, hybridDirectory));
+        assertThrows(NullPointerException.class, () -> ArkivoEditStorageFactory.hybrid(0L, null));
     }
 
     /// Reads all bytes from a channel's current position to its logical end.
