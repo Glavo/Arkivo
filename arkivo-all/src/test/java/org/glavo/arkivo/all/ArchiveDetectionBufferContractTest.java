@@ -142,7 +142,7 @@ final class ArchiveDetectionBufferContractTest {
             image[3] = 'y';
             return image;
         }
-        if (!(format instanceof ArkivoFormat.StreamingWriter streamingWriter)) {
+        if (!(format instanceof ArkivoFormat.StreamingWritable streamingWriter)) {
             throw new AssertionError("No archive seed writer for " + format.name());
         }
 

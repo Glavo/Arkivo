@@ -93,7 +93,7 @@ public final class RarLowHeapStorageProbe {
 
     /// Opens the archive with explicit temporary storage and verifies random access to the large entry.
     private static void verifyArchive(Path archivePath, Path storageDirectory) throws IOException {
-        RarArchiveOptions.Read options = RarArchiveOptions.READ_DEFAULTS.withCommon(
+        RarArchiveOptions options = RarArchiveOptions.DEFAULT.withCommon(
                 ArchiveReadOptions.DEFAULT.withEditStorageFactory(
                         ArkivoEditStorageFactory.temporaryFiles(storageDirectory)
                 )

@@ -114,7 +114,7 @@ public final class DMGArkivoFormat implements ArkivoFormat.FileSystem {
     public DMGArkivoFileSystem open(Path path, ArchiveReadOptions options) throws IOException {
         return DMGArkivoFileSystem.open(
                 path,
-                new DMGArchiveOptions.Read(options, DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX)
+                new DMGArchiveOptions(options, DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX)
         );
     }
 
@@ -126,7 +126,7 @@ public final class DMGArkivoFormat implements ArkivoFormat.FileSystem {
     ) throws IOException {
         return DMGArkivoFileSystem.open(
                 source,
-                new DMGArchiveOptions.Read(options, DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX)
+                new DMGArchiveOptions(options, DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX)
         );
     }
 
@@ -138,7 +138,7 @@ public final class DMGArkivoFormat implements ArkivoFormat.FileSystem {
     ) throws IOException {
         return DMGArkivoFileSystem.open(
                 source,
-                new DMGArchiveOptions.Read(options, DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX)
+                new DMGArchiveOptions(options, DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX)
         );
     }
 }

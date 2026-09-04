@@ -28,7 +28,7 @@ import java.util.Objects;
 /// Both formats preserve solid decompression state and can span split entry data across physical volumes. Legacy RAR 1.3,
 /// 1.5, and 2.x file-data encryption, RAR 3.x AES-128 encryption, and RAR5 AES-256 encryption are readable for otherwise
 /// supported entries. Encrypted headers are supported for RAR 3.x and RAR5. Encryption uses the archive-level password
-/// from [RarArchiveOptions.Read#passwordProvider()]. Legacy RAR 1.3 through 2.x treats provider bytes as a raw single-byte
+/// from [RarArchiveOptions#passwordProvider()]. Legacy RAR 1.3 through 2.x treats provider bytes as a raw single-byte
 /// password terminated by the first zero byte; RAR 3.x AES treats them as UTF-16LE, and RAR5 treats them as UTF-8.
 /// Advancing past a compressed entry in a solid archive decodes and discards its body when possible to preserve the
 /// dictionary required by later entries.
@@ -56,7 +56,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     /// @return a new forward-only reader positioned before the first entry
     /// @throws IOException if conventional volume discovery fails
     public static RarArkivoStreamingReader open(Path path) throws IOException {
-        return open(path, RarArchiveOptions.READ_DEFAULTS);
+        return open(path, RarArchiveOptions.DEFAULT);
     }
 
     /// Opens a configured streaming RAR reader from its first path and discovers conventional split volumes.
@@ -67,7 +67,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     /// @throws IOException if conventional volume discovery fails
     public static RarArkivoStreamingReader open(
             Path path,
-            RarArchiveOptions.Read options
+            RarArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -80,7 +80,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     /// @return a new forward-only reader that owns `source`
     /// @throws NullPointerException if `source` is `null`
     public static RarArkivoStreamingReader open(ArkivoVolumeSource source) {
-        return open(source, RarArchiveOptions.READ_DEFAULTS);
+        return open(source, RarArchiveOptions.DEFAULT);
     }
 
     /// Opens a streaming RAR reader from a multi-volume source with options.
@@ -93,7 +93,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     /// @throws NullPointerException if `source` or `options` is `null`
     public static RarArkivoStreamingReader open(
             ArkivoVolumeSource source,
-            RarArchiveOptions.Read options
+            RarArchiveOptions options
     ) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
@@ -110,7 +110,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     /// @return a new forward-only reader that owns `source`
     /// @throws NullPointerException if `source` is `null`
     public static RarArkivoStreamingReader open(InputStream source) {
-        return open(source, RarArchiveOptions.READ_DEFAULTS);
+        return open(source, RarArchiveOptions.DEFAULT);
     }
 
     /// Opens a streaming RAR reader from an input stream with options.
@@ -119,7 +119,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     /// @param options the read configuration
     /// @return a new forward-only reader that owns `source`
     /// @throws NullPointerException if `source` or `options` is `null`
-    public static RarArkivoStreamingReader open(InputStream source, RarArchiveOptions.Read options) {
+    public static RarArkivoStreamingReader open(InputStream source, RarArchiveOptions options) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return new RarArkivoStreamingReaderImpl(
@@ -135,7 +135,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     /// @return a new forward-only reader that owns `source`
     /// @throws NullPointerException if `source` is `null`
     public static RarArkivoStreamingReader open(ReadableByteChannel source) {
-        return open(source, RarArchiveOptions.READ_DEFAULTS);
+        return open(source, RarArchiveOptions.DEFAULT);
     }
 
     /// Opens a streaming RAR reader from a readable channel with options.
@@ -146,7 +146,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     /// @throws NullPointerException if `source` or `options` is `null`
     public static RarArkivoStreamingReader open(
             ReadableByteChannel source,
-            RarArchiveOptions.Read options
+            RarArchiveOptions options
     ) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");

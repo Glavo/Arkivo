@@ -231,8 +231,8 @@ public final class Rar4CompressionTest {
     }
 
     /// Returns read options containing one fixed UTF-16LE RAR3 password provider.
-    private static RarArchiveOptions.Read passwordOptions(byte[] password) {
-        return RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
+    private static RarArchiveOptions passwordOptions(byte[] password) {
+        return RarArchiveOptions.DEFAULT.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
     }
 
     /// Returns the required path supplied through one Gradle test system property.

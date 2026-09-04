@@ -26,16 +26,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies that archive streaming format implementations are channel-first.
 @NotNullByDefault
-public final class ArkivoFormatStreamingReaderChannelTest {
+public final class ArkivoFormatStreamingReadableChannelTest {
     /// Verifies the channel overload is the implementation contract and the stream overload is an adapter.
     @Test
     public void channelMethodDefinesImplementationContract() throws NoSuchMethodException {
-        Method channelMethod = ArkivoFormat.StreamingReader.class.getMethod(
+        Method channelMethod = ArkivoFormat.StreamingReadable.class.getMethod(
                 "openStreamingReader",
                 ReadableByteChannel.class,
                 ArchiveReadOptions.class
         );
-        Method streamMethod = ArkivoFormat.StreamingReader.class.getMethod(
+        Method streamMethod = ArkivoFormat.StreamingReadable.class.getMethod(
                 "openStreamingReader",
                 InputStream.class,
                 ArchiveReadOptions.class
@@ -49,7 +49,7 @@ public final class ArkivoFormatStreamingReaderChannelTest {
     /// Verifies the default stream convenience method dispatches through the channel implementation.
     @Test
     public void streamFactoryAdaptsToChannelImplementation() throws IOException {
-        TestStreamingReaderFormat format = new TestStreamingReaderFormat();
+        TestStreamingReadableFormat format = new TestStreamingReadableFormat();
         ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{1, 2, 3});
 
         ArkivoStreamingReader reader = format.openStreamingReader(source, ArchiveReadOptions.DEFAULT);
@@ -66,7 +66,7 @@ public final class ArkivoFormatStreamingReaderChannelTest {
     public void pathFactoryOpensAndOwnsChannel() throws IOException {
         Path path = Files.createTempFile("arkivo-reader-format-", ".bin");
         try {
-            TestStreamingReaderFormat format = new TestStreamingReaderFormat();
+        TestStreamingReadableFormat format = new TestStreamingReadableFormat();
             ArkivoStreamingReader reader = format.openStreamingReader(path, ArchiveReadOptions.DEFAULT);
             ReadableByteChannel openedChannel = Objects.requireNonNull(format.openedChannel);
 
@@ -83,7 +83,7 @@ public final class ArkivoFormatStreamingReaderChannelTest {
     public void pathFactoryClosesChannelAfterSetupFailure() throws IOException {
         Path path = Files.createTempFile("arkivo-reader-format-failure-", ".bin");
         try {
-            FailingStreamingReaderFormat format = new FailingStreamingReaderFormat();
+        FailingStreamingReadableFormat format = new FailingStreamingReadableFormat();
 
             assertThrows(IOException.class, () -> format.openStreamingReader(path, ArchiveReadOptions.DEFAULT));
 
@@ -96,7 +96,7 @@ public final class ArkivoFormatStreamingReaderChannelTest {
 
     /// Records the channel received through the abstract format contract.
     @NotNullByDefault
-    private static final class TestStreamingReaderFormat implements ArkivoFormat.StreamingReader {
+    private static final class TestStreamingReadableFormat implements ArkivoFormat.StreamingReadable {
         /// The channel received by the implementation.
         private @Nullable ReadableByteChannel openedChannel;
 
@@ -119,7 +119,7 @@ public final class ArkivoFormatStreamingReaderChannelTest {
 
     /// Records and rejects the channel received through the path adapter.
     @NotNullByDefault
-    private static final class FailingStreamingReaderFormat implements ArkivoFormat.StreamingReader {
+    private static final class FailingStreamingReadableFormat implements ArkivoFormat.StreamingReadable {
         /// The channel received before setup fails.
         private @Nullable ReadableByteChannel openedChannel;
 

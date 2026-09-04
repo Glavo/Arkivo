@@ -46,8 +46,8 @@ public final class ArArkivoFormatTest {
         assertEquals(List.of("a", "ar", "deb"), format.fileExtensions());
         assertEquals(8, format.probeSize());
         assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.FileSystem.Writable);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingReader);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingWriter);
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingReadable);
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingWritable);
 
         byte[] signature = "!<arch>\n".getBytes(StandardCharsets.US_ASCII);
         ByteBuffer prefix = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);

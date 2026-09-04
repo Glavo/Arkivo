@@ -489,13 +489,13 @@ final class DMGArkivoFileSystemTest {
     @Test
     void appliesPartitionSelection() throws IOException {
         Path imagePath = createImage("partition-selection.dmg");
-        DMGArchiveOptions.Read explicit = DMGArchiveOptions.READ_DEFAULTS.withPartitionIndex(0);
+        DMGArchiveOptions explicit = DMGArchiveOptions.DEFAULT.withPartitionIndex(0);
         try (DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(imagePath, explicit)) {
             assertEquals(0, fileSystem.partition().index());
             assertEquals("hello", Files.readString(fileSystem.getPath("/hello.txt")));
         }
 
-        DMGArchiveOptions.Read outside = explicit.withPartitionIndex(1);
+        DMGArchiveOptions outside = explicit.withPartitionIndex(1);
         IOException exception = assertThrows(
                 IOException.class,
                 () -> DMGArkivoFileSystem.open(imagePath, outside)
@@ -522,7 +522,7 @@ final class DMGArkivoFileSystemTest {
     void appliesCatalogEntryLimits() throws IOException {
         Path imagePath = createImage("entry-limits.dmg");
         ArchiveReadLimits countLimits = ArchiveReadLimits.builder().maximumEntryCount(1L).build();
-        DMGArchiveOptions.Read countOptions = DMGArchiveOptions.READ_DEFAULTS.withCommon(
+        DMGArchiveOptions countOptions = DMGArchiveOptions.DEFAULT.withCommon(
                 ArchiveReadOptions.DEFAULT.withLimits(countLimits)
         );
         ArkivoReadLimitException countException = assertThrows(
@@ -533,7 +533,7 @@ final class DMGArkivoFileSystemTest {
         assertEquals(2L, countException.actual());
 
         ArchiveReadLimits sizeLimits = ArchiveReadLimits.builder().maximumEntrySize(8L).build();
-        DMGArchiveOptions.Read sizeOptions = DMGArchiveOptions.READ_DEFAULTS.withCommon(
+        DMGArchiveOptions sizeOptions = DMGArchiveOptions.DEFAULT.withCommon(
                 ArchiveReadOptions.DEFAULT.withLimits(sizeLimits)
         );
         ArkivoReadLimitException sizeException = assertThrows(

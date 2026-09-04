@@ -4,20 +4,13 @@
 package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.archive.ArchiveReadOptions;
-import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.ArkivoFormat.FileSystem;
+import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoFormats;
-import org.glavo.arkivo.archive.ArkivoFormat.PathVolume;
-import org.glavo.arkivo.archive.ArkivoFormat.StreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
-import org.glavo.arkivo.archive.ArkivoFormat.StreamingWriter;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoFormat.VolumeFileSystem;
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
-import org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingReader;
-import org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingWriter;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
@@ -84,7 +77,7 @@ final class StreamingAggregationTest {
     void discoversStreamingFormats() {
         Set<String> formatNames = ArkivoFormats.installed()
                 .stream()
-                .filter(StreamingReader.class::isInstance)
+                .filter(ArkivoFormat.StreamingReadable.class::isInstance)
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
         assertEquals(Set.of("ar", "cpio", "rar", "tar", "zip"), formatNames);
@@ -172,7 +165,7 @@ final class StreamingAggregationTest {
     void discoversStreamingWriterFormats() {
         Set<String> formatNames = ArkivoFormats.installed()
                 .stream()
-                .filter(StreamingWriter.class::isInstance)
+                .filter(ArkivoFormat.StreamingWritable.class::isInstance)
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
         assertEquals(Set.of("7z", "ar", "cpio", "tar", "zip"), formatNames);
@@ -180,10 +173,10 @@ final class StreamingAggregationTest {
 
     /// Verifies the installed formats that advertise transactional multi-volume streaming writers.
     @Test
-    void discoversVolumeStreamingWriterFormats() {
+    void discoversVolumeStreamingWritableFormats() {
         Set<String> formatNames = ArkivoFormats.installed()
                 .stream()
-                .filter(VolumeStreamingWriter.class::isInstance)
+                .filter(ArkivoFormat.VolumeStreamingWritable.class::isInstance)
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
         assertEquals(Set.of("7z", "zip"), formatNames);
@@ -194,7 +187,7 @@ final class StreamingAggregationTest {
     void discoversPathVolumeFormats() {
         Set<String> formatNames = ArkivoFormats.installed()
                 .stream()
-                .filter(PathVolume.class::isInstance)
+                .filter(ArkivoFormat.PathVolume.class::isInstance)
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
         assertEquals(Set.of("7z", "rar", "zip"), formatNames);
@@ -202,10 +195,10 @@ final class StreamingAggregationTest {
 
     /// Verifies the installed formats that advertise multi-volume forward-only readers.
     @Test
-    void discoversVolumeStreamingReaderFormats() {
+    void discoversVolumeStreamingReadableFormats() {
         Set<String> formatNames = ArkivoFormats.installed()
                 .stream()
-                .filter(VolumeStreamingReader.class::isInstance)
+                .filter(ArkivoFormat.VolumeStreamingReadable.class::isInstance)
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
         assertEquals(Set.of("rar", "zip"), formatNames);
@@ -258,8 +251,8 @@ final class StreamingAggregationTest {
         Path archivePath = directory.resolve("sample.zip");
         List<Path> volumePaths = writeSplitZipVolumes(archivePath, target.committedVolumes());
         try {
-            PathVolume format = assertInstanceOf(
-                    PathVolume.class,
+            ArkivoFormat.PathVolume format = assertInstanceOf(
+                    ArkivoFormat.PathVolume.class,
                     ArkivoFormats.find("zip")
             );
             assertEquals(volumePaths, format.discoverVolumePaths(archivePath));
@@ -595,7 +588,7 @@ final class StreamingAggregationTest {
     void discoversVolumeFileSystemFormats() {
         Set<String> formatNames = ArkivoFormats.installed()
                 .stream()
-                .filter(VolumeFileSystem.class::isInstance)
+                .filter(ArkivoFormat.VolumeFileSystem.class::isInstance)
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
         assertEquals(Set.of("7z", "rar", "zip"), formatNames);
@@ -606,7 +599,7 @@ final class StreamingAggregationTest {
     void discoversWritableFileSystemFormats() {
         Set<String> formatNames = ArkivoFormats.installed()
                 .stream()
-                .filter(FileSystem.Writable.class::isInstance)
+                .filter(ArkivoFormat.FileSystem.Writable.class::isInstance)
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
         assertEquals(Set.of("7z", "ar", "tar", "zip"), formatNames);

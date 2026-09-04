@@ -192,7 +192,7 @@ final class LibarchiveCompleteFixtureCorpusTest {
     /// Exercises advertised streaming and random-access readers and returns both dispositions.
     private static String exerciseArchive(ArkivoFormat format, byte @Unmodifiable [] content) {
         ProbeOutcome streamingOutcome = ProbeOutcome.UNAVAILABLE;
-        if (format instanceof ArkivoFormat.StreamingReader streamingFormat) {
+        if (format instanceof ArkivoFormat.StreamingReadable streamingFormat) {
             try (ArkivoStreamingReader reader = streamingFormat.openStreamingReader(
                     new ByteArrayInputStream(content),
                     READ_OPTIONS

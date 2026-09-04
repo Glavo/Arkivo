@@ -44,7 +44,7 @@ final class CompressionDecoderSupportTest {
         );
     }
 
-    /// Verifies maximum-window enforcement through both public and SPI entry points.
+    /// Verifies maximum-window enforcement and memory-derived effective limits.
     @Test
     void validatesMaximumWindowSize() throws IOException {
         CompressionDecoderSupport.requireWindowSize(4_096L, 4_096L);

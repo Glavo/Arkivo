@@ -47,8 +47,8 @@ public final class ZipArkivoFormatTest {
         assertEquals(4, format.probeSize());
         assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.PathVolume);
         assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeFileSystem.Writable);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingReader);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingWriter);
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingReadable);
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingWritable);
 
         for (byte[] signature : List.of(
                 new byte[]{'P', 'K', 3, 4},

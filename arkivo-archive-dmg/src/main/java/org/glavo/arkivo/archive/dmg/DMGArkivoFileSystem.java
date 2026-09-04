@@ -30,7 +30,7 @@ public abstract sealed class DMGArkivoFileSystem extends ArkivoFileSystem permit
     /// Creates a DMG file system base with the selected common thread-safety strategy.
     ///
     /// @param options the validated read options
-    protected DMGArkivoFileSystem(DMGArchiveOptions.Read options) {
+    protected DMGArkivoFileSystem(DMGArchiveOptions options) {
         super(Objects.requireNonNull(options, "options").common().threadSafety());
     }
 
@@ -42,7 +42,7 @@ public abstract sealed class DMGArkivoFileSystem extends ArkivoFileSystem permit
     /// @return a new read-only file system
     /// @throws IOException if the image or selected HFS Plus volume cannot be opened or parsed
     public static DMGArkivoFileSystem open(Path path) throws IOException {
-        return open(path, DMGArchiveOptions.READ_DEFAULTS);
+        return open(path, DMGArchiveOptions.DEFAULT);
     }
 
     /// Opens a path-backed DMG with read options.
@@ -51,7 +51,7 @@ public abstract sealed class DMGArkivoFileSystem extends ArkivoFileSystem permit
     /// @param options the read limits, thread-safety policy, and partition selection
     /// @return a new read-only file system
     /// @throws IOException if the image or selected HFS Plus volume cannot be opened or parsed
-    public static DMGArkivoFileSystem open(Path path, DMGArchiveOptions.Read options) throws IOException {
+    public static DMGArkivoFileSystem open(Path path, DMGArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
         return DMGArkivoFileSystemProvider.instance().openPath(path, options);
@@ -66,7 +66,7 @@ public abstract sealed class DMGArkivoFileSystem extends ArkivoFileSystem permit
     /// @return a new read-only file system
     /// @throws IOException if source adaptation or image parsing fails
     public static DMGArkivoFileSystem open(SeekableByteChannel source) throws IOException {
-        return open(source, DMGArchiveOptions.READ_DEFAULTS);
+        return open(source, DMGArchiveOptions.DEFAULT);
     }
 
     /// Opens a DMG from one owned channel with read options.
@@ -80,7 +80,7 @@ public abstract sealed class DMGArkivoFileSystem extends ArkivoFileSystem permit
     /// @throws IOException if source adaptation or image parsing fails
     public static DMGArkivoFileSystem open(
             SeekableByteChannel source,
-            DMGArchiveOptions.Read options
+            DMGArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
@@ -96,7 +96,7 @@ public abstract sealed class DMGArkivoFileSystem extends ArkivoFileSystem permit
     /// @return a new read-only file system
     /// @throws IOException if the image or selected HFS Plus volume cannot be opened or parsed
     public static DMGArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
-        return open(source, DMGArchiveOptions.READ_DEFAULTS);
+        return open(source, DMGArchiveOptions.DEFAULT);
     }
 
     /// Opens a DMG from an owned repeatable source with read options.
@@ -110,7 +110,7 @@ public abstract sealed class DMGArkivoFileSystem extends ArkivoFileSystem permit
     /// @throws IOException if the image or selected HFS Plus volume cannot be opened or parsed
     public static DMGArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
-            DMGArchiveOptions.Read options
+            DMGArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");

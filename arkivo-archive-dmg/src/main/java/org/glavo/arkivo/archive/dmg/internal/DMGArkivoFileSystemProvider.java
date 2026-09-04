@@ -80,7 +80,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         ArkivoFileSystemProviderSupport.ParsedUri parsed = parseUri(uri, false);
-        DMGArchiveOptions.Read options = readOptions(ArchiveOptions.fromEnvironment(environment));
+        DMGArchiveOptions options = readOptions(ArchiveOptions.fromEnvironment(environment));
         return fileSystems.open(parsed.archiveUri(), closeAction -> openPath(
                 parsed.archivePath(),
                 parsed.archiveUri(),
@@ -103,7 +103,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     /// @param options the read and partition-selection options
     /// @return a new unregistered read-only file system
     /// @throws IOException if the image or selected HFS Plus volume cannot be opened or parsed
-    public DMGArkivoFileSystem openPath(Path path, DMGArchiveOptions.Read options) throws IOException {
+    public DMGArkivoFileSystem openPath(Path path, DMGArchiveOptions options) throws IOException {
         return openPath(path, path.toUri().normalize(), options, () -> {
         });
     }
@@ -112,7 +112,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     private DMGArkivoFileSystem openPath(
             Path path,
             URI archiveUri,
-            DMGArchiveOptions.Read options,
+            DMGArchiveOptions options,
             Runnable closeAction
     ) throws IOException {
         Objects.requireNonNull(path, "path");
@@ -284,7 +284,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Converts raw NIO environment options into the public DMG option model.
-    private static DMGArchiveOptions.Read readOptions(ArchiveOptions options) {
+    private static DMGArchiveOptions readOptions(ArchiveOptions options) {
         ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(
                 ArchiveEnvironmentOptions.THREAD_SAFETY,
                 ArkivoFileSystemThreadSafety.CONCURRENT_READ
@@ -307,7 +307,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
                 DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX
         );
         ArchiveReadOptions common = new ArchiveReadOptions(threadSafety, null, null, null, limits);
-        return new DMGArchiveOptions.Read(common, partitionIndex);
+        return new DMGArchiveOptions(common, partitionIndex);
     }
 
     /// Returns the DMG implementation owning a path.

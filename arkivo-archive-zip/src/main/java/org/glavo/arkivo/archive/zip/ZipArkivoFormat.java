@@ -6,12 +6,8 @@ package org.glavo.arkivo.archive.zip;
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArkivoFormat.FileSystem;
-import org.glavo.arkivo.archive.ArkivoFormat.PathVolume;
-import org.glavo.arkivo.archive.ArkivoFormat.VolumeFileSystem;
+import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingReader;
-import org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingWriter;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.internal.ZipSplitVolumePaths;
@@ -39,11 +35,11 @@ import java.util.Objects;
 /// [ZipArkivoStreamingWriter].
 @NotNullByDefault
 public final class ZipArkivoFormat implements
-        PathVolume,
-        FileSystem.Writable,
-        VolumeFileSystem.Writable,
-        VolumeStreamingReader,
-        VolumeStreamingWriter {
+        ArkivoFormat.PathVolume,
+        ArkivoFormat.FileSystem.Writable,
+        ArkivoFormat.VolumeFileSystem.Writable,
+        ArkivoFormat.VolumeStreamingReadable,
+        ArkivoFormat.VolumeStreamingWritable {
     /// The stable ZIP format name.
     public static final String NAME = "zip";
 

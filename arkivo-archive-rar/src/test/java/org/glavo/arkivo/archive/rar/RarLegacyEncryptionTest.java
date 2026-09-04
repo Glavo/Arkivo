@@ -422,8 +422,8 @@ public final class RarLegacyEncryptionTest {
     }
 
     /// Returns read options with a fixed archive-level legacy password.
-    private static RarArchiveOptions.Read passwordOptions(byte[] password) {
-        return RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
+    private static RarArchiveOptions passwordOptions(byte[] password) {
+        return RarArchiveOptions.DEFAULT.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
     }
 
     /// Stores one synthetic RAR4 physical file part.

@@ -229,8 +229,9 @@ public final class ArkivoFormats {
                     options
             );
             if (transformed.outerCompressionLayers() == 1L
-                    && transformed.format() instanceof ArkivoFormat.FileSystem.OuterCompressed outerCompressed) {
-                return outerCompressed.open(path, options);
+                    && transformed.format().supportsOuterCompression()
+                    && transformed.format() instanceof ArkivoFormat.FileSystem fileSystemFormat) {
+                return fileSystemFormat.open(path, options);
             }
             return openTransformedFileSystem(Files.newByteChannel(path, StandardOpenOption.READ), options);
         }
@@ -350,8 +351,9 @@ public final class ArkivoFormats {
             if (format == null) {
                 TransformedArchive transformed = detectTransformedArchive(owned.openChannel(), options);
                 if (transformed.outerCompressionLayers() == 1L
-                        && transformed.format() instanceof ArkivoFormat.FileSystem.OuterCompressed outerCompressed) {
-                    return outerCompressed.open(owned, options);
+                        && transformed.format().supportsOuterCompression()
+                        && transformed.format() instanceof ArkivoFormat.FileSystem fileSystemFormat) {
+                    return fileSystemFormat.open(owned, options);
                 }
                 ArkivoFileSystem fileSystem;
                 try (SeekableByteChannel channel = owned.openChannel()) {
@@ -538,7 +540,7 @@ public final class ArkivoFormats {
             );
             format = transformed.format();
             if (transformed.outerCompressionLayers() != 1L
-                    || !(format instanceof ArkivoFormat.FileSystem.OuterCompressed)) {
+                    || !format.supportsOuterCompression()) {
                 throw new UnsupportedOperationException(
                         "Archive format does not support updating an outer-compressed source: " + format.name()
                 );
@@ -838,7 +840,7 @@ public final class ArkivoFormats {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return requireStreamingReaderFormat(formatName).openStreamingReader(path, options);
+        return requireStreamingReadableFormat(formatName).openStreamingReader(path, options);
     }
 
     /// Detects and opens a streaming reader from an owned multi-volume source.
@@ -879,7 +881,7 @@ public final class ArkivoFormats {
                 closeSupersededSource(owned, reader);
                 return reader;
             }
-            if (!(format instanceof ArkivoFormat.VolumeStreamingReader readerFormat)) {
+            if (!(format instanceof ArkivoFormat.VolumeStreamingReadable readerFormat)) {
                 throw new UnsupportedOperationException(
                         "Archive format does not support multi-volume forward-only reading: " + format.name()
                 );
@@ -928,7 +930,7 @@ public final class ArkivoFormats {
         Objects.requireNonNull(options, "options");
         OwnedArchiveSources.OwnedVolumeSource owned = OwnedArchiveSources.own(source);
         try {
-            return requireVolumeStreamingReaderFormat(formatName)
+            return requireVolumeStreamingReadableFormat(formatName)
                     .openStreamingReader(owned, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeOwnedSourceAfterFailedOpen(owned, exception);
@@ -1059,7 +1061,7 @@ public final class ArkivoFormats {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         try {
-            return requireStreamingReaderFormat(formatName).openStreamingReader(source, options);
+            return requireStreamingReadableFormat(formatName).openStreamingReader(source, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterFailedOpen(source, exception);
             throw exception;
@@ -1142,7 +1144,7 @@ public final class ArkivoFormats {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
         try {
-            return requireStreamingWriterFormat(formatName).openStreamingWriter(target, options);
+            return requireStreamingWritableFormat(formatName).openStreamingWriter(target, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterFailedOpen(target, exception);
             throw exception;
@@ -1226,7 +1228,7 @@ public final class ArkivoFormats {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
         requirePositiveSplitSize(splitSize);
-        return requireVolumeStreamingWriterFormat(formatName)
+        return requireVolumeStreamingWritableFormat(formatName)
                 .openStreamingWriter(target, splitSize, options);
     }
 
@@ -1372,7 +1374,7 @@ public final class ArkivoFormats {
             ReadableByteChannel source,
             ArchiveReadOptions options
     ) throws IOException {
-        if (!(format instanceof ArkivoFormat.StreamingReader readerFormat)) {
+        if (!(format instanceof ArkivoFormat.StreamingReadable readerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support forward-only reading: " + format.name()
             );
@@ -1407,7 +1409,7 @@ public final class ArkivoFormats {
                     source.close();
                     continue;
                 }
-                if (!(candidate instanceof ArkivoFormat.VolumeStreamingReader readerFormat)) {
+                if (!(candidate instanceof ArkivoFormat.VolumeStreamingReadable readerFormat)) {
                     throw new UnsupportedOperationException(
                             "Archive format does not support multi-volume forward-only reading: " + candidate.name()
                     );
@@ -1447,12 +1449,12 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring streaming reader support.
-    private static ArkivoFormat.StreamingReader requireStreamingReaderFormat(String formatName) {
+    private static ArkivoFormat.StreamingReadable requireStreamingReadableFormat(String formatName) {
         @Nullable ArkivoFormat format = find(formatName);
         if (format == null) {
             throw new IllegalArgumentException("Unknown archive format: " + formatName);
         }
-        if (!(format instanceof ArkivoFormat.StreamingReader readerFormat)) {
+        if (!(format instanceof ArkivoFormat.StreamingReadable readerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support forward-only reading: " + format.name()
             );
@@ -1461,12 +1463,12 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring streaming writer support.
-    private static ArkivoFormat.StreamingWriter requireStreamingWriterFormat(String formatName) {
+    private static ArkivoFormat.StreamingWritable requireStreamingWritableFormat(String formatName) {
         @Nullable ArkivoFormat format = find(formatName);
         if (format == null) {
             throw new IllegalArgumentException("Unknown archive format: " + formatName);
         }
-        if (!(format instanceof ArkivoFormat.StreamingWriter writerFormat)) {
+        if (!(format instanceof ArkivoFormat.StreamingWritable writerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support forward-only writing: " + format.name()
             );
@@ -1528,11 +1530,11 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring multi-volume streaming reader support.
-    private static ArkivoFormat.VolumeStreamingReader requireVolumeStreamingReaderFormat(
+    private static ArkivoFormat.VolumeStreamingReadable requireVolumeStreamingReadableFormat(
             String formatName
     ) {
-        ArkivoFormat.StreamingReader format = requireStreamingReaderFormat(formatName);
-        if (!(format instanceof ArkivoFormat.VolumeStreamingReader readerFormat)) {
+        ArkivoFormat.StreamingReadable format = requireStreamingReadableFormat(formatName);
+        if (!(format instanceof ArkivoFormat.VolumeStreamingReadable readerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support multi-volume forward-only reading: " + format.name()
             );
@@ -1541,11 +1543,11 @@ public final class ArkivoFormats {
     }
 
     /// Returns the named installed format after requiring multi-volume streaming writer support.
-    private static ArkivoFormat.VolumeStreamingWriter requireVolumeStreamingWriterFormat(
+    private static ArkivoFormat.VolumeStreamingWritable requireVolumeStreamingWritableFormat(
             String formatName
     ) {
-        ArkivoFormat.StreamingWriter format = requireStreamingWriterFormat(formatName);
-        if (!(format instanceof ArkivoFormat.VolumeStreamingWriter writerFormat)) {
+        ArkivoFormat.StreamingWritable format = requireStreamingWritableFormat(formatName);
+        if (!(format instanceof ArkivoFormat.VolumeStreamingWritable writerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support multi-volume forward-only writing: " + format.name()
             );

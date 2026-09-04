@@ -35,8 +35,8 @@ public final class CPIOArkivoFormatTest {
         assertEquals(CPIOArkivoFormat.NAME, format.name());
         assertEquals(List.of("cpio"), format.fileExtensions());
         assertEquals(26, format.probeSize());
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingReader);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingWriter);
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingReadable);
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingWritable);
 
         for (String signature : List.of("070701", "070702", "070707")) {
             assertTrue(format.matches(ByteBuffer.wrap(signature.getBytes(StandardCharsets.US_ASCII))), signature);

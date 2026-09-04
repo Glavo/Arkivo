@@ -47,6 +47,7 @@ public final class ArkivoFormatDefaultsTest {
 
         assertEquals(List.of(), format.aliases());
         assertEquals(List.of("test"), format.fileExtensions());
+        assertFalse(format.supportsOuterCompression());
         assertEquals(0, format.probeSize());
         assertFalse(format.matches(prefix));
         assertEquals(1, prefix.position());
@@ -209,8 +210,8 @@ public final class ArkivoFormatDefaultsTest {
     /// Records dispatch through every abstract factory contract and stops before constructing an archive object.
     @NotNullByDefault
     private static final class RecordingFormat implements
-            ArkivoFormat.VolumeStreamingReader,
-            ArkivoFormat.VolumeStreamingWriter,
+            ArkivoFormat.VolumeStreamingReadable,
+            ArkivoFormat.VolumeStreamingWritable,
             ArkivoFormat.FileSystem.Writable,
             ArkivoFormat.VolumeFileSystem.Writable {
         /// The exception used to stop a factory after recording its arguments.

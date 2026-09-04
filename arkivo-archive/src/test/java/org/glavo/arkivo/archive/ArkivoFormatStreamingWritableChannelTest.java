@@ -22,16 +22,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies that archive streaming writer formats are channel-first.
 @NotNullByDefault
-public final class ArkivoFormatStreamingWriterChannelTest {
+public final class ArkivoFormatStreamingWritableChannelTest {
     /// Verifies the channel overload is the implementation contract and the stream overload is an adapter.
     @Test
     public void channelMethodDefinesImplementationContract() throws NoSuchMethodException {
-        Method channelMethod = ArkivoFormat.StreamingWriter.class.getMethod(
+        Method channelMethod = ArkivoFormat.StreamingWritable.class.getMethod(
                 "openStreamingWriter",
                 WritableByteChannel.class,
                 ArchiveCreateOptions.class
         );
-        Method streamMethod = ArkivoFormat.StreamingWriter.class.getMethod(
+        Method streamMethod = ArkivoFormat.StreamingWritable.class.getMethod(
                 "openStreamingWriter",
                 OutputStream.class,
                 ArchiveCreateOptions.class
@@ -45,7 +45,7 @@ public final class ArkivoFormatStreamingWriterChannelTest {
     /// Verifies the default stream convenience method dispatches through the channel implementation.
     @Test
     public void streamFactoryAdaptsToChannelImplementation() throws IOException {
-        TestStreamingWriterFormat format = new TestStreamingWriterFormat();
+        TestStreamingWritableFormat format = new TestStreamingWritableFormat();
         ByteArrayOutputStream target = new ByteArrayOutputStream();
 
         ArkivoStreamingWriter writer = format.openStreamingWriter(target, ArchiveCreateOptions.DEFAULT);
@@ -59,7 +59,7 @@ public final class ArkivoFormatStreamingWriterChannelTest {
 
     /// Records the channel received through the abstract writer contract.
     @NotNullByDefault
-    private static final class TestStreamingWriterFormat implements ArkivoFormat.StreamingWriter {
+    private static final class TestStreamingWritableFormat implements ArkivoFormat.StreamingWritable {
         /// The channel received by the implementation.
         private @Nullable WritableByteChannel openedChannel;
 

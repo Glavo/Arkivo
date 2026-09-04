@@ -11,9 +11,10 @@ import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -35,6 +36,7 @@ import java.util.Set;
 import java.util.SplittableRandom;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -77,36 +79,42 @@ final class MalformedArchiveRobustnessTest {
     /// Reproducible seed for archive mutations.
     private static final long MUTATION_SEED = 0x41524b49564f4d41L;
 
-    /// Exercises representative truncations and mutations through every public archive read path.
-    @Test
+    /// Exercises representative truncations and mutations through every public read path for one archive format.
+    ///
+    /// @param format the stable archive format name
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("formats")
     @Timeout(value = 120, unit = TimeUnit.SECONDS)
-    void boundsAndNormalizesMalformedArchiveFailures() throws IOException {
-        for (String format : FORMATS) {
-            byte[] validArchive = createArchive(format);
-            Path archivePath = Files.createTempFile("arkivo-malformed-" + format + "-", ".bin");
-            try {
-                Files.write(archivePath, validArchive, StandardOpenOption.TRUNCATE_EXISTING);
-                if (FILE_SYSTEM_FORMATS.contains(format)) {
-                    assertEquals(CONTENT.length, readFileSystem(format, archivePath), format);
-                }
-                if (STREAMING_FORMATS.contains(format)) {
-                    assertEquals(CONTENT.length, readStreaming(format, validArchive), format);
-                }
-
-                for (int length : truncationLengths(validArchive.length)) {
-                    byte[] truncated = Arrays.copyOf(validArchive, length);
-                    exerciseMalformedArchive(format, archivePath, truncated, "truncation@" + length);
-                }
-
-                SplittableRandom random = new SplittableRandom(MUTATION_SEED ^ format.hashCode());
-                for (int index = 0; index < MUTATION_COUNT; index++) {
-                    byte[] mutated = mutate(validArchive, random);
-                    exerciseMalformedArchive(format, archivePath, mutated, "mutation#" + index);
-                }
-            } finally {
-                Files.deleteIfExists(archivePath);
+    void boundsAndNormalizesMalformedArchiveFailures(String format) throws IOException {
+        byte[] validArchive = createArchive(format);
+        Path archivePath = Files.createTempFile("arkivo-malformed-" + format + "-", ".bin");
+        try {
+            Files.write(archivePath, validArchive, StandardOpenOption.TRUNCATE_EXISTING);
+            if (FILE_SYSTEM_FORMATS.contains(format)) {
+                assertEquals(CONTENT.length, readFileSystem(format, archivePath), format);
             }
+            if (STREAMING_FORMATS.contains(format)) {
+                assertEquals(CONTENT.length, readStreaming(format, validArchive), format);
+            }
+
+            for (int length : truncationLengths(validArchive.length)) {
+                byte[] truncated = Arrays.copyOf(validArchive, length);
+                exerciseMalformedArchive(format, archivePath, truncated, "truncation@" + length);
+            }
+
+            SplittableRandom random = new SplittableRandom(MUTATION_SEED ^ format.hashCode());
+            for (int index = 0; index < MUTATION_COUNT; index++) {
+                byte[] mutated = mutate(validArchive, random);
+                exerciseMalformedArchive(format, archivePath, mutated, "mutation#" + index);
+            }
+        } finally {
+            Files.deleteIfExists(archivePath);
         }
+    }
+
+    /// Returns stable archive format names as independent parameterized invocations.
+    private static Stream<String> formats() {
+        return FORMATS.stream();
     }
 
     /// Creates one valid single-entry archive entirely in memory.
@@ -116,8 +124,8 @@ final class MalformedArchiveRobustnessTest {
         }
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(format, output)) {
-            var writerEntry116 = writer.beginFile("payload.bin");
-            try (OutputStream body = writerEntry116.openOutputStream()) {
+            var entry = writer.beginFile("payload.bin");
+            try (OutputStream body = entry.openOutputStream()) {
                 body.write(CONTENT);
             }
         }

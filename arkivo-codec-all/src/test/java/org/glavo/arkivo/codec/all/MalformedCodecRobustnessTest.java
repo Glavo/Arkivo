@@ -11,9 +11,10 @@ import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -25,6 +26,7 @@ import java.util.List;
 import java.util.SplittableRandom;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -49,33 +51,40 @@ final class MalformedCodecRobustnessTest {
     /// Reproducible seed for codec mutations.
     private static final long MUTATION_SEED = 0x434f4445434d5554L;
 
-    /// Exercises representative truncations and mutations through named and detected decoder factories.
-    @Test
+    /// Exercises representative truncations and mutations through one format's named and detected decoder factories.
+    ///
+    /// @param formatName the stable name of the installed compression format to exercise
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("installedFormats")
     @Timeout(value = 120, unit = TimeUnit.SECONDS)
-    void boundsAndNormalizesMalformedCodecFailures() throws IOException {
-        for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
-            byte[] validFrame = compress(codec);
-            CompressionCodec<?> decoderCodec = boundedCodec(
-                    CodecContractConfigurations.decoderCodec(codec, CONTENT.length)
-            );
-            assertArrayEquals(CONTENT, decodeNamed(decoderCodec, validFrame), codec.format().name());
-            boolean detectable = codec.format().matches(ByteBuffer.wrap(validFrame).asReadOnlyBuffer());
-            if (detectable) {
-                assertArrayEquals(CONTENT, decodeDetected(validFrame), codec.format().name());
-            }
-
-            for (int length : truncationLengths(validFrame.length)) {
-                byte[] truncated = Arrays.copyOf(validFrame, length);
-                exerciseMalformedFrame(codec, decoderCodec, truncated, detectable, "truncation@" + length);
-            }
-
-            SplittableRandom random = new SplittableRandom(MUTATION_SEED ^ codec.format().name().hashCode());
-            for (int index = 0; index < MUTATION_COUNT; index++) {
-                byte[] mutated = mutate(validFrame, random);
-                exerciseMalformedFrame(codec, decoderCodec, mutated, detectable, "mutation#" + index);
-            }
+    void boundsAndNormalizesMalformedCodecFailures(String formatName) throws IOException {
+        CompressionFormat format = CompressionFormats.require(formatName);
+        CompressionCodec<?> codec = format.defaultCodec();
+        byte[] validFrame = compress(codec);
+        CompressionCodec<?> decoderCodec = boundedCodec(
+                CodecContractConfigurations.decoderCodec(codec, CONTENT.length)
+        );
+        assertArrayEquals(CONTENT, decodeNamed(decoderCodec, validFrame), codec.format().name());
+        boolean detectable = codec.format().matches(ByteBuffer.wrap(validFrame).asReadOnlyBuffer());
+        if (detectable) {
+            assertArrayEquals(CONTENT, decodeDetected(validFrame), codec.format().name());
         }
+
+        for (int length : truncationLengths(validFrame.length)) {
+            byte[] truncated = Arrays.copyOf(validFrame, length);
+            exerciseMalformedFrame(codec, decoderCodec, truncated, detectable, "truncation@" + length);
+        }
+
+        SplittableRandom random = new SplittableRandom(MUTATION_SEED ^ codec.format().name().hashCode());
+        for (int index = 0; index < MUTATION_COUNT; index++) {
+            byte[] mutated = mutate(validFrame, random);
+            exerciseMalformedFrame(codec, decoderCodec, mutated, detectable, "mutation#" + index);
+        }
+    }
+
+    /// Returns installed compression format names as independent parameterized invocations.
+    private static Stream<String> installedFormats() {
+        return CompressionFormats.installed().stream().map(CompressionFormat::name);
     }
 
     /// Compresses the shared plaintext with one codec's default encoder.

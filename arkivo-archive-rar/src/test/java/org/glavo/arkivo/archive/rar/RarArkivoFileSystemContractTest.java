@@ -279,7 +279,7 @@ final class RarArkivoFileSystemContractTest {
         }
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archive,
-                RarArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(detector)
+                RarArchiveOptions.DEFAULT.withLegacyCharsetDetector(detector)
         )) {
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/ä")));
         }

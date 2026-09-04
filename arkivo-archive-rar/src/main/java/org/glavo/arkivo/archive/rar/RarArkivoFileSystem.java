@@ -35,7 +35,7 @@ import java.util.Objects;
 /// 5 with algorithm versions 0 and 1 and dictionaries up to 768 MiB are also readable. Both formats support solid and
 /// split compressed entries.
 /// RAR 3.x AES-128 and RAR5 AES-256 encrypted headers and supported entries, including split entries, use
-/// [RarArchiveOptions.Read#passwordProvider()]. Legacy RAR 1.3, 1.5, and 2.x file-data encryption is also readable for
+/// [RarArchiveOptions#passwordProvider()]. Legacy RAR 1.3, 1.5, and 2.x file-data encryption is also readable for
 /// otherwise supported entries.
 /// Materialized bodies validate available CRC32 values and RAR5 BLAKE2sp hashes over unpacked plaintext, including
 /// password-dependent checksums on encrypted entries. RAR5 hard-link and file-copy records targeting an indexed regular
@@ -75,7 +75,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// @return a read-only file system for the archive
     /// @throws IOException if the archive or any discovered volume cannot be opened or parsed
     public static RarArkivoFileSystem open(Path path) throws IOException {
-        return open(path, RarArchiveOptions.READ_DEFAULTS);
+        return open(path, RarArchiveOptions.DEFAULT);
     }
 
     /// Opens a RAR archive file system with read options.
@@ -84,7 +84,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// @param options the read configuration
     /// @return a read-only file system for the archive
     /// @throws IOException if the archive or any discovered volume cannot be opened or parsed
-    public static RarArkivoFileSystem open(Path path, RarArchiveOptions.Read options) throws IOException {
+    public static RarArkivoFileSystem open(Path path, RarArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
         return RarArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
@@ -99,7 +99,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// @return a read-only file system that owns `source`
     /// @throws IOException if the archive cannot be read; setup failure closes `source`
     public static RarArkivoFileSystem open(SeekableByteChannel source) throws IOException {
-        return open(source, RarArchiveOptions.READ_DEFAULTS);
+        return open(source, RarArchiveOptions.DEFAULT);
     }
 
     /// Opens a read-only RAR archive file system directly from one owned seekable channel with options.
@@ -110,7 +110,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// @throws IOException if the archive cannot be read; setup failure closes `source`
     public static RarArkivoFileSystem open(
             SeekableByteChannel source,
-            RarArchiveOptions.Read options
+            RarArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
@@ -125,7 +125,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// @return a read-only file system that owns `source`
     /// @throws IOException if the archive cannot be opened; setup failure closes `source`
     public static RarArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
-        return open(source, RarArchiveOptions.READ_DEFAULTS);
+        return open(source, RarArchiveOptions.DEFAULT);
     }
 
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source with options.
@@ -138,7 +138,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// @throws IOException if the archive cannot be opened; setup failure closes `source`
     public static RarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
-            RarArchiveOptions.Read options
+            RarArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         return open((ArkivoVolumeSource) source, options);
@@ -150,7 +150,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// @return a read-only file system that owns `volumes`
     /// @throws IOException if a volume cannot be opened or the archive cannot be parsed; setup failure closes `volumes`
     public static RarArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
-        return open(volumes, RarArchiveOptions.READ_DEFAULTS);
+        return open(volumes, RarArchiveOptions.DEFAULT);
     }
 
     /// Opens a multi-volume RAR archive file system with options.
@@ -161,7 +161,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// @param options the read configuration
     /// @return a read-only file system that owns `volumes`
     /// @throws IOException if a volume cannot be opened or the archive cannot be parsed; setup failure closes `volumes`
-    public static RarArkivoFileSystem open(ArkivoVolumeSource volumes, RarArchiveOptions.Read options) throws IOException {
+    public static RarArkivoFileSystem open(ArkivoVolumeSource volumes, RarArchiveOptions options) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
         Objects.requireNonNull(options, "options");
         return RarArkivoFileSystemImpl.open(
@@ -172,7 +172,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Converts strongly typed RAR read settings for the internal parser.
-    static ArchiveOptions toInternalOptions(RarArchiveOptions.Read options) {
+    static ArchiveOptions toInternalOptions(RarArchiveOptions options) {
         ArchiveOptions result = ArchiveOptions.fromReadOptions(options.common())
                 .with(LEGACY_CHARSET_DETECTOR, options.legacyCharsetDetector());
         return options.passwordProvider() == null

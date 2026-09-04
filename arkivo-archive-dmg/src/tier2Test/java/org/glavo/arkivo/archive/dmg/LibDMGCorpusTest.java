@@ -89,7 +89,7 @@ final class LibDMGCorpusTest {
         Path dmgPath = root.resolve("test/attribution_reference/hdiutila.hfs.dmg");
         ArchiveReadLimits limits = ArchiveReadLimits.builder().maximumMetadataSize(512L).build();
         ArchiveReadOptions common = ArchiveReadOptions.DEFAULT.withLimits(limits);
-        DMGArchiveOptions.Read options = DMGArchiveOptions.READ_DEFAULTS.withCommon(common);
+        DMGArchiveOptions options = DMGArchiveOptions.DEFAULT.withCommon(common);
 
         ArkivoReadLimitException exception = assertThrows(
                 ArkivoReadLimitException.class,

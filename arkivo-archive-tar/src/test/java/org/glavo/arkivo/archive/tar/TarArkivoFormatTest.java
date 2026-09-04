@@ -45,9 +45,9 @@ public final class TarArkivoFormatTest {
         ), format.fileExtensions());
         assertEquals(1024, format.probeSize());
         assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.FileSystem.Writable);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.FileSystem.OuterCompressed);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingReader);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingWriter);
+        assertTrue(format.supportsOuterCompression());
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingReadable);
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.StreamingWritable);
 
         ByteBuffer prefix = ByteBuffer.allocate(1032).order(ByteOrder.LITTLE_ENDIAN);
         prefix.position(3).put(new byte[1024]).limit(1027);

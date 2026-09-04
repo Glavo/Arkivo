@@ -47,7 +47,7 @@ public final class RarArkivoFormatTest {
         assertEquals(rar5.length, format.probeSize());
         assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.PathVolume);
         assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeFileSystem);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingReader);
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingReadable);
         assertTrue(format.matches(ByteBuffer.wrap(rar4)));
         assertTrue(format.matches(ByteBuffer.wrap(rar5)));
 

@@ -19,13 +19,13 @@ final class DMGArchiveOptionsTest {
     /// Verifies unchanged values reuse the record while changed values preserve independent fields.
     @Test
     void derivesCommonAndPartitionConfiguration() {
-        DMGArchiveOptions.Read defaults = DMGArchiveOptions.READ_DEFAULTS;
+        DMGArchiveOptions defaults = DMGArchiveOptions.DEFAULT;
         assertSame(defaults, defaults.withCommon(ArchiveReadOptions.DEFAULT));
         assertSame(defaults, defaults.withPartitionIndex(DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX));
 
         ArchiveReadOptions common = ArchiveReadOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT);
-        DMGArchiveOptions.Read configured = defaults.withCommon(common).withPartitionIndex(2);
+        DMGArchiveOptions configured = defaults.withCommon(common).withPartitionIndex(2);
         assertNotSame(defaults, configured);
         assertSame(common, configured.common());
         assertEquals(2, configured.partitionIndex());
@@ -37,12 +37,12 @@ final class DMGArchiveOptionsTest {
     void rejectsInvalidConfiguration() {
         assertThrows(
                 NullPointerException.class,
-                () -> new DMGArchiveOptions.Read(null, DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX)
+                () -> new DMGArchiveOptions(null, DMGArchiveOptions.AUTOMATIC_PARTITION_INDEX)
         );
-        assertThrows(NullPointerException.class, () -> DMGArchiveOptions.READ_DEFAULTS.withCommon(null));
+        assertThrows(NullPointerException.class, () -> DMGArchiveOptions.DEFAULT.withCommon(null));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> DMGArchiveOptions.READ_DEFAULTS.withPartitionIndex(-2)
+                () -> DMGArchiveOptions.DEFAULT.withPartitionIndex(-2)
         );
     }
 }

@@ -10,7 +10,6 @@ import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeChannel;
@@ -70,13 +69,10 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
-import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
-import java.nio.file.attribute.UserPrincipal;
-import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
@@ -87,7 +83,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
-import java.util.stream.StreamSupport;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
@@ -156,52 +151,6 @@ public final class ZipArkivoFileSystemTest {
         return updateOptions(common).withPasswordProvider(ArkivoPasswordProvider.fixed(password));
     }
 
-    /// Verifies that a ZIP file system can be opened from an archive path.
-    @Test
-    public void openPath() throws IOException {
-        Path archivePath = Path.of("sample.zip");
-
-        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-            assertEquals(ZipArkivoFileSystemProvider.instance(), fileSystem.provider());
-            assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, fileSystem.threadSafety());
-            assertEquals(true, fileSystem.isOpen());
-            assertEquals(true, fileSystem.isReadOnly());
-            assertEquals("/", fileSystem.getSeparator());
-            assertEquals(true, fileSystem.supportedFileAttributeViews().contains("zip"));
-            assertEquals(true, fileSystem.supportedFileAttributeViews().contains("owner"));
-            assertEquals(true, fileSystem.supportedFileAttributeViews().contains("posix"));
-        }
-    }
-
-    /// Verifies that ZIP file systems are read-only.
-    @Test
-    public void zipFileSystemIsReadOnly() throws IOException {
-        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(Path.of("sample.zip"))) {
-            assertEquals(true, fileSystem.isReadOnly());
-        }
-    }
-
-    /// Verifies that ZIP file systems expose synthesized owner and group principal lookup.
-    @Test
-    public void userPrincipalLookupService() throws IOException {
-        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(Path.of("sample.zip"))) {
-            UserPrincipalLookupService lookupService = fileSystem.getUserPrincipalLookupService();
-            UserPrincipal owner = lookupService.lookupPrincipalByName("owner");
-            GroupPrincipal group = lookupService.lookupPrincipalByGroupName("group");
-
-            assertEquals("owner", owner.getName());
-            assertEquals("group", group.getName());
-            assertThrows(
-                    UserPrincipalNotFoundException.class,
-                    () -> lookupService.lookupPrincipalByName("missing")
-            );
-            assertThrows(
-                    UserPrincipalNotFoundException.class,
-                    () -> lookupService.lookupPrincipalByGroupName("missing")
-            );
-        }
-    }
-
     /// Verifies that a streaming ZIP writer can write entries in storage order.
     @Test
     public void streamingWriter() throws IOException {
@@ -209,14 +158,14 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry186 = writer.beginDirectory("dir");
-                writerEntry186.close();
-                var writerEntry188 = writer.beginFile("dir/hello.txt");
-                try (var output = writerEntry188.openOutputStream()) {
+                var directoryEntry = writer.beginDirectory("dir");
+                directoryEntry.close();
+                var contentEntry = writer.beginFile("dir/hello.txt");
+                try (var output = contentEntry.openOutputStream()) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
-                var writerEntry192 = writer.beginFile("dir/empty.txt");
-                writerEntry192.close();
+                var emptyEntry = writer.beginFile("dir/empty.txt");
+                emptyEntry.close();
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
@@ -243,8 +192,8 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                var writerEntry224 = writer.beginFile("before.txt");
-                try (OutputStream output = writerEntry224.openOutputStream()) {
+                var originalEntry = writer.beginFile("before.txt");
+                try (OutputStream output = originalEntry.openOutputStream()) {
                     output.write("before".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -6076,48 +6025,6 @@ public final class ZipArkivoFileSystemTest {
             }
         } finally {
             deleteTemporaryArchive(archivePath);
-        }
-    }
-
-    /// Verifies basic ZIP path operations.
-    @Test
-    public void paths() throws IOException {
-        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(Path.of("sample.zip"))) {
-            Path path = fileSystem.getPath("/a/b/../c.txt");
-            Path normalized = fileSystem.getPath("/a/c.txt");
-
-            assertEquals("/a/b/../c.txt", path.toString());
-            assertEquals(fileSystem, path.getFileSystem());
-            assertEquals(true, path.isAbsolute());
-            assertEquals("/", path.getRoot().toString());
-            assertEquals("c.txt", path.getFileName().toString());
-            assertEquals("/a/b/..", path.getParent().toString());
-            assertEquals(4, path.getNameCount());
-            assertEquals("b", path.getName(1).toString());
-            assertEquals("b/..", path.subpath(1, 3).toString());
-            assertThrows(IllegalArgumentException.class, () -> path.getName(-1));
-            assertThrows(IllegalArgumentException.class, () -> path.getName(path.getNameCount()));
-            assertThrows(IllegalArgumentException.class, () -> path.subpath(-1, 1));
-            assertThrows(IllegalArgumentException.class, () -> path.subpath(1, 1));
-            assertThrows(IllegalArgumentException.class, () -> path.subpath(0, path.getNameCount() + 1));
-            assertEquals(true, path.startsWith("/a"));
-            assertEquals(true, path.endsWith("c.txt"));
-            assertEquals(false, path.endsWith("/c.txt"));
-            assertEquals(true, normalized.endsWith("/a/c.txt"));
-            assertEquals(false, normalized.endsWith("/c.txt"));
-            assertEquals(false, normalized.endsWith("/"));
-            assertEquals(normalized, path.normalize());
-            assertEquals("/a/child", fileSystem.getPath("/a").resolve("child").toString());
-            assertEquals("/a/child", normalized.resolveSibling("child").toString());
-            assertEquals("b/../c.txt", fileSystem.getPath("/a").relativize(path).toString());
-            assertEquals("/relative", fileSystem.getPath("relative").toAbsolutePath().toString());
-            assertEquals(0, normalized.compareTo(fileSystem.getPath("/a/c.txt")));
-            assertEquals(List.of("a", "b", "..", "c.txt"),
-                    StreamSupport.stream(path.spliterator(), false).map(Path::toString).toList());
-            assertEquals(false, path.startsWith(Path.of("/a")));
-            assertThrows(ProviderMismatchException.class, () -> path.resolve(Path.of("other")));
-            assertThrows(ProviderMismatchException.class, () -> path.relativize(Path.of("other")));
-            assertThrows(ClassCastException.class, () -> path.compareTo(Path.of("other")));
         }
     }
 

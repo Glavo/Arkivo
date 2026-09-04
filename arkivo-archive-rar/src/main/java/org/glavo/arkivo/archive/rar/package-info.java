@@ -6,7 +6,7 @@
 /// [org.glavo.arkivo.archive.rar.RarArkivoFileSystem] indexes entries for read-only NIO access and materializes decoded
 /// bodies on demand. [org.glavo.arkivo.archive.rar.RarArkivoStreamingReader] processes entries and split volumes in
 /// physical order while retaining the decompression state required by solid archives. Password-protected headers and
-/// entries use the provider configured by [org.glavo.arkivo.archive.rar.RarArchiveOptions.Read].
+/// entries use the provider configured by [org.glavo.arkivo.archive.rar.RarArchiveOptions].
 ///
 /// RAR creation and update are not supported.
 @NotNullByDefault

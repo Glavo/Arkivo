@@ -4,10 +4,8 @@
 package org.glavo.arkivo.archive.rar;
 
 import org.glavo.arkivo.archive.ArchiveReadOptions;
-import org.glavo.arkivo.archive.ArkivoFormat.PathVolume;
-import org.glavo.arkivo.archive.ArkivoFormat.VolumeFileSystem;
+import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.internal.RarSplitVolumePaths;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -27,14 +25,14 @@ import java.util.Objects;
 ///
 /// This descriptor discovers conventional split-volume paths and opens indexed NIO file systems or forward-only
 /// readers. Generic read options do not configure a password provider and retain the UTF-8 fallback for legacy RAR4
-/// names; use [RarArchiveOptions.Read] with the concrete factories for encrypted archives or contextual legacy-name
+/// names; use [RarArchiveOptions] with the concrete factories for encrypted archives or contextual legacy-name
 /// decoding. Factory methods have the same source ownership contract as [RarArkivoFileSystem] and
 /// [RarArkivoStreamingReader].
 @NotNullByDefault
 public final class RarArkivoFormat implements
-        PathVolume,
-        VolumeFileSystem,
-        VolumeStreamingReader {
+        ArkivoFormat.PathVolume,
+        ArkivoFormat.VolumeFileSystem,
+        ArkivoFormat.VolumeStreamingReadable {
     /// The stable RAR format name.
     public static final String NAME = "rar";
 
@@ -211,7 +209,7 @@ public final class RarArkivoFormat implements
     }
 
     /// Applies RAR defaults to format-independent read options.
-    private static RarArchiveOptions.Read readOptions(ArchiveReadOptions options) {
-        return new RarArchiveOptions.Read(options);
+    private static RarArchiveOptions readOptions(ArchiveReadOptions options) {
+        return new RarArchiveOptions(options);
     }
 }

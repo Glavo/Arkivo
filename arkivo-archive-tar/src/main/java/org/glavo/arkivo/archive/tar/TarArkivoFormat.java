@@ -6,10 +6,8 @@ package org.glavo.arkivo.archive.tar;
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArkivoFormat.FileSystem;
+import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoFormat.StreamingReader;
-import org.glavo.arkivo.archive.ArkivoFormat.StreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -32,10 +30,9 @@ import java.util.List;
 /// concrete TAR types.
 @NotNullByDefault
 public final class TarArkivoFormat implements
-        FileSystem.Writable,
-        FileSystem.OuterCompressed,
-        StreamingReader,
-        StreamingWriter {
+        ArkivoFormat.FileSystem.Writable,
+        ArkivoFormat.StreamingReadable,
+        ArkivoFormat.StreamingWritable {
     /// The size of one TAR header or padding block.
     private static final int BLOCK_SIZE = 512;
 
@@ -93,6 +90,12 @@ public final class TarArkivoFormat implements
                 "tar.zst",
                 "tzst"
         );
+    }
+
+    /// Returns that TAR factories recognize one installed outer compression layer.
+    @Override
+    public boolean supportsOuterCompression() {
+        return true;
     }
 
     /// Returns the number of leading bytes used to identify headers and empty TAR archives.

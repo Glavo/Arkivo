@@ -182,7 +182,7 @@ public final class RarArkivoStreamingReaderTest {
                 content,
                 null
         ));
-        RarArchiveOptions.Read options = RarArchiveOptions.READ_DEFAULTS.withCommon(
+        RarArchiveOptions options = RarArchiveOptions.DEFAULT.withCommon(
                 ArchiveReadOptions.DEFAULT.withLimits(ArchiveReadLimits.builder()
                         .maximumEntryCount(16L)
                         .maximumEntrySize(1L << 20)
@@ -229,7 +229,7 @@ public final class RarArkivoStreamingReaderTest {
     private static void exerciseMalformedRar(
             Path archivePath,
             byte[] archive,
-            RarArchiveOptions.Read options,
+            RarArchiveOptions options,
             String variant
     ) throws IOException {
         tolerateMalformedRarFailure(
@@ -254,7 +254,7 @@ public final class RarArkivoStreamingReaderTest {
     /// Reads all regular RAR entry bodies with an independent output bound.
     private static byte[] readSingleRarBody(
             byte[] archive,
-            RarArchiveOptions.Read options
+            RarArchiveOptions options
     ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (var reader = RarArkivoStreamingReader.open(
@@ -350,7 +350,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 source,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                RarArchiveOptions.DEFAULT.withCommon(
                         ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
                 )
         )) {
@@ -394,7 +394,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(true);
         RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                RarArchiveOptions.DEFAULT.withCommon(
                         ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
                 )
         );
@@ -435,7 +435,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                RarArchiveOptions.DEFAULT.withCommon(
                         ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
                 )
         )) {
@@ -466,7 +466,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                RarArchiveOptions.DEFAULT.withCommon(
                         ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
                 )
         );
@@ -500,7 +500,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                RarArchiveOptions.READ_DEFAULTS.withCommon(
+                RarArchiveOptions.DEFAULT.withCommon(
                         ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
                 )
         )) {
@@ -530,7 +530,7 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
+                RarArchiveOptions.DEFAULT.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
                         ArchiveReadLimits.builder().maximumEntryCount(1L).build()
                 ))
         )) {
@@ -552,7 +552,7 @@ public final class RarArkivoStreamingReaderTest {
                     ArkivoReadLimitException.class,
                     () -> RarArkivoFileSystem.open(
                             archivePath,
-                            RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
+                            RarArchiveOptions.DEFAULT.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
                                     ArchiveReadLimits.builder().maximumTotalEntrySize(6L).build()
                             ))
                     )
@@ -578,7 +578,7 @@ public final class RarArkivoStreamingReaderTest {
         ));
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
+                RarArchiveOptions.DEFAULT.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
                         ArchiveReadLimits.builder().maximumMetadataSize(8L).build()
                 ))
         )) {
@@ -1252,7 +1252,7 @@ public final class RarArkivoStreamingReaderTest {
     public void failedSeekableChannelSourceOpenClosesSource() throws IOException {
         TestSeekableChannelSource source = new TestSeekableChannelSource(new byte[0]);
 
-        assertThrows(IOException.class, () -> RarArkivoFileSystem.open(source, RarArchiveOptions.READ_DEFAULTS));
+        assertThrows(IOException.class, () -> RarArkivoFileSystem.open(source, RarArchiveOptions.DEFAULT));
 
         assertEquals(true, source.openCount() > 0);
         assertEquals(true, source.allOpenedChannelsClosed());
@@ -2268,7 +2268,7 @@ public final class RarArkivoStreamingReaderTest {
                 encrypted,
                 storedFile("after.txt", 1_700_000_001L, 0100644, after, null)
         );
-        RarArchiveOptions.Read options = rar3PasswordOptions(RAR3_PASSWORD);
+        RarArchiveOptions options = rar3PasswordOptions(RAR3_PASSWORD);
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
@@ -2483,7 +2483,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     archivePath,
-                    RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(passwordProvider)
+                    RarArchiveOptions.DEFAULT.withPasswordProvider(passwordProvider)
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
             }
@@ -2505,7 +2505,7 @@ public final class RarArkivoStreamingReaderTest {
                 encryptedStoredFile("secret.txt", content, true),
                 storedFile("after.txt", 1_700_000_001L, 0100644, after, null)
         );
-        RarArchiveOptions.Read options = rar5PasswordOptions(RAR5_PASSWORD);
+        RarArchiveOptions options = rar5PasswordOptions(RAR5_PASSWORD);
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
@@ -2661,7 +2661,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     archivePath,
-                    RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(passwordProvider)
+                    RarArchiveOptions.DEFAULT.withPasswordProvider(passwordProvider)
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
             }
@@ -2928,7 +2928,7 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                RarArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(detector)
+                RarArchiveOptions.DEFAULT.withLegacyCharsetDetector(detector)
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());
@@ -2947,7 +2947,7 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                RarArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(detector)
+                RarArchiveOptions.DEFAULT.withLegacyCharsetDetector(detector)
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());
@@ -4119,8 +4119,8 @@ public final class RarArkivoStreamingReaderTest {
     }
 
     /// Returns read options containing one fixed UTF-16LE RAR3 password provider.
-    private static RarArchiveOptions.Read rar3PasswordOptions(byte[] password) {
-        return RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
+    private static RarArchiveOptions rar3PasswordOptions(byte[] password) {
+        return RarArchiveOptions.DEFAULT.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
     }
 
     /// Independently derives RAR 3.x fixture keys for passwords shorter than one SHA-1 block.
@@ -4171,8 +4171,8 @@ public final class RarArkivoStreamingReaderTest {
     }
 
     /// Returns read options containing one fixed RAR5 password provider.
-    private static RarArchiveOptions.Read rar5PasswordOptions(byte[] password) {
-        return RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
+    private static RarArchiveOptions rar5PasswordOptions(byte[] password) {
+        return RarArchiveOptions.DEFAULT.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
     }
 
     /// Independently derives the three RAR5 PBKDF2 outputs used by encrypted fixtures.

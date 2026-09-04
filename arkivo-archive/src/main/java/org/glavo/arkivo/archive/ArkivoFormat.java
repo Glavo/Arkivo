@@ -24,7 +24,7 @@ import java.util.Objects;
 /// Describes an archive format supported by Arkivo.
 ///
 /// Implementations are immutable identities safe for concurrent use. Operational capabilities are exposed through
-/// nested subinterfaces such as [FileSystem] and [StreamingReader]. [ArkivoFormats] recognizes only Arkivo's fixed
+/// nested subinterfaces such as [FileSystem] and [StreamingReadable]. [ArkivoFormats] recognizes only Arkivo's fixed
 /// official implementation list; implementing this interface does not register another format.
 @NotNullByDefault
 public interface ArkivoFormat {
@@ -45,6 +45,17 @@ public interface ArkivoFormat {
     /// @return immutable extension strings without leading dots
     default @Unmodifiable List<String> fileExtensions() {
         return List.of(name());
+    }
+
+    /// Returns whether this format recognizes an installed outer compression format around its archive data.
+    ///
+    /// A supporting format may preserve format-specific capabilities, such as indexed access or complete-rewrite
+    /// updates, instead of requiring generic callers to materialize the decoded archive. Support may depend on the
+    /// source being repeatable; directly supplied one-shot channels need not provide the same behavior.
+    ///
+    /// @return `true` if format factories recognize one outer compression layer
+    default boolean supportsOuterCompression() {
+        return false;
     }
 
     /// Returns the preferred number of source bytes requested by generic format detection.
@@ -120,7 +131,7 @@ public interface ArkivoFormat {
     /// The configured [ReadableByteChannel] factory is the implementation contract. Stream and path factories are
     /// convenience adapters that open or wrap a channel before dispatching to that contract.
     @NotNullByDefault
-    interface StreamingReader extends ArkivoFormat {
+    interface StreamingReadable extends ArkivoFormat {
         /// Opens a streaming reader from a path and takes ownership of the opened channel when successful.
         ///
         /// @param path the archive path
@@ -207,7 +218,7 @@ public interface ArkivoFormat {
 
     /// Describes an archive format that can stream entries from a multi-volume source.
     @NotNullByDefault
-    interface VolumeStreamingReader extends StreamingReader {
+    interface VolumeStreamingReadable extends StreamingReadable {
         /// Opens a multi-volume streaming reader with default options.
         ///
         /// @param source the volume source whose ownership is transferred to the returned reader
@@ -237,7 +248,7 @@ public interface ArkivoFormat {
     /// The configured [WritableByteChannel] factory is the implementation contract. Stream factories are convenience
     /// adapters that wrap a channel before dispatching to that contract.
     @NotNullByDefault
-    interface StreamingWriter extends ArkivoFormat {
+    interface StreamingWritable extends ArkivoFormat {
         /// Opens a streaming writer and takes ownership of the output stream when successful.
         ///
         /// @param target the output stream whose ownership is transferred to the returned writer
@@ -285,7 +296,7 @@ public interface ArkivoFormat {
 
     /// Describes an archive format that can stream entries to transactional multi-volume output.
     @NotNullByDefault
-    interface VolumeStreamingWriter extends StreamingWriter {
+    interface VolumeStreamingWritable extends StreamingWritable {
         /// Opens a multi-volume streaming writer with the requested maximum physical volume size.
         ///
         /// @param target    the transactional destination for the output volumes
@@ -408,16 +419,6 @@ public interface ArkivoFormat {
                 SeekableByteChannel source,
                 ArchiveReadOptions options
         ) throws IOException;
-
-        /// Describes a file-system format whose path and repeatable-source factories recognize one outer compression
-        /// layer from Arkivo's installed compression catalog.
-        ///
-        /// Generic format detection may use this capability to delegate the original seekable source after probing its
-        /// decoded prefix. This preserves format-specific indexed access instead of materializing the decoded archive.
-        /// Directly supplied one-shot channels are excluded because probing cannot reopen them.
-        @NotNullByDefault
-        interface OuterCompressed extends FileSystem {
-        }
 
         /// Describes a format that supports path-backed creation and complete-rewrite updates.
         ///

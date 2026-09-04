@@ -102,7 +102,7 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
             @Nullable URI archiveUri,
             UDIFImage image,
             HFSPlusVolume volume,
-            DMGArchiveOptions.Read options,
+            DMGArchiveOptions options,
             Runnable closeAction
     ) {
         super(options);
@@ -127,7 +127,7 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
             DMGArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
             @Nullable URI archiveUri,
-            DMGArchiveOptions.Read options,
+            DMGArchiveOptions options,
             Runnable closeAction
     ) throws IOException {
         Objects.requireNonNull(provider, "provider");

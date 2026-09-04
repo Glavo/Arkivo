@@ -49,7 +49,7 @@ public final class SevenZipArkivoFormatTest {
         assertEquals(signature.length, format.probeSize());
         assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.PathVolume);
         assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeFileSystem.Writable);
-        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingWriter);
+        assertTrue(format instanceof org.glavo.arkivo.archive.ArkivoFormat.VolumeStreamingWritable);
 
         ByteBuffer prefix = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
         prefix.position(3).put(signature).limit(3 + signature.length);
