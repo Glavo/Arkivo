@@ -26,7 +26,7 @@ public final class BuiltinCatalogProbe {
 
     /// Expected archive format names, including formats without an NIO file-system provider.
     private static final @Unmodifiable List<String> EXPECTED_ARCHIVE_FORMAT_NAMES =
-            List.of("7z", "ar", "cpio", "dmg", "rar", "tar", "zip");
+            List.of("7z", "ar", "cpio", "dmg", "rar", "zip", "tar");
 
     /// Expected compression format names in deterministic detection order.
     private static final @Unmodifiable List<String> EXPECTED_FORMAT_NAMES = List.of(

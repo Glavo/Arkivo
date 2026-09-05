@@ -723,9 +723,9 @@ final class ArArkivoFileSystemContractTest {
         }
     }
 
-    /// Verifies indexed directory streams apply filters eagerly and reject duplicate logical member paths.
+    /// Verifies indexed directory streams apply filters eagerly and reject contradictory logical member paths.
     @Test
-    void enforcesDirectoryFilterAndDuplicateMemberContracts() throws IOException {
+    void enforcesDirectoryAndDuplicateMemberContracts() throws IOException {
         Path archive = createArchive();
         try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archive)) {
             Path directory = fileSystem.getPath("/dir");
@@ -760,6 +760,26 @@ final class ArArkivoFileSystemContractTest {
                 () -> ArArkivoFileSystem.open(duplicateArchive)
         );
         assertTrue(duplicate.getMessage().contains("Duplicate AR entry path"));
+
+        String[][] pathConflicts = {
+                {"dir", "dir/file.txt"},
+                {"dir/file.txt", "dir"}
+        };
+        for (int index = 0; index < pathConflicts.length; index++) {
+            Path conflictArchive = temporaryDirectory.resolve("directory-conflict-" + index + ".a");
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(conflictArchive)) {
+                for (String path : pathConflicts[index]) {
+                    try (OutputStream ignored = writer.beginFile(path).openOutputStream()) {
+                        // Empty bodies are sufficient to exercise indexed path construction.
+                    }
+                }
+            }
+            IOException conflict = assertThrows(
+                    IOException.class,
+                    () -> ArArkivoFileSystem.open(conflictArchive)
+            );
+            assertTrue(conflict.getMessage().contains("AR entry path conflicts with directory"));
+        }
     }
 
     /// Verifies forward-only file systems expose writes and metadata only for entries already emitted.

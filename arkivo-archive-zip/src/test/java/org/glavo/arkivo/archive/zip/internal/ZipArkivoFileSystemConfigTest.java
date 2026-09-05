@@ -18,14 +18,17 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.OpenOption;
 import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests ZIP file system environment configuration parsing.
 @NotNullByDefault
@@ -139,8 +142,8 @@ public final class ZipArkivoFileSystemConfigTest {
 
         ZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
-        assertEquals(true, config.archiveWritable());
-        assertEquals(true, config.openOptions().contains(StandardOpenOption.APPEND));
+        assertTrue(config.archiveWritable());
+        assertTrue(config.openOptions().contains(StandardOpenOption.APPEND));
     }
 
     /// Verifies that read/write update mode is normalized to writable append output options.
@@ -153,10 +156,10 @@ public final class ZipArkivoFileSystemConfigTest {
 
         ZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
-        assertEquals(true, config.archiveWritable());
-        assertEquals(false, config.openOptions().contains(StandardOpenOption.READ));
-        assertEquals(true, config.openOptions().contains(StandardOpenOption.WRITE));
-        assertEquals(true, config.openOptions().contains(StandardOpenOption.APPEND));
+        assertTrue(config.archiveWritable());
+        assertFalse(config.openOptions().contains(StandardOpenOption.READ));
+        assertTrue(config.openOptions().contains(StandardOpenOption.WRITE));
+        assertTrue(config.openOptions().contains(StandardOpenOption.APPEND));
     }
 
     /// Verifies that append and truncate modes cannot be combined.
@@ -168,6 +171,17 @@ public final class ZipArkivoFileSystemConfigTest {
         );
 
         assertThrows(IllegalArgumentException.class, () -> fromEnvironment(environment));
+    }
+
+    /// Verifies that read configuration retains provider-specific non-write options.
+    @Test
+    public void readModeRetainsProviderSpecificOptions() {
+        Set<OpenOption> openOptions = Set.of(StandardOpenOption.READ, TestOpenOption.DIRECT);
+
+        ZipArkivoFileSystemConfig config = fromEnvironment(Map.of("arkivo.openOptions", openOptions));
+
+        assertFalse(config.archiveWritable());
+        assertEquals(openOptions, config.openOptions());
     }
 
     /// Verifies that password providers are preserved by ZIP configuration parsing.
@@ -205,5 +219,11 @@ public final class ZipArkivoFileSystemConfigTest {
     /// Parses raw NIO environment values through the public immutable option boundary.
     private static ZipArkivoFileSystemConfig fromEnvironment(Map<String, ?> environment) {
         return ZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.fromEnvironment(environment));
+    }
+
+    /// Open option used to emulate a provider-specific read option.
+    private enum TestOpenOption implements OpenOption {
+        /// Provider-specific direct I/O marker.
+        DIRECT
     }
 }

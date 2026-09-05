@@ -20,6 +20,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -146,6 +147,32 @@ final class RarVolumeInputStreamTest {
         assertEquals(2, volumes.closeCount());
     }
 
+    /// Verifies close preserves one shared channel and source failure while retaining both cleanup retries.
+    @Test
+    void preservesSharedChannelAndSourceCloseFailure() throws IOException {
+        IOException sharedFailure = new IOException("shared close failure");
+        TestSeekableByteChannel channel = channel(new byte[]{42});
+        channel.failFirstClose(sharedFailure);
+        TestVolumeSource volumes = new TestVolumeSource(List.of(channel), sharedFailure);
+        RarVolumeInputStream input = new RarVolumeInputStream(volumes, true);
+        assertEquals(42, input.read());
+
+        IOException failure = assertThrows(IOException.class, input::close);
+
+        assertSame(sharedFailure, failure);
+        assertEquals(0, failure.getSuppressed().length);
+        assertTrue(channel.isOpen());
+        assertTrue(volumes.isOpen());
+        assertEquals(1, channel.closeCount());
+        assertEquals(1, volumes.closeCount());
+
+        input.close();
+        assertFalse(channel.isOpen());
+        assertFalse(volumes.isOpen());
+        assertEquals(2, channel.closeCount());
+        assertEquals(2, volumes.closeCount());
+    }
+
     /// Verifies a failed cleanup after signature validation remains reachable for a later close retry.
     @Test
     void retriesContinuationCleanupAfterValidationFailure() throws IOException {
@@ -162,6 +189,30 @@ final class RarVolumeInputStreamTest {
         assertEquals(1, failure.getSuppressed().length);
         assertEquals("channel close failed", failure.getSuppressed()[0].getMessage());
         assertTrue(continuation.isOpen());
+
+        input.close();
+        assertFalse(continuation.isOpen());
+        assertFalse(volumes.isOpen());
+        assertEquals(2, continuation.closeCount());
+        assertEquals(1, volumes.closeCount());
+    }
+
+    /// Verifies a shared continuation-read and channel-close failure is preserved without self-suppression.
+    @Test
+    void preservesSharedContinuationReadAndCloseFailure() throws IOException {
+        IOException sharedFailure = new IOException("shared continuation failure");
+        TestSeekableByteChannel first = channel(new byte[0]);
+        TestSeekableByteChannel continuation = channel(RAR5_SIGNATURE);
+        continuation.failReadsAndFirstClose(sharedFailure, sharedFailure);
+        TestVolumeSource volumes = new TestVolumeSource(List.of(first, continuation), false);
+        RarVolumeInputStream input = new RarVolumeInputStream(volumes, true);
+
+        IOException failure = assertThrows(IOException.class, input::read);
+
+        assertSame(sharedFailure, failure);
+        assertEquals(0, failure.getSuppressed().length);
+        assertTrue(continuation.isOpen());
+        assertEquals(1, continuation.closeCount());
 
         input.close();
         assertFalse(continuation.isOpen());
@@ -211,8 +262,8 @@ final class RarVolumeInputStreamTest {
         /// Volume channels returned in index order.
         private final @Unmodifiable List<TestSeekableByteChannel> channels;
 
-        /// Whether the first source close attempt fails.
-        private final boolean failFirstClose;
+        /// Failure reported by the first source close attempt, or `null` for successful close.
+        private final @Nullable IOException closeFailure;
 
         /// Number of volume-open requests.
         private int openCount;
@@ -228,8 +279,16 @@ final class RarVolumeInputStreamTest {
                 @Unmodifiable List<TestSeekableByteChannel> channels,
                 boolean failFirstClose
         ) {
+            this(channels, failFirstClose ? new IOException("source close failed") : null);
+        }
+
+        /// Creates a source over the supplied channels with an optional first-close failure.
+        private TestVolumeSource(
+                @Unmodifiable List<TestSeekableByteChannel> channels,
+                @Nullable IOException closeFailure
+        ) {
             this.channels = List.copyOf(channels);
-            this.failFirstClose = failFirstClose;
+            this.closeFailure = closeFailure;
         }
 
         /// Returns the requested channel or reports the end of the fixed sequence.
@@ -249,8 +308,8 @@ final class RarVolumeInputStreamTest {
                 return;
             }
             closeCount++;
-            if (failFirstClose && closeCount == 1) {
-                throw new IOException("source close failed");
+            if (closeFailure != null && closeCount == 1) {
+                throw closeFailure;
             }
             open = false;
         }
@@ -286,8 +345,14 @@ final class RarVolumeInputStreamTest {
         /// Number of read calls.
         private int readCount;
 
+        /// Failure reported by reads, or `null` for ordinary reads.
+        private @Nullable IOException readFailure;
+
         /// Whether the first close attempt fails.
         private boolean failFirstClose;
+
+        /// Failure reported by the first close attempt, or `null` for the default failure.
+        private @Nullable IOException closeFailure;
 
         /// Number of close attempts.
         private int closeCount;
@@ -307,7 +372,20 @@ final class RarVolumeInputStreamTest {
 
         /// Configures the first close attempt to fail.
         private void failFirstClose() {
+            failFirstClose(new IOException("channel close failed"));
+        }
+
+        /// Configures the first close attempt to report the supplied failure.
+        private void failFirstClose(IOException failure) {
+            closeFailure = failure;
             failFirstClose = true;
+        }
+
+        /// Configures all reads and the first close attempt to report the supplied failures.
+        private void failReadsAndFirstClose(IOException readFailure, IOException closeFailure) {
+            this.readFailure = readFailure;
+            this.closeFailure = closeFailure;
+            this.failFirstClose = true;
         }
 
         /// Reads remaining volume bytes or performs the configured zero-progress call.
@@ -318,6 +396,9 @@ final class RarVolumeInputStreamTest {
                 return 0;
             }
             readCount++;
+            if (readFailure != null) {
+                throw readFailure;
+            }
             if (readCount == zeroRead) {
                 return 0;
             }
@@ -384,7 +465,7 @@ final class RarVolumeInputStreamTest {
             }
             closeCount++;
             if (failFirstClose && closeCount == 1) {
-                throw new IOException("channel close failed");
+                throw closeFailure != null ? closeFailure : new IOException("channel close failed");
             }
             open = false;
         }

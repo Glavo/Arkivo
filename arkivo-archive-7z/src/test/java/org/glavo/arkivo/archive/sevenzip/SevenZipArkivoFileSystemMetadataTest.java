@@ -13,7 +13,10 @@ import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileStoreAttributeView;
+import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
@@ -22,9 +25,12 @@ import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -61,6 +67,7 @@ public final class SevenZipArkivoFileSystemMetadataTest {
             assertEquals(fileStore.getTotalSpace(), fileStore.getAttribute("totalSpace"));
             assertEquals(fileStore.getUsableSpace(), fileStore.getAttribute("usableSpace"));
             assertEquals(fileStore.getUnallocatedSpace(), fileStore.getAttribute("unallocatedSpace"));
+            assertNull(fileStore.getFileStoreAttributeView(FileStoreAttributeView.class));
             assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("7z:type"));
             assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("missing"));
         }
@@ -94,13 +101,26 @@ public final class SevenZipArkivoFileSystemMetadataTest {
             Path root = fileSystem.getPath("/");
             BasicFileAttributes attributes = Files.readAttributes(root, BasicFileAttributes.class);
             PosixFileAttributes posixAttributes = Files.readAttributes(root, PosixFileAttributes.class);
+            BasicFileAttributeView basicView = Objects.requireNonNull(
+                    Files.getFileAttributeView(root, BasicFileAttributeView.class)
+            );
             ArrayList<Path> children = new ArrayList<>();
 
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(root)) {
                 stream.forEach(children::add);
             }
 
+            assertEquals("basic", basicView.name());
+            assertTrue(basicView.readAttributes().isDirectory());
+            assertEquals(FileTime.fromMillis(0L), attributes.lastModifiedTime());
+            assertEquals(FileTime.fromMillis(0L), attributes.lastAccessTime());
+            assertEquals(FileTime.fromMillis(0L), attributes.creationTime());
+            assertFalse(attributes.isRegularFile());
             assertTrue(attributes.isDirectory());
+            assertFalse(attributes.isSymbolicLink());
+            assertFalse(attributes.isOther());
+            assertEquals(0L, attributes.size());
+            assertNull(attributes.fileKey());
             assertEquals("owner", posixAttributes.owner().getName());
             assertEquals("group", posixAttributes.group().getName());
             assertEquals(Set.of(

@@ -117,7 +117,8 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         return new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 output,
-                ZipArkivoFileSystemConfig.fromCreateOptions(options)
+                ZipArkivoFileSystemConfig.fromCreateOptions(options),
+                null
         );
     }
 
@@ -151,7 +152,8 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         return new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 output,
-                ZipArkivoFileSystemConfig.fromCreateOptions(options)
+                ZipArkivoFileSystemConfig.fromCreateOptions(options),
+                null
         );
     }
 

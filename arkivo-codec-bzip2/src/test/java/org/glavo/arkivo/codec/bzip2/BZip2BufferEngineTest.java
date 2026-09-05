@@ -87,6 +87,33 @@ public final class BZip2BufferEngineTest {
         assertArrayEquals(content, decoded.toByteArray());
     }
 
+    /// Verifies decoded block bytes remain observable when the following block CRC validation fails.
+    @Test
+    public void blockCrcFailurePreservesCompletedOutputAndInputProgress() throws IOException {
+        byte[] content = patternedData(32_017);
+        byte[] encoded = encode(content, CODEC, 257, 31);
+        encoded[10] ^= 0x40;
+        ByteBuffer source = ByteBuffer.wrap(encoded);
+        ByteBuffer target = ByteBuffer.allocate(content.length);
+
+        try (CompressionDecoder decoder = CODEC.newDecoder()) {
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.finish(source, target));
+            assertEquals(content.length, target.position());
+            int committedSourcePosition = source.position();
+
+            ByteBuffer failureTarget = ByteBuffer.allocate(1);
+            IOException exception = assertThrows(IOException.class, () -> decoder.finish(source, failureTarget));
+            assertEquals("BZip2 block CRC mismatch", exception.getMessage());
+            assertEquals(0, failureTarget.position());
+            assertEquals(committedSourcePosition, source.position());
+        }
+
+        target.flip();
+        byte[] restored = new byte[target.remaining()];
+        target.get(restored);
+        assertArrayEquals(content, restored);
+    }
+
     /// Verifies frame completion emits a decodable boundary while preserving the encoding session.
     @Test
     public void finishFrameProducesDecodableBoundary() throws IOException {

@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 
@@ -35,6 +36,7 @@ final class StreamChannelAdaptersTest {
         )) {
             ByteBuffer heap = ByteBuffer.allocate(2);
             ByteBuffer direct = ByteBuffer.allocateDirect(2);
+            assertEquals(0, channel.read(ByteBuffer.allocate(0)));
             assertEquals(2, channel.read(heap));
             assertEquals(2, channel.read(direct));
             heap.flip();
@@ -107,6 +109,30 @@ final class StreamChannelAdaptersTest {
         assertFalse(encoder.isOpen());
     }
 
+    /// Verifies an explicit flush reaches a borrowed downstream stream and remains retryable after failure.
+    @Test
+    void flushesBorrowedDownstreamAndRetainsStreamAfterFailure() throws IOException {
+        TrackingCompressingWritableByteChannel encoder = new TrackingCompressingWritableByteChannel();
+        FailingOnceFlushOutputStream downstream = new FailingOnceFlushOutputStream();
+        OutputStream output = StreamChannelAdapters.outputStream(
+                encoder,
+                downstream,
+                ResourceOwnership.BORROWED
+        );
+
+        IOException failure = assertThrows(IOException.class, output::flush);
+        assertEquals("flush failed", failure.getMessage());
+        assertEquals(1, encoder.flushCount());
+        assertEquals(1, downstream.flushCount());
+
+        output.flush();
+        assertEquals(2, encoder.flushCount());
+        assertEquals(2, downstream.flushCount());
+        output.close();
+        assertEquals(1, encoder.finishCount());
+        assertEquals(3, downstream.flushCount());
+    }
+
     /// Verifies every adapter retries a failed endpoint close.
     @Test
     void retriesFailedEndpointClosure() throws IOException {
@@ -137,6 +163,64 @@ final class StreamChannelAdaptersTest {
         assertThrows(IOException.class, output::close);
         output.close();
         assertEquals(2, writableChannel.closeCount());
+    }
+
+    /// Verifies successful closure is idempotent and every adapter rejects subsequent I/O.
+    @Test
+    void rejectsOperationsAfterSuccessfulClosure() throws IOException {
+        ReadableByteChannel inputChannel = StreamChannelAdapters.readableChannel(
+                new ByteArrayInputStream(new byte[]{1})
+        );
+        inputChannel.close();
+        inputChannel.close();
+        assertFalse(inputChannel.isOpen());
+        assertThrows(ClosedChannelException.class, () -> inputChannel.read(ByteBuffer.allocate(1)));
+
+        WritableByteChannel outputChannel = StreamChannelAdapters.writableChannel(new ByteArrayOutputStream());
+        outputChannel.close();
+        outputChannel.close();
+        assertFalse(outputChannel.isOpen());
+        assertThrows(ClosedChannelException.class, () -> outputChannel.write(ByteBuffer.wrap(new byte[]{1})));
+
+        InputStream input = StreamChannelAdapters.inputStream(new ZeroProgressReadableChannel());
+        assertEquals(0, input.read(new byte[0]));
+        input.close();
+        input.close();
+        IOException readFailure = assertThrows(IOException.class, input::read);
+        assertEquals("Stream closed", readFailure.getMessage());
+
+        OutputStream output = StreamChannelAdapters.outputStream(new ZeroProgressWritableChannel());
+        output.write(new byte[0]);
+        output.close();
+        output.close();
+        IOException writeFailure = assertThrows(IOException.class, () -> output.write(1));
+        assertEquals("Stream closed", writeFailure.getMessage());
+    }
+
+    /// Verifies close retains the target failure and suppresses a simultaneous downstream flush failure.
+    @Test
+    void composesTargetCloseAndBorrowedDownstreamFlushFailures() throws IOException {
+        FailingCloseWritableChannel target = new FailingCloseWritableChannel();
+        FailingOnceFlushOutputStream downstream = new FailingOnceFlushOutputStream();
+        OutputStream output = StreamChannelAdapters.outputStream(
+                target,
+                downstream,
+                ResourceOwnership.BORROWED
+        );
+
+        IOException failure = assertThrows(IOException.class, output::close);
+        assertEquals("close failed", failure.getMessage());
+        assertEquals(1, failure.getSuppressed().length);
+        assertEquals("flush failed", failure.getSuppressed()[0].getMessage());
+        assertEquals(1, target.closeCount());
+        assertEquals(1, downstream.flushCount());
+
+        output.close();
+        assertEquals(2, target.closeCount());
+        assertEquals(2, downstream.flushCount());
+        output.close();
+        assertEquals(2, target.closeCount());
+        assertEquals(2, downstream.flushCount());
     }
 
     /// Verifies close retries only a failed downstream flush after codec finalization has completed.
@@ -279,6 +363,7 @@ final class StreamChannelAdaptersTest {
             return writeCount;
         }
     }
+
     /// Returns zero progress for every read.
     @NotNullByDefault
     private static final class ZeroProgressInputStream extends InputStream {

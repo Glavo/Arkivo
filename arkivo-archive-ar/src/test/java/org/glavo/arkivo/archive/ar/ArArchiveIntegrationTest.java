@@ -1,0 +1,1522 @@
+// Copyright (c) 2026 Glavo
+// SPDX-License-Identifier: MPL-2.0
+
+package org.glavo.arkivo.archive.ar;
+
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArkivoCommitTarget;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
+import org.glavo.arkivo.archive.ArkivoReadLimitKind;
+import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.time.Instant;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.ClosedFileSystemException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.ProviderMismatchException;
+import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileOwnerAttributeView;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+/// Tests end-to-end AR streaming, writing, file-system, update, metadata, and corruption behavior.
+@NotNullByDefault
+public final class ArArchiveIntegrationTest {
+    /// Verifies that ordinary AR members can be streamed with metadata.
+    @Test
+    public void readsOrdinaryMembers() throws IOException {
+        byte[] first = "hello".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "world!".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(
+                member("hello.txt/", 1_700_000_000L, 1000, 1001, 0100644, first),
+                member("dir/file.bin/", 1_700_000_010L, 1002, 1003, 0100600, second)
+        );
+        ArrayList<String> paths = new ArrayList<>();
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            BasicFileAttributes firstBasicAttributes = reader.readAttributes(BasicFileAttributes.class);
+            PosixFileAttributes firstPosixAttributes = reader.readAttributes(PosixFileAttributes.class);
+            paths.add(firstAttributes.path());
+            assertEquals("hello.txt", firstAttributes.path());
+            assertEquals("hello.txt/", firstAttributes.identifier());
+            assertEquals(1000, firstAttributes.userId());
+            assertEquals(1001, firstAttributes.groupId());
+            assertEquals(0100644, firstAttributes.mode());
+            assertEquals(first.length, firstAttributes.size());
+            assertEquals(FileTime.fromMillis(1_700_000_000_000L), firstAttributes.lastModifiedTime());
+            assertEquals(true, firstBasicAttributes.isRegularFile());
+            assertEquals("1000", firstPosixAttributes.owner().getName());
+            assertEquals("1001", firstPosixAttributes.group().getName());
+            assertEquals(
+                    Set.of(
+                            PosixFilePermission.OWNER_READ,
+                            PosixFilePermission.OWNER_WRITE,
+                            PosixFilePermission.GROUP_READ,
+                            PosixFilePermission.OTHERS_READ
+                    ),
+                    firstPosixAttributes.permissions()
+            );
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(first, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes secondAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            paths.add(secondAttributes.path());
+            assertEquals("dir/file.bin", secondAttributes.path());
+            assertEquals(second.length, secondAttributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(second, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+
+        assertEquals(List.of("hello.txt", "dir/file.bin"), paths);
+    }
+
+    /// Verifies that AR POSIX mode type bits are exposed through basic attributes.
+    @Test
+    public void readsPosixModeFileTypes() throws IOException {
+        byte[] target = "dir/hello.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(
+                member("link/", 0, 0, 0, 0120777, target),
+                member("fifo/", 0, 0, 0, 0010644, new byte[0])
+        );
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes linkAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("link", linkAttributes.path());
+            assertEquals(false, linkAttributes.isRegularFile());
+            assertEquals(false, linkAttributes.isDirectory());
+            assertEquals(true, linkAttributes.isSymbolicLink());
+            assertEquals(false, linkAttributes.isOther());
+            assertEquals(target.length, linkAttributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(target, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes fifoAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("fifo", fifoAttributes.path());
+            assertEquals(false, fifoAttributes.isRegularFile());
+            assertEquals(false, fifoAttributes.isDirectory());
+            assertEquals(false, fifoAttributes.isSymbolicLink());
+            assertEquals(true, fifoAttributes.isOther());
+
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that the streaming writer creates readable AR members.
+    @Test
+    public void writesStreamingMembers() throws IOException {
+        byte[] first = "hello".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "second".getBytes(StandardCharsets.UTF_8);
+        String longPath = "very-long-file-name-that-requires-bsd-inline-name.txt";
+        String unicodePath = "unicode/naive-\u00ef.txt";
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            var helloEntry = writer.beginFile("hello.txt");
+            try (OutputStream body = helloEntry.openOutputStream()) {
+                body.write(first);
+            }
+
+            var longNameEntry = writer.beginFile(longPath);
+            try (OutputStream body = longNameEntry.openOutputStream()) {
+                body.write(second);
+            }
+
+            var unicodeNameEntry = writer.beginFile(unicodePath);
+            unicodeNameEntry.close();
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("hello.txt", firstAttributes.path());
+            assertEquals("hello.txt/", firstAttributes.identifier());
+            assertEquals(0, firstAttributes.userId());
+            assertEquals(0, firstAttributes.groupId());
+            assertEquals(0100644, firstAttributes.mode());
+            assertEquals(FileTime.fromMillis(0L), firstAttributes.lastModifiedTime());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(first, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes secondAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals(longPath, secondAttributes.path());
+            assertEquals("#1/" + longPath.getBytes(StandardCharsets.UTF_8).length, secondAttributes.identifier());
+            assertEquals(second.length, secondAttributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(second, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes unicodeAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals(unicodePath, unicodeAttributes.path());
+            assertEquals("#1/" + unicodePath.getBytes(StandardCharsets.UTF_8).length, unicodeAttributes.identifier());
+            assertEquals(0L, unicodeAttributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[0], input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that the streaming writer creates symbolic link AR members.
+    @Test
+    public void writesSymbolicLinkMembers() throws IOException {
+        String target = "dir/hello.txt";
+        byte[] targetBytes = target.getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            var linkEntry = writer.beginSymbolicLink("link", target);
+            ArArkivoEntryAttributeView attributes =
+                    Objects.requireNonNull(linkEntry.attributeView(ArArkivoEntryAttributeView.class));
+            ArArkivoEntryAttributes pendingAttributes = attributes.readAttributes();
+            assertEquals("link", pendingAttributes.path());
+            assertEquals(0120777, pendingAttributes.mode());
+            assertEquals(targetBytes.length, pendingAttributes.size());
+            assertEquals(false, pendingAttributes.isRegularFile());
+            assertEquals(true, pendingAttributes.isSymbolicLink());
+            assertThrows(IllegalStateException.class, linkEntry::openOutputStream);
+            linkEntry.close();
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("link", attributes.path());
+            assertEquals("link/", attributes.identifier());
+            assertEquals(0120777, attributes.mode());
+            assertEquals(targetBytes.length, attributes.size());
+            assertEquals(false, attributes.isRegularFile());
+            assertEquals(true, attributes.isSymbolicLink());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(targetBytes, input.readAllBytes());
+            }
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that the streaming writer creates directory AR members.
+    @Test
+    public void writesDirectoryMembers() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            var directoryEntry = writer.beginDirectory("dir");
+            ArArkivoEntryAttributeView attributes =
+                    Objects.requireNonNull(directoryEntry.attributeView(ArArkivoEntryAttributeView.class));
+            ArArkivoEntryAttributes pendingAttributes = attributes.readAttributes();
+            assertEquals("dir", pendingAttributes.path());
+            assertEquals("dir/", pendingAttributes.identifier());
+            assertEquals(040755, pendingAttributes.mode());
+            assertEquals(0L, pendingAttributes.size());
+            assertEquals(false, pendingAttributes.isRegularFile());
+            assertEquals(true, pendingAttributes.isDirectory());
+            assertEquals(false, pendingAttributes.isSymbolicLink());
+            assertThrows(IllegalStateException.class, directoryEntry::openOutputStream);
+            directoryEntry.close();
+
+            var configuredDirectoryEntry = writer.beginDirectory("configured");
+            ArArkivoEntryAttributeView configuredAttributes =
+                    Objects.requireNonNull(configuredDirectoryEntry.attributeView(ArArkivoEntryAttributeView.class));
+            assertThrows(IllegalArgumentException.class, () -> configuredAttributes.setMode(0100644));
+            assertThrows(IOException.class, () -> configuredAttributes.setSize(1L));
+            configuredAttributes.setMode(040700);
+            configuredAttributes.setSize(0L);
+            configuredDirectoryEntry.close();
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes directoryAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("dir", directoryAttributes.path());
+            assertEquals("dir/", directoryAttributes.identifier());
+            assertEquals(040755, directoryAttributes.mode());
+            assertEquals(0L, directoryAttributes.size());
+            assertEquals(false, directoryAttributes.isRegularFile());
+            assertEquals(true, directoryAttributes.isDirectory());
+            assertEquals(false, directoryAttributes.isSymbolicLink());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[0], input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes configuredAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("configured", configuredAttributes.path());
+            assertEquals(040700, configuredAttributes.mode());
+            assertEquals(true, configuredAttributes.isDirectory());
+            assertEquals(false, configuredAttributes.isRegularFile());
+            assertEquals(false, configuredAttributes.isOther());
+
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that known-size members are written directly to the backing archive stream.
+    @Test
+    public void writesKnownSizeMembersDirectly() throws IOException {
+        byte[] first = "direct".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "long-name-body".getBytes(StandardCharsets.UTF_8);
+        String longPath = "known-size-long-file-name-that-requires-bsd-inline-name.txt";
+        byte[] longPathBytes = longPath.getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            var knownSizeEntry = writer.beginFile("known.txt");
+            ArArkivoEntryAttributeView firstAttributes =
+                    Objects.requireNonNull(knownSizeEntry.attributeView(ArArkivoEntryAttributeView.class));
+            firstAttributes.setSize(first.length);
+            assertEquals(first.length, firstAttributes.readAttributes().size());
+            try (OutputStream body = knownSizeEntry.openOutputStream()) {
+                int bodyStart = output.size();
+                assertEquals(68, bodyStart);
+                body.write(first, 0, 2);
+                assertEquals(bodyStart + 2, output.size());
+                body.write(first, 2, first.length - 2);
+            }
+
+            var longNameEntry = writer.beginFile(longPath);
+            ArArkivoEntryAttributeView secondAttributes =
+                    Objects.requireNonNull(longNameEntry.attributeView(ArArkivoEntryAttributeView.class));
+            secondAttributes.setSize(second.length);
+            int beforeSecond = output.size();
+            try (OutputStream body = longNameEntry.openOutputStream()) {
+                int bodyStart = output.size();
+                assertEquals(beforeSecond + 60 + longPathBytes.length, bodyStart);
+                body.write(second[0]);
+                assertEquals(bodyStart + 1, output.size());
+                body.write(second, 1, second.length - 1);
+            }
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("known.txt", firstAttributes.path());
+            assertEquals(first.length, firstAttributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(first, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes secondAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals(longPath, secondAttributes.path());
+            assertEquals("#1/" + longPathBytes.length, secondAttributes.identifier());
+            assertEquals(second.length, secondAttributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(second, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that known-size members reject bodies shorter than the configured size.
+    @Test
+    public void knownSizeMemberRejectsShortBody() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output);
+        var shortEntry = writer.beginFile("short.txt");
+        ArArkivoEntryAttributeView attributes =
+                Objects.requireNonNull(shortEntry.attributeView(ArArkivoEntryAttributeView.class));
+        attributes.setSize(5);
+        OutputStream body = shortEntry.openOutputStream();
+        body.write(new byte[]{1, 2});
+
+        IOException bodyException = assertThrows(IOException.class, body::close);
+        assertEquals(true, bodyException.getMessage().contains("does not match configured size"));
+
+        IOException writerException = assertThrows(IOException.class, writer::close);
+        assertEquals(true, writerException.getMessage().contains("does not match configured size"));
+    }
+
+    /// Verifies that known-size members reject bodies larger than the configured size.
+    @Test
+    public void knownSizeMemberRejectsOversizedBody() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            var oneByteEntry = writer.beginFile("one-byte.txt");
+            ArArkivoEntryAttributeView attributes =
+                    Objects.requireNonNull(oneByteEntry.attributeView(ArArkivoEntryAttributeView.class));
+            attributes.setSize(1);
+            try (OutputStream body = oneByteEntry.openOutputStream()) {
+                body.write('a');
+                IOException exception = assertThrows(IOException.class, () -> body.write('b'));
+                assertEquals(true, exception.getMessage().contains("exceeds configured size"));
+            }
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{'a'}, input.readAllBytes());
+            }
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that the streaming writer persists metadata configured through the AR attribute view.
+    @Test
+    public void writesConfiguredMemberMetadata() throws IOException {
+        byte[] content = "metadata".getBytes(StandardCharsets.UTF_8);
+        FileTime lastModifiedTime = FileTime.fromMillis(1_700_000_123_000L);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            var metadataEntry = writer.beginFile("metadata.txt");
+            ArArkivoEntryAttributeView attributes =
+                    Objects.requireNonNull(metadataEntry.attributeView(ArArkivoEntryAttributeView.class));
+            attributes.setTimes(lastModifiedTime, null, null);
+            attributes.setUserId(321);
+            attributes.setGroupId(654);
+            attributes.setMode(0100600);
+            try (OutputStream body = metadataEntry.openOutputStream()) {
+                body.write(content);
+            }
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("metadata.txt", attributes.path());
+            assertEquals("metadata.txt/", attributes.identifier());
+            assertEquals(lastModifiedTime, attributes.lastModifiedTime());
+            assertEquals(321, attributes.userId());
+            assertEquals(654, attributes.groupId());
+            assertEquals(0100600, attributes.mode());
+            PosixFileAttributes posixAttributes = reader.readAttributes(PosixFileAttributes.class);
+            assertEquals("321", posixAttributes.owner().getName());
+            assertEquals("654", posixAttributes.group().getName());
+            assertEquals(
+                    Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+                    posixAttributes.permissions()
+            );
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that AR archives can be opened as read-only file systems.
+    @Test
+    public void opensMembersAsReadOnlyFileSystem() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        Set<PosixFilePermission> filePermissions = Set.of(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.GROUP_READ
+        );
+        Path archivePath = createTemporaryArchivePath("ar-fs-");
+        Path copiedDirectory = archivePath.getParent().resolve("copied-dir");
+        Path copiedFile = archivePath.getParent().resolve("copied-file");
+        Path existingFile = archivePath.getParent().resolve("existing-file");
+        try {
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
+                var helloEntry = writer.beginFile("dir/hello.txt");
+                ArArkivoEntryAttributeView attributes =
+                        Objects.requireNonNull(helloEntry.attributeView(ArArkivoEntryAttributeView.class));
+                attributes.setTimes(FileTime.fromMillis(1_700_000_000_000L), null, null);
+                attributes.setUserId(1000);
+                attributes.setGroupId(1001);
+                attributes.setMode(0100640);
+                try (OutputStream body = helloEntry.openOutputStream()) {
+                    body.write(content);
+                }
+                var rootEntry = writer.beginFile("root.bin");
+                rootEntry.close();
+                var linkEntry = writer.beginSymbolicLink("dir/link", "hello.txt");
+                linkEntry.close();
+            }
+
+            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath);
+            try (fileSystem) {
+                assertEquals(true, fileSystem.isReadOnly());
+
+                Path directory = fileSystem.getPath("/dir");
+                BasicFileAttributes directoryAttributes = Files.readAttributes(directory, BasicFileAttributes.class);
+                assertEquals(true, directoryAttributes.isDirectory());
+                Files.copy(directory, copiedDirectory);
+                assertEquals(true, Files.isDirectory(copiedDirectory));
+                assertThrows(FileAlreadyExistsException.class, () -> Files.copy(directory, copiedDirectory));
+                Files.copy(directory, copiedDirectory, StandardCopyOption.REPLACE_EXISTING);
+                Files.writeString(existingFile, "existing", StandardCharsets.UTF_8);
+                Files.copy(directory, existingFile, StandardCopyOption.REPLACE_EXISTING);
+                assertEquals(true, Files.isDirectory(existingFile));
+
+                ArrayList<String> children = new ArrayList<>();
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                    for (Path child : stream) {
+                        children.add(child.toString());
+                    }
+                }
+                assertEquals(Set.of("/dir", "/root.bin"), Set.copyOf(children));
+
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                assertEquals(true, Files.isReadable(file));
+                assertEquals(false, Files.isWritable(file));
+                assertEquals(false, Files.isExecutable(file));
+                ArArkivoEntryAttributes fileAttributes = Files.readAttributes(file, ArArkivoEntryAttributes.class);
+                assertEquals(true, fileAttributes.isRegularFile());
+                assertEquals(1000, fileAttributes.userId());
+                assertEquals(1001, fileAttributes.groupId());
+                assertEquals(0100640, fileAttributes.mode());
+                assertEquals(content.length, fileAttributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                Files.copy(
+                        file,
+                        copiedFile,
+                        LinkOption.NOFOLLOW_LINKS,
+                        StandardCopyOption.COPY_ATTRIBUTES
+                );
+                assertArrayEquals(content, Files.readAllBytes(copiedFile));
+
+                Path link = fileSystem.getPath("/dir/link");
+                ArArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        ArArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(false, linkAttributes.isRegularFile());
+                assertEquals(0120777, linkAttributes.mode());
+                assertArrayEquals(content, Files.readAllBytes(link));
+                assertEquals("hello.txt", Files.readSymbolicLink(link).toString());
+
+                PosixFileAttributes posixAttributes = Files.readAttributes(file, PosixFileAttributes.class);
+                assertEquals("1000", posixAttributes.owner().getName());
+                assertEquals("1001", posixAttributes.group().getName());
+                assertEquals(filePermissions, posixAttributes.permissions());
+
+                FileOwnerAttributeView ownerView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, FileOwnerAttributeView.class));
+                assertEquals("owner", ownerView.name());
+                assertEquals("1000", ownerView.getOwner().getName());
+                assertThrows(ReadOnlyFileSystemException.class, () -> ownerView.setOwner(() -> "other-user"));
+
+                PosixFileAttributeView posixView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, PosixFileAttributeView.class));
+                assertEquals("posix", posixView.name());
+                assertEquals(filePermissions, posixView.readAttributes().permissions());
+                assertEquals("1000", posixView.getOwner().getName());
+                assertThrows(ReadOnlyFileSystemException.class, () -> posixView.setGroup(() -> "other-group"));
+                assertThrows(
+                        ReadOnlyFileSystemException.class,
+                        () -> posixView.setPermissions(Set.<PosixFilePermission>of())
+                );
+                var fileStore = Files.getFileStore(file);
+                assertEquals(fileStore.name(), fileStore.getAttribute("name"));
+                assertEquals(fileStore.type(), fileStore.getAttribute("type"));
+                assertEquals(Boolean.valueOf(fileStore.isReadOnly()), fileStore.getAttribute("basic:readOnly"));
+                assertEquals(Long.valueOf(fileStore.getTotalSpace()), fileStore.getAttribute("totalSpace"));
+                assertEquals(Long.valueOf(fileStore.getUsableSpace()), fileStore.getAttribute("usableSpace"));
+                assertEquals(Long.valueOf(fileStore.getUnallocatedSpace()), fileStore.getAttribute("unallocatedSpace"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("ar:type"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("missing"));
+                assertEquals(
+                        true,
+                        fileStore.supportsFileAttributeView(FileOwnerAttributeView.class)
+                );
+                assertEquals(
+                        true,
+                        fileStore.supportsFileAttributeView(PosixFileAttributeView.class)
+                );
+
+                Map<String, Object> selectedBasicAttributes = Files.readAttributes(file, "basic:size,isRegularFile");
+                assertEquals((long) content.length, selectedBasicAttributes.get("size"));
+                assertEquals(true, selectedBasicAttributes.get("isRegularFile"));
+                assertEquals(false, selectedBasicAttributes.containsKey("mode"));
+
+                Map<String, Object> selectedArAttributes = Files.readAttributes(
+                        file,
+                        "ar:path,identifier,mode,userId,groupId,size"
+                );
+                assertEquals("dir/hello.txt", selectedArAttributes.get("path"));
+                assertEquals("dir/hello.txt/", selectedArAttributes.get("identifier"));
+                assertEquals(0100640, selectedArAttributes.get("mode"));
+                assertEquals(1000L, selectedArAttributes.get("userId"));
+                assertEquals(1001L, selectedArAttributes.get("groupId"));
+                assertEquals((long) content.length, selectedArAttributes.get("size"));
+
+                Map<String, Object> ownerNamedAttributes = Files.readAttributes(file, "owner:owner");
+                assertEquals("1000", ((UserPrincipal) ownerNamedAttributes.get("owner")).getName());
+
+                Map<String, Object> posixNamedAttributes =
+                        Files.readAttributes(file, "posix:owner,group,permissions,isRegularFile");
+                assertEquals("1000", ((UserPrincipal) posixNamedAttributes.get("owner")).getName());
+                assertEquals("1001", ((GroupPrincipal) posixNamedAttributes.get("group")).getName());
+                assertEquals(filePermissions, posixNamedAttributes.get("permissions"));
+                assertEquals(true, posixNamedAttributes.get("isRegularFile"));
+
+                try (SeekableByteChannel channel = Files.newByteChannel(file, StandardOpenOption.READ)) {
+                    assertEquals(content.length, channel.size());
+                    channel.position(1);
+                    ByteBuffer buffer = ByteBuffer.allocate(2);
+                    assertEquals(2, channel.read(buffer));
+                    buffer.flip();
+                    assertEquals((byte) 'e', buffer.get());
+                    assertEquals((byte) 'l', buffer.get());
+                }
+
+                Map<String, Object> namedAttributes = Files.readAttributes(file, "ar:*");
+                assertEquals(0100640, namedAttributes.get("mode"));
+                assertEquals("dir/hello.txt/", namedAttributes.get("identifier"));
+                ArArkivoEntryAttributeView arView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, ArArkivoEntryAttributeView.class));
+                assertThrows(ReadOnlyFileSystemException.class, () -> arView.setSize(content.length));
+                assertThrows(UnsupportedOperationException.class, () -> Files.readAttributes(file, "zip:size"));
+                assertThrows(ReadOnlyFileSystemException.class, () -> Files.delete(file));
+            }
+
+            assertThrows(ClosedFileSystemException.class, () -> fileSystem.getPath("/dir"));
+        } finally {
+            Files.deleteIfExists(copiedFile);
+            Files.deleteIfExists(existingFile);
+            Files.deleteIfExists(copiedDirectory);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies repeated member separators cannot create self-referential synthetic directories.
+    @Test
+    public void fileSystemNormalizesRepeatedMemberSeparators() throws IOException {
+        byte[] content = "normalized".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(member("dir//file/", 0, 0, 0, 0100644, content));
+        Path archivePath = createTemporaryArchivePath("ar-repeated-separator-");
+        try {
+            Files.write(archivePath, archive);
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath);
+                 var paths = Files.walk(fileSystem.getPath("/"))) {
+                assertEquals(
+                        Set.of("/", "/dir", "/dir/file"),
+                        paths.map(Path::toString).collect(java.util.stream.Collectors.toUnmodifiableSet())
+                );
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/dir/file")));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that AR archives can be created through a forward-only writable file system.
+    @Test
+    public void createsMembersAsWritableFileSystem() throws IOException {
+        byte[] content = "hello from writable file system".getBytes(StandardCharsets.UTF_8);
+        byte[] channelContent = new byte[]{1, 2, 3};
+        Path archivePath = createTemporaryArchivePath("ar-writable-fs-");
+        Set<PosixFilePermission> directoryPermissions = PosixFilePermissions.fromString("rwxr-x---");
+        Set<PosixFilePermission> channelFilePermissions = PosixFilePermissions.fromString("rw-r-----");
+        Set<PosixFilePermission> linkPermissions = PosixFilePermissions.fromString("rwxr-xr--");
+        try {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.create(archivePath)) {
+                assertEquals(false, fileSystem.isReadOnly());
+
+                Path directory = fileSystem.getPath("/dir");
+                Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(directoryPermissions));
+
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                Files.write(file, content);
+                assertThrows(FileAlreadyExistsException.class, () -> Files.write(file, content));
+
+                Path channelFile = fileSystem.getPath("/channel.bin");
+                try (SeekableByteChannel channel =
+                             Files.newByteChannel(
+                                     channelFile,
+                                     Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                                     PosixFilePermissions.asFileAttribute(channelFilePermissions)
+                             )) {
+                    assertEquals(0L, channel.position());
+                    assertEquals(channelContent.length, channel.write(ByteBuffer.wrap(channelContent)));
+                    assertEquals(channelContent.length, channel.size());
+                    assertThrows(UnsupportedOperationException.class, () -> channel.position(0L));
+                }
+
+                Files.createSymbolicLink(
+                        fileSystem.getPath("/dir/link"),
+                        Path.of("hello.txt"),
+                        PosixFilePermissions.asFileAttribute(linkPermissions)
+                );
+                assertThrows(UnsupportedOperationException.class, () -> Files.readString(file, StandardCharsets.UTF_8));
+            }
+
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath)) {
+                Path directory = fileSystem.getPath("/dir");
+                ArArkivoEntryAttributes directoryAttributes =
+                        Files.readAttributes(directory, ArArkivoEntryAttributes.class);
+                PosixFileAttributes directoryPosixAttributes =
+                        Files.readAttributes(directory, PosixFileAttributes.class);
+                assertEquals(true, Files.isDirectory(directory));
+                assertEquals(040750, directoryAttributes.mode());
+                assertEquals(directoryPermissions, directoryPosixAttributes.permissions());
+
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                assertArrayEquals(content, Files.readAllBytes(file));
+
+                Path channelFile = fileSystem.getPath("/channel.bin");
+                ArArkivoEntryAttributes channelFileAttributes =
+                        Files.readAttributes(channelFile, ArArkivoEntryAttributes.class);
+                PosixFileAttributes channelFilePosixAttributes =
+                        Files.readAttributes(channelFile, PosixFileAttributes.class);
+                assertArrayEquals(channelContent, Files.readAllBytes(channelFile));
+                assertEquals(0100640, channelFileAttributes.mode());
+                assertEquals(channelFilePermissions, channelFilePosixAttributes.permissions());
+
+                Path link = fileSystem.getPath("/dir/link");
+                ArArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        ArArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
+                PosixFileAttributes linkPosixAttributes = Files.readAttributes(
+                        link,
+                        PosixFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(0120754, linkAttributes.mode());
+                assertEquals(linkPermissions, linkPosixAttributes.permissions());
+                ArArkivoEntryAttributeView followedView = Objects.requireNonNull(
+                        Files.getFileAttributeView(link, ArArkivoEntryAttributeView.class)
+                );
+                ArArkivoEntryAttributeView linkView = Objects.requireNonNull(Files.getFileAttributeView(
+                        link,
+                        ArArkivoEntryAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                ));
+                assertEquals(true, followedView.readAttributes().isRegularFile());
+                assertEquals(true, linkView.readAttributes().isSymbolicLink());
+                assertEquals(linkPermissions, Objects.requireNonNull(Files.getFileAttributeView(
+                        link,
+                        PosixFileAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                )).readAttributes().permissions());
+                assertEquals("hello.txt", Files.readSymbolicLink(link).toString());
+                assertArrayEquals(content, Files.readAllBytes(link));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that update mode rewrites additions, replacements, deletions, moves, links, long names, and metadata.
+    @Test
+    public void updatesExistingArchiveThroughCompleteRewrite() throws IOException {
+        byte[] keepContent = "abcdef".getBytes(StandardCharsets.UTF_8);
+        String longName = "this-is-a-very-long-ar-member-name.txt";
+        Path archivePath = createTemporaryArchivePath("ar-update-");
+        try {
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingMember(writer, "keep.txt", keepContent);
+                writeStreamingMember(writer, "remove.txt", "remove".getBytes(StandardCharsets.UTF_8));
+                var directoryEntry = writer.beginDirectory("dir");
+                directoryEntry.close();
+                writeStreamingMember(writer, "dir/child.txt", "child".getBytes(StandardCharsets.UTF_8));
+                var linkEntry = writer.beginSymbolicLink("link", "keep.txt");
+                linkEntry.close();
+                writeStreamingMember(writer, longName, "long".getBytes(StandardCharsets.UTF_8));
+                writeStreamingMember(writer, "target.txt", "old-target".getBytes(StandardCharsets.UTF_8));
+                writeStreamingMember(writer, "replacement.txt", "new-target".getBytes(StandardCharsets.UTF_8));
+                writeStreamingMember(writer, "resize.bin", new byte[]{1, 2, 3});
+            }
+
+            FileTime modifiedTime = FileTime.from(Instant.parse("2032-03-04T05:06:07Z"));
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath)) {
+                assertEquals(false, fileSystem.isReadOnly());
+                Path keep = fileSystem.getPath("/keep.txt");
+                assertArrayEquals(keepContent, Files.readAllBytes(keep));
+                assertThrows(
+                        ProviderMismatchException.class,
+                        () -> fileSystem.provider().move(keep, archivePath)
+                );
+                assertArrayEquals(keepContent, Files.readAllBytes(keep));
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        keep,
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                )) {
+                    channel.position(2L);
+                    assertEquals(2, channel.write(ByteBuffer.wrap("ZZ".getBytes(StandardCharsets.UTF_8))));
+                    channel.truncate(5L);
+                    channel.position(0L);
+                    ByteBuffer updated = ByteBuffer.allocate(5);
+                    assertEquals(5, channel.read(updated));
+                    assertArrayEquals("abZZe".getBytes(StandardCharsets.UTF_8), updated.array());
+                }
+
+                ArArkivoEntryAttributeView arView =
+                        Objects.requireNonNull(Files.getFileAttributeView(keep, ArArkivoEntryAttributeView.class));
+                arView.setTimes(modifiedTime, null, null);
+                arView.setGroupId(5678L);
+                arView.setMode(0100640);
+                Path link = fileSystem.getPath("/link");
+                Objects.requireNonNull(Files.getFileAttributeView(link, ArArkivoEntryAttributeView.class))
+                        .setUserId(1234L);
+                Objects.requireNonNull(Files.getFileAttributeView(
+                        link,
+                        ArArkivoEntryAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                )).setUserId(4321L);
+
+                Files.move(
+                        fileSystem.getPath("/replacement.txt"),
+                        fileSystem.getPath("/target.txt"),
+                        StandardCopyOption.REPLACE_EXISTING
+                );
+                Files.delete(fileSystem.getPath("/remove.txt"));
+                Files.move(fileSystem.getPath("/dir"), fileSystem.getPath("/renamed"));
+                Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+                Files.setAttribute(fileSystem.getPath("/resize.bin"), "ar:size", 5L);
+            }
+
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath)) {
+                Path keep = fileSystem.getPath("/keep.txt");
+                assertArrayEquals("abZZe".getBytes(StandardCharsets.UTF_8), Files.readAllBytes(keep));
+                ArArkivoEntryAttributes attributes = Files.readAttributes(keep, ArArkivoEntryAttributes.class);
+                assertEquals(modifiedTime, attributes.lastModifiedTime());
+                assertEquals(1234L, attributes.userId());
+                assertEquals(5678L, attributes.groupId());
+                assertEquals(0100640, attributes.mode());
+                assertEquals(4321L, Files.readAttributes(
+                        fileSystem.getPath("/link"),
+                        ArArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                ).userId());
+
+                assertEquals(false, Files.exists(fileSystem.getPath("/remove.txt")));
+                assertEquals(
+                        "new-target",
+                        Files.readString(fileSystem.getPath("/target.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(
+                        "child",
+                        Files.readString(fileSystem.getPath("/renamed/child.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals("keep.txt", Files.readSymbolicLink(fileSystem.getPath("/link")).toString());
+                assertEquals(
+                        "long",
+                        Files.readString(fileSystem.getPath("/" + longName), StandardCharsets.UTF_8)
+                );
+                assertEquals("new", Files.readString(fileSystem.getPath("/new.txt"), StandardCharsets.UTF_8));
+                assertArrayEquals(new byte[]{1, 2, 3, 0, 0}, Files.readAllBytes(fileSystem.getPath("/resize.bin")));
+            }
+
+            ArrayList<String> physicalMembers = new ArrayList<>();
+            try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
+                while (reader.next()) {
+                    physicalMembers.add(reader.readAttributes(ArArkivoEntryAttributes.class).path());
+                }
+            }
+            assertEquals(
+                    List.of(
+                            "keep.txt",
+                            "renamed",
+                            "renamed/child.txt",
+                            "link",
+                            longName,
+                            "target.txt",
+                            "resize.bin",
+                            "new.txt"
+                    ),
+                    physicalMembers
+            );
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that an explicit commit target can publish an updated derivative without changing the source.
+    @Test
+    public void updateCommitTargetCanPublishDerivedArchive() throws IOException {
+        Path archivePath = createTemporaryArchivePath("ar-update-source-");
+        Path derivedPath = createTemporaryArchivePath("ar-update-derived-");
+        Files.deleteIfExists(derivedPath);
+        try {
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingMember(writer, "value.txt", "before".getBytes(StandardCharsets.UTF_8));
+            }
+            ArArchiveOptions.Update options = ArArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(ArkivoCommitTarget.writeTo(derivedPath))
+            );
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath, options)) {
+                Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
+            }
+
+            try (ArArkivoFileSystem source = ArArkivoFileSystem.open(archivePath);
+                 ArArkivoFileSystem derived = ArArkivoFileSystem.open(derivedPath)) {
+                assertEquals("before", Files.readString(source.getPath("/value.txt"), StandardCharsets.UTF_8));
+                assertEquals("after", Files.readString(derived.getPath("/value.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(derivedPath);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that commit setup failure leaves the original AR bytes untouched.
+    @Test
+    public void failedUpdateCommitLeavesOriginalArchiveUntouched() throws IOException {
+        Path archivePath = createTemporaryArchivePath("ar-update-failure-");
+        try {
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingMember(writer, "value.txt", "before".getBytes(StandardCharsets.UTF_8));
+            }
+            byte[] originalArchive = Files.readAllBytes(archivePath);
+            ArkivoCommitTarget failingTarget = sourcePath -> {
+                throw new IOException("commit target failed");
+            };
+            ArArchiveOptions.Update options = ArArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(failingTarget)
+            );
+
+            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath, options);
+            Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
+            IOException exception = assertThrows(IOException.class, fileSystem::close);
+            assertEquals("commit target failed", exception.getMessage());
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that closing an unchanged update session does not rewrite archive bytes.
+    @Test
+    public void unchangedUpdateLeavesArchiveBytesUntouched() throws IOException {
+        Path archivePath = createTemporaryArchivePath("ar-update-unchanged-");
+        try {
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingMember(writer, "value.txt", "value".getBytes(StandardCharsets.UTF_8));
+            }
+            byte[] originalArchive = Files.readAllBytes(archivePath);
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.update(archivePath)) {
+            }
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that update mode with CREATE publishes a valid empty archive for a missing source.
+    @Test
+    public void updateCreateModeCreatesMissingArchive() throws IOException {
+        Path archivePath = createTemporaryArchivePath("ar-update-create-");
+        Files.deleteIfExists(archivePath);
+        try {
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.create(archivePath)) {
+            }
+            assertEquals(true, Files.exists(archivePath));
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath);
+                 DirectoryStream<Path> members = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                assertEquals(false, members.iterator().hasNext());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that BSD symbol tables are skipped and omitted from rewritten archives.
+    @Test
+    public void updateOmitsStaleBsdSymbolTables() throws IOException {
+        byte[] content = "value".getBytes(StandardCharsets.UTF_8);
+        byte[] extendedSymbolName = "__.SYMDEF_64 SORTED".getBytes(StandardCharsets.US_ASCII);
+        Path archivePath = createTemporaryArchivePath("ar-update-symbols-");
+        try {
+            Files.write(archivePath, archive(
+                    member("__.SYMDEF/", 0, 0, 0, 0, new byte[0]),
+                    member("#1/" + extendedSymbolName.length, 0, 0, 0, 0, extendedSymbolName),
+                    member("value.txt/", 1, 2, 3, 0100644, content)
+            ));
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/value.txt")));
+                Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+            }
+
+            String rewritten = new String(Files.readAllBytes(archivePath), StandardCharsets.ISO_8859_1);
+            assertEquals(false, rewritten.contains("__.SYMDEF"));
+            try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("value.txt", reader.readAttributes(ArArkivoEntryAttributes.class).path());
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("new.txt", reader.readAttributes(ArArkivoEntryAttributes.class).path());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming writer rejects unsafe paths.
+    @Test
+    public void writerRejectsUnsafePaths() throws IOException {
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(new ByteArrayOutputStream())) {
+            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("../evil.txt"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("/absolute.txt"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("C:/evil.txt"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory("../dir"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("../link", "target"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("link", ""));
+        }
+    }
+
+    /// Verifies that a raw short identifier receives fixed-header name context.
+    @Test
+    public void detectsShortIdentifierCharset() throws IOException {
+        Charset gb18030 = Charset.forName("GB18030");
+        String path = "短名称.txt";
+        byte[] identifier = (path + "/").getBytes(gb18030);
+        byte[] archive = archiveWithRawIdentifier(identifier, new byte[0]);
+        ArMetadataCharsetDetector detector = context -> {
+            assertEquals(ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+            assertEquals(ArMetadataCharsetDetector.Source.HEADER_IDENTIFIER, context.source());
+            assertNull(context.headerIdentifier());
+            assertEquals(0L, context.memberSize());
+            assertEquals(true, context.bytes().isReadOnly());
+            return gb18030;
+        };
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
+        )) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals(path, attributes.path());
+            assertEquals(path + "/", attributes.identifier());
+        }
+    }
+
+    /// Verifies that GNU filename tables and every fixed-width symbol-table identifier are handled.
+    @Test
+    public void readsGnuLongNamesAndSkipsSpecialMembers() throws IOException {
+        byte[] table = "very-long-file-name.txt/\nsecond-long-name.bin/\n".getBytes(StandardCharsets.UTF_8);
+        byte[] first = "first".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "second".getBytes(StandardCharsets.UTF_8);
+        byte[] ordinary = "ordinary".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(
+                member("/", 0, 0, 0, 0, new byte[]{0, 0, 0, 0}),
+                member("/SYM64/", 0, 0, 0, 0, new byte[]{1}),
+                member("__.SYMDEF", 0, 0, 0, 0, new byte[]{2, 3}),
+                member("__.SYMDEF/", 0, 0, 0, 0, new byte[]{4}),
+                member("__.SYMDEF SORTED", 0, 0, 0, 0, new byte[]{5, 6}),
+                member("__.SYMDEF_64/", 0, 0, 0, 0, new byte[]{7}),
+                member("//", 0, 0, 0, 0, table),
+                member("/0", 11, 1, 2, 0100644, first),
+                member("/25", 12, 3, 4, 0100644, second),
+                member("__.SYMDEFX/", 13, 5, 6, 0100644, ordinary)
+        );
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("very-long-file-name.txt", firstAttributes.path());
+            assertEquals("/0", firstAttributes.identifier());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(first, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes secondAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("second-long-name.bin", secondAttributes.path());
+            assertEquals("/25", secondAttributes.identifier());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(second, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes ordinaryAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("__.SYMDEFX", ordinaryAttributes.path());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(ordinary, input.readAllBytes());
+            }
+
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that BSD inline long names are resolved and excluded from member data.
+    @Test
+    public void readsBsdInlineLongNames() throws IOException {
+        byte[] path = "bsd-long-name.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "body".getBytes(StandardCharsets.UTF_8);
+        byte[] body = new byte[path.length + content.length];
+        System.arraycopy(path, 0, body, 0, path.length);
+        System.arraycopy(content, 0, body, path.length, content.length);
+        byte[] archive = archive(member("#1/" + path.length, 20, 10, 11, 0100644, body));
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("bsd-long-name.txt", attributes.path());
+            assertEquals(content.length, attributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies that BSD and GNU long names expose their structural header identifiers to a rich detector.
+    @Test
+    public void detectsExtendedNameCharsets() throws IOException {
+        Charset gb18030 = Charset.forName("GB18030");
+        String bsdPath = "BSD长名称.txt";
+        byte[] bsdPathBytes = bsdPath.getBytes(gb18030);
+        byte[] bsdContent = "body".getBytes(StandardCharsets.UTF_8);
+        byte[] bsdBody = new byte[bsdPathBytes.length + bsdContent.length];
+        System.arraycopy(bsdPathBytes, 0, bsdBody, 0, bsdPathBytes.length);
+        System.arraycopy(bsdContent, 0, bsdBody, bsdPathBytes.length, bsdContent.length);
+        String gnuPath = "GNU长名称.bin";
+        byte[] gnuTable = new byte[gnuPath.getBytes(gb18030).length + 2];
+        byte[] gnuPathBytes = gnuPath.getBytes(gb18030);
+        System.arraycopy(gnuPathBytes, 0, gnuTable, 0, gnuPathBytes.length);
+        gnuTable[gnuPathBytes.length] = '/';
+        gnuTable[gnuPathBytes.length + 1] = '\n';
+        byte[] archive = archive(
+                member("#1/" + bsdPathBytes.length, 20, 10, 11, 0100644, bsdBody),
+                member("//", 0, 0, 0, 0, gnuTable),
+                member("/0", 21, 12, 13, 0100644, new byte[0])
+        );
+        int[] calls = new int[2];
+        ArMetadataCharsetDetector detector = context -> {
+            assertEquals(ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+            if (context.source() == ArMetadataCharsetDetector.Source.BSD_LONG_NAME) {
+                calls[0]++;
+                assertEquals("#1/" + bsdPathBytes.length, context.headerIdentifier());
+                assertEquals((long) bsdBody.length, context.memberSize());
+            } else if (context.source() == ArMetadataCharsetDetector.Source.GNU_NAME_TABLE) {
+                calls[1]++;
+                assertEquals("/0", context.headerIdentifier());
+                assertEquals(0L, context.memberSize());
+            } else {
+                throw new AssertionError("Unexpected AR name source: " + context.source());
+            }
+            return gb18030;
+        };
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
+        )) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals(bsdPath, reader.readAttributes(ArArkivoEntryAttributes.class).path());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals(gnuPath, reader.readAttributes(ArArkivoEntryAttributes.class).path());
+            assertEquals(1, calls[0]);
+            assertEquals(1, calls[1]);
+        }
+    }
+
+    /// Verifies BSD inline names are rejected before their variable metadata body is buffered.
+    @Test
+    public void enforcesMetadataLimitBeforeBsdNameAllocation() throws IOException {
+        byte[] path = ("a".repeat(60) + ".txt").getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(member("#1/" + path.length, 20, 10, 11, 0100644, path));
+        long maximum = 8L + 60L;
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                ArArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withLimits(
+                                ArchiveReadLimits.builder().maximumMetadataSize(maximum).build()
+                        )
+                )
+        )) {
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+            assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
+            assertEquals(maximum, exception.maximum());
+            assertEquals(maximum + path.length, exception.actual());
+            assertNull(exception.entryPath());
+
+            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::next);
+            assertEquals(exception.kind(), repeated.kind());
+            assertEquals(exception.maximum(), repeated.maximum());
+            assertEquals(exception.actual(), repeated.actual());
+        }
+    }
+
+    /// Verifies that unsafe member paths are rejected.
+    @Test
+    public void rejectsParentDirectoryMemberPath() throws IOException {
+        byte[] archive = archive(member("../evil.txt/", 0, 0, 0, 0100644, new byte[0]));
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+
+            assertEquals(true, exception.getMessage().contains("must not contain .."));
+        }
+    }
+
+    /// Verifies that drive-letter member paths are rejected as non-relative paths.
+    @Test
+    public void rejectsDriveLetterMemberPath() throws IOException {
+        byte[] archive = archive(member("C:/evil.txt/", 0, 0, 0, 0100644, new byte[0]));
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+
+            assertEquals(true, exception.getMessage().contains("must be relative"));
+        }
+    }
+
+    /// Verifies global and fixed-width member headers fail deterministically at every structural boundary.
+    @Test
+    public void rejectsMalformedGlobalAndMemberHeaders() throws IOException {
+        byte[] globalHeader = "!<arch>\n".getBytes(StandardCharsets.US_ASCII);
+        for (int length = 0; length < globalHeader.length; length++) {
+            assertNextFailure(
+                    Arrays.copyOf(globalHeader, length),
+                    "Unexpected end of AR global header"
+            );
+        }
+
+        byte[] invalidGlobalHeader = globalHeader.clone();
+        invalidGlobalHeader[0] = '?';
+        assertNextFailure(invalidGlobalHeader, "Invalid AR global header");
+
+        byte[] validArchive = archive(member("file/", 0, 0, 0, 0100644, new byte[0]));
+        for (int headerLength : new int[]{1, 59}) {
+            assertNextFailure(
+                    Arrays.copyOf(validArchive, globalHeader.length + headerLength),
+                    "Unexpected end of AR member header"
+            );
+        }
+
+        byte[] invalidFirstTrailerByte = validArchive.clone();
+        invalidFirstTrailerByte[globalHeader.length + 58] = '?';
+        assertNextFailure(invalidFirstTrailerByte, "Invalid AR member header trailer");
+
+        byte[] invalidSecondTrailerByte = validArchive.clone();
+        invalidSecondTrailerByte[globalHeader.length + 59] = '?';
+        assertNextFailure(invalidSecondTrailerByte, "Invalid AR member header trailer");
+    }
+
+    /// Verifies blank, negative, and malformed fixed-width numeric fields are interpreted consistently.
+    @Test
+    public void validatesFixedWidthNumericFields() throws IOException {
+        byte[] validArchive = archive(member("file/", 1, 2, 3, 0100644, new byte[0]));
+        byte[] blankTimestamp = withFirstMemberField(validArchive, 16, 12, "");
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(blankTimestamp)
+        )) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals(0L, reader.readAttributes().lastModifiedTime().toMillis());
+        }
+
+        assertNextFailure(
+                withFirstMemberField(validArchive, 16, 12, "-1"),
+                "AR timestamp must not be negative"
+        );
+        assertNextFailure(
+                withFirstMemberField(validArchive, 16, 12, "invalid"),
+                "Invalid AR timestamp: invalid"
+        );
+        assertNextFailure(
+                withFirstMemberField(validArchive, 40, 8, "8"),
+                "Invalid AR mode: 8"
+        );
+        assertNextFailure(
+                withFirstMemberField(validArchive, 48, 10, "-1"),
+                "AR size must not be negative"
+        );
+    }
+
+    /// Verifies malformed GNU and BSD extended-name forms are rejected before body exposure.
+    @Test
+    public void rejectsMalformedExtendedNames() throws IOException {
+        assertNextFailure(
+                archive(member("/0", 0, 0, 0, 0100644, new byte[0])),
+                "AR GNU long name table is missing"
+        );
+
+        byte[] gnuTable = "name/\n".getBytes(StandardCharsets.US_ASCII);
+        assertNextFailure(
+                archive(
+                        member("//", 0, 0, 0, 0, gnuTable),
+                        member("/6", 0, 0, 0, 0100644, new byte[0])
+                ),
+                "AR GNU long name offset is out of range"
+        );
+        assertNextFailure(
+                archive(member("/-1", 0, 0, 0, 0100644, new byte[0])),
+                "AR GNU long name offset must not be negative"
+        );
+        assertNextFailure(
+                archive(member("/2147483648", 0, 0, 0, 0100644, new byte[0])),
+                "AR GNU long name offset is out of range"
+        );
+        assertNextFailure(
+                archive(
+                        member("//", 0, 0, 0, 0, "/\n".getBytes(StandardCharsets.US_ASCII)),
+                        member("/0", 0, 0, 0, 0100644, new byte[0])
+                ),
+                "AR member is missing a path"
+        );
+
+        assertNextFailure(
+                archive(member("#1/0", 0, 0, 0, 0100644, new byte[0])),
+                "AR BSD long name length is out of range"
+        );
+        assertNextFailure(
+                archive(member("#1/x", 0, 0, 0, 0100644, new byte[0])),
+                "Invalid AR BSD long name length: x"
+        );
+        assertNextFailure(
+                archive(member("#1/5", 0, 0, 0, 0100644, new byte[4])),
+                "AR BSD long name exceeds member size"
+        );
+
+        byte[] oversizedTable = archive(member("//", 0, 0, 0, 0, new byte[0]));
+        assertNextFailure(
+                withFirstMemberField(oversizedTable, 48, 10, "2147483648"),
+                "AR member is too large to buffer"
+        );
+    }
+
+    /// Verifies decoder fallback and strict name decoding for ordinary and BSD identifiers.
+    @Test
+    public void appliesNameDecodingFallbackAndRejectsMalformedInput() throws IOException {
+        ArchiveMetadataCharsetDetector unknownDetector = bytes -> null;
+        byte[] fallbackArchive = archive(member("fallback.txt/", 0, 0, 0, 0100644, new byte[0]));
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(fallbackArchive),
+                ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(unknownDetector)
+        )) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("fallback.txt", reader.readAttributes().path());
+        }
+
+        assertNextFailure(
+                archiveWithRawIdentifier(new byte[0], new byte[0]),
+                "AR member is missing a path"
+        );
+        assertNextFailure(
+                archiveWithRawIdentifier("\\absolute/".getBytes(StandardCharsets.US_ASCII), new byte[0]),
+                "AR member path must be relative"
+        );
+        assertNextFailure(
+                archive(member("#1/1", 0, 0, 0, 0100644, new byte[]{(byte) 0x80})),
+                "Failed to decode AR member name"
+        );
+    }
+
+    /// Verifies truncation is reported both while reading member data and while consuming alignment padding.
+    @Test
+    public void reportsTruncatedEntryBodiesAndPadding() throws IOException {
+        byte[] completeBodyArchive = archive(member("body/", 0, 0, 0, 0100644, new byte[]{1, 2}));
+        byte[] truncatedBodyArchive = Arrays.copyOf(completeBodyArchive, completeBodyArchive.length - 1);
+        ArArkivoStreamingReader bodyReader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(truncatedBodyArchive)
+        );
+        org.junit.jupiter.api.Assertions.assertTrue(bodyReader.next());
+        var body = bodyReader.openInputStream();
+        assertEquals(1, body.read());
+        EOFException readFailure = assertThrows(EOFException.class, body::read);
+        assertEquals("Unexpected end of AR member body", readFailure.getMessage());
+        EOFException bodyCloseFailure = assertThrows(EOFException.class, body::close);
+        assertEquals("Unexpected end of AR member body", bodyCloseFailure.getMessage());
+        bodyReader.close();
+
+        byte[] completePaddingArchive = archive(member("padding/", 0, 0, 0, 0100644, new byte[]{3}));
+        byte[] truncatedPaddingArchive = Arrays.copyOf(completePaddingArchive, completePaddingArchive.length - 1);
+        ArArkivoStreamingReader paddingReader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(truncatedPaddingArchive)
+        );
+        org.junit.jupiter.api.Assertions.assertTrue(paddingReader.next());
+        var paddingBody = paddingReader.openInputStream();
+        assertEquals(3, paddingBody.read());
+        EOFException paddingFailure = assertThrows(EOFException.class, paddingBody::close);
+        assertEquals("Unexpected end of AR member body", paddingFailure.getMessage());
+        paddingReader.close();
+    }
+
+    /// Asserts that advancing one archive fails with the expected message.
+    private static void assertNextFailure(byte[] archive, String expectedMessage) throws IOException {
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+            assertEquals(expectedMessage, exception.getMessage());
+        }
+    }
+
+    /// Returns a copy with one fixed-width field of the first member replaced and space-padded.
+    private static byte[] withFirstMemberField(byte[] archive, int offset, int width, String value) {
+        byte[] replacement = value.getBytes(StandardCharsets.US_ASCII);
+        if (replacement.length > width) {
+            throw new IllegalArgumentException("replacement field is too wide");
+        }
+        byte[] result = archive.clone();
+        int start = 8 + offset;
+        Arrays.fill(result, start, start + width, (byte) ' ');
+        System.arraycopy(replacement, 0, result, start, replacement.length);
+        return result;
+    }
+
+    /// Writes one streaming AR member with the given body.
+    private static void writeStreamingMember(
+            ArArkivoStreamingWriter writer,
+            String path,
+            byte @Unmodifiable [] content
+    ) throws IOException {
+        var entry = writer.beginFile(path);
+        try (OutputStream output = entry.openOutputStream()) {
+            output.write(content);
+        }
+    }
+
+    /// Creates an AR archive from the given members.
+    private static byte[] archive(Member... members) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write("!<arch>\n".getBytes(StandardCharsets.US_ASCII));
+        for (Member member : members) {
+            writeField(output, member.identifier(), 16);
+            writeField(output, Long.toString(member.timestamp()), 12);
+            writeField(output, Long.toString(member.userId()), 6);
+            writeField(output, Long.toString(member.groupId()), 6);
+            writeField(output, Integer.toOctalString(member.mode()), 8);
+            writeField(output, Integer.toString(member.body().length), 10);
+            output.write('`');
+            output.write('\n');
+            output.write(member.body());
+            if ((member.body().length & 1) != 0) {
+                output.write('\n');
+            }
+        }
+        return output.toByteArray();
+    }
+
+    /// Creates one AR archive containing a member with caller-supplied raw identifier bytes.
+    private static byte[] archiveWithRawIdentifier(byte[] identifier, byte[] body) throws IOException {
+        if (identifier.length > 16) {
+            throw new IllegalArgumentException("identifier is too long");
+        }
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write("!<arch>\n".getBytes(StandardCharsets.US_ASCII));
+        output.write(identifier);
+        for (int index = identifier.length; index < 16; index++) {
+            output.write(' ');
+        }
+        writeField(output, "0", 12);
+        writeField(output, "0", 6);
+        writeField(output, "0", 6);
+        writeField(output, Integer.toOctalString(0100644), 8);
+        writeField(output, Integer.toString(body.length), 10);
+        output.write('`');
+        output.write('\n');
+        output.write(body);
+        if ((body.length & 1) != 0) {
+            output.write('\n');
+        }
+        return output.toByteArray();
+    }
+
+    /// Creates one AR archive member.
+    private static Member member(
+            String identifier,
+            long timestamp,
+            long userId,
+            long groupId,
+            int mode,
+            byte[] body
+    ) {
+        return new Member(identifier, timestamp, userId, groupId, mode, body);
+    }
+
+    /// Writes a fixed-width AR header field.
+    private static void writeField(ByteArrayOutputStream output, String value, int width) throws IOException {
+        byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
+        if (bytes.length > width) {
+            throw new IllegalArgumentException("field is too wide");
+        }
+        output.write(bytes);
+        for (int index = bytes.length; index < width; index++) {
+            output.write(' ');
+        }
+    }
+
+    /// Creates a temporary archive path under the module build directory.
+    private static Path createTemporaryArchivePath(String prefix) throws IOException {
+        Path temporaryRoot = Path.of("build", "tmp", "arkivo-ar-tests");
+        Files.createDirectories(temporaryRoot);
+        Path temporaryDirectory = Files.createTempDirectory(temporaryRoot, prefix);
+        return temporaryDirectory.resolve("sample.ar");
+    }
+
+    /// Deletes a temporary archive file and its containing directory.
+    private static void deleteTemporaryArchive(Path archivePath) throws IOException {
+        Files.deleteIfExists(archivePath);
+        Files.deleteIfExists(archivePath.getParent());
+    }
+
+    /// One AR test member.
+    ///
+    /// @param identifier the raw fixed-width AR identifier
+    /// @param timestamp the member modification time in epoch seconds
+    /// @param userId the numeric user identifier
+    /// @param groupId the numeric group identifier
+    /// @param mode the stored POSIX mode bits
+    /// @param body the complete stored member body
+    private record Member(
+            String identifier,
+            long timestamp,
+            long userId,
+            long groupId,
+            int mode,
+            byte @Unmodifiable [] body
+    ) {
+        /// Creates a test AR member.
+        private Member {
+            Objects.requireNonNull(identifier, "identifier");
+            body = body.clone();
+        }
+    }
+
+}

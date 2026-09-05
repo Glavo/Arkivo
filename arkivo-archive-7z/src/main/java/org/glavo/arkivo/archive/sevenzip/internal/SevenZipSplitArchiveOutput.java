@@ -96,13 +96,13 @@ final class SevenZipSplitArchiveOutput {
                 try {
                     channel.close();
                 } catch (IOException | RuntimeException | Error closeException) {
-                    exception.addSuppressed(closeException);
+                    appendFailure(exception, closeException);
                 }
             }
             try {
                 Files.deleteIfExists(temporaryArchivePath);
             } catch (IOException | RuntimeException | Error cleanupException) {
-                exception.addSuppressed(cleanupException);
+                appendFailure(exception, cleanupException);
             }
             throw exception;
         }
@@ -194,9 +194,7 @@ final class SevenZipSplitArchiveOutput {
                         output.openVolume(volumeIndex),
                         "volume channel"
                 );
-                try (volume) {
-                    copyExactly(source, volume, volumeSize);
-                }
+                copyAndCloseVolume(source, volume, volumeSize);
                 remaining -= volumeSize;
                 if (remaining == 0L) {
                     return volumeIndex;
@@ -205,6 +203,32 @@ final class SevenZipSplitArchiveOutput {
                     volumeIndex = Math.addExact(volumeIndex, 1L);
                 } catch (ArithmeticException exception) {
                     throw new IOException("7z split archive has too many output volumes", exception);
+                }
+            }
+        }
+    }
+
+
+    /// Copies one physical volume and closes it while preserving an operation failure by identity.
+    private static void copyAndCloseVolume(
+            SeekableByteChannel source,
+            WritableByteChannel volume,
+            long volumeSize
+    ) throws IOException {
+        @Nullable Throwable failure = null;
+        try {
+            copyExactly(source, volume, volumeSize);
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            try {
+                volume.close();
+            } catch (IOException | RuntimeException | Error closeException) {
+                if (failure != null) {
+                    appendFailure(failure, closeException);
+                } else {
+                    throw closeException;
                 }
             }
         }

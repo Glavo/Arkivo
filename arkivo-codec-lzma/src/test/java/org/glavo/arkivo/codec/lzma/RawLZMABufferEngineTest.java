@@ -124,6 +124,56 @@ public final class RawLZMABufferEngineTest {
 
     }
 
+    /// Verifies raw decoder reset discards partial input and restores a reusable terminal state.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    public void decoderResetAndClosedState() throws IOException {
+        byte[] content = Arrays.copyOf(testData(), 12_345);
+        byte[] encoded = encode(content, CODEC, CompressionCodec.UNKNOWN_SIZE, 13, 3);
+        CompressionDecoder decoder = CODEC.newDecoder();
+
+        ByteBuffer blockedSource = ByteBuffer.wrap(encoded);
+        assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(blockedSource, ByteBuffer.allocate(0)));
+        assertEquals(0, blockedSource.position());
+        IOException truncatedPrefix = assertThrows(
+                IOException.class,
+                () -> decoder.finish(ByteBuffer.wrap(encoded, 0, 4).slice(), ByteBuffer.allocate(1))
+        );
+        assertEquals("Truncated LZMA range-coded stream", truncatedPrefix.getMessage());
+        decoder.reset();
+
+        ByteBuffer partialSource = ByteBuffer.wrap(encoded, 0, Math.min(8, encoded.length)).slice();
+        CodecOutcome partialOutcome = decoder.decode(partialSource, ByteBuffer.allocateDirect(2));
+        assertTrue(partialOutcome == CodecOutcome.NEEDS_INPUT || partialOutcome == CodecOutcome.NEEDS_OUTPUT);
+        assertTrue(partialSource.position() > 0);
+        decoder.reset();
+
+        assertArrayEquals(content, decodeWithDecoder(decoder, encoded, 5));
+        assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(0)));
+        decoder.reset();
+        assertArrayEquals(content, decodeWithDecoder(decoder, encoded, 7));
+
+        assertThrows(NullPointerException.class, () -> decoder.decode(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> decoder.decode(ByteBuffer.allocate(0), null));
+        assertThrows(NullPointerException.class, () -> decoder.finish(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> decoder.finish(ByteBuffer.allocate(0), null));
+
+        decoder.close();
+        decoder.close();
+        IllegalStateException resetFailure = assertThrows(IllegalStateException.class, decoder::reset);
+        assertEquals("LZMA decoder is closed", resetFailure.getMessage());
+        IllegalStateException decodeFailure = assertThrows(
+                IllegalStateException.class,
+                () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+        assertEquals("LZMA decoder is closed", decodeFailure.getMessage());
+        IllegalStateException finishFailure = assertThrows(
+                IllegalStateException.class,
+                () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+        assertEquals("LZMA decoder is closed", finishFailure.getMessage());
+    }
+
     /// Encodes one raw stream with fresh bounded source and target buffers.
     private static byte[] encode(
             byte[] content,
@@ -188,6 +238,25 @@ public final class RawLZMABufferEngineTest {
             }
         }
         return new DecodeResult(decoded.toByteArray(), offset);
+    }
+
+    /// Decodes one complete raw stream through an existing decoder and bounded direct targets.
+    private static byte[] decodeWithDecoder(
+            CompressionDecoder decoder,
+            byte[] encoded,
+            int targetSize
+    ) throws IOException {
+        ByteBuffer source = ByteBuffer.wrap(encoded);
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+        CodecOutcome outcome;
+        do {
+            ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
+            outcome = decoder.finish(source, target);
+            drain(target, decoded);
+            assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
+        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+        assertFalse(source.hasRemaining());
+        return decoded.toByteArray();
     }
 
     /// Drives one source buffer until the encoder requests more input.

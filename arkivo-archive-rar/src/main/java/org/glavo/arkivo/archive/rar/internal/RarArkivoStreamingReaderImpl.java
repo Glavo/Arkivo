@@ -779,7 +779,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         try {
             packedInput.close();
         } catch (IOException closeException) {
-            problem.addSuppressed(closeException);
+            if (problem != closeException) {
+                problem.addSuppressed(closeException);
+            }
         }
     }
 
@@ -1056,7 +1058,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             } catch (IOException exception) {
                 if (failure == null) {
                     failure = exception;
-                } else {
+                } else if (failure != exception) {
                     failure.addSuppressed(exception);
                 }
             }
@@ -3818,7 +3820,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 } catch (IOException exception) {
                     if (problem == null) {
                         problem = exception;
-                    } else {
+                    } else if (problem != exception) {
                         problem.addSuppressed(exception);
                     }
                 }
@@ -3829,7 +3831,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                     IOException published = failure;
                     if (published == null) {
                         failure = exception;
-                    } else {
+                    } else if (published != exception) {
                         published.addSuppressed(exception);
                     }
                 }

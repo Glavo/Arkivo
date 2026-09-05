@@ -1724,7 +1724,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         /// The validated sparse map.
         private final SparseMap sparseMap;
 
-        /// A reusable single-byte read buffer.
+        /// A reusable buffer required by the single-byte [#read()] bridge.
         private final byte[] singleByte = new byte[1];
 
         /// The current logical file position.
@@ -1786,50 +1786,6 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             return total;
         }
 
-        /// Skips expanded logical bytes while consuming packed data extents as needed.
-        @Override
-        public long skip(long count) throws IOException {
-            ensureOpen();
-            if (count <= 0L || logicalPosition == sparseMap.logicalSize()) {
-                return 0L;
-            }
-            long available = sparseMap.logicalSize() - logicalPosition;
-            long target = logicalPosition + Math.min(count, available);
-            long start = logicalPosition;
-            while (logicalPosition < target) {
-                advanceCompletedBlocks();
-                @Nullable SparseBlock block = currentBlock();
-                if (block == null || logicalPosition < block.offset()) {
-                    long holeEnd = block != null ? block.offset() : sparseMap.logicalSize();
-                    logicalPosition = Math.min(target, holeEnd);
-                    continue;
-                }
-                long blockEnd = block.offset() + block.size();
-                skipPackedData(Math.min(target - logicalPosition, blockEnd - logicalPosition));
-            }
-            return logicalPosition - start;
-        }
-
-        /// Returns immediately available logical bytes from the current hole or data block.
-        @Override
-        public int available() throws IOException {
-            ensureOpen();
-            if (logicalPosition == sparseMap.logicalSize()) {
-                return 0;
-            }
-            advanceCompletedBlocks();
-            @Nullable SparseBlock block = currentBlock();
-            long available;
-            if (block == null || logicalPosition < block.offset()) {
-                long holeEnd = block != null ? block.offset() : sparseMap.logicalSize();
-                available = holeEnd - logicalPosition;
-            } else {
-                long blockRemaining = block.offset() + block.size() - logicalPosition;
-                available = Math.min(blockRemaining, source.available());
-            }
-            return (int) Math.min(Integer.MAX_VALUE, available);
-        }
-
         /// Advances past sparse blocks ending at the current logical position.
         private void advanceCompletedBlocks() {
             @Unmodifiable List<SparseBlock> blocks = sparseMap.blocks();
@@ -1848,25 +1804,6 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             return blockIndex < blocks.size() ? blocks.get(blockIndex) : null;
         }
 
-        /// Skips an exact number of packed data bytes.
-        private void skipPackedData(long count) throws IOException {
-            long remaining = count;
-            while (remaining > 0L) {
-                long skipped = source.skip(remaining);
-                if (skipped > remaining) {
-                    throw new IOException("Invalid GNU sparse entry skip result");
-                }
-                if (skipped == 0L) {
-                    if (source.read() < 0) {
-                        throw new EOFException("Unexpected end of GNU sparse entry data");
-                    }
-                    skipped = 1L;
-                }
-                currentBodyRemaining -= skipped;
-                logicalPosition += skipped;
-                remaining -= skipped;
-            }
-        }
     }
 
     /// Exposes the current regular file body without consuming the following padding.
@@ -1906,23 +1843,5 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             return read;
         }
 
-        /// Skips bytes from the current entry body.
-        @Override
-        public long skip(long count) throws IOException {
-            ensureOpen();
-            if (count <= 0 || currentBodyRemaining == 0) {
-                return 0;
-            }
-            long skipped = source.skip(Math.min(count, currentBodyRemaining));
-            currentBodyRemaining -= skipped;
-            return skipped;
-        }
-
-        /// Returns the approximate available current entry body bytes.
-        @Override
-        public int available() throws IOException {
-            ensureOpen();
-            return Math.min(source.available(), (int) Math.min(Integer.MAX_VALUE, currentBodyRemaining));
-        }
     }
 }

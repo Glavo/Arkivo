@@ -166,6 +166,32 @@ final class HFSPlusValidationTest {
         assertRejected(linkOutsideMap, "leaf-link-outside-map.dmg", "Invalid or cyclic HFS Plus B-tree leaf chain");
     }
 
+    /// Rejects leaf nodes whose reverse offset tables cannot fit or address their record regions.
+    @Test
+    void rejectsMalformedLeafRecordTables() throws IOException {
+        int firstCatalogLeaf = 5 * SECTOR_SIZE;
+
+        byte[] oversizedTable = createHFSPlusDisk();
+        ByteArrayAccess.writeShortBigEndian(oversizedTable, firstCatalogLeaf + 10, (short) 0xffff);
+        assertRejected(
+                oversizedTable,
+                "oversized-catalog-record-table.dmg",
+                "HFS Plus B-tree record table exceeds its node"
+        );
+
+        byte[] descriptorOverlap = createHFSPlusDisk();
+        ByteArrayAccess.writeShortBigEndian(
+                descriptorOverlap,
+                firstCatalogLeaf + SECTOR_SIZE - Short.BYTES,
+                (short) 13
+        );
+        assertRejected(
+                descriptorOverlap,
+                "catalog-record-overlaps-descriptor.dmg",
+                "Invalid HFS Plus B-tree record offset"
+        );
+    }
+
     /// Rejects truncated or internally inconsistent catalog keys, records, and fork sizes.
     @Test
     void rejectsMalformedCatalogRecords() throws IOException {

@@ -104,6 +104,90 @@ public final class ZstdPureJavaDecoderTest {
         assertThrows(IOException.class, () -> decompress(corrupt, verified));
     }
 
+    /// Verifies every proper prefix of each fixed frame is rejected as incomplete by the buffer decoder.
+    @Test
+    public void rejectsEveryTruncatedFixedFramePrefix() {
+        assertEveryProperPrefixRejected(RAW_FRAME);
+        assertEveryProperPrefixRejected(RLE_FRAME);
+        assertEveryProperPrefixRejected(CHECKSUM_FRAME);
+        assertEveryProperPrefixRejected(SKIPPABLE_FRAME);
+    }
+
+    /// Verifies empty skippable frames complete without output and incomplete payloads remain terminal errors.
+    @Test
+    public void handlesEmptyAndTruncatedSkippablePayloads() throws IOException {
+        byte[] empty = {
+                0x5f, 0x2a, 0x4d, 0x18,
+                0x00, 0x00, 0x00, 0x00
+        };
+        ByteBuffer emptySource = ByteBuffer.wrap(empty);
+        ByteBuffer target = ByteBuffer.allocate(2);
+        target.position(1);
+        try (CompressionDecoder decoder = new ZstdCodec().newDecoder()) {
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(emptySource, target));
+        }
+        assertEquals(empty.length, emptySource.position());
+        assertEquals(1, target.position());
+
+        byte[] truncated = java.util.Arrays.copyOf(SKIPPABLE_FRAME, SKIPPABLE_FRAME.length - 1);
+        ByteBuffer truncatedSource = ByteBuffer.wrap(truncated);
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> {
+                    try (CompressionDecoder decoder = new ZstdCodec().newDecoder()) {
+                        decoder.finish(truncatedSource, ByteBuffer.allocate(1));
+                    }
+                }
+        );
+        assertEquals("Unexpected end of Zstandard frame", exception.getMessage());
+        assertEquals(truncated.length, truncatedSource.position());
+    }
+
+    /// Verifies malformed standard-frame fields are rejected with stable, field-specific diagnostics.
+    @Test
+    public void rejectsMalformedStandardFrameFields() {
+        assertFrameFailure(
+                new byte[]{
+                        0x28, (byte) 0xb5, 0x2f, (byte) 0xfd,
+                        (byte) 0xe0,
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, (byte) 0x80
+                },
+                "Zstandard frame content size exceeds the Java long range"
+        );
+        assertFrameFailure(
+                new byte[]{
+                        0x28, (byte) 0xb5, 0x2f, (byte) 0xfd,
+                        0x08
+                },
+                "Reserved Zstandard frame descriptor bits are set"
+        );
+        assertFrameFailure(
+                new byte[]{
+                        0x28, (byte) 0xb5, 0x2f, (byte) 0xfd,
+                        0x20, 0x01,
+                        0x07, 0x00, 0x00
+                },
+                "Reserved Zstandard block type"
+        );
+        assertFrameFailure(
+                new byte[]{
+                        0x28, (byte) 0xb5, 0x2f, (byte) 0xfd,
+                        0x20, 0x01,
+                        0x11, 0x00, 0x00
+                },
+                "Zstandard block exceeds the frame block-size limit"
+        );
+        assertFrameFailure(
+                new byte[]{
+                        0x28, (byte) 0xb5, 0x2f, (byte) 0xfd,
+                        0x20, 0x02,
+                        0x09, 0x00, 0x00,
+                        0x61
+                },
+                "Zstandard frame content size mismatch"
+        );
+    }
+
     /// Decodes explicitly selected magicless frames without confusing their boundaries.
     @Test
     public void decodesFixedMagiclessFrames() throws IOException {
@@ -246,5 +330,42 @@ public final class ZstdPureJavaDecoderTest {
             offset += array.length;
         }
         return result;
+    }
+
+    /// Requires every proper prefix of one valid frame to fail terminal buffer decoding.
+    private static void assertEveryProperPrefixRejected(byte[] frame) {
+        for (int length = 0; length < frame.length; length++) {
+            int prefixLength = length;
+            IOException exception = assertThrows(
+                    IOException.class,
+                    () -> {
+                        try (CompressionDecoder decoder = new ZstdCodec().newDecoder()) {
+                            decoder.finish(
+                                    ByteBuffer.wrap(java.util.Arrays.copyOf(frame, prefixLength)),
+                                    ByteBuffer.allocate(32)
+                            );
+                        }
+                    },
+                    "prefix length " + prefixLength + " of " + frame.length
+            );
+            assertEquals(
+                    "Unexpected end of Zstandard frame",
+                    exception.getMessage(),
+                    "prefix length " + prefixLength + " of " + frame.length
+            );
+        }
+    }
+
+    /// Requires one malformed frame to fail terminal buffer decoding with the expected diagnostic.
+    private static void assertFrameFailure(byte[] frame, String expectedMessage) {
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> {
+                    try (CompressionDecoder decoder = new ZstdCodec().newDecoder()) {
+                        decoder.finish(ByteBuffer.wrap(frame), ByteBuffer.allocate(32));
+                    }
+                }
+        );
+        assertEquals(expectedMessage, exception.getMessage());
     }
 }

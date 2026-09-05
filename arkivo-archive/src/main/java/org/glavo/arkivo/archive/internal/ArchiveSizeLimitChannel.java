@@ -23,7 +23,7 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
     /// The configured non-negative maximum byte count.
     private final long maximum;
 
-    /// The number of bytes returned by successful delegate reads.
+    /// The number of bytes delivered by delegate reads, including progress made before a delegate failure.
     private long count;
 
     /// The terminal limit failure, or `null` while the limit has not been exceeded.
@@ -61,7 +61,10 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
     /// Reads decoded bytes and accounts for partial progress before reporting a limit failure.
     ///
     /// The delegate receives at most the remaining allowance plus one probe byte. If that probe exceeds the limit,
-    /// the target position reflects every byte read before the exception and its original limit is restored.
+    /// the target position reflects every byte read before the exception and its original limit is restored. Bytes
+    /// placed in the target before a delegate failure remain accounted. If those bytes exceed the limit after an I/O
+    /// failure, the limit failure is reported with the delegate failure suppressed. Runtime failures and errors remain
+    /// primary and carry the newly latched limit failure as suppressed context.
     ///
     /// @param target the destination buffer
     /// @return the number of bytes read, possibly zero, or `-1` at end of input
@@ -74,25 +77,58 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
         if (previousFailure != null) {
             throw previousFailure;
         }
-        int read = readWithinProbeBoundary(target);
+        int initialPosition = target.position();
+        int read;
+        try {
+            read = readWithinProbeBoundary(target);
+        } catch (IOException | RuntimeException | Error exception) {
+            int partialRead = target.position() - initialPosition;
+            if (partialRead > 0) {
+                @Nullable ArkivoReadLimitException limitFailure = account(partialRead);
+                if (limitFailure != null) {
+                    if (exception instanceof IOException) {
+                        limitFailure.addSuppressed(exception);
+                        throw limitFailure;
+                    }
+                    exception.addSuppressed(limitFailure);
+                }
+            }
+            throw exception;
+        }
         if (read > 0) {
-            long actual = count > Long.MAX_VALUE - read ? Long.MAX_VALUE : count + read;
-            count = actual;
-            if (actual > maximum) {
-                ArkivoReadLimitException exception = new ArkivoReadLimitException(
-                        ArkivoReadLimitKind.DECODED_ARCHIVE_SIZE,
-                        maximum,
-                        actual,
-                        null
-                );
-                failure = exception;
-                throw exception;
+            @Nullable ArkivoReadLimitException limitFailure = account(read);
+            if (limitFailure != null) {
+                throw limitFailure;
             }
         }
         return read;
     }
 
+    /// Accounts for decoded bytes and returns the newly latched limit failure, if any.
+    ///
+    /// @param read the positive number of newly delivered bytes
+    /// @return the newly latched failure, or `null` if the decoded byte count remains within the limit
+    private @Nullable ArkivoReadLimitException account(int read) {
+        long actual = count > Long.MAX_VALUE - read ? Long.MAX_VALUE : count + read;
+        count = actual;
+        if (actual <= maximum) {
+            return null;
+        }
+        ArkivoReadLimitException exception = new ArkivoReadLimitException(
+                ArkivoReadLimitKind.DECODED_ARCHIVE_SIZE,
+                maximum,
+                actual,
+                null
+        );
+        failure = exception;
+        return exception;
+    }
+
     /// Reads no farther than one byte beyond the remaining allowance while preserving the caller's buffer limit.
+    ///
+    /// @param target the destination buffer
+    /// @return the delegate read result
+    /// @throws IOException if the delegate read fails
     private int readWithinProbeBoundary(ByteBuffer target) throws IOException {
         if (!target.hasRemaining()) {
             return delegate.read(target);

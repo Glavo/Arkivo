@@ -1606,7 +1606,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 try {
                     Files.deleteIfExists(path);
                 } catch (IOException cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    appendFailure(exception, cleanupFailure);
                 }
                 throw exception;
             }
@@ -1665,7 +1665,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                     }
                 }
                 if (failure != null && cleanupFailure != null) {
-                    failure.addSuppressed(cleanupFailure);
+                    appendFailure(failure, cleanupFailure);
                 } else if (cleanupFailure != null) {
                     throwFailure(cleanupFailure);
                 }
@@ -1714,7 +1714,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                     try {
                         output.close();
                     } catch (IOException | RuntimeException | Error closeFailure) {
-                        failure.addSuppressed(closeFailure);
+                        appendFailure(failure, closeFailure);
                     }
                 }
             }

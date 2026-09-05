@@ -1398,7 +1398,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             try {
                 input.close();
             } catch (IOException | RuntimeException | Error closeException) {
-                exception.addSuppressed(closeException);
+                if (exception != closeException) {
+                    exception.addSuppressed(closeException);
+                }
             }
             throw exception;
         }
@@ -1588,7 +1590,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             try {
                 compressedInput.close();
             } catch (IOException | RuntimeException | Error closeException) {
-                exception.addSuppressed(closeException);
+                if (exception != closeException) {
+                    exception.addSuppressed(closeException);
+                }
             }
             throw exception;
         }
@@ -1721,12 +1725,14 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     }
 
     /// Drains a known-size entry after stream setup fails and clears current entry state when recovery succeeds.
-    private void closeEntryAfterFailedSetup(InputStream input, Throwable failure) {
+    void closeEntryAfterFailedSetup(InputStream input, Throwable failure) {
         try {
             input.close();
             currentEntry = null;
         } catch (IOException | RuntimeException | Error exception) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
         }
     }
 
@@ -1755,7 +1761,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// Returns the current failure with the given exception added as a suppressed failure when needed.
     private static Throwable mergeFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure != null) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
             return failure;
         }
         return exception;
@@ -1838,7 +1846,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Reads known-size ZIP entry data and validates it when the stream ends.
     @NotNullByDefault
-    private static final class KnownSizeEntryInputStream extends InputStream {
+    static final class KnownSizeEntryInputStream extends InputStream {
         /// The source stream.
         private final InputStream input;
 
@@ -1870,7 +1878,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         private boolean closed;
 
         /// Creates a known-size entry stream without compressed-progress validation.
-        private KnownSizeEntryInputStream(InputStream input, long expectedCrc32, long expectedUncompressedSize) {
+        KnownSizeEntryInputStream(InputStream input, long expectedCrc32, long expectedUncompressedSize) {
             this(
                     input,
                     null,
@@ -1977,7 +1985,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 finishEntry();
             } catch (IOException | RuntimeException | Error exception) {
                 if (failure != null) {
-                    failure.addSuppressed(exception);
+                    if (failure != exception) {
+                        failure.addSuppressed(exception);
+                    }
                 } else {
                     failure = exception;
                 }
@@ -1986,7 +1996,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 input.close();
             } catch (IOException | RuntimeException | Error exception) {
                 if (failure != null) {
-                    failure.addSuppressed(exception);
+                    if (failure != exception) {
+                        failure.addSuppressed(exception);
+                    }
                 } else {
                     failure = exception;
                 }
@@ -2031,7 +2043,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Reads bytes from the current ZIP entry.
     @NotNullByDefault
-    private static final class CurrentEntryInputStream extends InputStream {
+    static final class CurrentEntryInputStream extends InputStream {
         /// The owner file system.
         private final ZipArkivoStreamingReaderImpl owner;
 
@@ -2042,7 +2054,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         private boolean inputOpen = true;
 
         /// Creates a current entry input stream.
-        private CurrentEntryInputStream(ZipArkivoStreamingReaderImpl owner, InputStream input) {
+        CurrentEntryInputStream(ZipArkivoStreamingReaderImpl owner, InputStream input) {
             this.owner = Objects.requireNonNull(owner, "owner");
             this.input = Objects.requireNonNull(input, "input");
         }
@@ -2092,7 +2104,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                         input.close();
                     } catch (IOException | RuntimeException | Error exception) {
                         if (failure != null) {
-                            failure.addSuppressed(exception);
+                            if (failure != exception) {
+                                failure.addSuppressed(exception);
+                            }
                         } else {
                             failure = exception;
                         }
@@ -2413,7 +2427,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Reads stored ZIP entry data until a signed or unsigned data descriptor is found.
     @NotNullByDefault
-    private final class StoredDataDescriptorInputStream extends InputStream {
+    final class StoredDataDescriptorInputStream extends InputStream {
         /// The source stream.
         private final PushbackInputStream input;
 
@@ -2439,7 +2453,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         private boolean closed;
 
         /// Creates a stored entry input stream.
-        private StoredDataDescriptorInputStream(PushbackInputStream input, boolean zip64DataDescriptor) {
+        StoredDataDescriptorInputStream(PushbackInputStream input, boolean zip64DataDescriptor) {
             this.input = Objects.requireNonNull(input, "input");
             this.zip64DataDescriptor = zip64DataDescriptor;
         }
@@ -2902,7 +2916,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Reads encrypted stored ZIP entry data until a signed data descriptor is found.
     @NotNullByDefault
-    private final class EncryptedStoredDataDescriptorInputStream extends InputStream {
+    final class EncryptedStoredDataDescriptorInputStream extends InputStream {
         /// The source stream.
         private final PushbackInputStream input;
 
@@ -2928,7 +2942,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         private boolean closed;
 
         /// Creates an encrypted stored entry input stream.
-        private EncryptedStoredDataDescriptorInputStream(
+        EncryptedStoredDataDescriptorInputStream(
                 PushbackInputStream input,
                 ZipTraditionalCrypto.Decryptor decryptor,
                 boolean zip64DataDescriptor

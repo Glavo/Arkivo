@@ -205,6 +205,24 @@ final class CodecChannelAdaptersTest {
         assertTrue(failingTarget.isOpen());
         failingTarget.close();
 
+        IOException sharedCreationFailure = new IOException("shared creation and close failure");
+        CollectingWritableChannel sharedFailureTarget =
+                new CollectingWritableChannel(3, 0, 1, sharedCreationFailure);
+        IOException sharedFailure = assertThrows(
+                IOException.class,
+                () -> CodecChannelAdapters.newWritableByteChannel(
+                        sharedFailureTarget,
+                        ResourceOwnership.OWNED,
+                        () -> {
+                            throw sharedCreationFailure;
+                        }
+                )
+        );
+        assertSame(sharedCreationFailure, sharedFailure);
+        assertEquals(0, sharedFailure.getSuppressed().length);
+        assertTrue(sharedFailureTarget.isOpen());
+        sharedFailureTarget.close();
+
         CollectingWritableChannel nullTarget = new CollectingWritableChannel();
         assertThrows(
                 NullPointerException.class,
@@ -872,6 +890,9 @@ final class CodecChannelAdaptersTest {
         /// Maximum bytes consumed by one write.
         private final int maximumWrite;
 
+        /// Stable close failure, or `null` to create a distinct failure for each attempt.
+        private final @Nullable IOException closeFailure;
+
         /// Number of initial writes that return zero.
         private int zeroWritesRemaining;
 
@@ -889,14 +910,30 @@ final class CodecChannelAdaptersTest {
 
         /// Creates an unbounded channel whose operations succeed.
         private CollectingWritableChannel() {
-            this(Integer.MAX_VALUE, 0, 0);
+            this(Integer.MAX_VALUE, 0, 0, null);
         }
 
         /// Creates a channel with configurable progress and close failures.
         private CollectingWritableChannel(int maximumWrite, int zeroWrites, int closeFailures) {
+            this(maximumWrite, zeroWrites, closeFailures, null);
+        }
+
+        /// Creates a channel with configurable progress and an optional stable close failure.
+        ///
+        /// @param maximumWrite the maximum bytes consumed by one write
+        /// @param zeroWrites the number of initial writes that return zero
+        /// @param closeFailures the number of initial close attempts that fail
+        /// @param closeFailure the stable close failure, or `null` to create a distinct failure for each attempt
+        private CollectingWritableChannel(
+                int maximumWrite,
+                int zeroWrites,
+                int closeFailures,
+                @Nullable IOException closeFailure
+        ) {
             this.maximumWrite = maximumWrite;
             this.zeroWritesRemaining = zeroWrites;
             this.closeFailuresRemaining = closeFailures;
+            this.closeFailure = closeFailure;
         }
 
         /// Consumes at most the configured number of bytes.
@@ -933,6 +970,9 @@ final class CodecChannelAdaptersTest {
             closeCalls++;
             if (closeFailuresRemaining > 0) {
                 closeFailuresRemaining--;
+                if (closeFailure != null) {
+                    throw closeFailure;
+                }
                 throw new IOException("writable close failed");
             }
             open = false;

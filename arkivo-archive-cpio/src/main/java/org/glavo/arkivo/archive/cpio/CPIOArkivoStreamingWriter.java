@@ -58,7 +58,9 @@ public abstract sealed class CPIOArkivoStreamingWriter extends ArkivoStreamingWr
             try {
                 target.close();
             } catch (IOException closeException) {
-                exception.addSuppressed(closeException);
+                if (exception != closeException) {
+                    exception.addSuppressed(closeException);
+                }
             }
             throw exception;
         }

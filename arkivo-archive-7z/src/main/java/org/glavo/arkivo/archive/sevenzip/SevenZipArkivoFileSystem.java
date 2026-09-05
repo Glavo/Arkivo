@@ -529,7 +529,9 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         try {
             source.close();
         } catch (IOException | RuntimeException | Error exception) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
         }
     }
 }

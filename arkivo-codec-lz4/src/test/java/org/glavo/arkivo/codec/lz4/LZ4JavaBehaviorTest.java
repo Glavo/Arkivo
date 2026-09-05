@@ -56,12 +56,12 @@ public final class LZ4JavaBehaviorTest {
         }
     }
 
-    /// Verifies malformed match endings, short final literals, and a zero match offset are rejected.
+    /// Verifies malformed sequence endings, truncated fields, invalid offsets, and decoded-size overflow are rejected.
     @Test
     public void rejectsMalformedRawBlockSequences() {
         LZ4BlockCodec codec = new LZ4BlockCodec().withMaximumBlockSize(64);
         byte @Unmodifiable [] endsWithMatch = {0x60, 42, 43, 44, 45, 46, 47, 5, 0};
-        assertThrows(IOException.class, () -> decompress(codec, endsWithMatch));
+        assertRawBlockFailure(codec, endsWithMatch, "LZ4 block is missing its final literal sequence");
 
         for (int finalLiteralCount = 1; finalLiteralCount < 5; finalLiteralCount++) {
             byte[] tooFewFinalLiterals = Arrays.copyOf(
@@ -69,17 +69,54 @@ public final class LZ4JavaBehaviorTest {
                     endsWithMatch.length + 1 + finalLiteralCount
             );
             tooFewFinalLiterals[endsWithMatch.length] = (byte) (finalLiteralCount << 4);
-            assertThrows(
-                    IOException.class,
-                    () -> decompress(codec, tooFewFinalLiterals),
-                    "final literal count " + finalLiteralCount
+            assertRawBlockFailure(
+                    codec,
+                    tooFewFinalLiterals,
+                    "Final LZ4 sequence contains fewer than five literals"
             );
         }
 
         byte @Unmodifiable [] zeroOffset = {
                 0x10, 42, 0, 0, (byte) 0x80, 42, 42, 42, 42, 42, 42, 42, 42
         };
-        assertThrows(IOException.class, () -> decompress(codec, zeroOffset));
+        assertRawBlockFailure(codec, zeroOffset, "Invalid LZ4 match offset: 0");
+
+        assertRawBlockFailure(codec, new byte[]{(byte) 0xf0}, "Truncated LZ4 literal length");
+        assertRawBlockFailure(codec, new byte[]{0x20, 42}, "Truncated LZ4 literal bytes");
+        assertRawBlockFailure(codec, new byte[]{0x01}, "Final LZ4 sequence declares a missing match");
+        assertRawBlockFailure(codec, new byte[]{0x10, 42, 1}, "Truncated LZ4 match offset");
+        assertRawBlockFailure(
+                codec,
+                new byte[]{0x10, 42, 2, 0, 0x50, 1, 2, 3, 4, 5},
+                "Invalid LZ4 match offset: 2"
+        );
+        assertRawBlockFailure(
+                codec,
+                new byte[]{0x1f, 42, 1, 0},
+                "Truncated LZ4 match length"
+        );
+
+        LZ4BlockCodec eightByteCodec = codec.withMaximumBlockSize(8);
+        assertRawBlockFailure(
+                eightByteCodec,
+                new byte[]{(byte) 0x90, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+                "Decoded LZ4 block exceeds the configured maximum of 8 bytes"
+        );
+        assertRawBlockFailure(
+                eightByteCodec,
+                new byte[]{0x14, 42, 1, 0, 0x50, 1, 2, 3, 4, 5},
+                "Decoded LZ4 block exceeds the configured maximum of 8 bytes"
+        );
+        assertRawBlockFailure(
+                codec.withMaximumBlockSize(15),
+                new byte[]{(byte) 0xf0, 1},
+                "Decoded LZ4 block exceeds the configured maximum of 15 bytes"
+        );
+        assertRawBlockFailure(
+                codec.withMaximumBlockSize(19),
+                new byte[]{0x1f, 42, 1, 0, 1},
+                "Decoded LZ4 block exceeds the configured maximum of 19 bytes"
+        );
     }
 
     /// Verifies highly repetitive, random, and maximum-match-distance patterns round-trip.
@@ -232,6 +269,12 @@ public final class LZ4JavaBehaviorTest {
         try (InputStream decoder = codec.newInputStream(new ByteArrayInputStream(input))) {
             return decoder.readAllBytes();
         }
+    }
+
+    /// Verifies one malformed raw block fails with the expected stable diagnostic.
+    private static void assertRawBlockFailure(LZ4BlockCodec codec, byte @Unmodifiable [] input, String message) {
+        IOException exception = assertThrows(IOException.class, () -> decompress(codec, input));
+        assertEquals(message, exception.getMessage());
     }
 
     /// Returns deterministic pseudo-random bytes.

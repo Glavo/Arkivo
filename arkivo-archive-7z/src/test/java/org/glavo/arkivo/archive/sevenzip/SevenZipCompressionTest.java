@@ -6,6 +6,8 @@ package org.glavo.arkivo.archive.sevenzip;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -69,9 +71,22 @@ public final class SevenZipCompressionTest {
                 ),
                 SevenZipCompression.zstandard()
         );
+
+        for (SevenZipCompression compression : List.of(
+                SevenZipCompression.copy(),
+                SevenZipCompression.lzma(),
+                SevenZipCompression.lzma2(),
+                SevenZipCompression.bzip2(),
+                SevenZipCompression.deflate(),
+                SevenZipCompression.deflate64(),
+                SevenZipCompression.ppmd(),
+                SevenZipCompression.zstandard()
+        )) {
+            assertEquals(compression, SevenZipCompression.of(compression.method()));
+        }
     }
 
-    /// Verifies method-specific custom parameters and default dispatch.
+    /// Verifies method-specific custom parameters and stable string representations.
     @Test
     public void customConfigurations() {
         assertEquals(64 * 1024, SevenZipCompression.lzma(64 * 1024).parameter());
@@ -82,8 +97,6 @@ public final class SevenZipCompressionTest {
         assertEquals(5, SevenZipCompression.ppmd(5, 4 * 1024 * 1024).parameter());
         assertEquals(4 * 1024 * 1024, SevenZipCompression.ppmd(5, 4 * 1024 * 1024).secondaryParameter());
         assertEquals(7, SevenZipCompression.zstandard(7).parameter());
-        assertEquals(SevenZipCompression.lzma2(), SevenZipCompression.of(SevenZipCompressionMethod.LZMA2));
-        assertEquals(SevenZipCompression.ppmd(), SevenZipCompression.of(SevenZipCompressionMethod.PPMD));
         assertEquals("lzma2(131072)", SevenZipCompression.lzma2(128 * 1024).toString());
         assertEquals("ppmd(5,4194304)", SevenZipCompression.ppmd(5, 4 * 1024 * 1024).toString());
     }

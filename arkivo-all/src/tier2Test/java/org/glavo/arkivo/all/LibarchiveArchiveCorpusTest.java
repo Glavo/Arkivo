@@ -39,6 +39,8 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.Channels;
 import java.nio.charset.Charset;
@@ -82,6 +84,13 @@ public final class LibarchiveArchiveCorpusTest {
     /// The expected content of the canonical RAR4 text entries.
     private static final byte @Unmodifiable [] RAR4_TEXT =
             "test text document\r\n".getBytes(StandardCharsets.US_ASCII);
+
+    /// The DOS header produced after applying the canonical RAR4 executable filter.
+    private static final byte @Unmodifiable [] RAR4_EXECUTABLE_PREFIX = {
+            0x4d, (byte) 0x5a, (byte) 0x90, 0,
+            3, 0, 0, 0,
+            4, 0, 0, 0
+    };
 
     /// The password used by libarchive's canonical encrypted 7z fixtures, encoded as required by 7z AES.
     private static final ArkivoPasswordProvider SEVEN_ZIP_PASSWORD = ArkivoPasswordProvider.fixed(
@@ -272,6 +281,21 @@ public final class LibarchiveArchiveCorpusTest {
                     Files.readAllBytes(fileSystem.getPath("/file1"))
             );
             assertThrows(IOException.class, () -> Files.readAllBytes(fileSystem.getPath("/file2")));
+        }
+    }
+
+    /// Uses a valid ZIP64 end record when the legacy end record is intentionally invalid.
+    @Test
+    public void readsZip64WithInvalidLegacyEndRecord(@TempDir Path temporaryDirectory) throws IOException {
+        Path archive = decodeFixture(
+                "test_read_format_zip_with_invalid_traditional_eocd.zip.uu",
+                "zip64-invalid-legacy-end.zip",
+                temporaryDirectory
+        );
+
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive)) {
+            assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/test1.txt")));
+            assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/test2.txt")));
         }
     }
 
@@ -721,6 +745,58 @@ public final class LibarchiveArchiveCorpusTest {
         }
     }
 
+    /// Verifies that a RAR5 solid archive preserves the shared dictionary across independently opened entries.
+    @Test
+    public void readsRar5SolidHistoryAcrossEntries(@TempDir Path temporaryDirectory) throws IOException {
+        Path archive = decodeFixture(
+                "test_read_format_rar5_multiple_files_solid.rar.uu",
+                "solid.rar",
+                temporaryDirectory
+        );
+
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive)) {
+            for (int magic = 4; magic >= 1; magic--) {
+                assertArrayEquals(
+                        generatedRar5Content(magic, 4096),
+                        Files.readAllBytes(fileSystem.getPath("/test" + magic + ".bin"))
+                );
+            }
+        }
+    }
+
+    /// Verifies the RAR4 virtual-machine executable filter against libarchive's canonical fixture.
+    @Test
+    public void readsRar4ExecutableFilter(@TempDir Path temporaryDirectory) throws IOException {
+        Path archive = decodeFixture("test_read_format_rar_filter.rar.uu", "filter.rar", temporaryDirectory);
+
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive)) {
+            byte @Unmodifiable [] content = Files.readAllBytes(fileSystem.getPath("/bsdcat.exe"));
+            assertEquals(204288, content.length);
+            assertArrayEquals(RAR4_EXECUTABLE_PREFIX, Arrays.copyOf(content, RAR4_EXECUTABLE_PREFIX.length));
+        }
+    }
+
+    /// Verifies the RAR5 ARM executable filter through the streaming reader.
+    @Test
+    public void readsRar5ArmExecutableFilter() throws IOException {
+        ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(
+                decodeFixtureBytes("test_read_format_rar5_arm.rar.uu")
+        ));
+
+        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source)) {
+            assertTrue(reader.next());
+            BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
+            assertEquals(90808L, attributes.size());
+            try (InputStream input = reader.openInputStream()) {
+                byte @Unmodifiable [] content = input.readAllBytes();
+                assertEquals(90808, content.length);
+                assertEquals(0x886f91ebL, crc32(content));
+            }
+            assertFalse(reader.next());
+        }
+        assertFalse(source.isOpen());
+    }
+
     /// Verifies the staged corpus retains the upstream license and immutable source manifest.
     @Test
     public void retainsUpstreamProvenance() {
@@ -970,6 +1046,17 @@ public final class LibarchiveArchiveCorpusTest {
         CRC32 crc = new CRC32();
         crc.update(content);
         return crc.getValue();
+    }
+
+    /// Recreates the deterministic little-endian word sequence used by libarchive's RAR5 fixtures.
+    private static byte[] generatedRar5Content(int magic, int size) {
+        byte[] content = new byte[size];
+        ByteBuffer output = ByteBuffer.wrap(content).order(ByteOrder.LITTLE_ENDIAN);
+        for (int index = 0; output.hasRemaining(); index++) {
+            int value = Math.max(0, (index + 1) * (index + 1) - 3 * (index + 1) + 1 + magic);
+            output.putInt(value);
+        }
+        return content;
     }
 
     /// Resolves one path under the prepared corpus directory.

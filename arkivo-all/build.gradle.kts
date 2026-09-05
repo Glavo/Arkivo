@@ -7,6 +7,10 @@ import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.bundling.Jar
 import org.gradle.api.file.RelativePath
 
+plugins {
+    `java-test-fixtures`
+}
+
 val benchmarkSourceSet = sourceSets.create("benchmark") {
     compileClasspath += sourceSets.main.get().output
     runtimeClasspath += output + compileClasspath
@@ -39,8 +43,10 @@ dependencies {
     api(project(":arkivo-checksum-xxhash"))
     api(project(":arkivo-codec-all"))
     implementation(project(":arkivo-archive-codec"))
+    testFixturesCompileOnly("org.jetbrains:annotations:26.1.0")
     testImplementation("org.tukaani:xz:1.12")
     testImplementation("org.apache.commons:commons-compress:1.28.0")
+    add("tier3TestImplementation", testFixtures(project()))
     add(benchmarkSourceSet.compileOnlyConfigurationName, "org.jetbrains:annotations:26.1.0")
     add(benchmarkSourceSet.implementationConfigurationName, "org.openjdk.jmh:jmh-core:1.37")
     add(
@@ -251,25 +257,6 @@ tasks.register("fuzzAll") {
     group = "fuzzing"
     description = "Runs every optional local Jazzer target with an independent fuzzing process."
     dependsOn(fuzzTargetTasks)
-}
-
-val publicApiTypeBaseline = layout.projectDirectory.file(
-    "src/test/resources/org/glavo/arkivo/all/public-api-types.txt"
-)
-
-val publicApiSignatureBaseline = layout.projectDirectory.file(
-    "src/test/resources/org/glavo/arkivo/all/public-api-signatures.txt"
-)
-
-val updatePublicApiBaselines by tasks.registering(JavaExec::class) {
-    group = "verification"
-    description = "Updates the reviewed text baselines for exported public types and JVM signatures."
-    dependsOn(tasks.named("testClasses"))
-    classpath = sourceSets.test.get().runtimeClasspath
-    mainClass.set("org.glavo.arkivo.all.PublicApiBaselineGenerator")
-    args(publicApiTypeBaseline.asFile.absolutePath, publicApiSignatureBaseline.asFile.absolutePath)
-    inputs.files(sourceSets.test.get().output.classesDirs)
-    outputs.files(publicApiTypeBaseline, publicApiSignatureBaseline)
 }
 
 val moduleProjectPaths = listOf(

@@ -6,6 +6,8 @@ package org.glavo.arkivo.archive.sevenzip;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -25,14 +27,27 @@ public final class SevenZipFilterTest {
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_SPARC, 0), SevenZipFilter.bcjSparc());
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_ARM64, 0), SevenZipFilter.bcjArm64());
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_RISCV, 0), SevenZipFilter.bcjRiscV());
+
+        for (SevenZipFilter filter : List.of(
+                SevenZipFilter.delta(),
+                SevenZipFilter.bcjX86(),
+                SevenZipFilter.bcj2(),
+                SevenZipFilter.bcjPowerPC(),
+                SevenZipFilter.bcjIa64(),
+                SevenZipFilter.bcjArm(),
+                SevenZipFilter.bcjArmThumb(),
+                SevenZipFilter.bcjSparc(),
+                SevenZipFilter.bcjArm64(),
+                SevenZipFilter.bcjRiscV()
+        )) {
+            assertEquals(filter, SevenZipFilter.of(filter.method()));
+        }
     }
 
     /// Verifies custom Delta distances and BCJ start offsets.
     @Test
     public void customConfigurations() {
         assertEquals(7L, SevenZipFilter.delta(7).parameter());
-        assertEquals(SevenZipFilter.bcjX86(), SevenZipFilter.of(SevenZipFilterMethod.BCJ_X86));
-        assertEquals(SevenZipFilter.bcj2(), SevenZipFilter.of(SevenZipFilterMethod.BCJ2));
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_X86, 0xffff_ffffL), SevenZipFilter.bcjX86(0xffff_ffffL));
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_POWERPC, 4), SevenZipFilter.bcjPowerPC(4));
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_IA64, 16), SevenZipFilter.bcjIa64(16));

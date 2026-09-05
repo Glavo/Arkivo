@@ -369,26 +369,34 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     try {
                         outputStream.close();
                     } catch (IOException | RuntimeException | Error cleanupFailure) {
-                        exception.addSuppressed(cleanupFailure);
+                        if (exception != cleanupFailure) {
+                            exception.addSuppressed(cleanupFailure);
+                        }
                     }
                 } else if (outputChannel != null) {
                     try {
                         outputChannel.close();
                     } catch (IOException | RuntimeException | Error cleanupFailure) {
-                        exception.addSuppressed(cleanupFailure);
+                        if (exception != cleanupFailure) {
+                            exception.addSuppressed(cleanupFailure);
+                        }
                     }
                 }
                 if (openedStagedRecords != null) {
                     try {
                         openedStagedRecords.close();
                     } catch (IOException | RuntimeException | Error cleanupFailure) {
-                        exception.addSuppressed(cleanupFailure);
+                        if (exception != cleanupFailure) {
+                            exception.addSuppressed(cleanupFailure);
+                        }
                     }
                 }
                 try {
                     openedEditStorage.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
                 throw exception;
             }
@@ -420,19 +428,25 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     try {
                         outputStream.close();
                     } catch (IOException | RuntimeException | Error cleanupFailure) {
-                        exception.addSuppressed(cleanupFailure);
+                        if (exception != cleanupFailure) {
+                            exception.addSuppressed(cleanupFailure);
+                        }
                     }
                 } else if (outputChannel != null) {
                     try {
                         outputChannel.close();
                     } catch (IOException | RuntimeException | Error cleanupFailure) {
-                        exception.addSuppressed(cleanupFailure);
+                        if (exception != cleanupFailure) {
+                            exception.addSuppressed(cleanupFailure);
+                        }
                     }
                 }
                 try {
                     openedCommitOutput.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
                 throw exception;
             }
@@ -557,7 +571,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             try {
                 source.close();
             } catch (IOException | RuntimeException | Error closeFailure) {
-                exception.addSuppressed(closeFailure);
+                if (exception != closeFailure) {
+                    exception.addSuppressed(closeFailure);
+                }
             }
             throw exception;
         }
@@ -614,7 +630,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             try {
                 source.close();
             } catch (IOException | RuntimeException | Error closeFailure) {
-                exception.addSuppressed(closeFailure);
+                if (exception != closeFailure) {
+                    exception.addSuppressed(closeFailure);
+                }
             }
             throw exception;
         }
@@ -668,26 +686,34 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 try {
                     outputStream.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
             } else if (outputChannel != null) {
                 try {
                     outputChannel.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
             }
             if (openedStagedRecords != null) {
                 try {
                     openedStagedRecords.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
             }
             try {
                 openedEditStorage.close();
             } catch (IOException | RuntimeException | Error cleanupFailure) {
-                exception.addSuppressed(cleanupFailure);
+                if (exception != cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
             }
             throw exception;
         }
@@ -716,12 +742,14 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// @param provider the provider that created this file system
     /// @param output the owned destination channel
     /// @param config the validated creation configuration
-    /// @throws NullPointerException if an argument is `null`
+    /// @param closeAction the callback invoked during close, or `null` when none is needed
+    /// @throws NullPointerException if `provider`, `output`, or `config` is `null`
     /// @throws UnsupportedOperationException if `config` requests split output
     public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             WritableByteChannel output,
-            ZipArkivoFileSystemConfig config
+            ZipArkivoFileSystemConfig config,
+            @Nullable Runnable closeAction
     ) {
         super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
@@ -732,7 +760,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         this.archiveSourceClosed = true;
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
-        this.closeAction = null;
+        this.closeAction = closeAction;
         this.commitOutput = null;
         this.editStorage = null;
         this.stagedRecords = null;
@@ -760,17 +788,20 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// @param provider the provider that created this file system
     /// @param output the owned destination stream
     /// @param config the validated creation configuration
-    /// @throws NullPointerException if an argument is `null`
+    /// @param closeAction the callback invoked during close, or `null` when none is needed
+    /// @throws NullPointerException if `provider`, `output`, or `config` is `null`
     /// @throws UnsupportedOperationException if `config` requests split output
     public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             OutputStream output,
-            ZipArkivoFileSystemConfig config
+            ZipArkivoFileSystemConfig config,
+            @Nullable Runnable closeAction
     ) {
         this(
                 provider,
                 StreamChannelAdapters.writableChannel(Objects.requireNonNull(output, "output")),
-                config
+                config,
+                closeAction
         );
     }
 
@@ -1304,7 +1335,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// Adds a secondary failure as suppressed when a primary failure already exists.
     private static Throwable appendFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure != null) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
             return failure;
         }
         return exception;
@@ -1865,13 +1898,17 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 try {
                     channel.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
             }
             try {
                 content.close();
             } catch (IOException | RuntimeException | Error cleanupFailure) {
-                exception.addSuppressed(cleanupFailure);
+                if (exception != cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
             }
             throw exception;
         }
@@ -2065,13 +2102,17 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     try {
                         storageChannel.close();
                     } catch (IOException | RuntimeException | Error cleanupFailure) {
-                        exception.addSuppressed(cleanupFailure);
+                        if (exception != cleanupFailure) {
+                            exception.addSuppressed(cleanupFailure);
+                        }
                     }
                 }
                 try {
                     pendingContent.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
                 throw exception;
             }
@@ -2898,8 +2939,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// Replaces metadata for one explicit entry after all validation has succeeded.
     private void mutateEntryMetadata(
             Path path,
-            ExistingEntryMutation existingMutation,
-            CentralEntryMutation writtenMutation
+            EntryMetadataMutation<ExistingEntry> existingMutation,
+            EntryMetadataMutation<CentralEntry> writtenMutation
     ) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             lock();
@@ -2940,18 +2981,14 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         }
     }
 
-    /// Changes metadata for one existing source entry.
+    /// Transforms entry metadata while permitting format decoding to fail.
+    ///
+    /// @param <E> the immutable entry representation
     @FunctionalInterface
-    private interface ExistingEntryMutation {
-        /// Returns the replacement existing-entry state.
-        ExistingEntry apply(ExistingEntry entry) throws IOException;
-    }
-
-    /// Changes metadata for one entry written in the current update session.
-    @FunctionalInterface
-    private interface CentralEntryMutation {
-        /// Returns the replacement written-entry state.
-        CentralEntry apply(CentralEntry entry) throws IOException;
+    @NotNullByDefault
+    private interface EntryMetadataMutation<E> {
+        /// Returns replacement metadata for the supplied entry.
+        E apply(E entry) throws IOException;
     }
 
     /// Returns the number of bytes stored before an archive being updated.
@@ -4300,24 +4337,32 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     try {
                         stream.close();
                     } catch (IOException | RuntimeException | Error cleanupFailure) {
-                        exception.addSuppressed(cleanupFailure);
+                        if (exception != cleanupFailure) {
+                            exception.addSuppressed(cleanupFailure);
+                        }
                     }
                 } else if (channel != null) {
                     try {
                         channel.close();
                     } catch (IOException | RuntimeException | Error cleanupFailure) {
-                        exception.addSuppressed(cleanupFailure);
+                        if (exception != cleanupFailure) {
+                            exception.addSuppressed(cleanupFailure);
+                        }
                     }
                 }
                 try {
                     volumeOutput.rollback();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
                 try {
                     volumeOutput.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
                 throw exception;
             }
@@ -4551,7 +4596,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 try {
                     lzmaOutput.close();
                 } catch (IOException | RuntimeException | Error closeException) {
-                    exception.addSuppressed(closeException);
+                    if (exception != closeException) {
+                        exception.addSuppressed(closeException);
+                    }
                 }
                 throw exception;
             }

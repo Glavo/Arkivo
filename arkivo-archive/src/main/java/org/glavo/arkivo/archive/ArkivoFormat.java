@@ -60,10 +60,10 @@ public interface ArkivoFormat {
 
     /// Returns the preferred number of source bytes requested by generic format detection.
     ///
-    /// The catalog uses this value to provision prefix probes and to prefer a more specific match when multiple formats
-    /// recognize the same source. A format may recognize a prefix containing fewer bytes. A format whose authoritative
-    /// signature is not at the beginning of the source may override [#matches(SeekableByteChannel)] and return the size
-    /// of the bounded structure inspected there. The returned value must not be negative.
+    /// The catalog uses this value to provision prefix probes and to prefer a more specific prefix match when multiple
+    /// formats recognize the same buffer. A format may recognize a prefix containing fewer bytes. A format whose
+    /// authoritative signature is not at the beginning of the source may override [#matches(SeekableByteChannel)] and
+    /// return the size of the bounded structure inspected there. The returned value must not be negative.
     ///
     /// @return the preferred non-negative probe byte count
     default int probeSize() {

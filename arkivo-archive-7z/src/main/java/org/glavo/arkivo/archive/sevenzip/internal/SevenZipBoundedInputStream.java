@@ -153,7 +153,9 @@ final class SevenZipBoundedInputStream extends InputStream {
                 inputClosed = true;
             } catch (IOException | RuntimeException | Error exception) {
                 if (failure != null) {
-                    failure.addSuppressed(exception);
+                    if (failure != exception) {
+                        failure.addSuppressed(exception);
+                    }
                 } else {
                     failure = exception;
                 }

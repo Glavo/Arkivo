@@ -87,6 +87,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 import static org.glavo.arkivo.archive.tar.internal.TarCompressionStreams.openArchiveInput;
 import static org.glavo.arkivo.archive.tar.internal.TarCompressionStreams.openArchiveOutput;
@@ -1813,7 +1814,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 try {
                     storageChannel.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
             }
             releaseStoredContent(pendingContent);
@@ -2319,7 +2322,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     }
 
     /// Replaces one entry's metadata through an update function.
-    private void mutateAttributes(Path path, AttributeMutation mutation) throws IOException {
+    private void mutateAttributes(
+            Path path,
+            UnaryOperator<TarArkivoEntryAttributes> mutation
+    ) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
         Node node = requireNode(path);
@@ -2329,14 +2335,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         TarArkivoEntryAttributes attributes = mutation.apply(node.attributes());
         nodes.put(node.path(), replaceNodeAttributes(node, attributes, node.content()));
         dirty = true;
-    }
-
-    /// Changes an immutable entry metadata snapshot.
-    @FunctionalInterface
-    @NotNullByDefault
-    private interface AttributeMutation {
-        /// Returns replacement metadata.
-        TarArkivoEntryAttributes apply(TarArkivoEntryAttributes attributes);
     }
 
     /// Prepares a new archive entry path for forward-only writing.
@@ -2547,14 +2545,18 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         try {
             source.close();
         } catch (IOException | RuntimeException | Error exception) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
         }
     }
 
     /// Adds a secondary failure as suppressed when a primary failure already exists.
     private static Throwable appendFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure != null) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
             return failure;
         }
         return exception;

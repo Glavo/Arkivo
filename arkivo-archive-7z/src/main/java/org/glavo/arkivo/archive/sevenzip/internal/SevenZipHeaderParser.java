@@ -311,7 +311,9 @@ public final class SevenZipHeaderParser {
                 decoded.close();
             } catch (IOException | RuntimeException | Error exception) {
                 if (failure != null) {
-                    failure.addSuppressed(exception);
+                    if (failure != exception) {
+                        failure.addSuppressed(exception);
+                    }
                 } else {
                     throw exception;
                 }
@@ -350,7 +352,9 @@ public final class SevenZipHeaderParser {
                 try {
                     closeInputStreams(inputs);
                 } catch (IOException | RuntimeException | Error exception) {
-                    failure.addSuppressed(exception);
+                    if (failure != exception) {
+                        failure.addSuppressed(exception);
+                    }
                 }
             }
         }
@@ -366,7 +370,9 @@ public final class SevenZipHeaderParser {
                 if (failure == null) {
                     failure = exception;
                 } else {
-                    failure.addSuppressed(exception);
+                    if (failure != exception) {
+                        failure.addSuppressed(exception);
+                    }
                 }
             }
         }
@@ -1199,7 +1205,7 @@ public final class SevenZipHeaderParser {
     @NotNullByDefault
     private static final class StreamsInfo {
         /// The empty streams information value.
-        private static final StreamsInfo EMPTY = new StreamsInfo(0L, new long[0], new long[0], new FolderInfo[0], null);
+        private static final StreamsInfo EMPTY = new StreamsInfo();
 
         /// The first pack stream position relative to the first byte after the signature header.
         private final long packPosition;
@@ -1216,14 +1222,25 @@ public final class SevenZipHeaderParser {
         /// The flattened substreams addressable by file entries.
         private final SubStreamsInfo subStreamsInfo;
 
+        /// Creates empty stream information.
+        private StreamsInfo() {
+            this.packPosition = 0L;
+            this.packSizes = new long[0];
+            this.packCrc32s = new long[0];
+            this.folders = new FolderInfo[0];
+            this.subStreamsInfo = new SubStreamsInfo(new SubStreamInfo[0]);
+        }
+
         /// Creates stream information.
+        ///
+        /// @throws IOException if a folder coder graph is invalid
         private StreamsInfo(
                 long packPosition,
                 long[] packSizes,
                 long[] packCrc32s,
                 FolderInfo[] folders,
                 @Nullable SubStreamsInfo subStreamsInfo
-        ) {
+        ) throws IOException {
             int expectedPackStreamCount = 0;
             for (FolderInfo folder : folders) {
                 expectedPackStreamCount = Math.addExact(expectedPackStreamCount, folder.packedStreamCount());
@@ -1363,14 +1380,12 @@ public final class SevenZipHeaderParser {
         }
 
         /// Creates default substream information with one stream per folder.
-        private static SubStreamsInfo fromFolders(FolderInfo[] folders) {
+        ///
+        /// @throws IOException if a folder coder graph is invalid
+        private static SubStreamsInfo fromFolders(FolderInfo[] folders) throws IOException {
             SubStreamInfo[] streams = new SubStreamInfo[folders.length];
             for (int index = 0; index < folders.length; index++) {
-                try {
-                    streams[index] = new SubStreamInfo(index, 0L, folders[index].unpackSize(), folders[index].crc32());
-                } catch (IOException exception) {
-                    throw new IllegalStateException("folder unpack size should already be validated", exception);
-                }
+                streams[index] = new SubStreamInfo(index, 0L, folders[index].unpackSize(), folders[index].crc32());
             }
             return new SubStreamsInfo(streams);
         }

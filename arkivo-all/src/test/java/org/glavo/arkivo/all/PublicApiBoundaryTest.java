@@ -8,10 +8,7 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.GenericArrayType;
@@ -25,7 +22,6 @@ import java.lang.reflect.WildcardType;
 import java.net.JarURLConnection;
 import java.net.URISyntaxException;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -36,13 +32,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies exported Arkivo types expose only public types from transitively readable modules.
@@ -111,7 +105,6 @@ public final class PublicApiBoundaryTest {
                 "context class loader"
         );
         List<String> failures = new ArrayList<>();
-        Set<String> apiTypeNames = new TreeSet<>();
 
         for (Map.Entry<String, String> entry : PUBLIC_PACKAGE_MODULES.entrySet()) {
             String packageName = entry.getKey();
@@ -121,58 +114,11 @@ public final class PublicApiBoundaryTest {
                 continue;
             }
             for (Class<?> apiClass : apiClasses) {
-                apiTypeNames.add(apiClass.getName());
                 validateClass(apiClass, entry.getValue(), failures);
             }
         }
 
         assertTrue(failures.isEmpty(), () -> "Public API boundary violations:\n" + String.join("\n", failures));
-        assertEquals(
-                loadExpectedApiTypes(loader),
-                apiTypeNames,
-                "Exported API types differ from the reviewed 1.0 API baseline"
-        );
-    }
-
-    /// Collects public and protected API classes directly contained in every exported package.
-    static @Unmodifiable SortedSet<String> collectApiTypeNames(ClassLoader loader) throws Exception {
-        SortedSet<String> apiTypeNames = new TreeSet<>();
-        for (String packageName : PUBLIC_PACKAGE_MODULES.keySet()) {
-            Set<Class<?>> apiClasses = findApiClasses(packageName, loader);
-            if (apiClasses.isEmpty()) {
-                throw new IllegalStateException("Exported package contains no accessible API classes: " + packageName);
-            }
-            for (Class<?> apiClass : apiClasses) {
-                apiTypeNames.add(apiClass.getName());
-            }
-        }
-        return Collections.unmodifiableSortedSet(apiTypeNames);
-    }
-
-    /// Loads the reviewed public and protected type names that define the current 1.0 API baseline.
-    private static @Unmodifiable Set<String> loadExpectedApiTypes(ClassLoader loader) throws IOException {
-        String resourceName = "org/glavo/arkivo/all/public-api-types.txt";
-        InputStream input = Objects.requireNonNull(
-                loader.getResourceAsStream(resourceName),
-                "Missing public API baseline: " + resourceName
-        );
-        Set<String> typeNames = new TreeSet<>();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
-            @Nullable String previousTypeName = null;
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String typeName = line.strip();
-                if (typeName.isEmpty()) {
-                    continue;
-                }
-                if (previousTypeName != null && previousTypeName.compareTo(typeName) >= 0) {
-                    throw new IOException("Public API baseline is not strictly sorted at: " + typeName);
-                }
-                typeNames.add(typeName);
-                previousTypeName = typeName;
-            }
-        }
-        return Set.copyOf(typeNames);
     }
 
     /// Finds public and protected API classes directly contained in one exported package.

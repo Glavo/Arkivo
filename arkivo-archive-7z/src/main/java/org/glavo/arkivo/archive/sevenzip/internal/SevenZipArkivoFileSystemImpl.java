@@ -86,6 +86,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 /// Implements a 7z archive file system backed by a read/update index or a forward-only writer.
 @NotNullByDefault
@@ -436,7 +437,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 try {
                     openedEditStorage.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    appendFailure(exception, cleanupFailure);
                 }
                 closeAfterConstructionFailure(exception);
                 throw exception;
@@ -514,7 +515,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 try {
                     openedEditStorage.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    appendFailure(exception, cleanupFailure);
                 }
                 closeAfterConstructionFailure(exception);
                 throw exception;
@@ -540,7 +541,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             try {
                 openedWriter.close();
             } catch (IOException | RuntimeException | Error exception) {
-                failure.addSuppressed(exception);
+                appendFailure(failure, exception);
             }
         }
     }
@@ -554,7 +555,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             try {
                 openedSplitOutput.rollback();
             } catch (IOException | RuntimeException | Error exception) {
-                failure.addSuppressed(exception);
+                appendFailure(failure, exception);
             }
         }
     }
@@ -565,14 +566,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             try {
                 volumes.close();
             } catch (IOException | RuntimeException | Error exception) {
-                failure.addSuppressed(exception);
+                appendFailure(failure, exception);
             }
         }
         if (closeAction != null) {
             try {
                 closeAction.run();
             } catch (RuntimeException | Error exception) {
-                failure.addSuppressed(exception);
+                appendFailure(failure, exception);
             }
         }
     }
@@ -1361,7 +1362,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     decoded.close();
                 } catch (IOException | RuntimeException | Error exception) {
                     if (failure != null) {
-                        failure.addSuppressed(exception);
+                        appendFailure(failure, exception);
                     } else {
                         throw exception;
                     }
@@ -1400,7 +1401,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 try {
                     closeInputStreams(inputs);
                 } catch (IOException | RuntimeException | Error exception) {
-                    failure.addSuppressed(exception);
+                    appendFailure(failure, exception);
                 }
             }
         }
@@ -1413,11 +1414,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             try {
                 input.close();
             } catch (IOException | RuntimeException | Error exception) {
-                if (failure == null) {
-                    failure = exception;
-                } else {
-                    failure.addSuppressed(exception);
-                }
+                failure = appendFailure(failure, exception);
             }
         }
         if (failure instanceof IOException exception) {
@@ -1857,7 +1854,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             try {
                 channel.close();
             } catch (IOException | RuntimeException | Error closeException) {
-                exception.addSuppressed(closeException);
+                appendFailure(exception, closeException);
             }
             throw exception;
         }
@@ -2353,7 +2350,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 try {
                     storageChannel.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    appendFailure(exception, cleanupFailure);
                 }
             }
             releaseStoredContent(pendingContent);
@@ -2476,7 +2473,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 try {
                     channel.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    appendFailure(exception, cleanupFailure);
                 }
             }
             releaseStoredContent(content);
@@ -2856,7 +2853,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Replaces one entry's parsed metadata through an update function.
-    private void mutateMetadata(Path path, MetadataMutation mutation) throws IOException {
+    private void mutateMetadata(
+            Path path,
+            UnaryOperator<SevenZipEntryMetadata> mutation
+    ) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
         String pathText = requireExistingPath(path);
@@ -2873,7 +2873,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Replaces one entry's output settings through an update function.
-    private void mutateOutputSettings(Path path, OutputSettingsMutation mutation) throws IOException {
+    private void mutateOutputSettings(
+            Path path,
+            UnaryOperator<UpdateOutputSettings> mutation
+    ) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
         String pathText = requireExistingPath(path);
@@ -2913,22 +2916,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 lastModifiedTime,
                 windowsAttributes
         );
-    }
-
-    /// Changes an immutable parsed metadata snapshot.
-    @FunctionalInterface
-    @NotNullByDefault
-    private interface MetadataMutation {
-        /// Returns replacement metadata.
-        SevenZipEntryMetadata apply(SevenZipEntryMetadata metadata);
-    }
-
-    /// Changes immutable per-entry output settings.
-    @FunctionalInterface
-    @NotNullByDefault
-    private interface OutputSettingsMutation {
-        /// Returns replacement output settings.
-        UpdateOutputSettings apply(UpdateOutputSettings settings);
     }
 
     /// Stores per-entry output method overrides for update rewriting.

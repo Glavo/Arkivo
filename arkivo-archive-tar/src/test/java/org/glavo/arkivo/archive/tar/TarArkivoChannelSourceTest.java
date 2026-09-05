@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -240,6 +241,19 @@ final class TarArkivoChannelSourceTest {
         }
     }
 
+    /// Verifies one shared source-open and source-close failure remains primary without self-suppression.
+    @Test
+    void preservesSharedOpenAndSourceCloseFailure() {
+        IOException sharedFailure = new IOException("shared source failure");
+        SharedFailureSource source = new SharedFailureSource(sharedFailure);
+
+        IOException exception = assertThrows(IOException.class, () -> TarArkivoFileSystem.open(source));
+
+        assertSame(sharedFailure, exception);
+        assertEquals(0, exception.getSuppressed().length);
+        assertEquals(1, source.closeCount());
+    }
+
     /// Creates a TAR archive used by channel-source tests.
     private static byte[] archiveBytes() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -318,6 +332,39 @@ final class TarArkivoChannelSourceTest {
         /// Returns whether the source closed successfully.
         private boolean closed() {
             return closed;
+        }
+    }
+
+    /// Reports one shared failure from channel creation and source closure.
+    @NotNullByDefault
+    private static final class SharedFailureSource implements ArkivoSeekableChannelSource {
+        /// Failure reported by source operations.
+        private final IOException failure;
+
+        /// Number of source-close attempts.
+        private int closeCount;
+
+        /// Creates a source reporting the supplied failure.
+        private SharedFailureSource(IOException failure) {
+            this.failure = failure;
+        }
+
+        /// Reports the configured failure instead of opening a channel.
+        @Override
+        public SeekableByteChannel openChannel() throws IOException {
+            throw failure;
+        }
+
+        /// Records closure and reports the configured failure.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            throw failure;
+        }
+
+        /// Returns the number of source-close attempts.
+        private int closeCount() {
+            return closeCount;
         }
     }
 }

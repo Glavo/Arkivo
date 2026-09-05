@@ -3,12 +3,13 @@
 
 package org.glavo.arkivo.archive.zip;
 
-import org.apache.commons.compress.utils.SeekableInMemoryByteChannel;
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
@@ -67,16 +68,54 @@ final class ZipCompatibilityRegressionTest {
     void readsZip64EntryWithExcessExtraFieldData(@TempDir Path directory) throws IOException {
         byte @Unmodifiable [] content = "zip64 extra field data".getBytes(StandardCharsets.UTF_8);
         Path archive = directory.resolve("zip64-extra-tail.zip");
-        Files.write(archive, zip64ArchiveWithExcessExtraFieldData(content, true));
+        Files.write(archive, zip64Archive(content, true, false, false, true));
 
         assertArrayEquals(content, readEntry(archive, "payload.bin"));
+    }
+
+    /// Verifies independently optional ZIP64 local-header location fields survive a complete-rewrite update.
+    @ParameterizedTest
+    @CsvSource({
+            "false, false",
+            "true,  false",
+            "false, true",
+            "true,  true"
+    })
+    void updatesEntryWithZip64LocationFields(
+            boolean zip64LocalHeaderOffset,
+            boolean zip64DiskNumber,
+            @TempDir Path directory
+    ) throws IOException {
+        byte @Unmodifiable [] content = "zip64 location fields".getBytes(StandardCharsets.UTF_8);
+        byte @Unmodifiable [] addedContent = "added during update".getBytes(StandardCharsets.UTF_8);
+        Path archive = directory.resolve(
+                "zip64-location-" + zip64LocalHeaderOffset + "-" + zip64DiskNumber + ".zip"
+        );
+        Files.write(archive, zip64ArchiveWithLeadingEntry(
+                content,
+                zip64LocalHeaderOffset,
+                zip64DiskNumber
+        ));
+
+        assertArrayEquals(content, readEntry(archive, "payload.bin"));
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.update(archive)) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/payload.bin")));
+            Files.delete(fileSystem.getPath("/leading.bin"));
+            Files.write(fileSystem.getPath("/added.bin"), addedContent);
+        }
+
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive)) {
+            assertFalse(Files.exists(fileSystem.getPath("/leading.bin")));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/payload.bin")));
+            assertArrayEquals(addedContent, Files.readAllBytes(fileSystem.getPath("/added.bin")));
+        }
     }
 
     /// Verifies an immediately preceding locator selects ZIP64 even when classic end fields are not saturated.
     @Test
     void readsZip64ArchiveWithUnsaturatedClassicEndFields() throws IOException {
         byte @Unmodifiable [] content = "zip64 locator selection".getBytes(StandardCharsets.UTF_8);
-        byte @Unmodifiable [] archive = zip64ArchiveWithExcessExtraFieldData(content, false);
+        byte @Unmodifiable [] archive = zip64Archive(content, false, false, false, false);
 
         assertArrayEquals(content, readEntry(archive, "payload.bin"));
     }
@@ -86,7 +125,7 @@ final class ZipCompatibilityRegressionTest {
     void readsClassicArchiveWithExactlyMaximumEntryCount() throws IOException {
         byte @Unmodifiable [] archive = classicArchiveWithEntryCount(UINT16_MAX);
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
-                new SeekableInMemoryByteChannel(archive)
+                new ReadOnlyByteArrayChannel(archive)
         ); var entries = Files.list(fileSystem.getPath("/"))) {
             assertEquals(UINT16_MAX, entries.count());
         }
@@ -166,7 +205,7 @@ final class ZipCompatibilityRegressionTest {
     void leavesCallerSourceAtFirstTrailerByteAfterZip64Directory() throws IOException {
         byte @Unmodifiable [] content =
                 "ZIP64 streaming source boundary".getBytes(StandardCharsets.UTF_8);
-        assertStreamingBoundary(zip64ArchiveWithExcessExtraFieldData(content, false), content);
+        assertStreamingBoundary(zip64Archive(content, false, false, false, false), content);
     }
 
     /// Reads one complete streaming archive and verifies the caller-owned bytes immediately following it.
@@ -203,7 +242,7 @@ final class ZipCompatibilityRegressionTest {
             String entryName
     ) throws IOException {
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
-                new SeekableInMemoryByteChannel(archive)
+                new ReadOnlyByteArrayChannel(archive)
         )) {
             return Files.readAllBytes(fileSystem.getPath("/" + entryName));
         }
@@ -222,15 +261,66 @@ final class ZipCompatibilityRegressionTest {
         }
     }
 
-    /// Builds a one-entry ZIP64 archive whose central ZIP64 field has excess trailing values.
-    private static byte @Unmodifiable [] zip64ArchiveWithExcessExtraFieldData(
+    /// Builds a one-entry ZIP64 archive with configurable classic count and location fields.
+    ///
+    /// @param content the stored entry content
+    /// @param saturateClassicEntryCount whether the classic end record uses the maximum entry-count sentinel
+    /// @param zip64LocalHeaderOffset whether the central entry carries its local-header offset in ZIP64 data
+    /// @param zip64DiskNumber whether the central entry carries its start disk in ZIP64 data
+    /// @param includeExcessLocationValues whether otherwise unneeded location values trail the ZIP64 size values
+    /// @return the complete archive bytes
+    private static byte @Unmodifiable [] zip64Archive(
             byte @Unmodifiable [] content,
-            boolean saturateClassicEntryCount
+            boolean saturateClassicEntryCount,
+            boolean zip64LocalHeaderOffset,
+            boolean zip64DiskNumber,
+            boolean includeExcessLocationValues
+    ) {
+        return zip64Archive(
+                content,
+                saturateClassicEntryCount,
+                zip64LocalHeaderOffset,
+                zip64DiskNumber,
+                includeExcessLocationValues,
+                false
+        );
+    }
+
+    /// Builds a ZIP64 archive whose payload follows a removable classic stored entry.
+    ///
+    /// @param content the ZIP64 payload entry content
+    /// @param zip64LocalHeaderOffset whether the payload location uses a ZIP64 offset
+    /// @param zip64DiskNumber whether the payload location uses a ZIP64 disk number
+    /// @return the complete two-entry archive bytes
+    private static byte @Unmodifiable [] zip64ArchiveWithLeadingEntry(
+            byte @Unmodifiable [] content,
+            boolean zip64LocalHeaderOffset,
+            boolean zip64DiskNumber
+    ) {
+        return zip64Archive(content, false, zip64LocalHeaderOffset, zip64DiskNumber, false, true);
+    }
+
+    /// Builds the configurable ZIP64 archive used by the public fixture helpers.
+    private static byte @Unmodifiable [] zip64Archive(
+            byte @Unmodifiable [] content,
+            boolean saturateClassicEntryCount,
+            boolean zip64LocalHeaderOffset,
+            boolean zip64DiskNumber,
+            boolean includeExcessLocationValues,
+            boolean includeLeadingEntry
     ) {
         byte @Unmodifiable [] name = "payload.bin".getBytes(StandardCharsets.UTF_8);
         long crc32 = crc32(content);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
 
+        byte @Unmodifiable [] leadingName = "leading.bin".getBytes(StandardCharsets.UTF_8);
+        byte @Unmodifiable [] leadingContent = "removed during update".getBytes(StandardCharsets.UTF_8);
+        int leadingLocalHeaderOffset = output.size();
+        if (includeLeadingEntry) {
+            writeClassicStoredLocalEntry(output, leadingName, leadingContent);
+        }
+
+        int payloadLocalHeaderOffset = output.size();
         writeInt(output, LOCAL_FILE_HEADER_SIGNATURE);
         writeShort(output, 45);
         writeShort(output, 0);
@@ -250,6 +340,14 @@ final class ZipCompatibilityRegressionTest {
         output.writeBytes(content);
 
         int centralDirectoryOffset = output.size();
+        if (includeLeadingEntry) {
+            writeClassicStoredCentralDirectoryEntry(
+                    output,
+                    leadingName,
+                    leadingContent,
+                    leadingLocalHeaderOffset
+            );
+        }
         writeInt(output, CENTRAL_DIRECTORY_HEADER_SIGNATURE);
         writeShort(output, 45);
         writeShort(output, 45);
@@ -261,19 +359,26 @@ final class ZipCompatibilityRegressionTest {
         writeInt(output, UINT32_MAX);
         writeInt(output, UINT32_MAX);
         writeShort(output, name.length);
-        writeShort(output, 32);
+        int zip64CentralDataSize = 2 * Long.BYTES
+                + (zip64LocalHeaderOffset || includeExcessLocationValues ? Long.BYTES : 0)
+                + (zip64DiskNumber || includeExcessLocationValues ? Integer.BYTES : 0);
+        writeShort(output, 4 + zip64CentralDataSize);
         writeShort(output, 0);
-        writeShort(output, 0);
+        writeShort(output, zip64DiskNumber ? UINT16_MAX : 0);
         writeShort(output, 0);
         writeInt(output, 0);
-        writeInt(output, 0);
+        writeInt(output, zip64LocalHeaderOffset ? UINT32_MAX : payloadLocalHeaderOffset);
         output.writeBytes(name);
         writeShort(output, ZIP64_EXTRA_FIELD_ID);
-        writeShort(output, 28);
+        writeShort(output, zip64CentralDataSize);
         writeLong(output, content.length);
         writeLong(output, content.length);
-        writeLong(output, 0);
-        writeInt(output, 0);
+        if (zip64LocalHeaderOffset || includeExcessLocationValues) {
+            writeLong(output, payloadLocalHeaderOffset);
+        }
+        if (zip64DiskNumber || includeExcessLocationValues) {
+            writeInt(output, 0);
+        }
         int centralDirectorySize = output.size() - centralDirectoryOffset;
 
         int zip64EndOffset = output.size();
@@ -283,8 +388,9 @@ final class ZipCompatibilityRegressionTest {
         writeShort(output, 45);
         writeInt(output, 0);
         writeInt(output, 0);
-        writeLong(output, 1);
-        writeLong(output, 1);
+        int entryCount = includeLeadingEntry ? 2 : 1;
+        writeLong(output, entryCount);
+        writeLong(output, entryCount);
         writeLong(output, centralDirectorySize);
         writeLong(output, centralDirectoryOffset);
         writeInt(output, ZIP64_LOCATOR_SIGNATURE);
@@ -294,12 +400,62 @@ final class ZipCompatibilityRegressionTest {
         writeInt(output, END_SIGNATURE);
         writeShort(output, 0);
         writeShort(output, 0);
-        writeShort(output, saturateClassicEntryCount ? UINT16_MAX : 1);
-        writeShort(output, saturateClassicEntryCount ? UINT16_MAX : 1);
+        writeShort(output, saturateClassicEntryCount ? UINT16_MAX : entryCount);
+        writeShort(output, saturateClassicEntryCount ? UINT16_MAX : entryCount);
         writeInt(output, centralDirectorySize);
         writeInt(output, centralDirectoryOffset);
         writeShort(output, 0);
         return output.toByteArray();
+    }
+
+    /// Writes one classic stored local-file record.
+    private static void writeClassicStoredLocalEntry(
+            ByteArrayOutputStream output,
+            byte @Unmodifiable [] name,
+            byte @Unmodifiable [] content
+    ) {
+        long checksum = crc32(content);
+        writeInt(output, LOCAL_FILE_HEADER_SIGNATURE);
+        writeShort(output, 20);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeInt(output, checksum);
+        writeInt(output, content.length);
+        writeInt(output, content.length);
+        writeShort(output, name.length);
+        writeShort(output, 0);
+        output.writeBytes(name);
+        output.writeBytes(content);
+    }
+
+    /// Writes one classic stored central-directory record.
+    private static void writeClassicStoredCentralDirectoryEntry(
+            ByteArrayOutputStream output,
+            byte @Unmodifiable [] name,
+            byte @Unmodifiable [] content,
+            int localHeaderOffset
+    ) {
+        long checksum = crc32(content);
+        writeInt(output, CENTRAL_DIRECTORY_HEADER_SIGNATURE);
+        writeShort(output, 20);
+        writeShort(output, 20);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeInt(output, checksum);
+        writeInt(output, content.length);
+        writeInt(output, content.length);
+        writeShort(output, name.length);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeInt(output, 0);
+        writeInt(output, localHeaderOffset);
+        output.writeBytes(name);
     }
 
     /// Builds a valid classic ZIP archive with the requested number of empty root entries.

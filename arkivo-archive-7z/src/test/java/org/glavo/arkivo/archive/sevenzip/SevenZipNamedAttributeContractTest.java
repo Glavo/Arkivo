@@ -8,6 +8,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.FileSystemException;
@@ -31,6 +35,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -64,6 +69,21 @@ final class SevenZipNamedAttributeContractTest {
 
             assertFalse(Files.isHidden(file));
             assertTrue(Files.isSameFile(file, fileSystem.getPath("/./value.txt")));
+            SeekableByteChannel channel = Files.newByteChannel(file);
+            try (channel) {
+                assertTrue(channel.isOpen());
+                assertEquals(0L, channel.position());
+                assertEquals("value".length(), channel.size());
+                assertThrows(
+                        NonWritableChannelException.class,
+                        () -> channel.write(ByteBuffer.wrap(new byte[]{1}))
+                );
+                assertThrows(NonWritableChannelException.class, () -> channel.truncate(0L));
+                channel.position(2L);
+                assertEquals(2L, channel.position());
+            }
+            assertFalse(channel.isOpen());
+            assertThrows(ClosedChannelException.class, channel::position);
             Files.copy(file, copiedFile);
             assertEquals("value", Files.readString(copiedFile, StandardCharsets.UTF_8));
             assertThrows(UnsupportedOperationException.class, fileSystem::newWatchService);
@@ -109,6 +129,26 @@ final class SevenZipNamedAttributeContractTest {
             Files.setAttribute(file, "7z:filter", SevenZipFilter.bcjX86());
             Files.setAttribute(file, "7z:filters", SevenZipFilterChain.of(SevenZipFilter.delta()));
             Files.setAttribute(file, "7z:filter", null);
+
+            PosixFileAttributeView posixView = Objects.requireNonNull(
+                    Files.getFileAttributeView(file, PosixFileAttributeView.class)
+            );
+            posixView.setTimes(modifiedTime, accessTime, creationTime);
+            assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> posixView.setOwner((UserPrincipal) () -> "owner")
+            );
+            assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> posixView.setGroup((GroupPrincipal) () -> "group")
+            );
+
+            SevenZipArkivoEntryAttributeView sevenZipView = Objects.requireNonNull(
+                    Files.getFileAttributeView(file, SevenZipArkivoEntryAttributeView.class)
+            );
+            sevenZipView.setFilter(SevenZipFilter.bcjX86());
+            sevenZipView.setFilters(SevenZipFilterChain.of(SevenZipFilter.delta()));
+            sevenZipView.clearFilter();
 
             assertMetadata(file, modifiedTime, accessTime, creationTime, permissions);
             assertThrows(
@@ -243,6 +283,7 @@ final class SevenZipNamedAttributeContractTest {
         assertEquals(modifiedTime, attributes.lastModifiedTime());
         assertEquals(accessTime, attributes.lastAccessTime());
         assertEquals(creationTime, attributes.creationTime());
+        assertNull(attributes.fileKey());
         assertEquals(0x20, attributes.windowsAttributes() & 0xffff);
         assertEquals(0100421, attributes.unixMode());
         assertEquals(permissions, Files.readAttributes(file, PosixFileAttributes.class).permissions());
@@ -251,7 +292,10 @@ final class SevenZipNamedAttributeContractTest {
     /// Creates an archive containing one nonempty regular file.
     private Path createArchive() throws IOException {
         Path archive = temporaryDirectory.resolve("sample.7z");
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(archive)) {
+        SevenZipArchiveOptions.Create options = SevenZipArchiveOptions.CREATE_DEFAULTS.withCompression(
+                SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE)
+        );
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(archive, options)) {
             Files.writeString(
                     fileSystem.getPath("/value.txt"),
                     "value",

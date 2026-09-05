@@ -4,9 +4,13 @@
 package org.glavo.arkivo.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -95,6 +99,98 @@ public final class ByteArrayAccessTest {
                 () -> ByteArrayAccess.readLongBigEndian(bytes, 1));
         assertThrows(IndexOutOfBoundsException.class,
                 () -> ByteArrayAccess.writeLongLittleEndian(bytes, -1, 0L));
+    }
+
+    /// Verifies every access operation against `ByteBuffer` across deterministic random inputs and unaligned offsets.
+    @Test
+    public void randomizedAccessMatchesByteBuffer() {
+        Random random = new Random(0x4152_4b49_564fL);
+        for (int iteration = 0; iteration < 1_000; iteration++) {
+            byte[] source = new byte[Long.BYTES + random.nextInt(57)];
+            random.nextBytes(source);
+
+            int shortOffset = random.nextInt(source.length - Short.BYTES + 1);
+            short shortValue = (short) random.nextInt();
+            assertEquals(
+                    ByteBuffer.wrap(source).order(ByteOrder.BIG_ENDIAN).getShort(shortOffset),
+                    ByteArrayAccess.readShortBigEndian(source, shortOffset)
+            );
+            assertEquals(
+                    ByteBuffer.wrap(source).order(ByteOrder.LITTLE_ENDIAN).getShort(shortOffset),
+                    ByteArrayAccess.readShortLittleEndian(source, shortOffset)
+            );
+            byte[] expectedShortBigEndian = source.clone();
+            ByteBuffer.wrap(expectedShortBigEndian).order(ByteOrder.BIG_ENDIAN).putShort(shortOffset, shortValue);
+            byte[] actualShortBigEndian = source.clone();
+            ByteArrayAccess.writeShortBigEndian(actualShortBigEndian, shortOffset, shortValue);
+            assertArrayEquals(expectedShortBigEndian, actualShortBigEndian);
+            byte[] expectedShortLittleEndian = source.clone();
+            ByteBuffer.wrap(expectedShortLittleEndian).order(ByteOrder.LITTLE_ENDIAN).putShort(shortOffset, shortValue);
+            byte[] actualShortLittleEndian = source.clone();
+            ByteArrayAccess.writeShortLittleEndian(actualShortLittleEndian, shortOffset, shortValue);
+            assertArrayEquals(expectedShortLittleEndian, actualShortLittleEndian);
+
+            int intOffset = random.nextInt(source.length - Integer.BYTES + 1);
+            int intValue = random.nextInt();
+            assertEquals(
+                    ByteBuffer.wrap(source).order(ByteOrder.BIG_ENDIAN).getInt(intOffset),
+                    ByteArrayAccess.readIntBigEndian(source, intOffset)
+            );
+            assertEquals(
+                    ByteBuffer.wrap(source).order(ByteOrder.LITTLE_ENDIAN).getInt(intOffset),
+                    ByteArrayAccess.readIntLittleEndian(source, intOffset)
+            );
+            byte[] expectedIntBigEndian = source.clone();
+            ByteBuffer.wrap(expectedIntBigEndian).order(ByteOrder.BIG_ENDIAN).putInt(intOffset, intValue);
+            byte[] actualIntBigEndian = source.clone();
+            ByteArrayAccess.writeIntBigEndian(actualIntBigEndian, intOffset, intValue);
+            assertArrayEquals(expectedIntBigEndian, actualIntBigEndian);
+            byte[] expectedIntLittleEndian = source.clone();
+            ByteBuffer.wrap(expectedIntLittleEndian).order(ByteOrder.LITTLE_ENDIAN).putInt(intOffset, intValue);
+            byte[] actualIntLittleEndian = source.clone();
+            ByteArrayAccess.writeIntLittleEndian(actualIntLittleEndian, intOffset, intValue);
+            assertArrayEquals(expectedIntLittleEndian, actualIntLittleEndian);
+
+            int longOffset = random.nextInt(source.length - Long.BYTES + 1);
+            long longValue = random.nextLong();
+            assertEquals(
+                    ByteBuffer.wrap(source).order(ByteOrder.BIG_ENDIAN).getLong(longOffset),
+                    ByteArrayAccess.readLongBigEndian(source, longOffset)
+            );
+            assertEquals(
+                    ByteBuffer.wrap(source).order(ByteOrder.LITTLE_ENDIAN).getLong(longOffset),
+                    ByteArrayAccess.readLongLittleEndian(source, longOffset)
+            );
+            byte[] expectedLongBigEndian = source.clone();
+            ByteBuffer.wrap(expectedLongBigEndian).order(ByteOrder.BIG_ENDIAN).putLong(longOffset, longValue);
+            byte[] actualLongBigEndian = source.clone();
+            ByteArrayAccess.writeLongBigEndian(actualLongBigEndian, longOffset, longValue);
+            assertArrayEquals(expectedLongBigEndian, actualLongBigEndian);
+            byte[] expectedLongLittleEndian = source.clone();
+            ByteBuffer.wrap(expectedLongLittleEndian).order(ByteOrder.LITTLE_ENDIAN).putLong(longOffset, longValue);
+            byte[] actualLongLittleEndian = source.clone();
+            ByteArrayAccess.writeLongLittleEndian(actualLongLittleEndian, longOffset, longValue);
+            assertArrayEquals(expectedLongLittleEndian, actualLongLittleEndian);
+        }
+    }
+
+    /// Verifies that every access operation rejects a null byte array.
+    @Test
+    public void nullChecks() {
+        byte @Nullable [] bytes = null;
+
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.readShortBigEndian(bytes, 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.readShortLittleEndian(bytes, 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.writeShortBigEndian(bytes, 0, (short) 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.writeShortLittleEndian(bytes, 0, (short) 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.readIntBigEndian(bytes, 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.readIntLittleEndian(bytes, 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.writeIntBigEndian(bytes, 0, 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.writeIntLittleEndian(bytes, 0, 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.readLongBigEndian(bytes, 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.readLongLittleEndian(bytes, 0));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.writeLongBigEndian(bytes, 0, 0L));
+        assertThrows(NullPointerException.class, () -> ByteArrayAccess.writeLongLittleEndian(bytes, 0, 0L));
     }
 
     /// Creates a byte array initialized with a recognizable guard value.

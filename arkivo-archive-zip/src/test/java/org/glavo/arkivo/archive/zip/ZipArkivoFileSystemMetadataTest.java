@@ -10,12 +10,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
+import java.util.Iterator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -42,9 +44,22 @@ final class ZipArkivoFileSystemMetadataTest {
             assertTrue(fileSystem.isOpen());
             assertTrue(fileSystem.isReadOnly());
             assertEquals("/", fileSystem.getSeparator());
+
+            Iterator<Path> roots = fileSystem.getRootDirectories().iterator();
+            assertEquals(fileSystem.getPath("/"), roots.next());
+            assertFalse(roots.hasNext());
+
+            Iterator<FileStore> stores = fileSystem.getFileStores().iterator();
+            FileStore store = stores.next();
+            assertFalse(stores.hasNext());
+            assertEquals("zip", store.name());
+            assertEquals("zip", store.type());
+            assertTrue(store.isReadOnly());
+
             assertTrue(fileSystem.supportedFileAttributeViews().contains("zip"));
             assertTrue(fileSystem.supportedFileAttributeViews().contains("owner"));
             assertTrue(fileSystem.supportedFileAttributeViews().contains("posix"));
+            assertFalse(Files.exists(archive));
         }
     }
 

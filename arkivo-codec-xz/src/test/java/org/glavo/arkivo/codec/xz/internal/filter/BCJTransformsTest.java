@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -50,6 +51,34 @@ public final class BCJTransformsTest {
         assertBcjInteroperability(sparcSample(), sparcOptions(), BCJTransforms::sparc);
         assertBcjInteroperability(arm64Sample(), arm64Options(), BCJTransforms::arm64);
         assertBcjInteroperability(riscVSample(), riscVOptions(), BCJTransforms::riscV);
+    }
+
+    /// Verifies overlapping x86 opcode candidates exercise recent-candidate masks exactly like XZ for Java.
+    @Test
+    public void denseX86CandidatesMatchReference() throws IOException {
+        byte[] sample = new byte[32_771];
+        new Random(0x86bc_1a5eL).nextBytes(sample);
+        for (int offset = 0; offset + 16 < sample.length; offset += 32) {
+            if ((offset & 32) == 0) {
+                sample[offset] = (byte) 0xe8;
+                sample[offset + 1] = (byte) 0xe9;
+                sample[offset + 2] = (byte) 0xe8;
+                sample[offset + 3] = (byte) 0xe9;
+                sample[offset + 4] = 0x7f;
+                sample[offset + 5] = 0x7f;
+                sample[offset + 6] = (byte) 0xe8;
+                sample[offset + 7] = 0;
+                sample[offset + 10] = 0;
+            } else {
+                sample[offset] = (byte) 0xe8;
+                sample[offset + 2] = (byte) 0xe9;
+                sample[offset + 4] = 0x7f;
+                sample[offset + 5] = 0x7f;
+                sample[offset + 6] = 0;
+            }
+        }
+
+        assertBcjInteroperability(sample, x86Options(), BCJTransforms::x86);
     }
 
     /// Verifies that a tail shorter than one x86 instruction passes through unchanged.

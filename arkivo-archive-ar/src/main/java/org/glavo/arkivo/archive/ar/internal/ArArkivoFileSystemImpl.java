@@ -81,6 +81,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 /// Implements an AR archive file system backed by an in-memory index or a forward-only writer.
 @NotNullByDefault
@@ -1978,7 +1979,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Replaces one member's metadata through an update function.
-    private void mutateAttributes(Path path, AttributeMutation mutation) throws IOException {
+    private void mutateAttributes(
+            Path path,
+            UnaryOperator<ArArkivoEntryAttributes> mutation
+    ) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
         Node node = requireNode(path);
@@ -1988,14 +1992,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         ArArkivoEntryAttributes attributes = mutation.apply(node.attributes());
         nodes.put(node.path(), replaceNodeAttributes(node, attributes, node.content()));
         dirty = true;
-    }
-
-    /// Changes an immutable member metadata snapshot.
-    @FunctionalInterface
-    @NotNullByDefault
-    private interface AttributeMutation {
-        /// Returns replacement metadata.
-        ArArkivoEntryAttributes apply(ArArkivoEntryAttributes attributes);
     }
 
     /// Prepares a new archive member path for forward-only writing.
@@ -2275,13 +2271,21 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Adds or replaces one node in the node map.
     private static void putNode(Map<String, Node> nodes, Node node) throws IOException {
         Node existing = nodes.get(node.path());
-        if (existing != null && !(existing.syntheticDirectory() && node.directory())) {
-            throw new IOException("Duplicate AR entry path: " + node.path());
+        if (existing != null) {
+            if (!existing.syntheticDirectory()) {
+                throw new IOException("Duplicate AR entry path: " + node.path());
+            }
+            if (!node.directory()) {
+                throw new IOException("AR entry path conflicts with directory: " + node.path());
+            }
         }
         @Nullable LinkedHashMap<String, String> existingChildren = existing != null ? existing.children() : null;
         if (!node.path().isEmpty()) {
             Node parent = nodes.get(parentPath(node.path()));
             if (parent != null) {
+                if (!parent.directory()) {
+                    throw new IOException("AR entry path conflicts with directory: " + parent.path());
+                }
                 parent.children().put(fileName(node.path()), node.path());
             }
         }

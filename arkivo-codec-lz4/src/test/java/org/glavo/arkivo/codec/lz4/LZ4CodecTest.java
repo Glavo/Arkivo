@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -174,9 +175,32 @@ public final class LZ4CodecTest {
         assertArrayEquals(input, decompress(blockCodec.withVerifyChecksums(false), badBlock));
     }
 
-    /// Verifies owned compressed payloads are rejected before exceeding decoder working-memory limits.
+    /// Verifies decoded bytes remain observable when the trailing content checksum subsequently fails.
     @Test
-    public void enforcesMemoryLimitsBeforeRetainingPayloads() throws IOException {
+    public void contentChecksumFailurePreservesDecodedProgress() throws IOException {
+        byte[] expected = testData(65_537);
+        LZ4Codec codec = new LZ4Codec().withBlockSize(LZ4BlockSize.KIB_64);
+        byte[] encoded = compress(codec, expected);
+        encoded[encoded.length - 1] ^= 1;
+        ByteBuffer source = ByteBuffer.wrap(encoded);
+        ByteBuffer target = ByteBuffer.allocate(expected.length + 1);
+
+        try (CompressionDecoder decoder = codec.newDecoder()) {
+            IOException failure = assertThrows(IOException.class, () -> decoder.finish(source, target));
+            assertEquals("LZ4 content checksum mismatch", failure.getMessage());
+        }
+
+        assertEquals(encoded.length, source.position());
+        assertEquals(expected.length, target.position());
+        target.flip();
+        byte[] actual = new byte[target.remaining()];
+        target.get(actual);
+        assertArrayEquals(expected, actual);
+    }
+
+    /// Verifies compressed and decoded storage are both subject to decoder working-memory limits.
+    @Test
+    public void enforcesMemoryLimitsAcrossDecoderPhases() throws IOException {
         int maximumMemorySize = 65_535;
         try (CompressionDecoder decoder = new LZ4BlockCodec()
                 .withMaximumBlockSize(128 * 1024L)
@@ -200,6 +224,23 @@ public final class LZ4CodecTest {
                     () -> decoder.decode(ByteBuffer.wrap(framePrefix), ByteBuffer.allocate(1))
             );
         }
+
+        int decodedBlockSize = 70_000;
+        byte[] rawBlock = compress(
+                new LZ4BlockCodec().withMaximumBlockSize(decodedBlockSize),
+                new byte[decodedBlockSize]
+        );
+        try (CompressionDecoder decoder = new LZ4BlockCodec()
+                .withMaximumBlockSize(decodedBlockSize)
+                .withMaximumMemorySize(65_535)
+                .newDecoder()) {
+            ByteBuffer source = ByteBuffer.wrap(rawBlock);
+            assertThrows(
+                    DecompressionMemoryLimitException.class,
+                    () -> decoder.finish(source, ByteBuffer.allocate(decodedBlockSize))
+            );
+            assertFalse(source.hasRemaining());
+        }
     }
 
     /// Verifies standard, legacy, and skippable magic detection plus installed aliases.
@@ -208,10 +249,13 @@ public final class LZ4CodecTest {
         assertSame(LZ4Format.instance(), CompressionFormats.require("lz4"));
         assertSame(LZ4Format.instance(), CompressionFormats.require("lz4-frame"));
         assertSame(LZ4BlockFormat.instance(), CompressionFormats.require("lz4-raw"));
+        assertEquals(List.of("lz4"), LZ4Format.instance().fileExtensions());
+        assertEquals(List.of(), LZ4BlockFormat.instance().fileExtensions());
         assertTrue(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x04, 0x22, 0x4d, 0x18})));
         assertTrue(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x50, 0x2a, 0x4d, 0x18})));
         assertTrue(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x02, 0x21, 0x4c, 0x18})));
         assertFalse(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x02, 0x21, 0x4c, 0x19})));
+        assertFalse(LZ4Format.instance().matches(ByteBuffer.wrap(new byte[]{0x04, 0x22, 0x4d})));
         assertEquals(0, LZ4BlockFormat.instance().probeSize());
     }
 

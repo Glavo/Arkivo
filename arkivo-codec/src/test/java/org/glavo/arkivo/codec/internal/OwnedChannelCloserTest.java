@@ -55,14 +55,47 @@ final class OwnedChannelCloserTest {
         assertTrue(closer.isComplete());
     }
 
+    /// Verifies a shared primary and close failure is not self-suppressed and remains retryable.
+    @Test
+    void preservesSharedFailureAndRetriesEndpointClosure() throws IOException {
+        IOException sharedFailure = new IOException("shared failure");
+        FailingOnceChannel channel = new FailingOnceChannel(sharedFailure);
+        OwnedChannelCloser closer = new OwnedChannelCloser(channel, ResourceOwnership.OWNED);
+
+        IOException thrown = assertThrows(IOException.class, () -> closer.closeAfter(sharedFailure));
+        assertSame(sharedFailure, thrown);
+        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(1, channel.closeCount());
+        assertFalse(closer.isComplete());
+
+        closer.close();
+        assertEquals(2, channel.closeCount());
+        assertTrue(closer.isComplete());
+    }
+
     /// Implements a channel that fails its first close attempt.
     @NotNullByDefault
     private static final class FailingOnceChannel implements Channel {
+        /// Failure thrown by the first close attempt.
+        private final IOException closeFailure;
+
         /// Whether the channel remains open.
         private boolean open = true;
 
         /// Number of close attempts.
         private int closeCount;
+
+        /// Creates a channel with a distinct close failure.
+        private FailingOnceChannel() {
+            this(new IOException("endpoint close failed"));
+        }
+
+        /// Creates a channel that throws the given close failure.
+        ///
+        /// @param closeFailure the failure thrown by the first close attempt
+        private FailingOnceChannel(IOException closeFailure) {
+            this.closeFailure = closeFailure;
+        }
 
         /// Returns whether the channel remains open.
         @Override
@@ -75,7 +108,7 @@ final class OwnedChannelCloserTest {
         public void close() throws IOException {
             closeCount++;
             if (closeCount == 1) {
-                throw new IOException("endpoint close failed");
+                throw closeFailure;
             }
             open = false;
         }

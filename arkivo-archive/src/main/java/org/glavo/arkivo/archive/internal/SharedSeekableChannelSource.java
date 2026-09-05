@@ -109,6 +109,9 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
         private boolean open = true;
 
         /// Reads from this view's logical position without exposing shared physical position state.
+        ///
+        /// Bytes placed in the target before a delegate failure remain consumed from both the target and this view.
+        /// The target limit is not changed.
         @Override
         public int read(ByteBuffer target) throws IOException {
             Objects.requireNonNull(target, "target");
@@ -126,15 +129,19 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
                 }
 
                 int count = (int) Math.min((long) target.remaining(), size - position);
+                int targetPosition = target.position();
                 ByteBuffer bounded = target.duplicate();
                 bounded.limit(bounded.position() + count);
                 channel.position(origin + position);
-                int read = channel.read(bounded);
-                if (read > 0) {
-                    target.position(target.position() + read);
-                    position += read;
+                try {
+                    return channel.read(bounded);
+                } finally {
+                    int transferred = bounded.position() - targetPosition;
+                    if (transferred > 0) {
+                        target.position(targetPosition + transferred);
+                        position += transferred;
+                    }
                 }
-                return read;
             } finally {
                 lock.unlock();
             }

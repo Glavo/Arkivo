@@ -3,12 +3,7 @@
 
 package org.glavo.arkivo.archive.cpio;
 
-import org.glavo.arkivo.archive.ArchiveReadLimits;
-import org.glavo.arkivo.archive.ArchiveReadOptions;
-import org.glavo.arkivo.archive.ArkivoReadLimitException;
-import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
@@ -20,14 +15,9 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
-import java.util.Arrays;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -36,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Tests native CPIO streaming behavior, metadata, corruption handling, and operation-scoped read limits.
+/// Tests cross-dialect CPIO streaming and corruption handling.
 @NotNullByDefault
 public final class CPIOArkivoStreamingTest {
     /// The modification timestamp stored by round-trip fixtures.
@@ -82,190 +72,6 @@ public final class CPIOArkivoStreamingTest {
             }
         });
         assertTrue(exception.getMessage().contains("checksum"));
-    }
-
-    /// Verifies entry-count, entry-size, total-entry-size, and metadata-size limits.
-    @Test
-    public void enforcesAllStreamingReadLimits() throws IOException {
-        byte[] archive = writeTwoFileArchive();
-
-        try (CPIOArkivoStreamingReader reader = openWithLimits(
-                archive,
-                ArchiveReadLimits.builder().maximumEntryCount(1L).build()
-        )) {
-            assertTrue(reader.next());
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
-            assertLimit(exception, ArkivoReadLimitKind.ENTRY_COUNT, 1L, 2L, null);
-        }
-
-        try (CPIOArkivoStreamingReader reader = openWithLimits(
-                archive,
-                ArchiveReadLimits.builder().maximumEntrySize(4L).build()
-        )) {
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
-            assertLimit(exception, ArkivoReadLimitKind.ENTRY_SIZE, 4L, 5L, "one.bin");
-        }
-
-        try (CPIOArkivoStreamingReader reader = openWithLimits(
-                archive,
-                ArchiveReadLimits.builder().maximumTotalEntrySize(6L).build()
-        )) {
-            assertTrue(reader.next());
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
-            assertLimit(exception, ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, 6L, 12L, "two.bin");
-        }
-
-        try (CPIOArkivoStreamingReader reader = openWithLimits(
-                archive,
-                ArchiveReadLimits.builder().maximumMetadataSize(119L).build()
-        )) {
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
-            assertLimit(exception, ArkivoReadLimitKind.METADATA_SIZE, 119L, 120L, null);
-        }
-    }
-
-    /// Verifies reserved, unsafe, and non-canonical entry paths at the streaming boundary.
-    @Test
-    public void validatesAndCanonicalizesEntryPaths() throws IOException {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(output)) {
-            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("TRAILER!!!"));
-            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("unsafe\0name"));
-            writer.beginFile("directory//./value.bin").close();
-        }
-
-        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
-                new ByteArrayInputStream(output.toByteArray())
-        )) {
-            assertTrue(reader.next());
-            assertEquals("directory/value.bin", reader.readAttributes().path());
-            assertFalse(reader.next());
-        }
-    }
-
-    /// Verifies a zero name-size field is reported as malformed archive data.
-    @Test
-    public void rejectsZeroNameSizeAsIOException() throws IOException {
-        byte[] archive = writeFileArchive(CPIODialect.NEW_ASCII, new byte[0]);
-        java.util.Arrays.fill(archive, 94, 102, (byte) '0');
-
-        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
-                new ByteArrayInputStream(archive)
-        )) {
-            assertThrows(IOException.class, reader::next);
-        }
-    }
-
-    /// Verifies that physical EOF cannot replace the required CPIO trailer entry.
-    @Test
-    public void rejectsArchiveWithoutTrailer() throws IOException {
-        byte[] archive = writeFileArchive(CPIODialect.NEW_ASCII, new byte[]{1, 2, 3});
-        int trailerNameOffset = indexOf(archive, "TRAILER!!!".getBytes(StandardCharsets.US_ASCII));
-        assertTrue(trailerNameOffset >= 110);
-        byte[] truncated = Arrays.copyOf(archive, trailerNameOffset - 110);
-
-        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
-                new ByteArrayInputStream(truncated)
-        )) {
-            assertTrue(reader.next());
-            assertThrows(IOException.class, reader::next);
-        }
-    }
-
-    /// Verifies that a name field containing only its terminator is rejected.
-    @Test
-    public void rejectsEmptyStoredName() throws IOException {
-        byte[] archive = writeFileArchive(CPIODialect.NEW_ASCII, new byte[0]);
-        System.arraycopy("00000001".getBytes(StandardCharsets.US_ASCII), 0, archive, 94, 8);
-
-        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
-                new ByteArrayInputStream(archive)
-        )) {
-            assertThrows(IOException.class, reader::next);
-        }
-    }
-
-    /// Verifies CPIO-specific charset detection receives already parsed header context.
-    @Test
-    public void suppliesHeaderContextToMetadataCharsetDetector() throws IOException {
-        byte[] content = {4, 5, 6};
-        byte[] archive = writeFileArchive(CPIODialect.NEW_ASCII_CRC, content);
-        AtomicReference<Boolean> observed = new AtomicReference<>(false);
-        CPIOMetadataCharsetDetector detector = context -> {
-            assertEquals(CPIOMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
-            assertEquals(CPIODialect.NEW_ASCII_CRC, context.dialect());
-            assertNull(context.binaryByteOrder());
-            assertEquals(1L, context.inode());
-            assertEquals(0100644, context.mode());
-            assertEquals(content.length, context.entrySize());
-            assertTrue(context.bytes().isReadOnly());
-            byte[] name = new byte[context.bytes().remaining()];
-            context.bytes().get(name);
-            assertArrayEquals("payload.bin".getBytes(StandardCharsets.UTF_8), name);
-            observed.set(true);
-            return StandardCharsets.UTF_8;
-        };
-
-        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
-                new ByteArrayInputStream(archive),
-                CPIOArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
-        )) {
-            assertTrue(reader.next());
-        }
-
-        assertTrue(observed.get());
-    }
-
-    /// Verifies pending snapshots distinguish unknown size and checksum from stored values.
-    @Test
-    public void reportsUnknownPendingSizeAndChecksum() throws IOException {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(
-                output,
-                CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(CPIODialect.NEW_ASCII_CRC)
-        )) {
-            var entry = writer.beginFile("pending.bin");
-            CPIOArkivoEntryAttributeView view = Objects.requireNonNull(
-                    entry.attributeView(CPIOArkivoEntryAttributeView.class)
-            );
-            CPIOArkivoEntryAttributes attributes = view.readAttributes();
-            assertEquals(CPIOArkivoEntryAttributes.UNKNOWN_SIZE, attributes.size());
-            assertEquals(CPIOArkivoEntryAttributes.UNKNOWN_CHECKSUM, attributes.checksum());
-            assertThrows(IllegalArgumentException.class, () -> view.setMode(040755));
-            entry.close();
-        }
-    }
-
-    /// Verifies a failed body drain can continue from its exact progress on a repeated close.
-    @Test
-    public void retriesEntryBodyCloseAfterSourceFailure() throws IOException {
-        byte[] content = new byte[32];
-        byte[] archive = writeFileArchive(CPIODialect.NEW_ASCII_CRC, content);
-        int bodyOffset = indexOf(archive, content);
-        assertTrue(bodyOffset >= 0);
-        FailOnceInputStream source = new FailOnceInputStream(archive, bodyOffset + 5);
-
-        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(source)) {
-            assertTrue(reader.next());
-            InputStream body = reader.openInputStream();
-            assertThrows(IOException.class, body::close);
-            body.close();
-            assertFalse(reader.next());
-        }
-    }
-
-    /// Verifies invalid options are rejected before an existing output path is truncated.
-    @Test
-    public void validatesCreateOptionsBeforeOpeningPath() throws IOException {
-        Path path = Files.createTempFile("arkivo-cpio-options-", ".cpio");
-        try {
-            byte[] original = {9, 8, 7};
-            Files.write(path, original);
-            assertThrows(NullPointerException.class, () -> CPIOArkivoStreamingWriter.create(path, null));
-            assertArrayEquals(original, Files.readAllBytes(path));
-        } finally {
-            Files.deleteIfExists(path);
-        }
     }
 
     /// Writes a directory, regular file, and symbolic link with representative CPIO metadata.
@@ -433,46 +239,6 @@ public final class CPIOArkivoStreamingTest {
         return output.toByteArray();
     }
 
-    /// Writes two new-ASCII regular files for read-limit checks.
-    private static byte[] writeTwoFileArchive() throws IOException {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(output)) {
-            var first = writer.beginFile("one.bin");
-            try (OutputStream body = first.openOutputStream()) {
-                body.write(new byte[5]);
-            }
-            var second = writer.beginFile("two.bin");
-            try (OutputStream body = second.openOutputStream()) {
-                body.write(new byte[7]);
-            }
-        }
-        return output.toByteArray();
-    }
-
-    /// Opens one in-memory archive with the requested common read limits.
-    private static CPIOArkivoStreamingReader openWithLimits(byte[] archive, ArchiveReadLimits limits) {
-        return CPIOArkivoStreamingReader.open(
-                new ByteArrayInputStream(archive),
-                CPIOArchiveOptions.READ_DEFAULTS.withCommon(
-                        ArchiveReadOptions.DEFAULT.withLimits(limits)
-                )
-        );
-    }
-
-    /// Verifies the structured fields of one read-limit failure.
-    private static void assertLimit(
-            ArkivoReadLimitException exception,
-            ArkivoReadLimitKind kind,
-            long maximum,
-            long actual,
-            @Nullable String entryPath
-    ) {
-        assertEquals(kind, exception.kind());
-        assertEquals(maximum, exception.maximum());
-        assertEquals(actual, exception.actual());
-        assertEquals(entryPath, exception.entryPath());
-    }
-
     /// Calculates the unsigned 32-bit sum used by CRC CPIO entries.
     private static long checksum(byte[] content) {
         long checksum = 0L;
@@ -494,64 +260,6 @@ public final class CPIOArkivoStreamingTest {
             return offset;
         }
         return -1;
-    }
-
-    /// Supplies bytes while injecting one recoverable read failure at an exact source offset.
-    @NotNullByDefault
-    private static final class FailOnceInputStream extends InputStream {
-        /// Immutable source bytes owned by this stream.
-        private final byte @Unmodifiable [] source;
-
-        /// Source offset at which one failure is injected.
-        private final int failureOffset;
-
-        /// Reusable storage for single-byte reads.
-        private final byte[] singleByte = new byte[1];
-
-        /// Current source offset.
-        private int offset;
-
-        /// Whether the configured failure has already been emitted.
-        private boolean failed;
-
-        /// Creates one fail-once source over a private byte-array copy.
-        private FailOnceInputStream(byte[] source, int failureOffset) {
-            this.source = Objects.requireNonNull(source, "source").clone();
-            if (failureOffset < 0 || failureOffset > source.length) {
-                throw new IllegalArgumentException("failureOffset is out of range");
-            }
-            this.failureOffset = failureOffset;
-        }
-
-        /// Reads one byte or emits the configured failure.
-        @Override
-        public int read() throws IOException {
-            int read = read(singleByte, 0, 1);
-            return read < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
-        }
-
-        /// Reads up to the failure boundary and fails once when that boundary is reached.
-        @Override
-        public int read(byte[] bytes, int targetOffset, int length) throws IOException {
-            Objects.checkFromIndexSize(targetOffset, length, bytes.length);
-            if (!failed && offset == failureOffset) {
-                failed = true;
-                throw new IOException("Injected CPIO source failure");
-            }
-            if (length == 0) {
-                return 0;
-            }
-            if (offset == source.length) {
-                return -1;
-            }
-            int count = Math.min(length, source.length - offset);
-            if (!failed && offset < failureOffset) {
-                count = Math.min(count, failureOffset - offset);
-            }
-            System.arraycopy(source, offset, bytes, targetOffset, count);
-            offset += count;
-            return count;
-        }
     }
 
     /// Supplies a bounded in-memory source that returns only small channel fragments.

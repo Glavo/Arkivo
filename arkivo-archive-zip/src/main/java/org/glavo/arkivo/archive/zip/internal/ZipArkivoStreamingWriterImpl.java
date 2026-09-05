@@ -104,7 +104,8 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                     new ZipArkivoWritableFileSystemImpl(
                             ZipArkivoFileSystemProvider.instance(),
                             output,
-                            Objects.requireNonNull(config, "config")
+                            Objects.requireNonNull(config, "config"),
+                            null
                     ),
                     config
             );

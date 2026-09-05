@@ -212,6 +212,36 @@ public final class ZlibBufferEngineTest {
         assertThrows(IOException.class, () -> decode(limitedWindow, 5, CODEC));
     }
 
+    /// Verifies every truncated trailer is rejected and checksum failure preserves completed decode progress.
+    @Test
+    public void trailerValidationPreservesDecodedOutputAndBufferProgress() throws IOException {
+        byte[] input = testData();
+        byte[] encoded = encodeInFragments(input, CODEC, 127, 17);
+
+        for (int trailerBytes = 0; trailerBytes < 4; trailerBytes++) {
+            byte[] truncated = Arrays.copyOf(encoded, encoded.length - 4 + trailerBytes);
+            EOFException exception = assertThrows(
+                    EOFException.class,
+                    () -> decode(truncated, input.length + 1, CODEC),
+                    "trailer bytes " + trailerBytes
+            );
+            assertEquals("Unexpected end of zlib stream trailer", exception.getMessage());
+        }
+
+        byte[] corrupted = encoded.clone();
+        corrupted[corrupted.length - 1] ^= 1;
+        ByteBuffer source = ByteBuffer.wrap(corrupted);
+        ByteBuffer target = ByteBuffer.allocate(input.length + 1);
+        try (CompressionDecoder decoder = CODEC.newDecoder()) {
+            IOException exception = assertThrows(IOException.class, () -> decoder.finish(source, target));
+            assertEquals("Zlib stream checksum mismatch", exception.getMessage());
+        }
+
+        assertEquals(corrupted.length, source.position());
+        assertEquals(input.length, target.position());
+        assertArrayEquals(input, Arrays.copyOf(target.array(), target.position()));
+    }
+
     /// Verifies output limiting, reset, terminal state, and non-framed engine capabilities.
     @Test
     public void lifecycleAndCapabilities() throws IOException {

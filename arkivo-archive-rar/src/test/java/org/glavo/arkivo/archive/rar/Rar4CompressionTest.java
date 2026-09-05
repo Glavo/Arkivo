@@ -108,6 +108,31 @@ public final class Rar4CompressionTest {
         }
     }
 
+    /// Preserves solid decompression history when an opened entry is only partially consumed.
+    @Test
+    public void closesPartiallyConsumedSolidEntryBeforeReadingNextEntry() throws IOException {
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(SOLID_ARCHIVE)
+        )) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            InputStream first = reader.openInputStream();
+
+            assertEquals(0, first.read(new byte[0], 0, 0));
+            assertEquals('f', first.read());
+            assertEquals(2L, first.skip(2L));
+            assertTrue(first.available() >= 0);
+            first.close();
+            first.close();
+            assertThrows(IOException.class, first::read);
+
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("file2.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            try (InputStream second = reader.openInputStream()) {
+                assertArrayEquals("file2\n".getBytes(StandardCharsets.UTF_8), second.readAllBytes());
+            }
+        }
+    }
+
     /// Reads a solid archive through the indexed file system and its cached content storage.
     @Test
     public void readsSolidCompressedEntriesThroughFileSystem() throws IOException {

@@ -4,12 +4,15 @@
 package org.glavo.arkivo.fuzz;
 
 import com.code_intelligence.jazzer.junit.FuzzTest;
+import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -28,8 +31,51 @@ public final class FormatDetectionFuzzTest {
     /// Sentinel retained outside every visible buffer and channel input range.
     private static final byte INPUT_GUARD = (byte) 0x9d;
 
+    /// Archive formats represented by complete deterministic detection seeds.
+    private static final @Unmodifiable List<String> ARCHIVE_FORMAT_NAMES =
+            List.of("7z", "ar", "cpio", "dmg", "rar", "tar", "zip");
+
     /// Creates a format-detection fuzz-test instance for JUnit.
     public FormatDetectionFuzzTest() {
+    }
+
+    /// Verifies that every generated seed reaches its intended buffer or seekable detector.
+    @Test
+    void generatedSeedsReachExpectedDetectors() throws IOException {
+        for (CompressionFormat expected : FuzzSupport.SIGNED_COMPRESSION_FORMATS) {
+            byte[] seed = createCompressionDetectionSeed(expected);
+            if (CompressionFormats.detect(ByteBuffer.wrap(seed)) != expected) {
+                throw new AssertionError("Compression seed was not detected as " + expected.name());
+            }
+            try (ReadOnlyByteArrayChannel channel = new ReadOnlyByteArrayChannel(seed, 1)) {
+                @Nullable CompressionFormat detected = CompressionFormats.detect(channel);
+                long position = channel.position();
+                if (detected != expected || position != 0L) {
+                    throw new AssertionError(
+                            "Compression seekable seed expected " + expected.name()
+                                    + " but detected " + detected + " at position " + position
+                    );
+                }
+            }
+        }
+
+        for (String formatName : ARCHIVE_FORMAT_NAMES) {
+            ArkivoFormat expected = ArkivoFormats.require(formatName);
+            byte[] seed = FuzzSupport.createArchiveSeed(formatName);
+            if (!"dmg".equals(formatName) && ArkivoFormats.detect(ByteBuffer.wrap(seed)) != expected) {
+                throw new AssertionError("Archive seed was not detected as " + formatName);
+            }
+            try (ReadOnlyByteArrayChannel channel = new ReadOnlyByteArrayChannel(seed, 1)) {
+                @Nullable ArkivoFormat detected = ArkivoFormats.detect(channel);
+                long position = channel.position();
+                if (detected != expected || position != 0L) {
+                    throw new AssertionError(
+                            "Archive seekable seed expected " + formatName
+                                    + " but detected " + detected + " at position " + position
+                    );
+                }
+            }
+        }
     }
 
     /// Fuzzes detection while checking caller buffer and channel position preservation.
@@ -145,22 +191,31 @@ public final class FormatDetectionFuzzTest {
         return result;
     }
 
+    /// Creates one valid encoding carrying the expected compression signature.
+    ///
+    /// @param format the signature-bearing compression format
+    /// @return the complete deterministic compressed seed
+    /// @throws IOException if the seed cannot be encoded
+    private static byte @Unmodifiable [] createCompressionDetectionSeed(
+            CompressionFormat format
+    ) throws IOException {
+        CompressionCodec<?> codec = FuzzSupport.boundedCodec(
+                format.defaultCodec(),
+                FuzzSupport.SEED_CONTENT.length
+        );
+        return FuzzSupport.remainingBytes(codec.compress(ByteBuffer.wrap(FuzzSupport.SEED_CONTENT)));
+    }
+
     /// Supplies valid encodings and archives so mutation starts inside every signature family.
     ///
     /// @return deterministic detection seed arguments
     /// @throws IOException if a seed cannot be encoded
     private static Stream<Arguments> detectionSeeds() throws IOException {
         List<Arguments> seeds = new ArrayList<>();
-        for (CompressionFormat format : FuzzSupport.COMPRESSION_FORMATS) {
-            CompressionCodec<?> codec = FuzzSupport.boundedCodec(
-                    format.defaultCodec(),
-                    FuzzSupport.SEED_CONTENT.length
-            );
-            seeds.add(Arguments.of((Object) FuzzSupport.remainingBytes(
-                    codec.compress(ByteBuffer.wrap(FuzzSupport.SEED_CONTENT))
-            )));
+        for (CompressionFormat format : FuzzSupport.SIGNED_COMPRESSION_FORMATS) {
+            seeds.add(Arguments.of((Object) createCompressionDetectionSeed(format)));
         }
-        for (String formatName : List.of("7z", "ar", "cpio", "dmg", "rar", "tar", "zip")) {
+        for (String formatName : ARCHIVE_FORMAT_NAMES) {
             seeds.add(Arguments.of((Object) FuzzSupport.createArchiveSeed(formatName)));
         }
         return seeds.stream();

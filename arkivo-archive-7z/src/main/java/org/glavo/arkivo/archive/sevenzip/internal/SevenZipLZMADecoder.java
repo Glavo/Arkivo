@@ -270,7 +270,9 @@ final class SevenZipLZMADecoder {
                     builder.closeRoots();
                 } catch (IOException | RuntimeException | Error exception) {
                     if (failure != null) {
-                        failure.addSuppressed(exception);
+                        if (failure != exception) {
+                            failure.addSuppressed(exception);
+                        }
                     } else {
                         throw exception;
                     }
@@ -474,19 +476,25 @@ final class SevenZipLZMADecoder {
                     if (failure == null) {
                         failure = exception;
                     } else {
-                        failure.addSuppressed(exception);
+                        if (failure != exception) {
+                            failure.addSuppressed(exception);
+                        }
                     }
                 } catch (RuntimeException exception) {
                     if (runtimeFailure == null) {
                         runtimeFailure = exception;
                     } else {
-                        runtimeFailure.addSuppressed(exception);
+                        if (runtimeFailure != exception) {
+                            runtimeFailure.addSuppressed(exception);
+                        }
                     }
                 } catch (Error exception) {
                     if (errorFailure == null) {
                         errorFailure = exception;
                     } else {
-                        errorFailure.addSuppressed(exception);
+                        if (errorFailure != exception) {
+                            errorFailure.addSuppressed(exception);
+                        }
                     }
                 }
             }

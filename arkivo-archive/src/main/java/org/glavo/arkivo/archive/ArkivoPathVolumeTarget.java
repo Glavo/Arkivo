@@ -175,10 +175,10 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
         /// Whether existing output may be replaced.
         private final boolean replaceExistingOutput;
 
-        /// Existing output paths moved into staging for rollback.
+        /// Existing output paths whose staged backups still require restoration.
         private final ArrayList<OutputBackup> backups = new ArrayList<>();
 
-        /// Newly published paths that must be removed on rollback.
+        /// Newly published paths that still require removal on rollback.
         private final ArrayList<Path> publishedPaths = new ArrayList<>();
 
         /// The number of staged volume channels opened so far.
@@ -341,6 +341,7 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
             for (int index = publishedPaths.size() - 1; index >= 0; index--) {
                 try {
                     Files.deleteIfExists(publishedPaths.get(index));
+                    publishedPaths.remove(index);
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = appendFailure(failure, exception);
                     cleanupFailed = true;
@@ -349,10 +350,12 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
             for (int index = backups.size() - 1; index >= 0; index--) {
                 OutputBackup backup = backups.get(index);
                 if (!Files.exists(backup.backupPath())) {
+                    backups.remove(index);
                     continue;
                 }
                 try {
                     Files.move(backup.backupPath(), backup.outputPath());
+                    backups.remove(index);
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = appendFailure(failure, exception);
                     cleanupFailed = true;

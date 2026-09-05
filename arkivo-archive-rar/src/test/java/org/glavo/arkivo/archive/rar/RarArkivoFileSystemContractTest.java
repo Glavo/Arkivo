@@ -5,13 +5,12 @@ package org.glavo.arkivo.archive.rar;
 
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider;
-import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
@@ -44,7 +43,6 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -67,7 +65,11 @@ final class RarArkivoFileSystemContractTest {
         byte[] content = "value".getBytes(StandardCharsets.US_ASCII);
         Path archive = Files.write(
                 temporaryDirectory.resolve("contract.rar"),
-                storedRar4Archive("dir/value.txt".getBytes(StandardCharsets.US_ASCII), content)
+                RarTestArchiveFixtures.rar4StoredArchive(
+                        "dir/value.txt".getBytes(StandardCharsets.US_ASCII),
+                        false,
+                        content
+                )
         );
         RarArkivoFileSystemProvider provider = new RarArkivoFileSystemProvider();
         RarArkivoFileSystem fileSystem = provider.newFileSystem(archive, Map.of());
@@ -209,7 +211,11 @@ final class RarArkivoFileSystemContractTest {
         byte[] content = "cached content".getBytes(StandardCharsets.US_ASCII);
         Path archive = Files.write(
                 temporaryDirectory.resolve("cached.rar"),
-                storedRar4Archive("value.txt".getBytes(StandardCharsets.US_ASCII), content)
+                RarTestArchiveFixtures.rar4StoredArchive(
+                        "value.txt".getBytes(StandardCharsets.US_ASCII),
+                        false,
+                        content
+                )
         );
 
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archive)) {
@@ -252,7 +258,7 @@ final class RarArkivoFileSystemContractTest {
         byte[] content = {1, 2, 3};
         Path archive = Files.write(
                 temporaryDirectory.resolve("legacy-name.rar"),
-                storedRar4Archive(new byte[]{(byte) 0xe4}, content)
+                RarTestArchiveFixtures.rar4StoredArchive(new byte[]{(byte) 0xe4}, false, content)
         );
         ArchiveMetadataCharsetDetector detector = ArchiveMetadataCharsetDetector.fixed(
                 StandardCharsets.ISO_8859_1
@@ -298,7 +304,11 @@ final class RarArkivoFileSystemContractTest {
     void exposesPathlessFileStore() throws IOException {
         Path archive = Files.write(
                 temporaryDirectory.resolve("channel-source.rar"),
-                storedRar4Archive("value.txt".getBytes(StandardCharsets.US_ASCII), new byte[]{1})
+                RarTestArchiveFixtures.rar4StoredArchive(
+                        "value.txt".getBytes(StandardCharsets.US_ASCII),
+                        false,
+                        new byte[]{1}
+                )
         );
         SeekableByteChannel backing = Files.newByteChannel(archive, StandardOpenOption.READ);
 
@@ -311,6 +321,40 @@ final class RarArkivoFileSystemContractTest {
         }
 
         assertFalse(backing.isOpen());
+    }
+
+    /// Verifies failed construction preserves a shared volume-open and source-close failure without self-suppression.
+    @Test
+    void preservesSharedVolumeOpenAndSourceCloseFailure() {
+        IOException sharedFailure = new IOException("shared volume failure");
+        FailingVolumeSource source = new FailingVolumeSource(sharedFailure, sharedFailure);
+
+        IOException failure = assertThrows(
+                IOException.class,
+                () -> RarArkivoFileSystem.open(source, RarArchiveOptions.DEFAULT)
+        );
+
+        assertSame(sharedFailure, failure);
+        assertEquals(0, failure.getSuppressed().length);
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies failed construction suppresses a distinct source-close failure behind the volume-open failure.
+    @Test
+    void suppressesDistinctSourceCloseFailureAfterVolumeOpenFailure() {
+        IOException openFailure = new IOException("volume open failure");
+        IOException closeFailure = new IOException("source close failure");
+        FailingVolumeSource source = new FailingVolumeSource(openFailure, closeFailure);
+
+        IOException failure = assertThrows(
+                IOException.class,
+                () -> RarArkivoFileSystem.open(source, RarArchiveOptions.DEFAULT)
+        );
+
+        assertSame(openFailure, failure);
+        assertEquals(1, failure.getSuppressed().length);
+        assertSame(closeFailure, failure.getSuppressed()[0]);
+        assertEquals(1, source.closeCount());
     }
 
     /// Verifies wildcard named views expose their complete immutable attribute sets.
@@ -386,44 +430,40 @@ final class RarArkivoFileSystemContractTest {
         assertEquals(Map.of("size", Files.size(file)), Files.readAttributes(file, "size,unknown"));
     }
 
-    /// Creates one minimal RAR4 archive containing a stored regular file with the supplied raw name bytes.
-    private static byte[] storedRar4Archive(byte[] name, byte[] body) {
-        byte[] fields = new byte[25 + name.length];
-        ByteArrayAccess.writeIntLittleEndian(fields, 0, body.length);
-        ByteArrayAccess.writeIntLittleEndian(fields, 4, body.length);
-        fields[8] = RarArkivoEntryAttributes.HOST_OS_UNIX;
-        CRC32 bodyChecksum = new CRC32();
-        bodyChecksum.update(body);
-        ByteArrayAccess.writeIntLittleEndian(fields, 9, (int) bodyChecksum.getValue());
-        ByteArrayAccess.writeIntLittleEndian(fields, 13, 0);
-        fields[17] = 29;
-        fields[18] = 0x30;
-        ByteArrayAccess.writeShortLittleEndian(fields, 19, (short) name.length);
-        ByteArrayAccess.writeIntLittleEndian(fields, 21, 0100644);
-        System.arraycopy(name, 0, fields, 25, name.length);
+    /// Reports configurable volume-open and source-close failures.
+    @NotNullByDefault
+    private static final class FailingVolumeSource implements ArkivoVolumeSource {
+        /// Failure reported while opening any volume.
+        private final IOException openFailure;
 
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        output.writeBytes(new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00});
-        output.writeBytes(rar4BlockHeader(0x73, 0, new byte[6]));
-        output.writeBytes(rar4BlockHeader(0x74, 0x8000, fields));
-        output.writeBytes(body);
-        output.writeBytes(rar4BlockHeader(0x7b, 0, new byte[0]));
-        return output.toByteArray();
-    }
+        /// Failure reported while closing the source.
+        private final IOException closeFailure;
 
-    /// Encodes one complete RAR4 block header with its low CRC-32 bits stored as CRC-16.
-    private static byte[] rar4BlockHeader(int type, int flags, byte[] fields) {
-        byte[] headerData = new byte[5 + fields.length];
-        headerData[0] = (byte) type;
-        ByteArrayAccess.writeShortLittleEndian(headerData, 1, (short) flags);
-        ByteArrayAccess.writeShortLittleEndian(headerData, 3, (short) (headerData.length + Short.BYTES));
-        System.arraycopy(fields, 0, headerData, 5, fields.length);
+        /// Number of source-close calls.
+        private int closeCount;
 
-        CRC32 checksum = new CRC32();
-        checksum.update(headerData);
-        byte[] header = new byte[Short.BYTES + headerData.length];
-        ByteArrayAccess.writeShortLittleEndian(header, 0, (short) checksum.getValue());
-        System.arraycopy(headerData, 0, header, Short.BYTES, headerData.length);
-        return header;
+        /// Creates a source with the supplied failures.
+        private FailingVolumeSource(IOException openFailure, IOException closeFailure) {
+            this.openFailure = openFailure;
+            this.closeFailure = closeFailure;
+        }
+
+        /// Reports the configured volume-open failure.
+        @Override
+        public SeekableByteChannel openVolume(long index) throws IOException {
+            throw openFailure;
+        }
+
+        /// Records source closure and reports the configured failure.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            throw closeFailure;
+        }
+
+        /// Returns the number of source-close calls.
+        private int closeCount() {
+            return closeCount;
+        }
     }
 }

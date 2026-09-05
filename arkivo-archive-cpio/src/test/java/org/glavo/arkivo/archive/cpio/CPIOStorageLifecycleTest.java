@@ -81,6 +81,17 @@ final class CPIOStorageLifecycleTest {
         assertEquals(1, storage.closeCount());
     }
 
+    /// Verifies invalid options are rejected before an existing output path is truncated.
+    @Test
+    void validatesCreateOptionsBeforeOpeningPath() throws IOException {
+        Path path = temporaryDirectory.resolve("invalid-options.cpio");
+        byte[] original = {9, 8, 7};
+        Files.write(path, original);
+
+        assertThrows(NullPointerException.class, () -> CPIOArkivoStreamingWriter.create(path, null));
+        assertArrayEquals(original, Files.readAllBytes(path));
+    }
+
     /// Verifies path setup closes its opened target while endpoint overloads retain caller ownership on failure.
     @Test
     void preservesSetupFailureIdentityAndOwnership() throws IOException {

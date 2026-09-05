@@ -97,6 +97,23 @@ final class TemporaryArchiveSourceTest {
         assertFalse(input.isOpen());
     }
 
+    /// Verifies a shared read and close failure remains primary without self-suppression.
+    @Test
+    void preservesSharedReadAndCloseFailure() {
+        IOException sharedFailure = new IOException("shared read and close failure");
+        FailingReadableByteChannel input = new FailingReadableByteChannel(sharedFailure, sharedFailure);
+
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> TemporaryArchiveSource.materialize(input, -1L)
+        );
+
+        assertSame(sharedFailure, exception);
+        assertEquals(0, exception.getSuppressed().length);
+        assertEquals(1, input.closeCalls());
+        assertFalse(input.isOpen());
+    }
+
     /// Reads every remaining byte from a seekable channel.
     private static byte @Unmodifiable [] readAll(SeekableByteChannel channel) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -193,6 +210,9 @@ final class TemporaryArchiveSourceTest {
         /// Failure reported by reads.
         private final IOException readFailure;
 
+        /// Failure reported by close.
+        private final IOException closeFailure;
+
         /// Number of close calls received.
         private int closeCalls;
 
@@ -200,8 +220,19 @@ final class TemporaryArchiveSourceTest {
         private boolean open = true;
 
         /// Creates a channel that reports the given read failure.
+        ///
+        /// @param readFailure the failure reported by reads
         private FailingReadableByteChannel(IOException readFailure) {
+            this(readFailure, new IOException("close failure"));
+        }
+
+        /// Creates a channel that reports the given read and close failures.
+        ///
+        /// @param readFailure the failure reported by reads
+        /// @param closeFailure the failure reported by close
+        private FailingReadableByteChannel(IOException readFailure, IOException closeFailure) {
             this.readFailure = readFailure;
+            this.closeFailure = closeFailure;
         }
 
         /// Reports the configured read failure.
@@ -224,7 +255,7 @@ final class TemporaryArchiveSourceTest {
         public void close() throws IOException {
             closeCalls++;
             open = false;
-            throw new IOException("close failure");
+            throw closeFailure;
         }
 
         /// Returns the number of close calls received.

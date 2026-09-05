@@ -161,7 +161,7 @@ public final class ArkivoFormatsCatalogTest {
     /// Verifies the catalog defensively restores the same origin between nonconforming format probes.
     @Test
     void seekableCatalogRestoresPositionBetweenFormats() throws IOException {
-        PositionMutatingFormat shorter = new PositionMutatingFormat("shorter", 1, true, null);
+        PositionMutatingFormat shorter = new PositionMutatingFormat("shorter", 1, false, null);
         PositionMutatingFormat longer = new PositionMutatingFormat("longer", 2, true, null);
         ArkivoFormats.Catalog catalog = ArkivoFormats.Catalog.of(List.of(shorter, longer));
         ProbeChannel source = new ProbeChannel(new byte[]{0x11, 0x22, 0x33});
@@ -170,6 +170,21 @@ public final class ArkivoFormatsCatalogTest {
         assertSame(longer, catalog.detect(source));
         assertEquals(1L, shorter.observedPosition);
         assertEquals(1L, longer.observedPosition);
+        assertEquals(1L, source.position());
+    }
+
+    /// Verifies seekable ambiguity is resolved by explicit catalog order rather than unrelated probe length.
+    @Test
+    void seekableCatalogPrefersFirstAmbiguousMatch() throws IOException {
+        PositionMutatingFormat first = new PositionMutatingFormat("first", 1, true, null);
+        PositionMutatingFormat second = new PositionMutatingFormat("second", 2, true, null);
+        ArkivoFormats.Catalog catalog = ArkivoFormats.Catalog.of(List.of(first, second));
+        ProbeChannel source = new ProbeChannel(new byte[]{0x11, 0x22, 0x33});
+        source.position(1L);
+
+        assertSame(first, catalog.detect(source));
+        assertEquals(1L, first.observedPosition);
+        assertEquals(-1L, second.observedPosition);
         assertEquals(1L, source.position());
     }
 
@@ -277,7 +292,7 @@ public final class ArkivoFormatsCatalogTest {
         /// The stable test format name.
         private final String name;
 
-        /// The preferred probe size used for match selection.
+        /// The reported preferred probe size.
         private final int probeSize;
 
         /// Whether this format reports a match when no failure is configured.

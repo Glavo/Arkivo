@@ -52,9 +52,10 @@ public final class ArkivoFormatStreamingReadableChannelTest {
         TestStreamingReadableFormat format = new TestStreamingReadableFormat();
         ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{1, 2, 3});
 
-        ArkivoStreamingReader reader = format.openStreamingReader(source, ArchiveReadOptions.DEFAULT);
+        ArkivoStreamingReader reader = format.openStreamingReader(source);
         ReadableByteChannel openedChannel = Objects.requireNonNull(format.openedChannel);
         assertSame(openedChannel, ((TestStreamingReader) reader).source);
+        assertSame(ArchiveReadOptions.DEFAULT, format.openedOptions);
         assertTrue(openedChannel.isOpen());
 
         reader.close();
@@ -66,10 +67,11 @@ public final class ArkivoFormatStreamingReadableChannelTest {
     public void pathFactoryOpensAndOwnsChannel() throws IOException {
         Path path = Files.createTempFile("arkivo-reader-format-", ".bin");
         try {
-        TestStreamingReadableFormat format = new TestStreamingReadableFormat();
-            ArkivoStreamingReader reader = format.openStreamingReader(path, ArchiveReadOptions.DEFAULT);
+            TestStreamingReadableFormat format = new TestStreamingReadableFormat();
+            ArkivoStreamingReader reader = format.openStreamingReader(path);
             ReadableByteChannel openedChannel = Objects.requireNonNull(format.openedChannel);
 
+            assertSame(ArchiveReadOptions.DEFAULT, format.openedOptions);
             assertTrue(openedChannel.isOpen());
             reader.close();
             assertFalse(openedChannel.isOpen());
@@ -83,9 +85,9 @@ public final class ArkivoFormatStreamingReadableChannelTest {
     public void pathFactoryClosesChannelAfterSetupFailure() throws IOException {
         Path path = Files.createTempFile("arkivo-reader-format-failure-", ".bin");
         try {
-        FailingStreamingReadableFormat format = new FailingStreamingReadableFormat();
+            FailingStreamingReadableFormat format = new FailingStreamingReadableFormat();
 
-            assertThrows(IOException.class, () -> format.openStreamingReader(path, ArchiveReadOptions.DEFAULT));
+            assertThrows(IOException.class, () -> format.openStreamingReader(path));
 
             assertNotNull(format.openedChannel);
             assertFalse(format.openedChannel.isOpen());
@@ -100,6 +102,9 @@ public final class ArkivoFormatStreamingReadableChannelTest {
         /// The channel received by the implementation.
         private @Nullable ReadableByteChannel openedChannel;
 
+        /// The options received by the implementation.
+        private @Nullable ArchiveReadOptions openedOptions;
+
         /// Returns the test format name.
         @Override
         public String name() {
@@ -113,6 +118,7 @@ public final class ArkivoFormatStreamingReadableChannelTest {
                 ArchiveReadOptions options
         ) {
             openedChannel = source;
+            openedOptions = options;
             return new TestStreamingReader(source);
         }
     }

@@ -243,11 +243,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             if (option != StandardOpenOption.READ) {
                 UnsupportedOperationException exception =
                         new UnsupportedOperationException("RAR archive file systems are read-only");
-                try {
-                    volumes.close();
-                } catch (IOException | RuntimeException | Error closeException) {
-                    exception.addSuppressed(closeException);
-                }
+                closeSourceAfterOpenFailure(volumes, exception);
                 throw exception;
             }
         }
@@ -256,11 +252,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         try {
             editStorage = StoredContentSupport.selectStorage(options);
         } catch (RuntimeException | Error exception) {
-            try {
-                volumes.close();
-            } catch (IOException | RuntimeException | Error closeException) {
-                exception.addSuppressed(closeException);
-            }
+            closeSourceAfterOpenFailure(volumes, exception);
             throw exception;
         }
         Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
@@ -284,11 +276,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             );
         } catch (IOException | RuntimeException | Error exception) {
             StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
-            try {
-                volumes.close();
-            } catch (IOException | RuntimeException | Error closeException) {
-                exception.addSuppressed(closeException);
-            }
+            closeSourceAfterOpenFailure(volumes, exception);
             throw exception;
         }
     }
@@ -1121,13 +1109,21 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// Adds or replaces one node in the node map.
     private static void putNode(Map<String, Node> nodes, Node node) throws IOException {
         Node existing = nodes.get(node.path());
-        if (existing != null && !(existing.syntheticDirectory() && node.directory())) {
-            throw new IOException("Duplicate RAR entry path: " + node.path());
+        if (existing != null) {
+            if (!existing.syntheticDirectory()) {
+                throw new IOException("Duplicate RAR entry path: " + node.path());
+            }
+            if (!node.directory()) {
+                throw new IOException("RAR entry path conflicts with directory: " + node.path());
+            }
         }
         @Nullable LinkedHashMap<String, String> existingChildren = existing != null ? existing.children() : null;
         if (!node.path().isEmpty()) {
             Node parent = nodes.get(parentPath(node.path()));
             if (parent != null) {
+                if (!parent.directory()) {
+                    throw new IOException("RAR entry path conflicts with directory: " + parent.path());
+                }
                 parent.children().put(fileName(node.path()), node.path());
             }
         }

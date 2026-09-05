@@ -55,30 +55,35 @@ public final class TemporaryArchiveSource implements ArkivoSeekableChannelSource
         boolean completed = false;
         try {
             ReadableByteChannel limited = ArchiveSizeLimitChannel.wrap(source, maximumSize);
-            try (limited;
-                 SeekableByteChannel output = Files.newByteChannel(
-                         path,
-                         StandardOpenOption.WRITE,
-                         StandardOpenOption.TRUNCATE_EXISTING
-                 )) {
-                ByteBuffer buffer = ByteBuffer.allocate(TRANSFER_BUFFER_SIZE);
-                while (true) {
-                    int read = limited.read(buffer);
-                    if (read < 0) {
-                        break;
-                    }
-                    if (read == 0) {
-                        continue;
-                    }
-                    buffer.flip();
-                    while (buffer.hasRemaining()) {
-                        if (output.write(buffer) == 0) {
-                            throw new IOException("Temporary archive channel made no write progress");
+            try {
+                try (SeekableByteChannel output = Files.newByteChannel(
+                        path,
+                        StandardOpenOption.WRITE,
+                        StandardOpenOption.TRUNCATE_EXISTING
+                )) {
+                    ByteBuffer buffer = ByteBuffer.allocate(TRANSFER_BUFFER_SIZE);
+                    while (true) {
+                        int read = limited.read(buffer);
+                        if (read < 0) {
+                            break;
                         }
+                        if (read == 0) {
+                            continue;
+                        }
+                        buffer.flip();
+                        while (buffer.hasRemaining()) {
+                            if (output.write(buffer) == 0) {
+                                throw new IOException("Temporary archive channel made no write progress");
+                            }
+                        }
+                        buffer.clear();
                     }
-                    buffer.clear();
                 }
+            } catch (IOException | RuntimeException | Error exception) {
+                closeAfterFailure(limited, exception);
+                throw exception;
             }
+            limited.close();
             completed = true;
             return new TemporaryArchiveSource(path);
         } finally {
@@ -113,7 +118,7 @@ public final class TemporaryArchiveSource implements ArkivoSeekableChannelSource
         }
     }
 
-    /// Closes an input after temporary-file allocation fails without hiding the primary failure.
+    /// Closes an input after another failure without hiding the primary failure.
     private static void closeAfterFailure(ReadableByteChannel source, Throwable failure) {
         try {
             source.close();

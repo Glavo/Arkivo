@@ -15,10 +15,12 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -85,6 +87,101 @@ public final class LZMAStandaloneBufferEngineTest {
         }
     }
 
+    /// Verifies every incomplete standalone header and an unsupported dictionary size fail with stable diagnostics.
+    @Test
+    public void rejectsTruncatedAndOversizedHeaders() throws IOException {
+        byte[] encoded = encode(new byte[0], CompressionCodec.UNKNOWN_SIZE, 1, 1);
+        for (int length = 0; length < 13; length++) {
+            byte[] prefix = Arrays.copyOf(encoded, length);
+            try (CompressionDecoder decoder = CODEC.newDecoder()) {
+                IOException failure = assertThrows(
+                        IOException.class,
+                        () -> decoder.finish(ByteBuffer.wrap(prefix), ByteBuffer.allocate(1)),
+                        () -> "header prefix length " + prefix.length
+                );
+                assertEquals("Truncated LZMA-alone header", failure.getMessage());
+            }
+        }
+
+        byte[] oversizedDictionary = Arrays.copyOf(encoded, 13);
+        ByteBuffer.wrap(oversizedDictionary)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(1, LZMAProperties.MAXIMUM_DICTIONARY_SIZE + 1);
+        try (CompressionDecoder decoder = CODEC.newDecoder()) {
+            IOException failure = assertThrows(
+                    IOException.class,
+                    () -> decoder.finish(ByteBuffer.wrap(oversizedDictionary), ByteBuffer.allocate(1))
+            );
+            assertEquals(
+                    "Unsupported LZMA dictionary size: " + (LZMAProperties.MAXIMUM_DICTIONARY_SIZE + 1L),
+                    failure.getMessage()
+            );
+        }
+    }
+
+    /// Verifies decoder reset, zero-capacity backpressure, stable completion, null checks, and permanent closure.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    public void decoderLifecycleAndReset() throws IOException {
+        byte[] content = Arrays.copyOf(testData(), 8_193);
+        byte[] encoded = encode(content, CompressionCodec.UNKNOWN_SIZE, 11, 3);
+        CompressionDecoder decoder = CODEC.newDecoder();
+
+        ByteBuffer blockedSource = ByteBuffer.wrap(encoded);
+        assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(blockedSource, ByteBuffer.allocate(0)));
+        assertEquals(0, blockedSource.position());
+        assertThrows(NullPointerException.class, () -> decoder.decode(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> decoder.decode(ByteBuffer.allocate(0), null));
+        assertThrows(NullPointerException.class, () -> decoder.finish(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> decoder.finish(ByteBuffer.allocate(0), null));
+
+        ByteBuffer partialHeader = ByteBuffer.wrap(encoded, 0, 7).slice();
+        assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(partialHeader, ByteBuffer.allocate(1)));
+        assertFalse(partialHeader.hasRemaining());
+        decoder.reset();
+
+        assertArrayEquals(content, decode(decoder, encoded, 5));
+        assertEquals(CodecOutcome.FINISHED, decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(0)));
+        decoder.reset();
+        assertArrayEquals(content, decode(decoder, encoded, 7));
+
+        decoder.close();
+        decoder.close();
+        IllegalStateException resetFailure = assertThrows(IllegalStateException.class, decoder::reset);
+        assertEquals("LZMA decoder is closed", resetFailure.getMessage());
+        IllegalStateException decodeFailure = assertThrows(
+                IllegalStateException.class,
+                () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+        assertEquals("LZMA decoder is closed", decodeFailure.getMessage());
+        IllegalStateException finishFailure = assertThrows(
+                IllegalStateException.class,
+                () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+        assertEquals("LZMA decoder is closed", finishFailure.getMessage());
+    }
+
+    /// Verifies bytes produced before a truncated EOS marker remain reflected in the caller's target position.
+    @Test
+    public void truncatedPayloadPreservesDecodedProgress() throws IOException {
+        byte[] content = Arrays.copyOf(testData(), 8_193);
+        byte[] encoded = encode(content, CompressionCodec.UNKNOWN_SIZE, 13, 5);
+        byte[] truncated = Arrays.copyOf(encoded, encoded.length - 1);
+        ByteBuffer source = ByteBuffer.wrap(truncated);
+        ByteBuffer target = ByteBuffer.allocate(content.length + 1);
+
+        try (CompressionDecoder decoder = CODEC.newDecoder()) {
+            assertThrows(IOException.class, () -> decoder.finish(source, target));
+        }
+
+        assertFalse(source.hasRemaining());
+        assertEquals(content.length, target.position());
+        target.flip();
+        byte[] actualPrefix = new byte[target.remaining()];
+        target.get(actualPrefix);
+        assertArrayEquals(Arrays.copyOf(content, actualPrefix.length), actualPrefix);
+    }
+
     /// Encodes one LZMA-alone stream through fresh bounded buffers.
     private static byte[] encode(
             byte[] content,
@@ -144,6 +241,21 @@ public final class LZMAStandaloneBufferEngineTest {
             }
         }
         return new DecodeResult(decoded.toByteArray(), offset);
+    }
+
+    /// Decodes one complete stream through an existing decoder and bounded direct targets.
+    private static byte[] decode(CompressionDecoder decoder, byte[] encoded, int targetSize) throws IOException {
+        ByteBuffer source = ByteBuffer.wrap(encoded);
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+        CodecOutcome outcome;
+        do {
+            ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
+            outcome = decoder.finish(source, target);
+            drain(target, decoded);
+            assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
+        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+        assertFalse(source.hasRemaining());
+        return decoded.toByteArray();
     }
 
     /// Copies produced bytes into the supplied byte stream.

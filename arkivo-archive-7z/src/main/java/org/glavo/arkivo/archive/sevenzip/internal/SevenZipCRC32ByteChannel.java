@@ -179,7 +179,9 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
                 channelClosed = true;
             } catch (IOException | RuntimeException | Error exception) {
                 if (failure != null) {
-                    failure.addSuppressed(exception);
+                    if (failure != exception) {
+                        failure.addSuppressed(exception);
+                    }
                 } else {
                     failure = exception;
                 }

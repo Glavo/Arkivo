@@ -5,15 +5,19 @@ package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NotLinkException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttributeView;
@@ -21,9 +25,11 @@ import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Set;
+import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -51,6 +57,47 @@ final class ZipArkivoStreamingWriterAttributesTest {
 
             assertEquals("zip", zipView.name());
             assertEquals("posix", posixView.name());
+            assertThrows(UnsupportedOperationException.class, () -> zipView.setOwner(posixView.getOwner()));
+            assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> zipView.setGroup(posixView.readAttributes().group())
+            );
+            posixView.setOwner(posixView.getOwner());
+            posixView.setGroup(posixView.readAttributes().group());
+            assertThrows(UserPrincipalNotFoundException.class, () -> posixView.setOwner(() -> "missing"));
+            assertThrows(UserPrincipalNotFoundException.class, () -> posixView.setGroup(() -> "missing"));
+
+            byte @Unmodifiable [] malformedExtraData = {0x01, 0x00, 0x02, 0x00, 0x03};
+            IOException localExtraFailure = assertThrows(
+                    IOException.class,
+                    () -> zipView.setLocalExtraData(malformedExtraData)
+            );
+            assertTrue(localExtraFailure.getMessage().contains("Invalid ZIP extra field length"));
+            IOException centralExtraFailure = assertThrows(
+                    IOException.class,
+                    () -> zipView.setCentralDirectoryExtraData(malformedExtraData)
+            );
+            assertTrue(centralExtraFailure.getMessage().contains("Invalid ZIP extra field length"));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> zipView.setUncompressedSizeAndCrc32(-1L, 0L)
+            );
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> zipView.setUncompressedSizeAndCrc32(0L, -1L)
+            );
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> zipView.setUncompressedSizeAndCrc32(0L, 0x1_0000_0000L)
+            );
+            assertThrows(IllegalArgumentException.class, () -> zipView.setInternalAttributes(-1));
+            assertThrows(IllegalArgumentException.class, () -> zipView.setInternalAttributes(0x1_0000));
+            assertThrows(IllegalArgumentException.class, () -> zipView.setExternalAttributes(-1L));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> zipView.setExternalAttributes(0x1_0000_0000L)
+            );
+
             ZipArkivoEntryAttributes defaults = zipView.readAttributes();
             assertArrayEquals("dir/value.txt".getBytes(StandardCharsets.UTF_8), defaults.rawPath());
             assertEquals("dir/value.txt", defaults.path());
@@ -176,7 +223,10 @@ final class ZipArkivoStreamingWriterAttributesTest {
             assertEquals(42L, configured.size());
             assertEquals(ZipMethod.LZMA, configured.compressionMethod());
             assertEquals(permissions, configured.permissions());
-            entry.close();
+            try (var output = entry.openOutputStream()) {
+                // An empty body matches the configured stored-entry size and CRC-32.
+            }
+            assertThrows(IllegalStateException.class, () -> zipView.setMethod(ZipMethod.DEFLATED));
         }
 
         assertTrue(archive.size() > 0);
@@ -186,6 +236,12 @@ final class ZipArkivoStreamingWriterAttributesTest {
     @Test
     void classifiesPendingDirectoryAndSymbolicLinkAttributes() throws IOException {
         Path archive = temporaryDirectory.resolve("attributes.zip");
+        FileTime linkTime = FileTime.from(Instant.parse("2034-05-06T07:08:08Z"));
+        Set<PosixFilePermission> linkPermissions = Set.of(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE
+        );
+
         try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archive)) {
             ArkivoStreamingWriter.Entry directory = writer.beginDirectory("directory");
             ZipArkivoEntryAttributeView directoryView = requireView(directory, ZipArkivoEntryAttributeView.class);
@@ -202,16 +258,12 @@ final class ZipArkivoStreamingWriterAttributesTest {
             assertTrue(directoryPosixAttributes.isDirectory());
             assertFalse(directoryPosixAttributes.isRegularFile());
             assertThrows(UnsupportedOperationException.class, () -> directoryView.setMethod(ZipMethod.DEFLATED));
+            assertThrows(IllegalStateException.class, directory::openOutputStream);
             directory.close();
 
             ArkivoStreamingWriter.Entry symbolicLink = writer.beginSymbolicLink("link", "directory");
             ZipArkivoEntryAttributeView linkView = requireView(symbolicLink, ZipArkivoEntryAttributeView.class);
             PosixFileAttributeView linkPosixView = requireView(symbolicLink, PosixFileAttributeView.class);
-            FileTime linkTime = FileTime.from(Instant.parse("2034-05-06T07:08:09Z"));
-            Set<PosixFilePermission> linkPermissions = Set.of(
-                    PosixFilePermission.OWNER_READ,
-                    PosixFilePermission.OWNER_WRITE
-            );
             linkPosixView.setTimes(linkTime, linkTime, linkTime);
             linkPosixView.setPermissions(linkPermissions);
             ZipArkivoEntryAttributes linkAttributes = linkView.readAttributes();
@@ -227,6 +279,7 @@ final class ZipArkivoStreamingWriterAttributesTest {
             assertEquals(linkTime, linkPosixAttributes.lastModifiedTime());
             assertEquals(linkPermissions, linkPosixAttributes.permissions());
             assertThrows(UnsupportedOperationException.class, () -> linkView.setMethod(ZipMethod.DEFLATED));
+            assertThrows(IllegalStateException.class, symbolicLink::openChannel);
             symbolicLink.close();
         }
 
@@ -235,11 +288,102 @@ final class ZipArkivoStreamingWriterAttributesTest {
                     fileSystem.getPath("/directory"),
                     ZipArkivoEntryAttributes.class
             ).isDirectory());
-            assertTrue(Files.readAttributes(
+            ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(
                     fileSystem.getPath("/link"),
                     ZipArkivoEntryAttributes.class,
                     LinkOption.NOFOLLOW_LINKS
-            ).isSymbolicLink());
+            );
+            assertTrue(linkAttributes.isSymbolicLink());
+            assertEquals(linkTime, linkAttributes.lastModifiedTime());
+            assertEquals(linkPermissions, linkAttributes.permissions());
+        }
+    }
+
+    /// Verifies stored-entry metadata, directory copying, and symbolic-link metadata survive indexed reopening.
+    @Test
+    void persistsStoredEntryMetadata() throws IOException {
+        Path archive = temporaryDirectory.resolve("stored-metadata.zip");
+        Path copiedDirectory = temporaryDirectory.resolve("copied-metadata");
+        Path existingFile = temporaryDirectory.resolve("existing-file");
+        byte @Unmodifiable [] content = "stored-content".getBytes(StandardCharsets.UTF_8);
+        byte @Unmodifiable [] localExtraData = {0x70, 0x70, 0x03, 0x00, 0x01, 0x02, 0x03};
+        byte @Unmodifiable [] centralExtraData = {0x71, 0x70, 0x02, 0x00, 0x04, 0x05};
+        byte @Unmodifiable [] rawComment = {0x06, 0x07, 0x08};
+        FileTime lastModifiedTime = FileTime.fromMillis(1_893_456_000_000L);
+        long expectedCrc32 = crc32(content);
+
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archive)) {
+            ArkivoStreamingWriter.Entry directory = writer.beginDirectory("meta");
+            ZipArkivoEntryAttributeView directoryView = requireView(directory, ZipArkivoEntryAttributeView.class);
+            directoryView.setTimes(lastModifiedTime, null, null);
+            directoryView.setRawComment(rawComment);
+            directory.close();
+
+            ArkivoStreamingWriter.Entry storedEntry = writer.beginFile("meta/stored.bin");
+            ZipArkivoEntryAttributeView fileView = requireView(storedEntry, ZipArkivoEntryAttributeView.class);
+            fileView.setMethod(ZipMethod.STORED);
+            fileView.setTimes(lastModifiedTime, null, null);
+            fileView.setUncompressedSizeAndCrc32(content.length, expectedCrc32);
+            fileView.setInternalAttributes(1);
+            fileView.setExternalAttributes(0x20L);
+            fileView.setLocalExtraData(localExtraData);
+            fileView.setCentralDirectoryExtraData(centralExtraData);
+            fileView.setRawComment(rawComment);
+            try (var output = storedEntry.openOutputStream()) {
+                output.write(content);
+            }
+
+            writer.beginSymbolicLink("meta/link", "stored.bin").close();
+        }
+
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive)) {
+            ZipArkivoEntryAttributes directoryAttributes = Files.readAttributes(
+                    fileSystem.getPath("/meta"),
+                    ZipArkivoEntryAttributes.class
+            );
+            assertTrue(directoryAttributes.isDirectory());
+            assertEquals(ZipMethod.STORED, directoryAttributes.compressionMethod());
+            assertArrayEquals(rawComment, directoryAttributes.rawComment());
+            assertEquals(lastModifiedTime, directoryAttributes.lastModifiedTime());
+
+            Files.copy(fileSystem.getPath("/meta"), copiedDirectory);
+            assertTrue(Files.isDirectory(copiedDirectory));
+            assertThrows(
+                    FileAlreadyExistsException.class,
+                    () -> Files.copy(fileSystem.getPath("/meta"), copiedDirectory)
+            );
+            Files.copy(fileSystem.getPath("/meta"), copiedDirectory, StandardCopyOption.REPLACE_EXISTING);
+            Files.writeString(existingFile, "existing", StandardCharsets.UTF_8);
+            Files.copy(fileSystem.getPath("/meta"), existingFile, StandardCopyOption.REPLACE_EXISTING);
+            assertTrue(Files.isDirectory(existingFile));
+
+            Path storedPath = fileSystem.getPath("/meta/stored.bin");
+            ZipArkivoEntryAttributes fileAttributes = Files.readAttributes(
+                    storedPath,
+                    ZipArkivoEntryAttributes.class
+            );
+            assertArrayEquals(content, Files.readAllBytes(storedPath));
+            assertEquals(ZipMethod.STORED, fileAttributes.compressionMethod());
+            assertEquals(content.length, fileAttributes.compressedSize());
+            assertEquals(content.length, fileAttributes.size());
+            assertEquals(expectedCrc32, fileAttributes.crc32());
+            assertEquals(1, fileAttributes.internalAttributes());
+            assertEquals(0x20L, fileAttributes.externalAttributes());
+            assertArrayEquals(localExtraData, fileAttributes.localExtraData());
+            assertArrayEquals(centralExtraData, fileAttributes.centralDirectoryExtraData());
+            assertArrayEquals(rawComment, fileAttributes.rawComment());
+            assertEquals(lastModifiedTime, fileAttributes.lastModifiedTime());
+
+            Path link = fileSystem.getPath("/meta/link");
+            ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                    link,
+                    ZipArkivoEntryAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS
+            );
+            assertTrue(linkAttributes.isSymbolicLink());
+            assertArrayEquals(content, Files.readAllBytes(link));
+            assertEquals(fileSystem.getPath("stored.bin"), Files.readSymbolicLink(link));
+            assertThrows(NotLinkException.class, () -> Files.readSymbolicLink(storedPath));
         }
     }
 
@@ -249,5 +393,12 @@ final class ZipArkivoStreamingWriterAttributesTest {
             Class<V> type
     ) throws IOException {
         return Objects.requireNonNull(entry.attributeView(type), type.getName());
+    }
+
+    /// Computes the unsigned CRC-32 value for the given content.
+    private static long crc32(byte @Unmodifiable [] content) {
+        CRC32 crc32 = new CRC32();
+        crc32.update(content);
+        return crc32.getValue();
     }
 }

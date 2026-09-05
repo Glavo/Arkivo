@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.EOFException;
@@ -17,6 +18,7 @@ import java.util.Objects;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests CRC-32 validating 7z entry byte channels.
@@ -145,6 +147,58 @@ public final class SevenZipCRC32ByteChannelTest {
         channel.close();
     }
 
+    /// Verifies close preserves one shared drain and delegate-close failure without self-suppression.
+    @Test
+    public void preservesSharedDrainAndDelegateCloseFailure() throws IOException {
+        byte[] content = "shared channel failure".getBytes(StandardCharsets.UTF_8);
+        IOException sharedFailure = new IOException("shared channel failure");
+        MemorySeekableByteChannel delegate = new MemorySeekableByteChannel(
+                content,
+                sharedFailure,
+                sharedFailure
+        );
+        SevenZipCRC32ByteChannel channel = new SevenZipCRC32ByteChannel(delegate, content.length, crc32(content));
+
+        IOException failure = assertThrows(IOException.class, channel::close);
+
+        assertSame(sharedFailure, failure);
+        assertEquals(0, failure.getSuppressed().length);
+        assertEquals(false, channel.isOpen());
+        assertEquals(true, delegate.isOpen());
+        assertEquals(1, delegate.closeCount());
+
+        channel.close();
+        assertEquals(false, delegate.isOpen());
+        assertEquals(2, delegate.closeCount());
+    }
+
+    /// Verifies close suppresses a distinct delegate-close failure behind the drain failure.
+    @Test
+    public void suppressesDistinctDelegateCloseFailureAfterDrainFailure() throws IOException {
+        byte[] content = "distinct channel failures".getBytes(StandardCharsets.UTF_8);
+        IOException drainFailure = new IOException("channel drain failure");
+        IOException closeFailure = new IOException("channel close failure");
+        MemorySeekableByteChannel delegate = new MemorySeekableByteChannel(
+                content,
+                drainFailure,
+                closeFailure
+        );
+        SevenZipCRC32ByteChannel channel = new SevenZipCRC32ByteChannel(delegate, content.length, crc32(content));
+
+        IOException failure = assertThrows(IOException.class, channel::close);
+
+        assertSame(drainFailure, failure);
+        assertEquals(1, failure.getSuppressed().length);
+        assertSame(closeFailure, failure.getSuppressed()[0]);
+        assertEquals(false, channel.isOpen());
+        assertEquals(true, delegate.isOpen());
+        assertEquals(1, delegate.closeCount());
+
+        channel.close();
+        assertEquals(false, delegate.isOpen());
+        assertEquals(2, delegate.closeCount());
+    }
+
     /// Verifies that sequential reads report truncation as soon as the wrapped channel ends early.
     @Test
     public void readRejectsTruncatedBodyAtEndOfChannel() throws IOException {
@@ -177,6 +231,12 @@ public final class SevenZipCRC32ByteChannelTest {
         /// The current channel position.
         private int position;
 
+        /// Failure reported by reads, or `null` for ordinary reads.
+        private final @Nullable IOException readFailure;
+
+        /// Failure reported by the first scheduled close failure, or `null` for successful close.
+        private final @Nullable IOException closeFailure;
+
         /// Whether this channel is open.
         private boolean open = true;
 
@@ -188,13 +248,24 @@ public final class SevenZipCRC32ByteChannelTest {
 
         /// Creates an in-memory channel for the given bytes.
         private MemorySeekableByteChannel(byte[] bytes) {
-            this(bytes, false);
+            this(bytes, null, null);
         }
 
         /// Creates an in-memory channel for the given bytes and close behavior.
         private MemorySeekableByteChannel(byte[] bytes, boolean failClose) {
+            this(bytes, null, failClose ? new IOException("close failed") : null);
+        }
+
+        /// Creates an in-memory channel with configurable read and close failures.
+        private MemorySeekableByteChannel(
+                byte[] bytes,
+                @Nullable IOException readFailure,
+                @Nullable IOException closeFailure
+        ) {
             this.bytes = Objects.requireNonNull(bytes, "bytes");
-            this.closeFailures = failClose ? 1 : 0;
+            this.readFailure = readFailure;
+            this.closeFailure = closeFailure;
+            this.closeFailures = closeFailure != null ? 1 : 0;
         }
 
         /// Reads bytes from the current channel position.
@@ -202,6 +273,9 @@ public final class SevenZipCRC32ByteChannelTest {
         public int read(ByteBuffer destination) throws IOException {
             ensureOpen();
             Objects.requireNonNull(destination, "destination");
+            if (readFailure != null) {
+                throw readFailure;
+            }
             if (!destination.hasRemaining()) {
                 return 0;
             }
@@ -268,7 +342,7 @@ public final class SevenZipCRC32ByteChannelTest {
             closeCount++;
             if (closeFailures > 0) {
                 closeFailures--;
-                throw new IOException("close failed");
+                throw Objects.requireNonNull(closeFailure, "closeFailure");
             }
             open = false;
         }

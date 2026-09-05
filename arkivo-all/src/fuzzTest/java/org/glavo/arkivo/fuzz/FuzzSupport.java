@@ -45,7 +45,7 @@ final class FuzzSupport {
     private static final long MAXIMUM_CODEC_MEMORY_SIZE = 32L * 1024L * 1024L;
 
     /// The fixed sector and allocation-block size used by the generated DMG seed.
-    private static final int DMG_SECTOR_SIZE = 512;
+    static final int DMG_SECTOR_SIZE = 512;
 
     /// The deterministic incompressible body size used to force split seed output.
     private static final int SPLIT_ARCHIVE_CONTENT_SIZE = 96 * 1024;
@@ -200,7 +200,91 @@ final class FuzzSupport {
 
     /// Creates a minimal flattened UDIF image containing a mountable empty HFS Plus volume.
     static byte @Unmodifiable [] createDMGSeed() {
-        byte[] disk = createEmptyHFSPlusDisk();
+        return createDMGSeed(createEmptyHFSPlusDisk());
+    }
+
+    /// Creates a flattened UDIF image containing an Apple Partition Map and an HFS Plus partition.
+    static byte @Unmodifiable [] createApplePartitionMapDMGSeed() {
+        byte[] volume = createEmptyHFSPlusDisk();
+        byte[] disk = new byte[3 * DMG_SECTOR_SIZE + volume.length];
+        ByteBuffer map = ByteBuffer.wrap(disk).order(ByteOrder.BIG_ENDIAN);
+        map.putShort(0, (short) 0x4552);
+        map.putShort(2, (short) DMG_SECTOR_SIZE);
+        writeApplePartitionMapEntry(
+                disk,
+                1,
+                2,
+                1,
+                2,
+                "Partition Map",
+                "Apple_partition_map"
+        );
+        writeApplePartitionMapEntry(
+                disk,
+                2,
+                2,
+                3,
+                volume.length / DMG_SECTOR_SIZE,
+                "Seed",
+                "Apple_HFS"
+        );
+        System.arraycopy(volume, 0, disk, 3 * DMG_SECTOR_SIZE, volume.length);
+        return createDMGSeed(disk);
+    }
+
+    /// Creates a flattened UDIF image containing a GUID Partition Table and an HFS Plus partition.
+    static byte @Unmodifiable [] createGUIDPartitionTableDMGSeed() {
+        byte[] volume = createEmptyHFSPlusDisk();
+        int partitionStart = 3;
+        int partitionBlocks = volume.length / DMG_SECTOR_SIZE;
+        byte[] disk = new byte[partitionStart * DMG_SECTOR_SIZE + volume.length];
+        ByteBuffer gpt = ByteBuffer.wrap(disk).order(ByteOrder.LITTLE_ENDIAN);
+
+        int entryOffset = 2 * DMG_SECTOR_SIZE;
+        int entryCount = 2;
+        int entrySize = 128;
+        gpt.putInt(entryOffset, 0x4846_5300);
+        gpt.putShort(entryOffset + 4, (short) 0);
+        gpt.putShort(entryOffset + 6, (short) 0x11aa);
+        disk[entryOffset + 8] = (byte) 0xaa;
+        disk[entryOffset + 9] = 0x11;
+        disk[entryOffset + 10] = 0x00;
+        disk[entryOffset + 11] = 0x30;
+        disk[entryOffset + 12] = 0x65;
+        disk[entryOffset + 13] = 0x43;
+        disk[entryOffset + 14] = (byte) 0xec;
+        disk[entryOffset + 15] = (byte) 0xac;
+        disk[entryOffset + 16] = 1;
+        gpt.putLong(entryOffset + 32, partitionStart);
+        gpt.putLong(entryOffset + 40, partitionStart + partitionBlocks - 1L);
+        byte[] name = "Seed".getBytes(StandardCharsets.UTF_16LE);
+        System.arraycopy(name, 0, disk, entryOffset + 56, name.length);
+
+        int headerOffset = DMG_SECTOR_SIZE;
+        byte[] signature = "EFI PART".getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(signature, 0, disk, headerOffset, signature.length);
+        gpt.putInt(headerOffset + 8, 0x0001_0000);
+        gpt.putInt(headerOffset + 12, 92);
+        gpt.putLong(headerOffset + 24, 1L);
+        gpt.putLong(headerOffset + 32, disk.length / DMG_SECTOR_SIZE - 1L);
+        gpt.putLong(headerOffset + 40, partitionStart);
+        gpt.putLong(headerOffset + 48, partitionStart + partitionBlocks - 1L);
+        disk[headerOffset + 56] = 1;
+        gpt.putLong(headerOffset + 72, 2L);
+        gpt.putInt(headerOffset + 80, entryCount);
+        gpt.putInt(headerOffset + 84, entrySize);
+        gpt.putInt(headerOffset + 88, crc32(disk, entryOffset, entryCount * entrySize));
+        gpt.putInt(headerOffset + 16, crc32(disk, headerOffset, 92));
+
+        System.arraycopy(volume, 0, disk, partitionStart * DMG_SECTOR_SIZE, volume.length);
+        return createDMGSeed(disk);
+    }
+
+    /// Creates one raw-run flattened UDIF image for the supplied sector-aligned decoded disk.
+    private static byte @Unmodifiable [] createDMGSeed(byte @Unmodifiable [] disk) {
+        if (disk.length % DMG_SECTOR_SIZE != 0) {
+            throw new IllegalArgumentException("DMG seed disk must be sector aligned");
+        }
         long sectorCount = disk.length / DMG_SECTOR_SIZE;
         byte[] blockTable = new byte[204 + 2 * 40];
         ByteBuffer table = ByteBuffer.wrap(blockTable).order(ByteOrder.BIG_ENDIAN);
@@ -236,6 +320,42 @@ final class FuzzSupport {
         output.writeBytes(xml);
         output.writeBytes(trailer);
         return output.toByteArray();
+    }
+
+    /// Writes one Apple Partition Map entry into a decoded fuzz seed disk.
+    private static void writeApplePartitionMapEntry(
+            byte[] disk,
+            int slot,
+            int entryCount,
+            int startBlock,
+            int blockCount,
+            String name,
+            String type
+    ) {
+        int offset = Math.multiplyExact(slot, DMG_SECTOR_SIZE);
+        ByteBuffer entry = ByteBuffer.wrap(disk).order(ByteOrder.BIG_ENDIAN);
+        entry.putShort(offset, (short) 0x504d);
+        entry.putInt(offset + 4, entryCount);
+        entry.putInt(offset + 8, startBlock);
+        entry.putInt(offset + 12, blockCount);
+        writeAsciiCString(disk, offset + 16, 32, name);
+        writeAsciiCString(disk, offset + 48, 32, type);
+    }
+
+    /// Writes one ASCII string into a fixed-width zero-initialized field.
+    private static void writeAsciiCString(byte[] target, int offset, int length, String value) {
+        byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
+        if (bytes.length >= length) {
+            throw new IllegalArgumentException("DMG seed string does not fit its field");
+        }
+        System.arraycopy(bytes, 0, target, offset, bytes.length);
+    }
+
+    /// Returns the CRC-32 of one array range as its raw 32-bit representation.
+    private static int crc32(byte[] bytes, int offset, int length) {
+        CRC32 checksum = new CRC32();
+        checksum.update(bytes, offset, length);
+        return (int) checksum.getValue();
     }
 
     /// Creates an eight-block HFS Plus volume containing only its root catalog folder.

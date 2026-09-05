@@ -3,20 +3,16 @@
 
 package org.glavo.arkivo.archive.dmg;
 
-import org.glavo.arkivo.archive.ArchiveReadLimits;
-import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
-import org.glavo.arkivo.archive.ArkivoReadLimitException;
-import org.glavo.arkivo.archive.ArkivoReadLimitKind;
-import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
-import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
@@ -24,16 +20,11 @@ import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
-import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileStore;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemException;
-import java.nio.file.FileSystemNotFoundException;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
@@ -129,6 +120,44 @@ final class DMGArkivoFileSystemTest {
             assertEquals(7L * DMGTestFixtures.SECTOR_SIZE, store.getUnallocatedSpace());
             assertEquals(0L, store.getUsableSpace());
             assertThrows(ReadOnlyFileSystemException.class, () -> Files.writeString(file, "changed"));
+        }
+    }
+
+    /// Maps HFS Plus slash and NUL characters into safe characters within one archive path element.
+    @Test
+    void mapsUnsafeCatalogNameCharacters() throws IOException {
+        byte[] disk = createHFSPlusDisk();
+        int fileName = 5 * DMGTestFixtures.SECTOR_SIZE + 118 + 8;
+        ByteArrayAccess.writeShortBigEndian(disk, fileName, (short) '/');
+        ByteArrayAccess.writeShortBigEndian(disk, fileName + Character.BYTES, (short) 0);
+        Path image = writeRawImage(temporaryDirectory.resolve("mapped-catalog-name.dmg"), disk);
+
+        try (DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(image)) {
+            Path mapped = fileSystem.getPath("/:\u2400llo.txt");
+            assertEquals("hello", Files.readString(mapped));
+            try (var children = Files.list(fileSystem.getPath("/"))) {
+                assertTrue(children.anyMatch(mapped::equals));
+            }
+        }
+    }
+
+    /// Ignores folder-thread and file-thread catalog records while retaining ordinary entries.
+    ///
+    /// @param recordType the HFS Plus catalog thread-record type
+    @ParameterizedTest(name = "catalog record type {0}")
+    @ValueSource(ints = {3, 4})
+    void ignoresCatalogThreadRecords(int recordType) throws IOException {
+        byte[] disk = createHFSPlusDisk();
+        int threadRecordType = 6 * DMGTestFixtures.SECTOR_SIZE + 14 + 16;
+        ByteArrayAccess.writeShortBigEndian(disk, threadRecordType, (short) recordType);
+        Path image = writeRawImage(
+                temporaryDirectory.resolve("catalog-thread-" + recordType + ".dmg"),
+                disk
+        );
+
+        try (DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(image)) {
+            assertEquals("hello", Files.readString(fileSystem.getPath("/hello.txt")));
+            assertFalse(Files.exists(fileSystem.getPath("/link"), LinkOption.NOFOLLOW_LINKS));
         }
     }
 
@@ -517,134 +546,8 @@ final class DMGArkivoFileSystemTest {
         }
     }
 
-    /// Applies entry-count and entry-size limits while indexing the HFS Plus catalog.
-    @Test
-    void appliesCatalogEntryLimits() throws IOException {
-        Path imagePath = createImage("entry-limits.dmg");
-        ArchiveReadLimits countLimits = ArchiveReadLimits.builder().maximumEntryCount(1L).build();
-        DMGArchiveOptions countOptions = DMGArchiveOptions.DEFAULT.withCommon(
-                ArchiveReadOptions.DEFAULT.withLimits(countLimits)
-        );
-        ArkivoReadLimitException countException = assertThrows(
-                ArkivoReadLimitException.class,
-                () -> DMGArkivoFileSystem.open(imagePath, countOptions)
-        );
-        assertEquals(ArkivoReadLimitKind.ENTRY_COUNT, countException.kind());
-        assertEquals(2L, countException.actual());
-
-        ArchiveReadLimits sizeLimits = ArchiveReadLimits.builder().maximumEntrySize(8L).build();
-        DMGArchiveOptions sizeOptions = DMGArchiveOptions.DEFAULT.withCommon(
-                ArchiveReadOptions.DEFAULT.withLimits(sizeLimits)
-        );
-        ArkivoReadLimitException sizeException = assertThrows(
-                ArkivoReadLimitException.class,
-                () -> DMGArkivoFileSystem.open(imagePath, sizeOptions)
-        );
-        assertEquals(ArkivoReadLimitKind.ENTRY_SIZE, sizeException.kind());
-        assertEquals("link", sizeException.entryPath());
-        assertEquals(9L, sizeException.actual());
-    }
-
-    /// Registers provider-URI file systems and unregisters them when closed.
-    @Test
-    void supportsProviderURILifecycle() throws IOException {
-        Path imagePath = createImage("provider-uri.dmg");
-        URI fileSystemUri = URI.create(
-                DMGArkivoFormat.instance().uriScheme() + ":" + imagePath.toUri().toASCIIString()
-        );
-        URI entryUri = URI.create(fileSystemUri + "!/hello.txt");
-
-        try (FileSystem fileSystem = FileSystems.newFileSystem(
-                fileSystemUri,
-                Map.of("arkivo.dmg.partitionIndex", 0)
-        )) {
-            assertEquals(fileSystem, FileSystems.getFileSystem(fileSystemUri));
-            assertEquals("hello", Files.readString(Path.of(entryUri)));
-            assertThrows(
-                    FileSystemAlreadyExistsException.class,
-                    () -> FileSystems.newFileSystem(fileSystemUri, Map.of())
-            );
-        }
-        assertThrows(FileSystemNotFoundException.class, () -> FileSystems.getFileSystem(fileSystemUri));
-    }
-
-    /// Closes channels owned by a file system and rejects subsequent path access.
-    @Test
-    void closesManagedResources() throws IOException {
-        Path imagePath = createImage("close.dmg");
-        DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(imagePath);
-        Path file = fileSystem.getPath("/hello.txt");
-        SeekableByteChannel channel = Files.newByteChannel(file);
-
-        fileSystem.close();
-        fileSystem.close();
-        assertFalse(fileSystem.isOpen());
-        assertFalse(channel.isOpen());
-        assertThrows(ClosedFileSystemException.class, () -> Files.size(file));
-    }
-
-    /// Verifies a failed source close makes the file system terminal while allowing cleanup to be retried.
-    @Test
-    void retriesIncompleteSourceCleanup() throws IOException {
-        Path imagePath = createImage("retry-close.dmg");
-        RetryingCloseSource source = new RetryingCloseSource(imagePath);
-        DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(source);
-
-        IOException failure = assertThrows(IOException.class, fileSystem::close);
-        assertEquals("source close failure", failure.getMessage());
-        assertFalse(fileSystem.isOpen());
-        assertFalse(source.closed);
-        assertEquals(1, source.closeAttempts);
-        assertThrows(ClosedFileSystemException.class, fileSystem::partition);
-
-        fileSystem.close();
-        fileSystem.close();
-        assertTrue(source.closed);
-        assertEquals(2, source.closeAttempts);
-    }
-
     /// Writes the shared generated HFS Plus disk as one flattened UDIF image.
     private Path createImage(String name) throws IOException {
         return writeRawImage(temporaryDirectory.resolve(name), createHFSPlusDisk());
-    }
-
-    /// Opens repeatable path channels and fails its first cleanup attempt without completing it.
-    @NotNullByDefault
-    private static final class RetryingCloseSource implements ArkivoSeekableChannelSource {
-        /// The immutable fixture path.
-        private final Path path;
-
-        /// Number of close attempts.
-        private int closeAttempts;
-
-        /// Whether source cleanup completed.
-        private boolean closed;
-
-        /// Creates a repeatable source for the supplied fixture.
-        private RetryingCloseSource(Path path) {
-            this.path = path;
-        }
-
-        /// Opens one independently positioned fixture channel.
-        @Override
-        public SeekableByteChannel openChannel() throws IOException {
-            if (closed) {
-                throw new IOException("source is closed");
-            }
-            return Files.newByteChannel(path);
-        }
-
-        /// Fails once while remaining open and completes cleanup on the next attempt.
-        @Override
-        public void close() throws IOException {
-            closeAttempts++;
-            if (closed) {
-                return;
-            }
-            if (closeAttempts == 1) {
-                throw new IOException("source close failure");
-            }
-            closed = true;
-        }
     }
 }

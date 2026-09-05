@@ -13,9 +13,11 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -160,6 +162,41 @@ public final class ArkivoEditStorageContractTest {
             assertThrows(IOException.class, stored::size);
             assertThrows(IOException.class, () -> stored.openChannel(Set.of(StandardOpenOption.READ)));
             stored.close();
+        }
+    }
+
+    /// Verifies failed temporary-file cleanup closes the handle and remains retryable.
+    @Test
+    public void temporaryFileCleanupRetriesAfterDeleteFailure() throws IOException {
+        Path directory = temporaryDirectory.resolve("retry-content");
+        try (ArkivoEditStorage storage = ArkivoEditStorage.temporaryFiles(directory)) {
+            ArkivoStoredContent stored = storage.createContent(
+                    "entry.bin",
+                    ArkivoEditStorage.UNKNOWN_SIZE
+            );
+            List<Path> stagedPaths;
+            try (Stream<Path> paths = Files.list(directory)) {
+                stagedPaths = paths.toList();
+            }
+            assertEquals(1, stagedPaths.size());
+            Path stagedPath = stagedPaths.get(0);
+            Files.delete(stagedPath);
+            Files.createDirectory(stagedPath);
+            Path blockingChild = Files.write(stagedPath.resolve("blocking-entry"), new byte[]{10});
+
+            IOException failure = assertThrows(IOException.class, stored::close);
+            assertEquals(DirectoryNotEmptyException.class, failure.getClass());
+            assertThrows(IOException.class, stored::size);
+            assertThrows(
+                    IOException.class,
+                    () -> stored.openChannel(Set.of(StandardOpenOption.READ))
+            );
+
+            Files.delete(blockingChild);
+            stored.close();
+            stored.close();
+
+            assertFalse(Files.exists(stagedPath));
         }
     }
 

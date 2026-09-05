@@ -303,6 +303,37 @@ final class ArchiveReadLimitsTest {
         }
     }
 
+    /// Verifies that streaming outer decompression enforces the decoded archive size while the reader advances.
+    @Test
+    void decodedArchiveSizeLimitStopsStreamingRead() throws IOException {
+        Fixture fixture = createTarFixture();
+        try {
+            byte[] compressed = gzip(Files.readAllBytes(fixture.path()));
+            long maximum = 1_535L;
+            ArchiveReadLimits limits = ArchiveReadLimits.builder()
+                    .maximumDecodedArchiveSize(maximum)
+                    .build();
+
+            try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
+                    new ByteArrayInputStream(compressed),
+                    readOptions(limits)
+            )) {
+                assertTrue(reader.next());
+                assertArrayEquals(FIRST_CONTENT, readCurrentEntry(reader));
+                ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+                assertLimit(
+                        exception,
+                        ArkivoReadLimitKind.DECODED_ARCHIVE_SIZE,
+                        maximum,
+                        maximum + 1L,
+                        null
+                );
+            }
+        } finally {
+            Files.deleteIfExists(fixture.path());
+        }
+    }
+
     /// Verifies that file-system staging enforces the complete decoded archive size.
     @Test
     void decodedArchiveSizeLimitStopsMaterialization() throws IOException {

@@ -174,7 +174,9 @@ final class RarVolumeInputStream extends InputStream {
                 try {
                     closeCurrentVolume();
                 } catch (IOException | RuntimeException | Error closeException) {
-                    exception.addSuppressed(closeException);
+                    if (exception != closeException) {
+                        exception.addSuppressed(closeException);
+                    }
                 }
                 throw exception;
             }

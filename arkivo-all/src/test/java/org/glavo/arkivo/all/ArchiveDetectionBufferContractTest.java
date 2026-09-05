@@ -105,6 +105,26 @@ final class ArchiveDetectionBufferContractTest {
         }
     }
 
+    /// Verifies a terminal DMG signature outranks a coincidental empty-TAR prefix for seekable detection.
+    @Test
+    void prefersTerminalDmgSignatureOverEmptyTarPrefix() throws IOException {
+        ArkivoFormat dmg = ArkivoFormats.require("dmg");
+        ArkivoFormat tar = ArkivoFormats.require("tar");
+        byte[] image = new byte[tar.probeSize() + dmg.probeSize()];
+        ByteBuffer.wrap(image).order(ByteOrder.BIG_ENDIAN).putInt(
+                image.length - dmg.probeSize(),
+                0x6b6f6c79
+        );
+        assertTrue(tar.matches(ByteBuffer.wrap(image)));
+
+        try (FragmentingSeekableByteChannel source = new FragmentingSeekableByteChannel(image, 1)) {
+            assertTrue(dmg.matches(source));
+            assertEquals(0L, source.position());
+            assertSame(dmg, ArkivoFormats.detect(source));
+            assertEquals(0L, source.position());
+        }
+    }
+
     /// Verifies every format through fragmented seekable reads from a nonzero logical archive origin.
     @Test
     void detectsEveryFormatFromFragmentedSeekableSourcesAndRestoresPosition() throws IOException {

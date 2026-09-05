@@ -12,6 +12,7 @@ import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -33,6 +34,32 @@ public final class CompressionFuzzTest {
 
     /// Creates a compression fuzz-test instance for JUnit.
     public CompressionFuzzTest() {
+    }
+
+    /// Verifies that every generated compressed seed completes incremental decoding with its original content.
+    @Test
+    void generatedDecoderSeedsReachIncrementalCompletion() throws IOException {
+        for (int index = 0; index < FuzzSupport.COMPRESSION_FORMATS.size(); index++) {
+            byte @Unmodifiable [] seed = compressionDecoderSeed(index);
+            CompressionCodec<?> codec = FuzzSupport.boundedCodec(
+                    FuzzSupport.COMPRESSION_FORMATS.get(index).defaultCodec(),
+                    FuzzSupport.SEED_CONTENT.length
+            );
+            byte @Unmodifiable [] decoded = runDecoder(
+                    codec,
+                    seed,
+                    1 + (Byte.toUnsignedInt(seed[3]) & 0x3f),
+                    1 + (Byte.toUnsignedInt(seed[4]) & 0x3f),
+                    (seed[5] & 1) != 0,
+                    (seed[5] & 2) != 0
+            );
+            if (!Arrays.equals(FuzzSupport.SEED_CONTENT, decoded)) {
+                throw new AssertionError(
+                        "Generated " + FuzzSupport.COMPRESSION_FORMATS.get(index).name()
+                                + " decoder seed changed incremental output"
+                );
+            }
+        }
     }
 
     /// Fuzzes incremental decoder behavior under arbitrary input and output chunk boundaries.
@@ -434,8 +461,9 @@ public final class CompressionFuzzTest {
     /// @param targetChunkSize the positive output buffer size
     /// @param directSource whether to use a direct input buffer
     /// @param directTarget whether to use a direct output buffer
+    /// @return all bytes produced before successful completion
     /// @throws IOException if decoding rejects the input
-    private static void runDecoder(
+    private static byte @Unmodifiable [] runDecoder(
             CompressionCodec<?> codec,
             byte @Unmodifiable [] data,
             int sourceChunkSize,
@@ -452,6 +480,7 @@ public final class CompressionFuzzTest {
         int finalSourceLimit = source.limit();
         source.limit(Math.min(finalSourceLimit, source.position() + sourceChunkSize));
         ByteBuffer target = newBuffer(targetChunkSize, directTarget);
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
         try (CompressionDecoder decoder = codec.newDecoder()) {
             while (true) {
@@ -460,14 +489,16 @@ public final class CompressionFuzzTest {
                         ? decoder.finish(source, target)
                         : decoder.decode(source, target);
                 switch (outcome) {
-                    case FINISHED, NEEDS_DICTIONARY -> {
-                        return;
+                    case FINISHED -> {
+                        drain(target, decoded);
+                        return decoded.toByteArray();
                     }
+                    case NEEDS_DICTIONARY -> throw new IOException("Decoder requires an unavailable dictionary");
                     case NEEDS_OUTPUT -> {
                         if (target.position() == 0 || target.hasRemaining()) {
                             throw new AssertionError("Decoder requested output space without filling its target");
                         }
-                        target.clear();
+                        drain(target, decoded);
                     }
                     case NEEDS_INPUT -> {
                         if (source.hasRemaining()) {
@@ -477,7 +508,7 @@ public final class CompressionFuzzTest {
                             throw new AssertionError("Decoder finish returned NEEDS_INPUT");
                         }
                         source.limit(Math.min(finalSourceLimit, source.position() + sourceChunkSize));
-                        target.clear();
+                        drain(target, decoded);
                     }
                     default -> throw new AssertionError("Unexpected decoder outcome: " + outcome);
                 }
@@ -501,25 +532,34 @@ public final class CompressionFuzzTest {
     private static Stream<Arguments> compressionDecoderSeeds() throws IOException {
         Arguments[] seeds = new Arguments[FuzzSupport.COMPRESSION_FORMATS.size()];
         for (int index = 0; index < seeds.length; index++) {
-            CompressionFormat format = FuzzSupport.COMPRESSION_FORMATS.get(index);
-            CompressionCodec<?> codec = FuzzSupport.boundedCodec(
-                    format.defaultCodec(),
-                    FuzzSupport.SEED_CONTENT.length
-            );
-            byte[] compressed = FuzzSupport.remainingBytes(
-                    codec.compress(ByteBuffer.wrap(FuzzSupport.SEED_CONTENT))
-            );
-            byte[] controls = {
-                    (byte) index,
-                    (byte) FuzzSupport.SEED_CONTENT.length,
-                    0,
-                    7,
-                    11,
-                    (byte) index
-            };
-            seeds[index] = Arguments.of((Object) FuzzSupport.prefix(controls, compressed));
+            seeds[index] = Arguments.of((Object) compressionDecoderSeed(index));
         }
         return Arrays.stream(seeds);
+    }
+
+    /// Creates one complete incremental-decoder seed for the selected installed format.
+    ///
+    /// @param index the compression-format list index
+    /// @return the control header followed by a complete valid encoding
+    /// @throws IOException if the seed cannot be encoded
+    private static byte @Unmodifiable [] compressionDecoderSeed(int index) throws IOException {
+        CompressionFormat format = FuzzSupport.COMPRESSION_FORMATS.get(index);
+        CompressionCodec<?> codec = FuzzSupport.boundedCodec(
+                format.defaultCodec(),
+                FuzzSupport.SEED_CONTENT.length
+        );
+        byte[] compressed = FuzzSupport.remainingBytes(
+                codec.compress(ByteBuffer.wrap(FuzzSupport.SEED_CONTENT))
+        );
+        byte[] controls = {
+                (byte) index,
+                (byte) FuzzSupport.SEED_CONTENT.length,
+                0,
+                7,
+                11,
+                (byte) index
+        };
+        return FuzzSupport.prefix(controls, compressed);
     }
 
     /// Supplies representative payloads to every codec's round-trip target.

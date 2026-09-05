@@ -125,6 +125,13 @@ public final class ZstdBufferEngineTest {
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.NEEDS_DICTIONARY, outcome);
             assertEquals(dictionary.dictionaryId(), decoder.dictionaryRequest().dictionaryId());
+
+            int waitingSourcePosition = source.position();
+            ByteBuffer waitingTarget = ByteBuffer.allocate(1);
+            assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.finish(source, waitingTarget));
+            assertEquals(waitingSourcePosition, source.position());
+            assertEquals(0, waitingTarget.position());
+
             decoder.provideDictionary(dictionary);
             do {
                 ByteBuffer target = ByteBuffer.allocate(7);
@@ -179,6 +186,78 @@ public final class ZstdBufferEngineTest {
         assertThrows(IOException.class, () -> decode(corrupt, codec, 17));
 
         assertThrows(IOException.class, () -> decode(encoded, codec.withMaximumWindowSize(1024L), 17));
+    }
+
+    /// Verifies checksum validation retains decoded bytes and accounts for the consumed checksum on failure.
+    @Test
+    public void checksumFailurePreservesDecodedOutputAndInputProgress() throws IOException {
+        byte[] input = testData(32_017);
+        ZstdCodec codec = CODEC.withFrameChecksum(true);
+        byte[] encoded = encode(input, codec.newEncoder(), 257, 11, false);
+        encoded[encoded.length - 1] ^= 1;
+        ByteBuffer source = ByteBuffer.wrap(encoded);
+        ByteBuffer target = ByteBuffer.allocate(input.length);
+
+        try (CompressionDecoder decoder = codec.newDecoder()) {
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.finish(source, target));
+            assertEquals(input.length, target.position());
+            assertEquals(encoded.length - Integer.BYTES, source.position());
+
+            ByteBuffer failureTarget = ByteBuffer.allocate(1);
+            IOException exception = assertThrows(IOException.class, () -> decoder.finish(source, failureTarget));
+            assertEquals("Zstandard frame checksum mismatch", exception.getMessage());
+            assertEquals(encoded.length, source.position());
+            assertEquals(0, failureTarget.position());
+        }
+
+        target.flip();
+        byte[] restored = new byte[target.remaining()];
+        target.get(restored);
+        assertArrayEquals(input, restored);
+    }
+
+    /// Verifies a decoder can be reused after completion and rejects every operation after closure.
+    @Test
+    public void decoderCompletionResetAndClosure() throws IOException {
+        byte[] input = testData(2_017);
+        byte[] encoded = encode(input, CODEC.newEncoder(), 127, 7, false);
+        CompressionDecoder.FramedDictionaryAware<ZstdDictionary, ZstdDictionaryRequest> decoder = CODEC.newDecoder();
+        assertThrows(IllegalStateException.class, decoder::dictionaryRequest);
+
+        ByteBuffer firstSource = ByteBuffer.wrap(encoded);
+        ByteBuffer firstTarget = ByteBuffer.allocate(input.length + 1);
+        assertEquals(CodecOutcome.FINISHED, decoder.finish(firstSource, firstTarget));
+        assertEquals(encoded.length, firstSource.position());
+        assertEquals(input.length, firstTarget.position());
+        assertThrows(IllegalStateException.class, decoder::dictionaryRequest);
+
+        ByteBuffer trailingSource = ByteBuffer.wrap(new byte[]{1, 2, 3});
+        ByteBuffer terminalTarget = ByteBuffer.allocate(1);
+        assertEquals(CodecOutcome.FINISHED, decoder.decode(trailingSource, terminalTarget));
+        assertEquals(0, trailingSource.position());
+        assertEquals(0, terminalTarget.position());
+
+        decoder.reset();
+        ByteBuffer secondSource = ByteBuffer.wrap(encoded);
+        ByteBuffer secondTarget = ByteBuffer.allocate(input.length + 1);
+        assertEquals(CodecOutcome.FINISHED, decoder.finish(secondSource, secondTarget));
+        assertArrayEquals(
+                Arrays.copyOf(firstTarget.array(), firstTarget.position()),
+                Arrays.copyOf(secondTarget.array(), secondTarget.position())
+        );
+
+        decoder.close();
+        decoder.close();
+        assertThrows(IllegalStateException.class, decoder::dictionaryRequest);
+        assertThrows(IllegalStateException.class, decoder::reset);
+        assertThrows(
+                IllegalStateException.class,
+                () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+        assertThrows(
+                IllegalStateException.class,
+                () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
     }
 
     /// Verifies Channel adaptation exposes one exact frame boundary before physical EOF.

@@ -13,6 +13,7 @@ import org.glavo.arkivo.codec.SeekableEncodingOptions;
 import org.glavo.arkivo.codec.deflate.GzipCodec;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
@@ -38,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -84,6 +86,48 @@ final class SeekableCompressedTarSourceTest {
             probe.close();
         }
         assertFalse(source.channel(2).isOpen());
+    }
+
+    /// Verifies a slice reports complete-frame progress before a later indexed frame fails.
+    @Test
+    void preservesDecodedProgressBeforeLaterFrameFailure() throws IOException {
+        byte[] decoded = patternedBytes(25);
+        byte[] encoded = seekableEncoding(decoded);
+        long firstFrameSize;
+        long secondFrameOffset;
+        try (TrackingChannel indexSource = new TrackingChannel(encoded, 5)) {
+            var index = Objects.requireNonNull(ZstdCodec.DEFAULT.readIndex(indexSource));
+            firstFrameSize = index.frameUncompressedSize(0);
+            secondFrameOffset = index.frameCompressedOffset(1);
+        }
+
+        byte[] corrupted = encoded.clone();
+        corrupted[Math.toIntExact(secondFrameOffset)] ^= 1;
+        TrackingSource source = new TrackingSource(encoded);
+        SeekableCompressedTarSource archive = openIndexed(source);
+        source.replaceContent(corrupted);
+
+        ArkivoStoredContent content = archive.newStoredContent(0L, decoded.length);
+        SeekableByteChannel channel = content.openChannel(Set.of());
+        try {
+            ByteBuffer target = ByteBuffer.allocate(decoded.length + 2);
+            target.position(1);
+            target.limit(1 + decoded.length);
+
+            assertThrows(IOException.class, () -> channel.read(target));
+            int transferred = Math.toIntExact(firstFrameSize);
+            assertEquals(1 + transferred, target.position());
+            assertEquals(1 + decoded.length, target.limit());
+            assertEquals(firstFrameSize, channel.position());
+            assertArrayEquals(
+                    Arrays.copyOfRange(decoded, 0, transferred),
+                    Arrays.copyOfRange(target.array(), 1, target.position())
+            );
+        } finally {
+            channel.close();
+            source.channel(0).close();
+        }
+        assertFalse(source.channel(1).isOpen());
     }
 
     /// Verifies slice range validation, read-only options, empty reads, and closed-channel behavior.
@@ -193,6 +237,30 @@ final class SeekableCompressedTarSourceTest {
         source.channel(0).close();
     }
 
+    /// Verifies a shared setup and cleanup exception is propagated without illegal self-suppression.
+    @Test
+    void preservesSharedSetupAndCleanupFailure() throws IOException {
+        byte[] decoded = patternedBytes(29);
+        TrackingSource source = new TrackingSource(seekableEncoding(decoded));
+        SeekableCompressedTarSource archive = openIndexed(source);
+        IOException sharedFailure = new IOException("shared setup failure");
+        source.failNextChannelWith(sharedFailure);
+
+        ArkivoStoredContent content = archive.newStoredContent(0L, decoded.length);
+        IOException failure = assertThrows(IOException.class, () -> content.openChannel(Set.of()));
+
+        assertSame(sharedFailure, failure);
+        assertEquals(0, failure.getSuppressed().length);
+        assertEquals(2, source.openCount());
+        TrackingChannel failedChannel = source.channel(1);
+        assertTrue(failedChannel.isOpen());
+        assertEquals(1, failedChannel.closeAttempts());
+
+        failedChannel.repeatedFailure = null;
+        failedChannel.close();
+        source.channel(0).close();
+    }
+
     /// Opens and requires an indexed compressed source through the first tracking channel.
     private static SeekableCompressedTarSource openIndexed(TrackingSource source) throws IOException {
         TrackingChannel probe = source.openChannel();
@@ -236,6 +304,9 @@ final class SeekableCompressedTarSourceTest {
         /// Channels opened so far in call order.
         private final ArrayList<TrackingChannel> channels = new ArrayList<>();
 
+        /// Failure assigned to the next opened channel's positioning and closure, or `null`.
+        private @Nullable IOException nextRepeatedFailure;
+
         /// Creates a tracking source over a private copy of encoded bytes.
         private TrackingSource(byte @Unmodifiable [] content) {
             this.content = content.clone();
@@ -245,8 +316,15 @@ final class SeekableCompressedTarSourceTest {
         @Override
         public TrackingChannel openChannel() {
             TrackingChannel channel = new TrackingChannel(content, 5);
+            channel.repeatedFailure = nextRepeatedFailure;
+            nextRepeatedFailure = null;
             channels.add(channel);
             return channel;
+        }
+
+        /// Makes the next opened channel report the same failure from positioning and closure.
+        private void failNextChannelWith(IOException failure) {
+            nextRepeatedFailure = Objects.requireNonNull(failure, "failure");
         }
 
         /// Changes the bytes exposed by future channels without affecting already opened channels.
@@ -282,6 +360,9 @@ final class SeekableCompressedTarSourceTest {
 
         /// Whether the channel remains open.
         private boolean open = true;
+
+        /// Failure optionally repeated by positioning and closure.
+        private @Nullable IOException repeatedFailure;
 
         /// Creates a channel over a private content copy.
         private TrackingChannel(byte @Unmodifiable [] content, int maximumReadSize) {
@@ -323,12 +404,17 @@ final class SeekableCompressedTarSourceTest {
         }
 
         /// Changes the physical position.
+        ///
+        /// @throws IOException if the configured repeated failure remains active
         @Override
         public SeekableByteChannel position(long newPosition) throws IOException {
             if (newPosition < 0L) {
                 throw new IllegalArgumentException("newPosition must not be negative");
             }
             ensureOpen();
+            if (repeatedFailure != null) {
+                throw repeatedFailure;
+            }
             position = newPosition;
             return this;
         }
@@ -354,9 +440,14 @@ final class SeekableCompressedTarSourceTest {
         }
 
         /// Closes this channel and records every close attempt.
+        ///
+        /// @throws IOException if the configured repeated failure remains active
         @Override
-        public void close() {
+        public void close() throws IOException {
             closeAttempts++;
+            if (repeatedFailure != null) {
+                throw repeatedFailure;
+            }
             open = false;
         }
 

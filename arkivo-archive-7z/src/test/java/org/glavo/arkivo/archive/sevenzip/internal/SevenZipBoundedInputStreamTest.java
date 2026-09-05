@@ -15,6 +15,7 @@ import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests bounded 7z entry input stream behavior.
@@ -105,6 +106,44 @@ public final class SevenZipBoundedInputStreamTest {
         assertEquals(true, delegate.closed());
         assertThrows(IOException.class, input::read);
         input.close();
+    }
+
+    /// Verifies close preserves one shared drain and delegate-close failure without self-suppression.
+    @Test
+    public void preservesSharedDrainAndDelegateCloseFailure() throws IOException {
+        IOException sharedFailure = new IOException("shared drain failure");
+        FailingInputStream delegate = new FailingInputStream(sharedFailure, sharedFailure);
+        SevenZipBoundedInputStream input = new SevenZipBoundedInputStream(delegate, 1L);
+
+        IOException failure = assertThrows(IOException.class, input::close);
+
+        assertSame(sharedFailure, failure);
+        assertEquals(0, failure.getSuppressed().length);
+        assertEquals(true, delegate.closed());
+        assertEquals(1, delegate.closeCount());
+
+        input.close();
+        assertEquals(2, delegate.closeCount());
+    }
+
+    /// Verifies close suppresses a distinct delegate-close failure behind the drain failure.
+    @Test
+    public void suppressesDistinctDelegateCloseFailureAfterDrainFailure() throws IOException {
+        IOException drainFailure = new IOException("drain failure");
+        IOException closeFailure = new IOException("close failure");
+        FailingInputStream delegate = new FailingInputStream(drainFailure, closeFailure);
+        SevenZipBoundedInputStream input = new SevenZipBoundedInputStream(delegate, 1L);
+
+        IOException failure = assertThrows(IOException.class, input::close);
+
+        assertSame(drainFailure, failure);
+        assertEquals(1, failure.getSuppressed().length);
+        assertSame(closeFailure, failure.getSuppressed()[0]);
+        assertEquals(true, delegate.closed());
+        assertEquals(1, delegate.closeCount());
+
+        input.close();
+        assertEquals(2, delegate.closeCount());
     }
 
     /// Provides an in-memory stream that rejects reads after close.
@@ -266,6 +305,70 @@ public final class SevenZipBoundedInputStreamTest {
         }
 
         /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("stream is closed");
+            }
+        }
+    }
+
+    /// Reports configurable read and close failures while recording physical closure.
+    @NotNullByDefault
+    private static final class FailingInputStream extends InputStream {
+        /// Failure reported by every read while open.
+        private final IOException readFailure;
+
+        /// Failure reported by the first close call.
+        private final IOException closeFailure;
+
+        /// Whether the stream has been physically closed.
+        private boolean closed;
+
+        /// Number of close calls.
+        private int closeCount;
+
+        /// Creates a stream with the supplied read and close failures.
+        private FailingInputStream(IOException readFailure, IOException closeFailure) {
+            this.readFailure = readFailure;
+            this.closeFailure = closeFailure;
+        }
+
+        /// Reports the configured read failure while open.
+        @Override
+        public int read() throws IOException {
+            ensureOpen();
+            throw readFailure;
+        }
+
+        /// Reports the configured read failure while open.
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, buffer.length);
+            ensureOpen();
+            throw readFailure;
+        }
+
+        /// Physically closes the stream and reports the configured failure once.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            if (!closed) {
+                closed = true;
+                throw closeFailure;
+            }
+        }
+
+        /// Returns whether the stream has been physically closed.
+        private boolean closed() {
+            return closed;
+        }
+
+        /// Returns the number of close calls.
+        private int closeCount() {
+            return closeCount;
+        }
+
+        /// Requires this stream to remain open.
         private void ensureOpen() throws IOException {
             if (closed) {
                 throw new IOException("stream is closed");

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.zip;
 
-import org.apache.commons.compress.utils.SeekableInMemoryByteChannel;
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -69,7 +69,7 @@ final class ZipExtendedMetadataTest {
         assertMetadata(expected, readSeekableAttributes(archive));
         assertMetadata(expected, readStreamingAttributes(archive));
 
-        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(new SeekableInMemoryByteChannel(archive))) {
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(archive))) {
             Map<String, Object> namedAttributes = Files.readAttributes(
                     fileSystem.getPath("/entry"),
                     "zip:userId,groupId"
@@ -189,7 +189,7 @@ final class ZipExtendedMetadataTest {
     private static ZipArkivoEntryAttributes readSeekableAttributes(
             byte @Unmodifiable [] archive
     ) throws IOException {
-        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(new SeekableInMemoryByteChannel(archive))) {
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(archive))) {
             return Files.readAttributes(fileSystem.getPath("/entry"), ZipArkivoEntryAttributes.class);
         }
     }

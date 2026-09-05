@@ -3,14 +3,16 @@
 
 package org.glavo.arkivo.codec.xz;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ARM64Options;
@@ -479,6 +481,31 @@ public final class XZCodecTest {
         indexCorrupt[footerOffset - 1] ^= 1;
         assertThrows(IOException.class, () -> readStreamAdapter(indexCorrupt));
         assertThrows(IOException.class, () -> readCodec(indexCorrupt));
+    }
+
+    /// Verifies decoded bytes and source progress remain observable when the following Block Check fails.
+    @Test
+    public void blockCheckFailurePreservesDecodedProgress() throws IOException {
+        byte[] content = patternedContent(45_678);
+        byte[] encoded = independentStream(content, XZ.CHECK_CRC32);
+        int footerOffset = encoded.length - 12;
+        int indexSize = Math.toIntExact((littleEndian(encoded, footerOffset + 4, 4) + 1L) * 4L);
+        int indexOffset = footerOffset - indexSize;
+        encoded[indexOffset - 1] ^= 1;
+        ByteBuffer source = ByteBuffer.wrap(encoded);
+        ByteBuffer target = ByteBuffer.allocate(content.length + 1);
+
+        try (CompressionDecoder decoder = new XZCodec().newDecoder()) {
+            IOException failure = assertThrows(IOException.class, () -> decoder.finish(source, target));
+            assertEquals("XZ Block integrity check mismatch", failure.getMessage());
+        }
+
+        assertEquals(indexOffset, source.position());
+        assertEquals(content.length, target.position());
+        target.flip();
+        byte[] actual = new byte[target.remaining()];
+        target.get(actual);
+        assertArrayEquals(content, actual);
     }
 
     /// Verifies that checksum policy controls Block Checks without weakening XZ structure validation.

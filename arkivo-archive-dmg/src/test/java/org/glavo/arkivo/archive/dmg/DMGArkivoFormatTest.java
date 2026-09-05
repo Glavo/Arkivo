@@ -123,25 +123,39 @@ public final class DMGArkivoFormatTest {
     public void handlesSeekableProbeFailures() throws IOException {
         DMGArkivoFormat format = DMGArkivoFormat.instance();
 
-        FaultingProbeChannel truncated = new FaultingProbeChannel(-1, null, false);
+        FaultingProbeChannel truncated = new FaultingProbeChannel(-1, null, null);
         assertFalse(format.matches(truncated));
         assertEquals(17L, truncated.position());
 
-        FaultingProbeChannel stalled = new FaultingProbeChannel(0, null, false);
+        FaultingProbeChannel stalled = new FaultingProbeChannel(0, null, null);
         IOException noProgress = assertThrows(IOException.class, () -> format.matches(stalled));
         assertEquals("DMG format probe made no progress", noProgress.getMessage());
         assertEquals(17L, stalled.position());
 
         IOException readFailure = new IOException("read failed");
-        FaultingProbeChannel failed = new FaultingProbeChannel(0, readFailure, true);
+        FaultingProbeChannel failed = new FaultingProbeChannel(
+                0,
+                readFailure,
+                new IOException("restore failed")
+        );
         IOException propagated = assertThrows(IOException.class, () -> format.matches(failed));
         assertSame(readFailure, propagated);
         assertEquals(1, propagated.getSuppressed().length);
         assertEquals("restore failed", propagated.getSuppressed()[0].getMessage());
 
-        FaultingProbeChannel restorationOnly = new FaultingProbeChannel(-1, null, true);
+        FaultingProbeChannel restorationOnly = new FaultingProbeChannel(
+                -1,
+                null,
+                new IOException("restore failed")
+        );
         IOException restoreFailure = assertThrows(IOException.class, () -> format.matches(restorationOnly));
         assertEquals("restore failed", restoreFailure.getMessage());
+
+        IOException sharedFailure = new IOException("shared failure");
+        FaultingProbeChannel shared = new FaultingProbeChannel(0, sharedFailure, sharedFailure);
+        IOException sharedResult = assertThrows(IOException.class, () -> format.matches(shared));
+        assertSame(sharedFailure, sharedResult);
+        assertEquals(0, sharedResult.getSuppressed().length);
     }
 
     /// Verifies null probe inputs fail at the public boundary.
@@ -162,8 +176,8 @@ public final class DMGArkivoFormatTest {
         /// The explicit read failure, or `null` when reads return [#readResult].
         private final @Nullable IOException readFailure;
 
-        /// Whether the second position change fails while restoring the original position.
-        private final boolean failRestoration;
+        /// Failure thrown by the second position change, or `null` when restoration succeeds.
+        private final @Nullable IOException restorationFailure;
 
         /// The current channel position.
         private long position = 17L;
@@ -178,15 +192,15 @@ public final class DMGArkivoFormatTest {
         ///
         /// @param readResult the read result used when `readFailure` is `null`
         /// @param readFailure the failure thrown by reads, or `null`
-        /// @param failRestoration whether restoring the initial position fails
+        /// @param restorationFailure the failure thrown while restoring the initial position, or `null`
         private FaultingProbeChannel(
                 int readResult,
                 @Nullable IOException readFailure,
-                boolean failRestoration
+                @Nullable IOException restorationFailure
         ) {
             this.readResult = readResult;
             this.readFailure = readFailure;
-            this.failRestoration = failRestoration;
+            this.restorationFailure = restorationFailure;
         }
 
         /// Returns the configured read result or throws the configured failure.
@@ -213,8 +227,8 @@ public final class DMGArkivoFormatTest {
         /// Changes the simulated position or fails the restoration attempt.
         @Override
         public SeekableByteChannel position(long newPosition) throws IOException {
-            if (failRestoration && positionChangeCount > 0) {
-                throw new IOException("restore failed");
+            if (restorationFailure != null && positionChangeCount > 0) {
+                throw restorationFailure;
             }
             positionChangeCount++;
             position = newPosition;

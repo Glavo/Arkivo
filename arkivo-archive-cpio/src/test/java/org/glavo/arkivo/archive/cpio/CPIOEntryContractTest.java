@@ -161,6 +161,7 @@ final class CPIOEntryContractTest {
                 view.setRemoteDeviceNumbers(15L, 16L);
                 CPIOArkivoEntryAttributes attributes = view.readAttributes();
 
+                assertEquals(CPIOArkivoEntryAttributes.UNKNOWN_SIZE, attributes.size());
                 assertEquals(
                         dialect == CPIODialect.OLD_BINARY ? CPIOBinaryByteOrder.LITTLE_ENDIAN : null,
                         attributes.binaryByteOrder()
@@ -191,15 +192,25 @@ final class CPIOEntryContractTest {
         }
     }
 
-    /// Verifies unsafe paths and metadata that cannot be represented by the configured charset are rejected.
+    /// Verifies entry-name validation, canonicalization, and configured-charset failures.
     @Test
-    void rejectsUnsafeAndUnencodableMetadata() throws IOException {
+    void validatesEntryNamesAndUnencodableMetadata() throws IOException {
         ByteArrayOutputStream target = new ByteArrayOutputStream();
         try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(target)) {
-            for (String path : new String[]{"", ".", "./", "/absolute", "C:value", "../value", "a/../b"}) {
+            for (String path : new String[]{
+                    "", ".", "./", "/absolute", "C:value", "../value", "a/../b", "TRAILER!!!", "unsafe\0name"
+            }) {
                 assertThrows(IllegalArgumentException.class, () -> writer.beginFile(path), path);
             }
-            writer.beginFile("valid\\normalized.bin").close();
+            writer.beginFile("directory//./value.bin").close();
+        }
+
+        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
+                new ByteArrayInputStream(target.toByteArray())
+        )) {
+            assertTrue(reader.next());
+            assertEquals("directory/value.bin", reader.readAttributes().path());
+            assertFalse(reader.next());
         }
 
         assertEntryNameRejected(StandardCharsets.US_ASCII, "caf\u00e9", "Failed to encode");

@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -102,6 +103,53 @@ final class ArkivoCommitTargetTest {
         assertFalse(Files.exists(stagingPath));
         assertArrayEquals(new byte[]{11, 12}, Files.readAllBytes(source));
         assertClosed(output);
+    }
+
+    /// Verifies a failed atomic publication leaves the output retryable.
+    @Test
+    void retriesAtomicCommitAfterPublicationFailure() throws IOException {
+        Path source = temporaryDirectory.resolve("missing").resolve("archive.7z");
+        ArkivoCommitOutput output = ArkivoCommitTarget.atomicReplace(
+                temporaryDirectory.resolve("staging")
+        ).openOutput(source);
+        Path stagingPath = output.path();
+        write(output, new byte[]{15, 16, 17});
+
+        assertThrows(IOException.class, output::commit);
+        assertTrue(Files.exists(stagingPath));
+
+        Files.createDirectories(source.getParent());
+        output.commit();
+
+        assertArrayEquals(new byte[]{15, 16, 17}, Files.readAllBytes(source));
+        assertFalse(Files.exists(stagingPath));
+        assertClosed(output);
+    }
+
+    /// Verifies a failed atomic rollback can retry incomplete staging cleanup.
+    @Test
+    void retriesAtomicRollbackAfterCleanupFailure() throws IOException {
+        Path source = temporaryDirectory.resolve("archive.tar");
+        Files.write(source, new byte[]{18, 19});
+        ArkivoCommitOutput output = ArkivoCommitTarget.atomicReplace(
+                temporaryDirectory.resolve("staging")
+        ).openOutput(source);
+        Path stagingPath = output.path();
+        Files.delete(stagingPath);
+        Files.createDirectory(stagingPath);
+        Path blockingChild = Files.write(stagingPath.resolve("blocking-entry"), new byte[]{20});
+
+        IOException failure = assertThrows(IOException.class, output::close);
+        assertEquals(DirectoryNotEmptyException.class, failure.getClass());
+        assertTrue(Files.isDirectory(stagingPath));
+        assertClosed(output);
+
+        Files.delete(blockingChild);
+        output.rollback();
+        output.close();
+
+        assertFalse(Files.exists(stagingPath));
+        assertArrayEquals(new byte[]{18, 19}, Files.readAllBytes(source));
     }
 
     /// Verifies factory validation and the shared direct-replacement target identity.

@@ -181,6 +181,7 @@ final class SevenZipArkivoStreamingWriterAttributesTest {
             ).readAttributes();
             assertEquals(0040750, configuredDirectory.unixMode());
             assertEquals(directoryPermissions, directoryPosixView.readAttributes().permissions());
+            assertThrows(IllegalStateException.class, directory::openOutputStream);
             directory.close();
 
             ArkivoStreamingWriter.Entry symbolicLink = writer.beginSymbolicLink("link", "directory");
@@ -201,6 +202,7 @@ final class SevenZipArkivoStreamingWriterAttributesTest {
             SevenZipArkivoEntryAttributes configuredLink = linkView.readAttributes();
             assertEquals(0120754, configuredLink.unixMode());
             assertEquals(linkPermissions, linkPosixView.readAttributes().permissions());
+            assertThrows(IllegalStateException.class, symbolicLink::openChannel);
             symbolicLink.close();
         }
 

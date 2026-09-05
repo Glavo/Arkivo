@@ -249,6 +249,36 @@ public final class GzipBufferEngineTest {
         assertThrows(IllegalStateException.class, encoder::reset);
     }
 
+    /// Verifies every truncated trailer is rejected and checksum failure preserves completed decode progress.
+    @Test
+    public void trailerValidationPreservesDecodedOutputAndBufferProgress() throws IOException {
+        byte[] input = testData();
+        byte[] encoded = encodeInFragments(input, 127, 17, false);
+
+        for (int trailerBytes = 0; trailerBytes < 8; trailerBytes++) {
+            byte[] truncated = Arrays.copyOf(encoded, encoded.length - 8 + trailerBytes);
+            EOFException exception = assertThrows(
+                    EOFException.class,
+                    () -> decode(truncated, input.length + 1, CODEC),
+                    "trailer bytes " + trailerBytes
+            );
+            assertEquals("Unexpected end of gzip member trailer", exception.getMessage());
+        }
+
+        byte[] corrupted = encoded.clone();
+        corrupted[corrupted.length - 8] ^= 1;
+        ByteBuffer source = ByteBuffer.wrap(corrupted);
+        ByteBuffer target = ByteBuffer.allocate(input.length + 1);
+        try (CompressionDecoder decoder = CODEC.newDecoder()) {
+            IOException exception = assertThrows(IOException.class, () -> decoder.finish(source, target));
+            assertEquals("Gzip member checksum mismatch", exception.getMessage());
+        }
+
+        assertEquals(corrupted.length, source.position());
+        assertEquals(input.length, target.position());
+        assertArrayEquals(input, Arrays.copyOf(target.array(), target.position()));
+    }
+
     /// Verifies output limiting and the flushable framed encoder contract.
     @Test
     public void framedEncoderAndOutputLimit() throws IOException {

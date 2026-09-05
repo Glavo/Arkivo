@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMA2Codec;
+import org.glavo.arkivo.codec.lzma.LZMACodec;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.lzma.RawLZMACodec;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -151,6 +152,49 @@ final class LZMAEncoderFlushTest {
         assertThrows(NullPointerException.class, () -> raw.flush(null));
         assertThrows(IllegalStateException.class, () -> raw.flush(ByteBuffer.allocate(1)));
         assertThrows(IllegalStateException.class, raw::reset);
+    }
+
+    /// Verifies standalone header backpressure, nonterminal flush, reset, and wrapper-specific closed states.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    void flushesAndResetsStandaloneWrapper() throws IOException {
+        byte[] discarded = patternedBytes(257, 13);
+        byte[] first = patternedBytes(3_011, 37);
+        byte[] second = patternedBytes(4_019, 71);
+        byte[] expected = concatenate(first, second);
+        LZMAEncoder encoder = new LZMAEncoder(PROPERTIES, CompressionCodec.UNKNOWN_SIZE);
+
+        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.flush(ByteBuffer.allocate(0)));
+        ByteBuffer partialHeader = ByteBuffer.allocate(5);
+        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.flush(partialHeader));
+        assertEquals(5, partialHeader.position());
+        encode(encoder, ByteBuffer.wrap(discarded), new ByteArrayOutputStream(), 17);
+        encoder.reset();
+
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        encode(encoder, ByteBuffer.wrap(first), encoded, 5);
+        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.flush(ByteBuffer.allocate(0)));
+        drain(encoder::flush, CodecOutcome.FLUSHED, encoded, 3);
+        encode(encoder, ByteBuffer.wrap(second), encoded, 7);
+        drain(encoder::finish, CodecOutcome.FINISHED, encoded, 2);
+        assertArrayEquals(expected, decode(new LZMACodec(PROPERTIES), encoded.toByteArray()));
+
+        encoder.reset();
+        ByteArrayOutputStream resetEncoding = new ByteArrayOutputStream();
+        encode(encoder, ByteBuffer.wrap(expected), resetEncoding, 11);
+        drain(encoder::finish, CodecOutcome.FINISHED, resetEncoding, 5);
+        assertArrayEquals(expected, decode(new LZMACodec(PROPERTIES), resetEncoding.toByteArray()));
+
+        encoder.close();
+        encoder.close();
+        assertThrows(NullPointerException.class, () -> encoder.flush(null));
+        assertThrows(IllegalStateException.class, () -> encoder.flush(ByteBuffer.allocate(1)));
+        assertThrows(IllegalStateException.class, encoder::reset);
+        assertThrows(
+                IllegalStateException.class,
+                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
     }
 
     /// Encodes all source bytes while forcing transport-independent pending-output retries.

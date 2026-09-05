@@ -11,7 +11,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -19,6 +18,7 @@ import java.util.List;
 import java.util.zip.CRC32;
 
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.SECTOR_SIZE;
+import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.concatenate;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.readFully;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.sector;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.writeRawImage;
@@ -31,12 +31,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Exercises generated GUID and Apple partition maps without external fixtures.
 @NotNullByDefault
 final class DMGPartitionTableTest {
-    /// The Macintosh Roman encoding used by Apple Partition Map names.
-    private static final Charset MAC_ROMAN = Charset.forName("x-MacRoman");
-
     /// The generated test directory.
     @TempDir
     Path temporaryDirectory;
+
+    /// Verifies partition descriptors reject negative geometry and require a partitioning scheme.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    void validatesPartitionDescriptors() {
+        DMGPartition partition = new DMGPartition(0, 0L, 0L, null, null, DMGPartitionScheme.RAW);
+        assertEquals(0, partition.index());
+        assertEquals(DMGPartitionScheme.RAW, partition.scheme());
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new DMGPartition(-1, 0L, 0L, null, null, DMGPartitionScheme.RAW)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new DMGPartition(0, -1L, 0L, null, null, DMGPartitionScheme.RAW)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new DMGPartition(0, 0L, -1L, null, null, DMGPartitionScheme.RAW)
+        );
+        assertThrows(
+                NullPointerException.class,
+                () -> new DMGPartition(0, 0L, 0L, null, null, null)
+        );
+    }
 
     /// Reads a GPT partition, canonicalizes its type GUID, and omits unused entries.
     @Test
@@ -320,43 +343,14 @@ final class DMGPartitionTableTest {
 
     /// Creates a six-sector disk containing two present and one unused APM entries.
     private static byte[] createApplePartitionMapDisk() {
-        byte[] disk = new byte[6 * SECTOR_SIZE];
-        ByteArrayAccess.writeShortBigEndian(disk, 0, (short) 0x4552);
-        ByteArrayAccess.writeShortBigEndian(disk, 2, (short) SECTOR_SIZE);
-        writeApplePartitionEntry(disk, 1, 3, 1, 3, "Partition Map", "Apple_partition_map");
-        writeApplePartitionEntry(disk, 2, 3, 4, 2, "Café", "Apple_HFS");
-        writeApplePartitionEntry(disk, 3, 3, 0, 0, "Unused", "Apple_Free");
-        System.arraycopy(sector(51), 0, disk, 4 * SECTOR_SIZE, SECTOR_SIZE);
-        System.arraycopy(sector(52), 0, disk, 5 * SECTOR_SIZE, SECTOR_SIZE);
-        return disk;
-    }
-
-    /// Writes one Apple Partition Map entry into a decoded disk.
-    private static void writeApplePartitionEntry(
-            byte[] disk,
-            int slot,
-            int entryCount,
-            int startBlock,
-            int blockCount,
-            String name,
-            String type
-    ) {
-        int offset = slot * SECTOR_SIZE;
-        ByteArrayAccess.writeShortBigEndian(disk, offset, (short) 0x504d);
-        ByteArrayAccess.writeIntBigEndian(disk, offset + 4, entryCount);
-        ByteArrayAccess.writeIntBigEndian(disk, offset + 8, startBlock);
-        ByteArrayAccess.writeIntBigEndian(disk, offset + 12, blockCount);
-        writeCString(disk, offset + 16, 32, name);
-        writeCString(disk, offset + 48, 32, type);
-    }
-
-    /// Writes a Macintosh Roman string followed by zero padding.
-    private static void writeCString(byte[] target, int offset, int length, String value) {
-        byte[] encoded = value.getBytes(MAC_ROMAN);
-        if (encoded.length >= length) {
-            throw new IllegalArgumentException("fixture string does not fit its fixed field");
-        }
-        System.arraycopy(encoded, 0, target, offset, encoded.length);
+        return DMGTestFixtures.createApplePartitionMapDisk(List.of(
+                new DMGTestFixtures.ApplePartition(
+                        "Café",
+                        "Apple_HFS",
+                        concatenate(new byte[][]{sector(51), sector(52)})
+                ),
+                new DMGTestFixtures.ApplePartition("Unused", "Apple_Free", new byte[0])
+        ));
     }
 
     /// Returns the CRC-32 of an array range as its raw 32-bit representation.

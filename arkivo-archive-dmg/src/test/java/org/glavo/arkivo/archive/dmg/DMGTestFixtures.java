@@ -12,12 +12,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Objects;
 
 /// Creates deterministic binary-free UDIF fixtures shared by DMG tests.
 @NotNullByDefault
@@ -45,6 +47,9 @@ final class DMGTestFixtures {
 
     /// The decoded UDIF sector size.
     static final int SECTOR_SIZE = 512;
+
+    /// The Macintosh Roman encoding used by Apple Partition Map strings.
+    private static final Charset MAC_ROMAN = Charset.forName("x-MacRoman");
 
     /// Prevents utility-class construction.
     private DMGTestFixtures() {
@@ -180,6 +185,82 @@ final class DMGTestFixtures {
             output.writeBytes(array);
         }
         return output.toByteArray();
+    }
+
+    /// Creates a decoded disk containing an Apple Partition Map and the supplied partitions.
+    ///
+    /// Each partition occupies one map entry. Zero-length partitions remain present in the map but are omitted by the
+    /// production parser, permitting fixtures to exercise unused slots without special byte mutations.
+    ///
+    /// @param partitions the partition descriptions in map order
+    /// @return a new sector-aligned decoded disk
+    static byte[] createApplePartitionMapDisk(List<ApplePartition> partitions) {
+        Objects.requireNonNull(partitions, "partitions");
+        int entryCount = Math.addExact(partitions.size(), 1);
+        int dataStartBlock = Math.addExact(entryCount, 1);
+        int totalBlocks = dataStartBlock;
+        for (ApplePartition partition : partitions) {
+            totalBlocks = Math.addExact(totalBlocks, partition.bytes.length / SECTOR_SIZE);
+        }
+
+        byte[] disk = new byte[Math.multiplyExact(totalBlocks, SECTOR_SIZE)];
+        ByteArrayAccess.writeShortBigEndian(disk, 0, (short) 0x4552);
+        ByteArrayAccess.writeShortBigEndian(disk, 2, (short) SECTOR_SIZE);
+        writeApplePartitionEntry(
+                disk,
+                1,
+                entryCount,
+                1,
+                entryCount,
+                "Partition Map",
+                "Apple_partition_map"
+        );
+
+        int dataBlock = dataStartBlock;
+        for (int index = 0; index < partitions.size(); index++) {
+            ApplePartition partition = partitions.get(index);
+            int partitionBlocks = partition.bytes.length / SECTOR_SIZE;
+            writeApplePartitionEntry(
+                    disk,
+                    index + 2,
+                    entryCount,
+                    partitionBlocks == 0 ? 0 : dataBlock,
+                    partitionBlocks,
+                    partition.name,
+                    partition.type
+            );
+            System.arraycopy(partition.bytes, 0, disk, dataBlock * SECTOR_SIZE, partition.bytes.length);
+            dataBlock = Math.addExact(dataBlock, partitionBlocks);
+        }
+        return disk;
+    }
+
+    /// Writes one Apple Partition Map entry into a decoded disk.
+    private static void writeApplePartitionEntry(
+            byte[] disk,
+            int slot,
+            int entryCount,
+            int startBlock,
+            int blockCount,
+            String name,
+            String type
+    ) {
+        int offset = Math.multiplyExact(slot, SECTOR_SIZE);
+        ByteArrayAccess.writeShortBigEndian(disk, offset, (short) 0x504d);
+        ByteArrayAccess.writeIntBigEndian(disk, offset + 4, entryCount);
+        ByteArrayAccess.writeIntBigEndian(disk, offset + 8, startBlock);
+        ByteArrayAccess.writeIntBigEndian(disk, offset + 12, blockCount);
+        writeMacRomanCString(disk, offset + 16, 32, name);
+        writeMacRomanCString(disk, offset + 48, 32, type);
+    }
+
+    /// Writes a Macintosh Roman string followed by zero padding.
+    private static void writeMacRomanCString(byte[] target, int offset, int length, String value) {
+        byte[] encoded = value.getBytes(MAC_ROMAN);
+        if (encoded.length >= length) {
+            throw new IllegalArgumentException("fixture string does not fit its fixed field");
+        }
+        System.arraycopy(encoded, 0, target, offset, encoded.length);
     }
 
     /// Creates a minimal HFS Plus disk with one regular file and one symbolic link.
@@ -522,6 +603,31 @@ final class DMGTestFixtures {
     /// @param blockCount the number of contiguous allocation blocks
     @NotNullByDefault
     private record Extent(int startBlock, int blockCount) {
+    }
+
+    /// Describes one generated Apple Partition Map partition.
+    ///
+    /// @param name the Macintosh Roman partition name
+    /// @param type the Macintosh Roman partition type
+    /// @param bytes the sector-aligned partition contents
+    @NotNullByDefault
+    record ApplePartition(String name, String type, byte @Unmodifiable [] bytes) {
+        /// Copies and validates the generated partition contents.
+        ApplePartition {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(type, "type");
+            Objects.requireNonNull(bytes, "bytes");
+            if (bytes.length % SECTOR_SIZE != 0) {
+                throw new IllegalArgumentException("partition contents must be sector aligned");
+            }
+            bytes = bytes.clone();
+        }
+
+        /// Returns a defensive copy of the generated partition contents.
+        @Override
+        public byte @Unmodifiable [] bytes() {
+            return bytes.clone();
+        }
     }
 
     /// Reads a channel into the target until it is full.

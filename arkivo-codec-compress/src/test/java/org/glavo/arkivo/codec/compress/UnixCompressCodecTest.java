@@ -180,6 +180,51 @@ public final class UnixCompressCodecTest {
         );
     }
 
+    /// Verifies null rejection, zero-capacity output backpressure, and closed-engine operations.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    public void validatesBufferArgumentsAndBackpressure() throws IOException {
+        UnixCompressCodec codec = new UnixCompressCodec(12, true);
+        byte[] content = {(byte) 0xa5};
+        byte[] encoded;
+
+        CompressionEncoder encoder = codec.newEncoder();
+        assertThrows(NullPointerException.class, () -> encoder.encode(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> encoder.encode(ByteBuffer.allocate(0), null));
+        assertThrows(NullPointerException.class, () -> encoder.finish(null));
+
+        ByteBuffer source = ByteBuffer.wrap(content);
+        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.encode(source, ByteBuffer.allocate(0)));
+        assertEquals(0, source.position());
+        encoded = encodeSession(encoder, content);
+        encoder.close();
+        assertThrows(
+                IllegalStateException.class,
+                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+
+        CompressionDecoder decoder = codec.newDecoder();
+        assertThrows(NullPointerException.class, () -> decoder.decode(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> decoder.decode(ByteBuffer.allocate(0), null));
+        assertThrows(NullPointerException.class, () -> decoder.finish(null, ByteBuffer.allocate(1)));
+        assertThrows(NullPointerException.class, () -> decoder.finish(ByteBuffer.allocate(0), null));
+
+        ByteBuffer compressed = ByteBuffer.wrap(encoded);
+        assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(compressed, ByteBuffer.allocate(0)));
+        assertTrue(compressed.position() >= UnixCompressFormat.instance().probeSize());
+        ByteBuffer target = ByteBuffer.allocate(1);
+        assertEquals(CodecOutcome.FINISHED, decoder.finish(compressed, target));
+        assertEquals(1, target.position());
+        target.flip();
+        assertEquals(Byte.toUnsignedInt(content[0]), Byte.toUnsignedInt(target.get()));
+
+        decoder.close();
+        assertThrows(
+                IllegalStateException.class,
+                () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+        );
+    }
+
     /// Verifies reset discards partial headers, populated dictionaries, pending final bytes, and decoder input state.
     @Test
     public void resetsEveryPartialEnginePhase() throws IOException {
@@ -353,14 +398,37 @@ public final class UnixCompressCodecTest {
     @Test
     public void rejectsMalformedStreamsAndLimitViolations() throws IOException {
         UnixCompressCodec codec = UnixCompressCodec.DEFAULT;
-        assertThrows(IOException.class, () -> decode(codec, new byte[0], 32));
-        assertThrows(IOException.class, () -> decode(codec, new byte[]{0x1f, (byte) 0x9d}, 32));
-        assertThrows(IOException.class,
-                () -> decode(codec, new byte[]{0x1e, (byte) 0x9d, (byte) 0x90}, 32));
-        assertThrows(IOException.class,
-                () -> decode(codec, new byte[]{0x1f, (byte) 0x9d, (byte) 0xf0}, 32));
-        assertThrows(IOException.class,
-                () -> decode(codec, new byte[]{0x1f, (byte) 0x9d, (byte) 0x88}, 32));
+        for (byte[] truncatedHeader : new byte[][]{
+                new byte[0],
+                new byte[]{0x1f},
+                new byte[]{0x1f, (byte) 0x9d}
+        }) {
+            EOFException exception = assertThrows(
+                    EOFException.class,
+                    () -> decode(codec, truncatedHeader, 32)
+            );
+            assertEquals("Truncated Unix compress stream header", exception.getMessage());
+        }
+        for (byte[] invalidSignature : new byte[][]{
+                new byte[]{0x1e, (byte) 0x9d, (byte) 0x90},
+                new byte[]{0x1f, (byte) 0x9c, (byte) 0x90}
+        }) {
+            IOException exception = assertThrows(
+                    IOException.class,
+                    () -> decode(codec, invalidSignature, 32)
+            );
+            assertEquals("Invalid Unix compress stream signature", exception.getMessage());
+        }
+        IOException reservedFlags = assertThrows(
+                IOException.class,
+                () -> decode(codec, new byte[]{0x1f, (byte) 0x9d, (byte) 0xf0}, 32)
+        );
+        assertEquals("Unsupported reserved Unix compress header flags", reservedFlags.getMessage());
+        IOException invalidCodeWidth = assertThrows(
+                IOException.class,
+                () -> decode(codec, new byte[]{0x1f, (byte) 0x9d, (byte) 0x88}, 32)
+        );
+        assertEquals("Invalid Unix compress maximum code width: 8", invalidCodeWidth.getMessage());
         IOException invalidFirstCode = assertThrows(
                 IOException.class,
                 () -> decode(codec, packNineBitCodes(true, 257), 32)

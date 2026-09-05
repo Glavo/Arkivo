@@ -82,6 +82,64 @@ final class ArkivoPathVolumeTargetTest {
         assertNoStagingDirectories();
     }
 
+    /// Verifies publication failures retain rollback cleanup failures and leave state that can be retried.
+    @Test
+    void aggregatesPublicationAndRollbackFailuresBeforeSuccessfulRetry() throws IOException {
+        TestLayout successfulLayout = new TestLayout(temporaryDirectory);
+        Path firstOutput = successfulLayout.numberedPath(0L);
+        Path secondOutput = successfulLayout.numberedPath(1L);
+        Files.write(firstOutput, bytes("old-first"));
+        Files.write(secondOutput, bytes("old-second"));
+        ArkivoVolumePathLayout failingLayout = new FailingLayout(successfulLayout);
+        ArkivoVolumeOutput output = new ArkivoPathVolumeTarget(failingLayout).openOutput();
+        writeVolume(output, 0L, "first");
+        writeVolume(output, 1L, "second");
+        writeVolume(output, 2L, "third");
+
+        Path stagingDirectory = singleStagingDirectory();
+        Path stagedFirstDirectory = stagingDirectory.resolve("volume-0");
+        Files.delete(stagedFirstDirectory);
+        Files.createDirectory(stagedFirstDirectory);
+        Files.writeString(stagedFirstDirectory.resolve("blocker"), "blocker");
+        Path stagedSecondDirectory = stagingDirectory.resolve("volume-1");
+        Files.delete(stagedSecondDirectory);
+        Files.createDirectory(stagedSecondDirectory);
+        Files.writeString(stagedSecondDirectory.resolve("blocker"), "blocker");
+        Path cleanupBlockerDirectory = Files.createDirectory(stagingDirectory.resolve("cleanup-blocker"));
+        Path cleanupBlocker = Files.writeString(cleanupBlockerDirectory.resolve("child"), "child");
+
+        IOException publicationFailure = assertThrows(IOException.class, () -> output.commit(2L));
+        assertEquals(4, publicationFailure.getSuppressed().length);
+        assertTrue(publicationFailure.getSuppressed()[0] instanceof DirectoryNotEmptyException);
+        assertTrue(publicationFailure.getSuppressed()[1] instanceof DirectoryNotEmptyException);
+        assertTrue(publicationFailure.getSuppressed()[2] instanceof FileAlreadyExistsException);
+        assertTrue(publicationFailure.getSuppressed()[3] instanceof FileAlreadyExistsException);
+        assertTrue(Files.isDirectory(firstOutput));
+        assertTrue(Files.isDirectory(secondOutput));
+        assertTrue(Files.exists(stagingDirectory));
+
+        DirectoryNotEmptyException rollbackFailure = assertThrows(DirectoryNotEmptyException.class, output::rollback);
+        assertEquals(3, rollbackFailure.getSuppressed().length);
+        assertTrue(rollbackFailure.getSuppressed()[0] instanceof DirectoryNotEmptyException);
+        assertTrue(rollbackFailure.getSuppressed()[1] instanceof FileAlreadyExistsException);
+        assertTrue(rollbackFailure.getSuppressed()[2] instanceof FileAlreadyExistsException);
+        Files.delete(firstOutput.resolve("blocker"));
+        Files.delete(secondOutput.resolve("blocker"));
+
+        assertThrows(DirectoryNotEmptyException.class, output::rollback);
+        assertArrayEquals(bytes("old-first"), Files.readAllBytes(firstOutput));
+        assertArrayEquals(bytes("old-second"), Files.readAllBytes(secondOutput));
+        assertTrue(Files.exists(stagingDirectory));
+
+        Files.delete(cleanupBlocker);
+        output.rollback();
+        output.close();
+
+        assertArrayEquals(bytes("old-first"), Files.readAllBytes(firstOutput));
+        assertArrayEquals(bytes("old-second"), Files.readAllBytes(secondOutput));
+        assertNoStagingDirectories();
+    }
+
     /// Verifies volume indexes, final-index validation, and terminal-state rejection around one successful commit.
     @Test
     void enforcesVolumeTransactionStateMachine() throws IOException {

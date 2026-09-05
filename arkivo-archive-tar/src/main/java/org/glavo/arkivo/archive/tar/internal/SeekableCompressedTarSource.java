@@ -110,7 +110,9 @@ final class SeekableCompressedTarSource {
             try {
                 encoded.close();
             } catch (IOException | RuntimeException | Error cleanupFailure) {
-                exception.addSuppressed(cleanupFailure);
+                if (exception != cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
             }
             throw exception;
         }
@@ -152,7 +154,9 @@ final class SeekableCompressedTarSource {
                 try {
                     decoded.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
                 throw exception;
             }
@@ -190,6 +194,8 @@ final class SeekableCompressedTarSource {
         }
 
         /// Reads no more than the remaining body range.
+        ///
+        /// Bytes decoded before a later frame failure remain consumed from both the target and this slice.
         @Override
         public int read(ByteBuffer target) throws IOException {
             Objects.requireNonNull(target, "target");
@@ -201,16 +207,22 @@ final class SeekableCompressedTarSource {
                 return -1;
             }
             int count = (int) Math.min(target.remaining(), size - position);
+            int targetPosition = target.position();
             ByteBuffer boundedTarget = target.duplicate();
             boundedTarget.limit(boundedTarget.position() + count);
             decoded.position(origin + position);
-            int read = decoded.read(boundedTarget);
+            int read;
+            try {
+                read = decoded.read(boundedTarget);
+            } finally {
+                int transferred = boundedTarget.position() - targetPosition;
+                if (transferred > 0) {
+                    target.position(targetPosition + transferred);
+                    position += transferred;
+                }
+            }
             if (read < 0) {
                 throw new EOFException("Decoded TAR source ended inside an indexed entry body");
-            }
-            if (read > 0) {
-                target.position(target.position() + read);
-                position += read;
             }
             return read;
         }

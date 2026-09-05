@@ -510,6 +510,61 @@ final class TarArkivoSparseTest {
         assertTrue(exception.getMessage().contains("padding"));
     }
 
+    /// Verifies rejection of malformed and physically truncated GNU sparse 1.0 body maps.
+    @Test
+    void rejectsMalformedPaxSparseVersion10BodyMaps() throws IOException {
+        assertSparseVersion10BodyRejected(
+                new byte[0],
+                "Unexpected end of GNU sparse map"
+        );
+        assertSparseVersion10BodyRejected(
+                "\n".getBytes(StandardCharsets.US_ASCII),
+                "GNU sparse block count is empty"
+        );
+        assertSparseVersion10BodyRejected(
+                "x\n".getBytes(StandardCharsets.US_ASCII),
+                "Invalid GNU sparse block count"
+        );
+        assertSparseVersion10BodyRejected(
+                "/\n".getBytes(StandardCharsets.US_ASCII),
+                "Invalid GNU sparse block count"
+        );
+        assertSparseVersion10BodyRejected(
+                "9223372036854775808\n".getBytes(StandardCharsets.US_ASCII),
+                "GNU sparse block count is too large"
+        );
+        assertSparseVersion10BodyRejected(
+                "2147483648\n".getBytes(StandardCharsets.US_ASCII),
+                "GNU sparse block count is too large"
+        );
+        assertSparseVersion10BodyRejected(
+                "1\n0\n".getBytes(StandardCharsets.US_ASCII),
+                "Unexpected end of GNU sparse map"
+        );
+        assertSparseVersion10BodyRejected(
+                "0\n".getBytes(StandardCharsets.US_ASCII),
+                "Unexpected end of GNU sparse map padding"
+        );
+
+        byte[] complete = paxSparseVersion10Archive(sparseVersion10Body("0\n", new byte[0]));
+        int bodyOffset = findSequence(
+                complete,
+                "GNUSparseFile/entry".getBytes(StandardCharsets.US_ASCII)
+        ) + 512;
+
+        IOException numberTruncation = assertThrows(
+                IOException.class,
+                () -> readFirstEntry(Arrays.copyOf(complete, bodyOffset + 1))
+        );
+        assertEquals("Unexpected end of GNU sparse map", numberTruncation.getMessage());
+
+        IOException paddingTruncation = assertThrows(
+                IOException.class,
+                () -> readFirstEntry(Arrays.copyOf(complete, bodyOffset + 3))
+        );
+        assertEquals("Unexpected end of GNU sparse map padding", paddingTruncation.getMessage());
+    }
+
     /// Verifies rejection of malformed old GNU maps and truncated extension headers.
     @Test
     void rejectsInvalidOldGnuSparseEntries() throws IOException {
@@ -601,6 +656,28 @@ final class TarArkivoSparseTest {
         )) {
             reader.next();
         }
+    }
+
+    /// Verifies that one GNU sparse 1.0 body is rejected with the expected diagnostic.
+    private static void assertSparseVersion10BodyRejected(byte[] sparseBody, String expectedMessage) throws IOException {
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> readFirstEntry(paxSparseVersion10Archive(sparseBody))
+        );
+        assertEquals(expectedMessage, exception.getMessage());
+    }
+
+    /// Creates a GNU sparse 1.0 archive with the supplied complete stored body.
+    private static byte[] paxSparseVersion10Archive(byte[] sparseBody) throws IOException {
+        return paxSparseArchive(
+                List.of(
+                        Map.entry("GNU.sparse.major", "1"),
+                        Map.entry("GNU.sparse.minor", "0"),
+                        Map.entry("GNU.sparse.realsize", "0")
+                ),
+                sparseBody,
+                false
+        );
     }
 
     /// Creates a PAX sparse archive and optionally appends a regular entry.

@@ -88,7 +88,9 @@ final class ZipAesCrypto {
     /// Returns the current failure with the given exception added as a suppressed failure when needed.
     private static Throwable mergeFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure != null) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
             return failure;
         }
         return exception;

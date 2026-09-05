@@ -315,6 +315,54 @@ public final class ZstdSeekableCodecTest {
         }
     }
 
+    /// Verifies a logical read preserves completed-frame progress when decoding a later frame fails.
+    @Test
+    public void preservesCompletedFramesBeforeLaterFrameFailure() throws IOException {
+        byte[] decoded = patternedBytes(1300);
+        int frameSize = 512;
+        Path path = Files.createTempFile("arkivo-zstd-seekable-partial-failure-", ".zst");
+        try {
+            try (SeekableByteChannel target = Files.newByteChannel(
+                    path,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING
+            ); var encoder = ZstdCodec.DEFAULT.newSeekableWritableByteChannel(
+                    target,
+                    SeekableEncodingOptions.ofMaximumFrameSize(frameSize),
+                    ResourceOwnership.BORROWED
+            )) {
+                encoder.encode(ByteBuffer.wrap(decoded));
+            }
+
+            CompressionCodec.Seekable.Index index;
+            try (SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ)) {
+                index = ZstdCodec.DEFAULT.readIndex(source);
+                assertNotNull(index);
+            }
+            byte[] corrupted = Files.readAllBytes(path);
+            corrupted[Math.toIntExact(index.frameCompressedOffset(1))] ^= 1;
+            Files.write(path, corrupted, StandardOpenOption.TRUNCATE_EXISTING);
+
+            try (SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ);
+                 SeekableByteChannel logical = index.newReadableByteChannel(source)) {
+                ByteBuffer target = ByteBuffer.allocate(decoded.length + 4);
+                target.position(2);
+                target.limit(2 + decoded.length);
+
+                assertThrows(IOException.class, () -> logical.read(target));
+                assertEquals(2 + frameSize, target.position());
+                assertEquals(2 + decoded.length, target.limit());
+                assertEquals(frameSize, logical.position());
+                assertArrayEquals(
+                        java.util.Arrays.copyOf(decoded, frameSize),
+                        java.util.Arrays.copyOfRange(target.array(), 2, target.position())
+                );
+            }
+        } finally {
+            Files.deleteIfExists(path);
+        }
+    }
+
     /// Verifies pre-existing interruption aborts seekable writers and logical readers together with their endpoints.
     @Test
     public void preservesInterruptibleLifecycle() throws IOException {

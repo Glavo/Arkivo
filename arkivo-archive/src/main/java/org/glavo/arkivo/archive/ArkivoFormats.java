@@ -58,7 +58,7 @@ public final class ArkivoFormats {
     /// The result is fixed when this class is initialized. Implementations not listed by Arkivo are ignored even if they
     /// implement [ArkivoFormat].
     ///
-    /// @return the immutable format list in deterministic official order
+    /// @return the immutable format list in deterministic seekable-detection priority order
     public static @Unmodifiable List<ArkivoFormat> installed() {
         return INSTALLED_FORMATS.formats();
     }
@@ -90,12 +90,12 @@ public final class ArkivoFormats {
         return INSTALLED_FORMATS.detect(prefix);
     }
 
-    /// Detects an installed archive format from bytes at the channel's current position.
+    /// Detects the first matching installed archive format from bytes at the channel's current position.
     ///
     /// The channel position is restored before this method returns or throws.
     ///
     /// @param channel the borrowed seekable channel to probe
-    /// @return the best matching installed format, or {@code null} if none matches
+    /// @return the highest-priority matching installed format, or {@code null} if none matches
     /// @throws IOException if probe bytes cannot be read or the original channel position cannot be restored
     public static @Nullable ArkivoFormat detect(SeekableByteChannel channel) throws IOException {
         Objects.requireNonNull(channel, "channel");
@@ -114,7 +114,7 @@ public final class ArkivoFormats {
     /// Detects an installed archive format from the content of the given path.
     ///
     /// @param path the archive path to probe
-    /// @return the best matching installed format, or {@code null} if none matches
+    /// @return the highest-priority matching installed format, or {@code null} if none matches
     /// @throws IOException if the path cannot be opened or read
     public static @Nullable ArkivoFormat detect(Path path) throws IOException {
         Objects.requireNonNull(path, "path");
@@ -128,7 +128,7 @@ public final class ArkivoFormats {
     /// This method closes the probe channel but does not take ownership of the repeatable source.
     ///
     /// @param source the borrowed repeatable source to probe
-    /// @return the best matching installed format, or {@code null} if none matches
+    /// @return the highest-priority matching installed format, or {@code null} if none matches
     /// @throws IOException if a probe channel cannot be opened, read, restored, or closed
     public static @Nullable ArkivoFormat detect(ArkivoSeekableChannelSource source) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -1651,8 +1651,8 @@ public final class ArkivoFormats {
                 "org.glavo.arkivo.archive.cpio.CPIOArkivoFormat",
                 "org.glavo.arkivo.archive.dmg.DMGArkivoFormat",
                 "org.glavo.arkivo.archive.rar.RarArkivoFormat",
-                "org.glavo.arkivo.archive.tar.TarArkivoFormat",
-                "org.glavo.arkivo.archive.zip.ZipArkivoFormat"
+                "org.glavo.arkivo.archive.zip.ZipArkivoFormat",
+                "org.glavo.arkivo.archive.tar.TarArkivoFormat"
         );
 
         /// Formats in deterministic official order, with repeated logical identities included once.
@@ -1773,25 +1773,24 @@ public final class ArkivoFormats {
             return detected;
         }
 
-        /// Returns the matching seekable format with the largest preferred probe size.
+        /// Returns the first matching seekable format in catalog priority order.
         ///
         /// Each format receives the same logical archive start. Format implementations must preserve the channel
-        /// position; this method also restores it defensively between probes.
+        /// position; this method also restores it defensively between probes. Explicit order is used because seekable
+        /// formats may inspect authoritative signatures outside the leading prefix, so probe length is not a reliable
+        /// measure of match specificity.
         ///
         /// @param source the borrowed seekable archive source
-        /// @return the best matching format, or {@code null} if no format recognizes the source
+        /// @return the first matching format, or {@code null} if no format recognizes the source
         /// @throws IOException if a format probe or position restoration fails
         @Nullable ArkivoFormat detect(SeekableByteChannel source) throws IOException {
             Objects.requireNonNull(source, "source");
             long origin = source.position();
-            @Nullable ArkivoFormat detected = null;
-            int detectedProbeSize = -1;
             for (ArkivoFormat format : formats) {
                 @Nullable Throwable failure = null;
                 try {
-                    if (format.matches(source) && format.probeSize() > detectedProbeSize) {
-                        detected = format;
-                        detectedProbeSize = format.probeSize();
+                    if (format.matches(source)) {
+                        return format;
                     }
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
@@ -1800,7 +1799,7 @@ public final class ArkivoFormats {
                     restorePosition(source, origin, failure);
                 }
             }
-            return detected;
+            return null;
         }
 
         /// Returns the largest preferred signature prefix requested by an installed official format.

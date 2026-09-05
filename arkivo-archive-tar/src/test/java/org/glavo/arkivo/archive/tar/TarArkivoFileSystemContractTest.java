@@ -579,6 +579,29 @@ final class TarArkivoFileSystemContractTest {
         }
     }
 
+    /// Verifies an indexed TAR tree rejects duplicate paths and regular files used as directories.
+    @Test
+    void rejectsContradictoryIndexedEntryPaths() throws IOException {
+        String[][] cases = {
+                {"duplicate.txt", "duplicate.txt"},
+                {"dir", "dir/file.txt"},
+                {"dir/file.txt", "dir"}
+        };
+
+        for (int index = 0; index < cases.length; index++) {
+            Path archive = temporaryDirectory.resolve("path-conflict-" + index + ".tar");
+            try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archive)) {
+                for (String path : cases[index]) {
+                    try (OutputStream ignored = writer.beginFile(path).openOutputStream()) {
+                        // Empty bodies are sufficient to exercise indexed path construction.
+                    }
+                }
+            }
+
+            assertThrows(IOException.class, () -> TarArkivoFileSystem.open(archive));
+        }
+    }
+
     /// Verifies one path exposes the expected metadata through TAR and POSIX projections.
     private static void assertMetadata(
             Path file,

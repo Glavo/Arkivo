@@ -65,6 +65,36 @@ final class SharedSeekableChannelSourceTest {
         assertFalse(backing.isOpen());
     }
 
+    /// Verifies delegate progress remains observable when a physical read subsequently fails.
+    @Test
+    void preservesPartialProgressBeforeReadFailure() throws IOException {
+        IOException readFailure = new IOException("partial read failure");
+        TrackingSeekableByteChannel backing = new TrackingSeekableByteChannel(new byte[]{1, 2, 3, 4});
+        backing.partialReadSize = 2;
+        backing.readFailure = readFailure;
+
+        try (ArkivoSeekableChannelSource source = ArkivoSeekableChannelSource.of(backing);
+             SeekableByteChannel view = source.openChannel()) {
+            ByteBuffer target = ByteBuffer.allocate(6);
+            target.position(1);
+            target.limit(5);
+
+            assertSame(readFailure, assertThrows(IOException.class, () -> view.read(target)));
+            assertEquals(3, target.position());
+            assertEquals(5, target.limit());
+            assertEquals(2L, view.position());
+            assertEquals(1, target.get(1));
+            assertEquals(2, target.get(2));
+
+            assertEquals(2, view.read(target));
+            assertEquals(5, target.position());
+            assertEquals(4L, view.position());
+            assertEquals(3, target.get(3));
+            assertEquals(4, target.get(4));
+            assertEquals(-1, view.read(ByteBuffer.allocate(1)));
+        }
+    }
+
     /// Verifies all logical views can read concurrently without sharing positions.
     @Test
     void serializesPhysicalAccessForConcurrentViews() throws Exception {
@@ -304,6 +334,12 @@ final class SharedSeekableChannelSourceTest {
         /// Whether querying the position fails.
         private boolean failPositionQuery;
 
+        /// Number of bytes delivered before the pending read failure.
+        private int partialReadSize;
+
+        /// Pending read failure reported after partial progress, or `null` when reads succeed.
+        private @Nullable IOException readFailure;
+
         /// One exception optionally repeated by position lookup and the first close attempt.
         private @Nullable IOException repeatedFailure;
 
@@ -334,8 +370,16 @@ final class SharedSeekableChannelSourceTest {
                     return -1;
                 }
                 int count = (int) Math.min((long) target.remaining(), content.length - position);
+                @Nullable IOException readFailure = this.readFailure;
+                if (readFailure != null) {
+                    count = Math.min(count, partialReadSize);
+                }
                 target.put(content, (int) position, count);
                 position += count;
+                if (readFailure != null) {
+                    this.readFailure = null;
+                    throw readFailure;
+                }
                 return count;
             } finally {
                 endAccess();

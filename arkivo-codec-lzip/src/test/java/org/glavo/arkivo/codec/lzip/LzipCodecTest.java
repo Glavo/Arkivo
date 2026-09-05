@@ -227,23 +227,81 @@ public final class LzipCodecTest {
         }
     }
 
+    /// Preserves decoded bytes when a later member fails integrity validation at its trailer.
+    @Test
+    public void frameChannelPreservesProgressBeforeIntegrityFailure() throws IOException {
+        byte[] first = "valid first member".getBytes(StandardCharsets.UTF_8);
+        byte[] second = patternedContent(4_097);
+        byte[] firstMember = independentMember(first, TEST_DICTIONARY_SIZE);
+        byte[] secondMember = independentMember(second, TEST_DICTIONARY_SIZE);
+        byte[] damagedSecondMember = changed(
+                secondMember,
+                secondMember.length - LzipSupport.TRAILER_SIZE,
+                1
+        );
+
+        try (DecompressingReadableByteChannel.Framed input = new LzipCodec().newReadableByteChannel(
+                Channels.newChannel(new ByteArrayInputStream(concatenate(firstMember, damagedSecondMember))),
+                ResourceOwnership.BORROWED
+        )) {
+            ByteBuffer firstTarget = ByteBuffer.allocate(first.length + 1);
+            assertEquals(CodecResult.Status.FRAME_FINISHED, input.decodeFrame(firstTarget).status());
+            assertArrayEquals(first, Arrays.copyOf(firstTarget.array(), firstTarget.position()));
+
+            ByteBuffer secondTarget = ByteBuffer.allocate(second.length + 1);
+            IOException exception = assertThrows(IOException.class, () -> input.decodeFrame(secondTarget));
+            assertEquals("Lzip member CRC-32 mismatch", exception.getMessage());
+            assertArrayEquals(second, Arrays.copyOf(secondTarget.array(), secondTarget.position()));
+        }
+    }
+
     /// Verifies metadata, CRC, size, truncation, and dictionary-window failures are strict checked errors.
     @Test
     public void rejectsMalformedMembers() throws IOException {
         byte[] content = patternedContent(12_345);
         byte[] encoded = independentMember(content, TEST_DICTIONARY_SIZE);
 
-        assertMalformed(changed(encoded, 0, 1), IOException.class);
-        assertMalformed(changed(encoded, 4, 1), IOException.class);
-        assertMalformed(changed(encoded, 5, 16), IOException.class);
-        assertMalformed(changed(encoded, encoded.length - 20, 1), IOException.class);
-        assertMalformed(changed(encoded, encoded.length - 16, 1), IOException.class);
-        assertMalformed(changed(encoded, encoded.length - 8, 1), IOException.class);
-        assertMalformed(Arrays.copyOf(encoded, encoded.length - 1), EOFException.class);
+        for (int index = 0; index < LzipSupport.MAGIC.length; index++) {
+            assertMalformed(
+                    changed(encoded, index, 1),
+                    IOException.class,
+                    "Invalid lzip member signature"
+            );
+        }
+        assertMalformed(
+                changed(encoded, 4, 1),
+                IOException.class,
+                "Unsupported lzip member version: 0"
+        );
+        assertMalformed(
+                changed(encoded, 5, 16),
+                IOException.class,
+                "Invalid lzip member dictionary size"
+        );
+        assertMalformed(
+                changed(encoded, encoded.length - 20, 1),
+                IOException.class,
+                "Lzip member CRC-32 mismatch"
+        );
+        assertMalformed(
+                changed(encoded, encoded.length - 16, 1),
+                IOException.class,
+                "Lzip data size mismatch"
+        );
+        assertMalformed(
+                changed(encoded, encoded.length - 8, 1),
+                IOException.class,
+                "Lzip member size mismatch"
+        );
+        assertMalformed(
+                Arrays.copyOf(encoded, encoded.length - 1),
+                EOFException.class,
+                "Truncated lzip member trailer"
+        );
 
         byte[] unsignedDataSize = encoded.clone();
         ByteArrayAccess.writeLongLittleEndian(unsignedDataSize, unsignedDataSize.length - 16, Long.MIN_VALUE);
-        assertMalformed(unsignedDataSize, IOException.class);
+        assertMalformed(unsignedDataSize, IOException.class, "Unsupported unsigned lzip data size");
 
         byte[] oversizedMember = encoded.clone();
         ByteArrayAccess.writeLongLittleEndian(
@@ -251,11 +309,11 @@ public final class LzipCodecTest {
                 oversizedMember.length - 8,
                 LzipSupport.MAXIMUM_MEMBER_SIZE + 1L
         );
-        assertMalformed(oversizedMember, IOException.class);
+        assertMalformed(oversizedMember, IOException.class, "Unsupported lzip member size");
 
         byte[] unsignedMemberSize = encoded.clone();
         ByteArrayAccess.writeLongLittleEndian(unsignedMemberSize, unsignedMemberSize.length - 8, Long.MIN_VALUE);
-        assertMalformed(unsignedMemberSize, IOException.class);
+        assertMalformed(unsignedMemberSize, IOException.class, "Unsupported lzip member size");
 
         assertThrows(
                 DecompressionWindowLimitException.class,
@@ -312,15 +370,17 @@ public final class LzipCodecTest {
     /// Asserts malformed input fails with the requested checked exception type.
     private static void assertMalformed(
             byte[] encoded,
-            Class<? extends IOException> exceptionType
+            Class<? extends IOException> exceptionType,
+            String expectedMessage
     ) {
-        assertThrows(
+        IOException exception = assertThrows(
                 exceptionType,
                 () -> new LzipCodec().decompress(
                         ByteBuffer.wrap(encoded),
                         ByteBuffer.allocate(1 << 16)
                 )
         );
+        assertTrue(exception.getMessage().contains(expectedMessage), exception::getMessage);
     }
 
     /// Returns a copy whose selected byte is XORed with the requested mask.

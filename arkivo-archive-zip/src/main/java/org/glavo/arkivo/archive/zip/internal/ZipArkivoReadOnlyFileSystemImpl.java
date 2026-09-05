@@ -78,6 +78,7 @@ import static org.glavo.arkivo.archive.zip.internal.ZipConstants.LZMA_EOS_MARKER
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.LZMA_PROPERTY_SIZE;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.LOCAL_FILE_HEADER_SIGNATURE;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.STRONG_ENCRYPTION_FLAG;
+import static org.glavo.arkivo.archive.zip.internal.ZipConstants.UINT16_MAX;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.UINT32_MAX;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.WINZIP_AES_METHOD;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE;
@@ -345,7 +346,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     closeActionCompleted = true;
                 } catch (RuntimeException | Error exception) {
                     if (failure != null) {
-                        failure.addSuppressed(exception);
+                        if (failure != exception) {
+                            failure.addSuppressed(exception);
+                        }
                     } else {
                         failure = exception;
                     }
@@ -926,7 +929,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 int internalAttributes = Short.toUnsignedInt(centralDirectory.getShort(offset + 36));
                 long externalAttributes = Integer.toUnsignedLong(centralDirectory.getInt(offset + 38));
                 long localHeaderOffset = Integer.toUnsignedLong(centralDirectory.getInt(offset + 42));
-                int localHeaderDiskNumber = Short.toUnsignedInt(centralDirectory.getShort(offset + 34));
+                long localHeaderDiskNumber = Short.toUnsignedInt(centralDirectory.getShort(offset + 34));
                 int variableOffset = offset + ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE;
                 int nextOffset = variableOffset + nameLength + extraLength + commentLength;
                 if (nextOffset > centralDirectory.limit()) {
@@ -941,11 +944,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         extraData,
                         uncompressedSize,
                         compressedSize,
-                        localHeaderOffset
+                        localHeaderOffset,
+                        localHeaderDiskNumber
                 );
                 uncompressedSize = zip64.uncompressedSize;
                 compressedSize = zip64.compressedSize;
                 localHeaderOffset = zip64.localHeaderOffset;
+                localHeaderDiskNumber = zip64.localHeaderDiskNumber;
 
                 String decodedPath;
                 try {
@@ -1453,7 +1458,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 try {
                     channel.close();
                 } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    exception.addSuppressed(cleanupFailure);
+                    if (exception != cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
                 }
             }
             retireDecodedEntryContent(content, exception);
@@ -1500,7 +1507,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             synchronized (decodedEntryLifecycleLock) {
                 retiredDecodedEntryContents.add(content);
             }
-            failure.addSuppressed(cleanupFailure);
+            if (failure != cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
         }
     }
 
@@ -1644,7 +1653,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             try {
                 input.close();
             } catch (IOException | RuntimeException | Error closeException) {
-                exception.addSuppressed(closeException);
+                if (exception != closeException) {
+                    exception.addSuppressed(closeException);
+                }
             }
             throw exception;
         }
@@ -1960,7 +1971,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             if (crc32 != expectedCrc32) {
                 throw new IOException("ZIP local header CRC-32 does not match central directory");
             }
-            Zip64Values localZip64 = Zip64Values.read(extraData, uncompressedSize, compressedSize, 0L);
+            Zip64Values localZip64 = Zip64Values.read(
+                    extraData,
+                    uncompressedSize,
+                    compressedSize,
+                    0L,
+                    0L
+            );
             if (localZip64.compressedSize != expectedCompressedSize) {
                 throw new IOException("ZIP local header compressed size does not match central directory");
             }
@@ -2259,7 +2276,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             channel.close();
         } catch (IOException | RuntimeException | Error exception) {
             if (failure != null) {
-                failure.addSuppressed(exception);
+                if (failure != exception) {
+                    failure.addSuppressed(exception);
+                }
             } else {
                 throw exception;
             }
@@ -2269,7 +2288,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// Returns the current failure with the given exception added as a suppressed failure when needed.
     private static Throwable mergeFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure != null) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
             return failure;
         }
         return exception;
@@ -2967,11 +2988,20 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// The local file header offset.
         private final long localHeaderOffset;
 
+        /// The zero-based disk containing the local file header.
+        private final long localHeaderDiskNumber;
+
         /// Creates decoded ZIP64 values.
-        private Zip64Values(long uncompressedSize, long compressedSize, long localHeaderOffset) {
+        private Zip64Values(
+                long uncompressedSize,
+                long compressedSize,
+                long localHeaderOffset,
+                long localHeaderDiskNumber
+        ) {
             this.uncompressedSize = uncompressedSize;
             this.compressedSize = compressedSize;
             this.localHeaderOffset = localHeaderOffset;
+            this.localHeaderDiskNumber = localHeaderDiskNumber;
         }
 
         /// Reads ZIP64 values from central directory extra data when required.
@@ -2979,13 +3009,23 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 byte[] extraData,
                 long uncompressedSize,
                 long compressedSize,
-                long localHeaderOffset
+                long localHeaderOffset,
+                long localHeaderDiskNumber
         ) throws IOException {
             boolean needsUncompressedSize = uncompressedSize == UINT32_MAX;
             boolean needsCompressedSize = compressedSize == UINT32_MAX;
             boolean needsLocalHeaderOffset = localHeaderOffset == UINT32_MAX;
-            if (!needsUncompressedSize && !needsCompressedSize && !needsLocalHeaderOffset) {
-                return new Zip64Values(uncompressedSize, compressedSize, localHeaderOffset);
+            boolean needsLocalHeaderDiskNumber = localHeaderDiskNumber == UINT16_MAX;
+            if (!needsUncompressedSize
+                    && !needsCompressedSize
+                    && !needsLocalHeaderOffset
+                    && !needsLocalHeaderDiskNumber) {
+                return new Zip64Values(
+                        uncompressedSize,
+                        compressedSize,
+                        localHeaderOffset,
+                        localHeaderDiskNumber
+                );
             }
 
             ZipExtraFields.Field field = ZipExtraFields.find(extraData, ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID);
@@ -3004,7 +3044,15 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             if (needsLocalHeaderOffset) {
                 localHeaderOffset = readZip64Long(data);
             }
-            return new Zip64Values(uncompressedSize, compressedSize, localHeaderOffset);
+            if (needsLocalHeaderDiskNumber) {
+                localHeaderDiskNumber = readZip64UnsignedInt(data);
+            }
+            return new Zip64Values(
+                    uncompressedSize,
+                    compressedSize,
+                    localHeaderOffset,
+                    localHeaderDiskNumber
+            );
         }
 
         /// Reads one little-endian ZIP64 long value.
@@ -3017,6 +3065,14 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 throw new IOException("ZIP64 extended information value is too large");
             }
             return value;
+        }
+
+        /// Reads one little-endian unsigned ZIP64 disk number.
+        private static long readZip64UnsignedInt(ByteBuffer data) throws IOException {
+            if (data.remaining() < Integer.BYTES) {
+                throw new IOException("Invalid ZIP64 extended information extra field");
+            }
+            return Integer.toUnsignedLong(data.getInt());
         }
     }
 

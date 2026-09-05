@@ -9,6 +9,8 @@ import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.dmg.DMGImage;
+import org.glavo.arkivo.archive.dmg.DMGPartition;
+import org.glavo.arkivo.archive.dmg.DMGPartitionScheme;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -67,52 +69,113 @@ public final class ArchiveFuzzTest {
     public ArchiveFuzzTest() {
     }
 
-    /// Verifies that the source-generated RAR seed reaches entry and body parsing through both public reader models.
+    /// Verifies that every generated archive seed reaches its intended public reader models.
     @Test
-    void generatedRARSeedContainsStoredFile() throws IOException {
-        byte @Unmodifiable [] archive = FuzzSupport.createArchiveSeed("rar");
-
-        ReadOnlyByteArrayChannel streamingSource = new ReadOnlyByteArrayChannel(archive);
-        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
-                "rar",
-                (ReadableByteChannel) streamingSource,
-                FuzzSupport.ARCHIVE_READ_OPTIONS
-        )) {
-            if (!reader.next()) {
-                throw new AssertionError("Generated RAR seed omitted its stored file");
-            }
-            ArchiveEntryAttributes attributes = reader.readAttributes();
-            if (!"seed.txt".equals(attributes.path()) || !attributes.isRegularFile()) {
-                throw new AssertionError("Generated RAR seed changed its stored-file metadata");
-            }
-            try (InputStream body = reader.openInputStream()) {
-                if (!Arrays.equals(FuzzSupport.SEED_CONTENT, body.readAllBytes())) {
-                    throw new AssertionError("Generated RAR seed changed its stored-file content");
+    void generatedArchiveSeedsReachReaderModels() throws IOException {
+        for (String formatName : FuzzSupport.STREAMING_ARCHIVE_FORMATS) {
+            byte @Unmodifiable [] archive = FuzzSupport.createArchiveSeed(formatName, BODY_MODE_COUNT);
+            ReadOnlyByteArrayChannel source = new ReadOnlyByteArrayChannel(archive);
+            try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
+                    formatName,
+                    (ReadableByteChannel) source,
+                    FuzzSupport.ARCHIVE_READ_OPTIONS
+            )) {
+                for (int index = 0; index < BODY_MODE_COUNT; index++) {
+                    if (!reader.next()) {
+                        throw new AssertionError("Generated " + formatName + " seed omitted entry " + index);
+                    }
+                    ArchiveEntryAttributes attributes = reader.readAttributes();
+                    String expectedPath = index == 0 ? "seed.txt" : "seed-" + index + ".txt";
+                    if (!expectedPath.equals(attributes.path()) || !attributes.isRegularFile()) {
+                        throw new AssertionError("Generated " + formatName + " seed changed entry metadata");
+                    }
+                    try (InputStream body = reader.openInputStream()) {
+                        if (!Arrays.equals(FuzzSupport.SEED_CONTENT, body.readAllBytes())) {
+                            throw new AssertionError("Generated " + formatName + " seed changed entry content");
+                        }
+                    }
+                }
+                if (reader.next()) {
+                    throw new AssertionError("Generated " + formatName + " seed contains an unexpected entry");
                 }
             }
-            if (reader.next()) {
-                throw new AssertionError("Generated RAR seed contains an unexpected entry");
+            if (source.isOpen()) {
+                throw new AssertionError(formatName + " streaming reader did not close its owned seed source");
             }
-        }
-        if (streamingSource.isOpen()) {
-            throw new AssertionError("RAR streaming reader did not close its owned source");
         }
 
-        ReadOnlyByteArrayChannel fileSystemSource = new ReadOnlyByteArrayChannel(archive);
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(
-                "rar",
-                fileSystemSource,
-                FuzzSupport.ARCHIVE_READ_OPTIONS
-        )) {
-            Path seedPath = fileSystem.getPath("/seed.txt");
-            if (!Files.isRegularFile(seedPath, LinkOption.NOFOLLOW_LINKS)
-                    || !Arrays.equals(FuzzSupport.SEED_CONTENT, Files.readAllBytes(seedPath))) {
-                throw new AssertionError("Generated RAR seed did not round trip through its file system");
+        for (String formatName : FuzzSupport.FILE_SYSTEM_ARCHIVE_FORMATS) {
+            byte @Unmodifiable [] archive = FuzzSupport.createArchiveSeed(formatName);
+            ReadOnlyByteArrayChannel source = new ReadOnlyByteArrayChannel(archive);
+            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(
+                    formatName,
+                    source,
+                    FuzzSupport.ARCHIVE_READ_OPTIONS
+            )) {
+                Path root = fileSystem.getPath("/");
+                if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new AssertionError("Generated " + formatName + " seed did not expose an archive root");
+                }
+                if (!"dmg".equals(formatName)) {
+                    Path seedPath = fileSystem.getPath("/seed.txt");
+                    if (!Files.isRegularFile(seedPath, LinkOption.NOFOLLOW_LINKS)
+                            || !Arrays.equals(FuzzSupport.SEED_CONTENT, Files.readAllBytes(seedPath))) {
+                        throw new AssertionError("Generated " + formatName + " seed changed file-system content");
+                    }
+                }
+            }
+            if (source.isOpen()) {
+                throw new AssertionError(formatName + " file system did not close its owned seed source");
             }
         }
-        if (fileSystemSource.isOpen()) {
-            throw new AssertionError("RAR file system did not close its owned source");
-        }
+    }
+
+    /// Verifies that every generated DMG seed reaches its intended partition-table parser.
+    @Test
+    void generatedDMGSeedsExposeExpectedPartitions() throws IOException {
+        verifyDMGPartitions(
+                FuzzSupport.createDMGSeed(),
+                List.of(new DMGPartition(
+                        0,
+                        0L,
+                        8L * FuzzSupport.DMG_SECTOR_SIZE,
+                        null,
+                        null,
+                        DMGPartitionScheme.RAW
+                ))
+        );
+        verifyDMGPartitions(
+                FuzzSupport.createApplePartitionMapDMGSeed(),
+                List.of(
+                        new DMGPartition(
+                                0,
+                                FuzzSupport.DMG_SECTOR_SIZE,
+                                2L * FuzzSupport.DMG_SECTOR_SIZE,
+                                "Partition Map",
+                                "Apple_partition_map",
+                                DMGPartitionScheme.APPLE_PARTITION_MAP
+                        ),
+                        new DMGPartition(
+                                1,
+                                3L * FuzzSupport.DMG_SECTOR_SIZE,
+                                8L * FuzzSupport.DMG_SECTOR_SIZE,
+                                "Seed",
+                                "Apple_HFS",
+                                DMGPartitionScheme.APPLE_PARTITION_MAP
+                        )
+                )
+        );
+        verifyDMGPartitions(
+                FuzzSupport.createGUIDPartitionTableDMGSeed(),
+                List.of(new DMGPartition(
+                        0,
+                        3L * FuzzSupport.DMG_SECTOR_SIZE,
+                        8L * FuzzSupport.DMG_SECTOR_SIZE,
+                        "Seed",
+                        "48465300-0000-11AA-AA11-00306543ECAC",
+                        DMGPartitionScheme.GUID_PARTITION_TABLE
+                ))
+        );
     }
 
     /// Fuzzes named and detected forward-only archive readers, including entry bodies.
@@ -245,25 +308,61 @@ public final class ArchiveFuzzTest {
         try (DMGImage image = DMGImage.open(
                 new ReadOnlyByteArrayChannel(data),
                 FuzzSupport.ARCHIVE_READ_OPTIONS
-        ); SeekableByteChannel disk = image.openChannel()) {
-            ByteBuffer buffer = ByteBuffer.allocate(4096);
-            int total = 0;
-            while (true) {
-                int count = disk.read(buffer);
-                if (count < 0) {
-                    break;
+        )) {
+            try (SeekableByteChannel disk = image.openChannel()) {
+                drainDMGChannel(disk);
+            }
+            for (DMGPartition partition : image.partitions()) {
+                try (SeekableByteChannel channel = image.openPartition(partition)) {
+                    drainDMGChannel(channel);
                 }
-                if (count == 0) {
-                    throw new AssertionError("DMG decoded channel made no progress");
-                }
-                total = Math.addExact(total, count);
-                if (total > FuzzSupport.MAX_DECODED_OUTPUT_SIZE) {
-                    throw new AssertionError("DMG decoded-output limit was not enforced");
-                }
-                buffer.clear();
             }
         } catch (IOException | UnsupportedOperationException expectedMalformedImage) {
             // Malformed layouts, configured limits, and unsupported run encodings are normal fuzz outcomes.
+        }
+    }
+
+    /// Fully reads one bounded DMG channel while enforcing progress independently of the production implementation.
+    ///
+    /// @param channel the decoded disk or partition channel
+    /// @throws IOException if reading the channel fails
+    private static void drainDMGChannel(SeekableByteChannel channel) throws IOException {
+        ByteBuffer buffer = ByteBuffer.allocate(4096);
+        int total = 0;
+        while (true) {
+            int count = channel.read(buffer);
+            if (count < 0) {
+                return;
+            }
+            if (count == 0) {
+                throw new AssertionError("DMG decoded channel made no progress");
+            }
+            total = Math.addExact(total, count);
+            if (total > FuzzSupport.MAX_DECODED_OUTPUT_SIZE) {
+                throw new AssertionError("DMG decoded-output limit was not enforced");
+            }
+            buffer.clear();
+        }
+    }
+
+    /// Opens one generated DMG seed and verifies its exact discovered partition descriptors.
+    ///
+    /// @param seed the complete flattened UDIF image
+    /// @param expected the expected immutable partition descriptors
+    /// @throws IOException if the generated image cannot be opened
+    private static void verifyDMGPartitions(
+            byte @Unmodifiable [] seed,
+            @Unmodifiable List<DMGPartition> expected
+    ) throws IOException {
+        try (DMGImage image = DMGImage.open(
+                new ReadOnlyByteArrayChannel(seed),
+                FuzzSupport.ARCHIVE_READ_OPTIONS
+        )) {
+            if (!expected.equals(image.partitions())) {
+                throw new AssertionError(
+                        "Generated DMG seed exposed unexpected partitions: " + image.partitions()
+                );
+            }
         }
     }
 
@@ -431,11 +530,15 @@ public final class ArchiveFuzzTest {
         return seeds.stream();
     }
 
-    /// Supplies one valid flattened UDIF seed.
+    /// Supplies raw, Apple-partitioned, and GUID-partitioned valid flattened UDIF seeds.
     ///
     /// @return the deterministic DMG-image seed arguments
     private static Stream<Arguments> dmgImageSeeds() {
-        return Stream.of(Arguments.of((Object) FuzzSupport.createDMGSeed()));
+        return Stream.of(
+                Arguments.of((Object) FuzzSupport.createDMGSeed()),
+                Arguments.of((Object) FuzzSupport.createApplePartitionMapDMGSeed()),
+                Arguments.of((Object) FuzzSupport.createGUIDPartitionTableDMGSeed())
+        );
     }
 
     /// Creates one archive seed argument with explicit or detected format selection.

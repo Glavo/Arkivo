@@ -61,7 +61,7 @@ final class LibarchiveCompleteFixtureCorpusTest {
 
     /// The SHA-256 digest of every fixture name and its complete stable probe outcome.
     private static final String EXPECTED_OUTCOME_DIGEST =
-            "d78f4d15b987ee21d6c2919fd23038dd80c15b01320d4d071400b3b7fd5de69c";
+            "f6a9a72a79154182ac812a9125cbf62704c3c56021ef39b20e133538abbaec56";
 
     /// The maximum decoded stream retained while probing a compression fixture.
     private static final long MAXIMUM_DECODED_SIZE = 64L * 1024L * 1024L;
@@ -145,11 +145,13 @@ final class LibarchiveCompleteFixtureCorpusTest {
     void retainsStableFixtureOutcomes() throws IOException, NoSuchAlgorithmException {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         Map<String, Integer> outcomeCounts = new TreeMap<>();
+        Map<String, String> fixtureOutcomes = new TreeMap<>();
         try (Stream<String> fixtures = fixtureNames()) {
             for (String fixture : fixtures.toList()) {
                 byte @Unmodifiable [] content = LibarchiveUuDecoder.decode(fixturePath(fixture));
                 String outcome = probeFixture(content);
                 outcomeCounts.merge(outcome, 1, Math::addExact);
+                fixtureOutcomes.put(fixture, outcome);
                 digest.update(fixture.getBytes(StandardCharsets.UTF_8));
                 digest.update((byte) '\t');
                 digest.update(outcome.getBytes(StandardCharsets.UTF_8));
@@ -161,6 +163,7 @@ final class LibarchiveCompleteFixtureCorpusTest {
                 EXPECTED_OUTCOME_DIGEST,
                 actualDigest,
                 () -> "Complete libarchive fixture outcome counts: " + outcomeCounts
+                        + "; fixture outcomes: " + fixtureOutcomes
         );
     }
 

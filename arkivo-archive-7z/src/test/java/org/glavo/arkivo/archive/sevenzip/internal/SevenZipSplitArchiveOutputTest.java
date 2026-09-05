@@ -8,6 +8,7 @@ import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
@@ -22,6 +23,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -138,6 +140,56 @@ final class SevenZipSplitArchiveOutputTest {
         assertEquals(1, physicalOutput.rollbackAttempts);
     }
 
+    /// Verifies publication preserves one shared volume-write and volume-close failure without self-suppression.
+    @Test
+    void preservesSharedVolumeWriteAndCloseFailure() throws IOException {
+        IOException sharedFailure = new IOException("shared volume failure");
+        RecordingVolumeOutput physicalOutput = new RecordingVolumeOutput();
+        physicalOutput.firstVolumeWriteFailure = sharedFailure;
+        physicalOutput.firstVolumeCloseFailure = sharedFailure;
+        physicalOutput.firstVolumeCloseFailures = 1;
+        RecordingVolumeTarget target = new RecordingVolumeTarget(physicalOutput);
+        SevenZipSplitArchiveOutput output = completedOutput(target, Long.MAX_VALUE);
+
+        IOException failure = assertThrows(IOException.class, output::commit);
+
+        assertSame(sharedFailure, failure);
+        assertEquals(0, failure.getSuppressed().length);
+        assertEquals(1, physicalOutput.rollbackAttempts);
+        assertEquals(1, physicalOutput.closeAttempts);
+        assertTrue(physicalOutput.rolledBack);
+        assertTrue(physicalOutput.allChannelsClosed());
+        assertEquals(2, physicalOutput.channels.get(0).closeAttempts);
+
+        output.commit();
+        assertEquals(1, target.openAttempts);
+    }
+
+    /// Verifies publication suppresses a distinct volume-close failure behind the volume-write failure.
+    @Test
+    void suppressesDistinctVolumeCloseFailureAfterWriteFailure() throws IOException {
+        IOException writeFailure = new IOException("volume write failure");
+        IOException closeFailure = new IOException("volume close failure");
+        RecordingVolumeOutput physicalOutput = new RecordingVolumeOutput();
+        physicalOutput.firstVolumeWriteFailure = writeFailure;
+        physicalOutput.firstVolumeCloseFailure = closeFailure;
+        physicalOutput.firstVolumeCloseFailures = 1;
+        SevenZipSplitArchiveOutput output = completedOutput(
+                new RecordingVolumeTarget(physicalOutput),
+                Long.MAX_VALUE
+        );
+
+        IOException failure = assertThrows(IOException.class, output::commit);
+
+        assertSame(writeFailure, failure);
+        assertEquals(1, failure.getSuppressed().length);
+        assertSame(closeFailure, failure.getSuppressed()[0]);
+        assertEquals(1, physicalOutput.rollbackAttempts);
+        assertEquals(1, physicalOutput.closeAttempts);
+        assertTrue(physicalOutput.rolledBack);
+        assertTrue(physicalOutput.allChannelsClosed());
+    }
+
     /// Verifies rollback before publication removes assembly state without opening the target.
     @Test
     void rollbackBeforePublicationSkipsTarget() throws IOException {
@@ -228,6 +280,12 @@ final class SevenZipSplitArchiveOutputTest {
         /// Number of close failures scheduled for the first volume channel.
         private int firstVolumeCloseFailures;
 
+        /// Failure reported by writes to the first volume, or `null` for successful writes.
+        private @Nullable IOException firstVolumeWriteFailure;
+
+        /// Failure reported by scheduled first-volume close failures, or `null` for the default failure.
+        private @Nullable IOException firstVolumeCloseFailure;
+
         /// Number of commit attempts.
         private int commitAttempts;
 
@@ -262,7 +320,9 @@ final class SevenZipSplitArchiveOutputTest {
                 throw new IOException("previous volume is still open");
             }
             RecordingVolumeChannel channel = new RecordingVolumeChannel(
-                    channels.isEmpty() ? firstVolumeCloseFailures : 0
+                    channels.isEmpty() ? firstVolumeWriteFailure : null,
+                    channels.isEmpty() ? firstVolumeCloseFailures : 0,
+                    channels.isEmpty() ? firstVolumeCloseFailure : null
             );
             channels.add(channel);
             return channel;
@@ -351,8 +411,14 @@ final class SevenZipSplitArchiveOutputTest {
         /// Bytes written to this volume.
         private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
+        /// Failure reported by each write, or `null` for successful writes.
+        private final @Nullable IOException writeFailure;
+
         /// Number of close failures still scheduled.
         private int closeFailures;
+
+        /// Failure reported by scheduled close failures, or `null` for the default failure.
+        private final @Nullable IOException closeFailure;
 
         /// Number of close attempts.
         private int closeAttempts;
@@ -360,15 +426,24 @@ final class SevenZipSplitArchiveOutputTest {
         /// Whether the channel remains open.
         private boolean open = true;
 
-        /// Creates a volume with the requested close failures.
-        private RecordingVolumeChannel(int closeFailures) {
+        /// Creates a volume with the requested write and close failures.
+        private RecordingVolumeChannel(
+                @Nullable IOException writeFailure,
+                int closeFailures,
+                @Nullable IOException closeFailure
+        ) {
+            this.writeFailure = writeFailure;
             this.closeFailures = closeFailures;
+            this.closeFailure = closeFailure;
         }
 
         /// Writes every remaining source byte.
         @Override
         public int write(ByteBuffer source) throws IOException {
             ensureOpen();
+            if (writeFailure != null) {
+                throw writeFailure;
+            }
             int count = source.remaining();
             byte[] buffer = new byte[count];
             source.get(buffer);
@@ -391,7 +466,7 @@ final class SevenZipSplitArchiveOutputTest {
             }
             if (closeFailures > 0) {
                 closeFailures--;
-                throw new IOException("volume close failure");
+                throw closeFailure != null ? closeFailure : new IOException("volume close failure");
             }
             open = false;
         }
