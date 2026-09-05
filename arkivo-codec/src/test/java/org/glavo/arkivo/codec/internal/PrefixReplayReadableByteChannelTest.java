@@ -10,18 +10,21 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.spi.AbstractInterruptibleChannel;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -57,6 +60,115 @@ final class PrefixReplayReadableByteChannelTest {
 
         replay.close();
         assertTrue(source.isOpen());
+    }
+
+    /// Verifies replay owns its cursor and does not read the source until the complete selected prefix is delivered.
+    @Test
+    void replaysSelectedPrefixWithoutChangingCallerCursor() throws IOException {
+        for (boolean interruptible : new boolean[]{false, true}) {
+            for (boolean direct : new boolean[]{false, true}) {
+                TrackingReadableByteChannel source = interruptible
+                        ? new InterruptibleTrackingReadableByteChannel(new byte[]{5, 6})
+                        : new TrackingReadableByteChannel(new byte[]{5, 6});
+                ByteBuffer storage = direct ? ByteBuffer.allocateDirect(8) : ByteBuffer.allocate(8);
+                storage.put(new byte[]{9, 8, 1, 2, 3, 4, 7, 6}).position(1).limit(7);
+                ByteBuffer prefix = storage.slice().asReadOnlyBuffer().position(1).limit(5).mark();
+                try (ReadableByteChannel replay = PrefixReplayReadableByteChannel.create(prefix, source, ResourceOwnership.OWNED)) {
+                    assertEquals(1, prefix.position());
+                    assertEquals(5, prefix.limit());
+                    // Caller cursor changes must not move the replay channel's independent view.
+                    prefix.position(3).limit(4);
+                    assertEquals(0, replay.read(ByteBuffer.allocate(0)));
+                    assertEquals(0, source.readCalls());
+                    ByteBuffer target = direct ? ByteBuffer.allocateDirect(9) : ByteBuffer.allocate(9);
+                    target.put(new byte[]{9, 8, 8, 8, 8, 8, 8, 7, 6}).position(1).limit(3).mark();
+                    assertEquals(2, replay.read(target));
+                    assertEquals(0, source.readCalls());
+                    target.limit(8);
+                    assertEquals(2, replay.read(target));
+                    assertEquals(5, target.position());
+                    assertEquals(0, source.readCalls());
+                    assertEquals(2, replay.read(target));
+                    assertEquals(1, source.readCalls());
+                    assertEquals(-1, replay.read(target));
+                    assertEquals(7, target.position());
+                    assertEquals(8, target.limit());
+                    assertEquals(1, target.reset().position());
+                    assertEquals(3, prefix.position());
+                    assertEquals(4, prefix.limit());
+                    assertEquals(1, prefix.reset().position());
+                    byte[] actual = new byte[9];
+                    target.clear().get(actual);
+                    assertArrayEquals(new byte[]{9, 1, 2, 3, 4, 5, 6, 7, 6}, actual);
+                }
+                assertFalse(source.isOpen());
+            }
+        }
+    }
+
+    /// Verifies rejected read-only targets preserve the replay prefix and do not touch the source.
+    @Test
+    void rejectedTargetsDoNotConsumePrefix() throws IOException {
+        for (boolean interruptible : new boolean[]{false, true}) {
+            TrackingReadableByteChannel source = interruptible
+                    ? new InterruptibleTrackingReadableByteChannel(new byte[]{3})
+                    : new TrackingReadableByteChannel(new byte[]{3});
+            try (ReadableByteChannel replay = PrefixReplayReadableByteChannel.create(
+                    ByteBuffer.wrap(new byte[]{1, 2}), source, ResourceOwnership.OWNED)) {
+                ByteBuffer target = ByteBuffer.allocate(3);
+                ByteBuffer rejected = target.asReadOnlyBuffer().mark();
+                assertThrows(ReadOnlyBufferException.class, () -> replay.read(rejected));
+                assertEquals(0, rejected.position());
+                assertEquals(0, rejected.reset().position());
+                assertEquals(0, source.readCalls());
+                assertEquals(0, replay.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
+                assertEquals(2, replay.read(target));
+                assertEquals(0, source.readCalls());
+                assertEquals(1, replay.read(target));
+                assertArrayEquals(new byte[]{1, 2, 3}, target.array());
+            }
+        }
+    }
+
+    /// Verifies source failures preserve partial progress and neither replay the prefix nor force-close borrowed sources.
+    @Test
+    void preservesPartialSourceFailuresAfterPrefix() throws IOException {
+        for (boolean interruptible : new boolean[]{false, true}) {
+            for (ResourceOwnership ownership : ResourceOwnership.values()) {
+                for (int transferred : new int[]{0, 1, 2}) {
+                    for (Throwable failure : List.of(new IOException("partial read failed"),
+                            new IllegalStateException("partial read failed"), new AssertionError("partial read failed"))) {
+                        TrackingReadableByteChannel source = interruptible
+                                ? new InterruptibleTrackingReadableByteChannel(new byte[]{3, 4})
+                                : new TrackingReadableByteChannel(new byte[]{3, 4});
+                        source.nextReadFailure = failure;
+                        source.bytesBeforeReadFailure = transferred;
+                        ReadableByteChannel replay = PrefixReplayReadableByteChannel.create(
+                                ByteBuffer.wrap(new byte[]{1, 2}), source, ownership);
+                        ByteBuffer target = ByteBuffer.allocateDirect(7);
+                        target.put(new byte[]{9, 6, 6, 6, 6, 8, 7}).position(1).limit(6).mark();
+                        assertEquals(2, replay.read(target));
+                        assertEquals(0, source.readCalls());
+                        assertSame(failure, assertThrows(failure.getClass(), () -> replay.read(target)));
+                        assertEquals(3 + transferred, target.position());
+                        assertEquals(6, target.limit());
+                        assertTrue(replay.isOpen());
+                        assertEquals(transferred == 2 ? -1 : 2 - transferred, replay.read(target));
+                        assertEquals(-1, replay.read(target));
+                        assertEquals(5, target.position());
+                        assertEquals(1, target.reset().position());
+                        byte[] actual = new byte[7];
+                        target.clear().get(actual);
+                        assertArrayEquals(new byte[]{9, 1, 2, 3, 4, 8, 7}, actual);
+                        replay.close();
+                        replay.close();
+                        assertEquals(ownership == ResourceOwnership.BORROWED, source.isOpen());
+                        assertFalse(replay.isOpen());
+                        source.close();
+                    }
+                }
+            }
+        }
     }
 
     /// Verifies an interruptible source produces an interruptible replay channel.
@@ -340,6 +452,30 @@ final class PrefixReplayReadableByteChannelTest {
         }
     }
 
+    /// Verifies ordinary owned-source close failures remain retryable without making replay bytes readable again.
+    @Test
+    void retriesOrdinaryOwnedCloseFailures() throws IOException {
+        for (Throwable failure : List.of(new IOException("close failed"),
+                new IllegalStateException("close failed"), new AssertionError("close failed"))) {
+            ScriptedFailureInterruptibleReadableByteChannel source = new ScriptedFailureInterruptibleReadableByteChannel(
+                    new IOException("unexpected source read"), failure);
+            ReadableByteChannel replay = PrefixReplayReadableByteChannel.create(
+                    ByteBuffer.wrap(new byte[]{1, 2}), source, ResourceOwnership.OWNED);
+            assertSame(failure, assertThrows(failure.getClass(), replay::close));
+            assertFalse(replay.isOpen());
+            assertTrue(source.isOpen());
+            assertEquals(1, source.closeCalls());
+            assertThrows(ClosedChannelException.class, () -> replay.read(ByteBuffer.allocate(1)));
+            assertThrows(ClosedChannelException.class, () -> replay.read(ByteBuffer.allocate(0)));
+            assertEquals(0, source.scriptedReadCalls());
+            source.allowClose();
+            replay.close();
+            replay.close();
+            assertFalse(source.isOpen());
+            assertEquals(2, source.closeCalls());
+        }
+    }
+
     /// Verifies a failed source close after interruption remains retryable.
     @Test
     void retriesInterruptedSourceCloseFailure() throws IOException {
@@ -409,6 +545,12 @@ final class PrefixReplayReadableByteChannelTest {
         /// The number of read calls received.
         private int readCalls;
 
+        /// Failure thrown once after transferring a configured prefix of the next source read.
+        private @Nullable Throwable nextReadFailure;
+
+        /// Number of bytes consumed inside the next failing read.
+        private int bytesBeforeReadFailure;
+
         /// Whether this source remains open.
         protected boolean open = true;
 
@@ -432,10 +574,24 @@ final class PrefixReplayReadableByteChannelTest {
                 return -1;
             }
             int count = Math.min(target.remaining(), content.remaining());
+            @Nullable Throwable failure = nextReadFailure;
+            if (failure != null) {
+                count = Math.min(count, bytesBeforeReadFailure);
+            }
             ByteBuffer chunk = content.slice();
             chunk.limit(count);
             target.put(chunk);
             content.position(content.position() + count);
+            nextReadFailure = null;
+            if (failure instanceof IOException exception) {
+                throw exception;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (failure instanceof Error error) {
+                throw error;
+            }
             return count;
         }
 
@@ -476,7 +632,7 @@ final class PrefixReplayReadableByteChannelTest {
         private final IOException readFailure;
 
         /// Failure reported by closure until explicitly cleared.
-        private @Nullable IOException closeFailure;
+        private @Nullable Throwable closeFailure;
 
         /// Number of read calls received.
         private int readCalls;
@@ -487,7 +643,7 @@ final class PrefixReplayReadableByteChannelTest {
         /// Creates an interruptible source with configured read and close failures.
         private ScriptedFailureInterruptibleReadableByteChannel(
                 IOException readFailure,
-                @Nullable IOException closeFailure
+                @Nullable Throwable closeFailure
         ) {
             super(new byte[0]);
             this.readFailure = Objects.requireNonNull(readFailure, "readFailure");
@@ -512,8 +668,14 @@ final class PrefixReplayReadableByteChannelTest {
                 return;
             }
             closeCalls++;
-            if (closeFailure != null) {
-                throw closeFailure;
+            if (closeFailure instanceof IOException exception) {
+                throw exception;
+            }
+            if (closeFailure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (closeFailure instanceof Error error) {
+                throw error;
             }
             super.close();
         }

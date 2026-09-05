@@ -557,7 +557,8 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
         if (actualBlockCrc != expectedBlockCrc) {
             throw new IOException("BZip2 block CRC mismatch");
         }
-        combinedCrc = BZip2CRC.combine(combinedCrc, actualBlockCrc);
+        // BZip2 rotates the stream CRC once for each completed block.
+        combinedCrc = Integer.rotateLeft(combinedCrc, 1) ^ actualBlockCrc;
         blockData = new byte[0];
         blockPosition = 0;
         blockActive = false;

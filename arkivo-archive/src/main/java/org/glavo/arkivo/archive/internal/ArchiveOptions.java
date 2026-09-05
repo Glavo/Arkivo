@@ -15,7 +15,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
-/// Stores immutable typed options for archive open, create, update, and streaming operations.
+/// Stores environment values for archive operations and converts them on lookup.
+///
+/// The map cannot be modified after construction. Values obtained from a raw environment are not copied or converted
+/// until requested with an [ArchiveOption]. Mutable values must therefore remain unchanged while these options are used.
 @NotNullByDefault
 public final class ArchiveOptions {
     /// The reusable empty option set.
@@ -29,12 +32,13 @@ public final class ArchiveOptions {
         this.values = Map.copyOf(values);
     }
 
-    /// Copies a raw NIO file-system environment into immutable archive options.
+    /// Copies the entries of an NIO file-system environment.
     ///
-    /// Entries mapped to null are treated as absent, matching option lookup semantics.
+    /// Entries mapped to `null` are omitted. The map is copied, but its values are not; conversion and type checking
+    /// occur when an option is read. Unknown keys are retained.
     ///
-    /// @param environment the raw NIO environment to validate and copy
-    /// @return immutable options containing all non-null entries, or {@link #EMPTY} when none remain
+    /// @param environment the environment whose entries are copied
+    /// @return options containing all non-null entries, or [#EMPTY] when none remain
     /// @throws IllegalArgumentException if an environment key is blank
     public static ArchiveOptions fromEnvironment(Map<String, ?> environment) {
         Objects.requireNonNull(environment, "environment");
@@ -116,7 +120,7 @@ public final class ArchiveOptions {
     /// @return the converted value, or {@code null} when absent
     public <T> @Nullable T get(ArchiveOption<T> option) {
         Objects.requireNonNull(option, "option");
-        Object value = values.get(option.key());
+        @Nullable Object value = values.get(option.key());
         return value == null ? null : option.convert(value);
     }
 
@@ -141,7 +145,7 @@ public final class ArchiveOptions {
     public <T> ArchiveOptions with(ArchiveOption<T> option, T value) {
         Objects.requireNonNull(option, "option");
         T checkedValue = option.convert(Objects.requireNonNull(value, "value"));
-        Object previous = values.get(option.key());
+        @Nullable Object previous = values.get(option.key());
         if (checkedValue.equals(previous)) {
             return this;
         }

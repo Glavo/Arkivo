@@ -12,10 +12,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -26,7 +29,7 @@ final class CPIOStreamingReaderLifecycleTest {
     @Test
     void readsSingleBytesFromOneShotEntryBody() throws IOException {
         byte[] content = {0, 0x7f, (byte) 0x80, (byte) 0xff};
-        byte[] archive = writeFileArchive(content);
+        byte[] archive = writeFileArchive(content, CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(CPIODialect.NEW_ASCII_CRC));
 
         try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
@@ -56,30 +59,97 @@ final class CPIOStreamingReaderLifecycleTest {
         }
     }
 
-    /// Verifies a failed body drain can continue from its exact progress on a repeated close.
+    /// Verifies body and alignment-padding drains resume after failures without losing checksum or cursor progress.
     @Test
     void retriesEntryBodyCloseAfterSourceFailure() throws IOException {
-        byte[] content = new byte[32];
-        byte[] archive = writeFileArchive(content);
-        int bodyOffset = indexOf(archive, content);
-        assertTrue(bodyOffset >= 0);
-        FailOnceInputStream source = new FailOnceInputStream(archive, bodyOffset + 5);
-
-        try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(source)) {
-            assertTrue(reader.next());
-            InputStream body = reader.openInputStream();
-            assertThrows(IOException.class, body::close);
-            body.close();
-            assertFalse(reader.next());
+        for (CPIODialect dialect : CPIODialect.values()) {
+            List<CPIOBinaryByteOrder> byteOrders = dialect == CPIODialect.OLD_BINARY
+                    ? List.of(CPIOBinaryByteOrder.values()) : List.of(CPIOBinaryByteOrder.BIG_ENDIAN);
+            int alignment = switch (dialect) {
+                case NEW_ASCII, NEW_ASCII_CRC -> 4;
+                case OLD_BINARY -> 2;
+                case OLD_ASCII -> 1;
+            };
+            for (CPIOBinaryByteOrder byteOrder : byteOrders) {
+                for (int length : new int[]{31, 32, 33}) {
+                    byte[] content = new byte[length];
+                    for (int index = 0; index < content.length; index++) {
+                        content[index] = (byte) (0x80 + index * 3);
+                    }
+                    byte[] archive = writeFileArchive(content, CPIOArchiveOptions.CREATE_DEFAULTS
+                            .withDialect(dialect).withBinaryByteOrder(byteOrder));
+                    int bodyOffset = indexOf(archive, content);
+                    assertTrue(bodyOffset >= 0);
+                    int padding = (alignment - length % alignment) % alignment;
+                    List<Integer> failureOffsets = new ArrayList<>(List.of(0, length / 2, length - 1));
+                    if (padding > 0) {
+                        failureOffsets.add(length);
+                    }
+                    if (padding > 1) {
+                        failureOffsets.add(length + padding - 1);
+                    }
+                    for (int relativeOffset : failureOffsets) {
+                        for (Throwable failure : List.of(new IOException("injected source failure"),
+                                new IllegalStateException("injected source failure"), new AssertionError("injected source failure"))) {
+                            FailOnceInputStream source = new FailOnceInputStream(archive, bodyOffset + relativeOffset, failure);
+                            try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(source)) {
+                                assertTrue(reader.next());
+                                InputStream body = reader.openInputStream();
+                                assertSame(failure, assertThrows(failure.getClass(), body::close));
+                                assertEquals(bodyOffset + relativeOffset, source.offset);
+                                body.close();
+                                assertEquals(bodyOffset + length + padding, source.offset);
+                                body.close();
+                                assertEquals(bodyOffset + length + padding, source.offset);
+                                assertFalse(reader.next());
+                                assertFalse(reader.next());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    /// Writes one CRC-protected regular file.
-    private static byte[] writeFileArchive(byte @Unmodifiable [] content) throws IOException {
+    /// Verifies retrying a failed drain still detects corruption both before and after the failure boundary.
+    @Test
+    void validatesChecksumAfterRecoverableDrainFailure() throws IOException {
+        byte[] content = new byte[33];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (0xa0 + index);
+        }
+        byte[] valid = writeFileArchive(content, CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(CPIODialect.NEW_ASCII_CRC));
+        int bodyOffset = indexOf(valid, content);
+        assertTrue(bodyOffset >= 0);
+        for (int corruptOffset : new int[]{0, content.length - 1}) {
+            for (Throwable failure : List.of(new IOException("drain failed"),
+                    new IllegalStateException("drain failed"), new AssertionError("drain failed"))) {
+                byte[] archive = valid.clone();
+                archive[bodyOffset + corruptOffset] ^= 1;
+                FailOnceInputStream source = new FailOnceInputStream(archive, bodyOffset + 16, failure);
+                CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(source);
+                try {
+                    assertTrue(reader.next());
+                    InputStream body = reader.openInputStream();
+                    assertSame(failure, assertThrows(failure.getClass(), body::close));
+                    IOException checksumFailure = assertThrows(IOException.class, body::close);
+                    assertEquals("CPIO entry data checksum mismatch", checksumFailure.getMessage());
+                    assertEquals(bodyOffset + content.length, source.offset);
+                    assertThrows(IOException.class, reader::next);
+                } finally {
+                    assertThrows(IOException.class, reader::close);
+                    assertTrue(source.closed);
+                }
+            }
+        }
+    }
+
+    /// Writes one regular file using the requested CPIO wire-format settings.
+    private static byte[] writeFileArchive(byte @Unmodifiable [] content, CPIOArchiveOptions.Create options) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(
                 output,
-                CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(CPIODialect.NEW_ASCII_CRC)
+                options
         )) {
             try (OutputStream body = writer.beginFile("payload.bin").openOutputStream()) {
                 body.write(content);
@@ -111,6 +181,9 @@ final class CPIOStreamingReaderLifecycleTest {
         /// Source offset at which one failure is injected.
         private final int failureOffset;
 
+        /// Checked or unchecked failure emitted at the selected offset.
+        private final Throwable failure;
+
         /// Reusable storage for single-byte reads.
         private final byte[] singleByte = new byte[1];
 
@@ -120,13 +193,17 @@ final class CPIOStreamingReaderLifecycleTest {
         /// Whether the configured failure has already been emitted.
         private boolean failed;
 
+        /// Whether the owning reader has attempted source closure.
+        private boolean closed;
+
         /// Creates one fail-once source over a private byte-array copy.
-        private FailOnceInputStream(byte @Unmodifiable [] source, int failureOffset) {
+        private FailOnceInputStream(byte @Unmodifiable [] source, int failureOffset, Throwable failure) {
             this.source = Objects.requireNonNull(source, "source").clone();
             if (failureOffset < 0 || failureOffset > source.length) {
                 throw new IllegalArgumentException("failureOffset is out of range");
             }
             this.failureOffset = failureOffset;
+            this.failure = Objects.requireNonNull(failure, "failure");
         }
 
         /// Reads one byte or emits the configured failure.
@@ -142,7 +219,13 @@ final class CPIOStreamingReaderLifecycleTest {
             Objects.checkFromIndexSize(targetOffset, length, bytes.length);
             if (!failed && offset == failureOffset) {
                 failed = true;
-                throw new IOException("Injected CPIO source failure");
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
             }
             if (length == 0) {
                 return 0;
@@ -157,6 +240,12 @@ final class CPIOStreamingReaderLifecycleTest {
             System.arraycopy(source, offset, bytes, targetOffset, count);
             offset += count;
             return count;
+        }
+
+        /// Records source closure without performing further reads.
+        @Override
+        public void close() {
+            closed = true;
         }
     }
 }

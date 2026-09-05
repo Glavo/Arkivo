@@ -37,33 +37,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies typed archive option descriptors, raw environments, and public-option conversion.
 @NotNullByDefault
 final class ArchiveOptionsTest {
-    /// Verifies option identity components and namespace validation.
+    /// Verifies environment keys and runtime value validation.
     @Test
     void validatesOptionNamesAndRuntimeTypes() {
-        ArchiveOption<String> option = ArchiveOption.of("format.zip", "commentCharset", String.class);
+        ArchiveOption<String> option = ArchiveOption.of("format.zip.commentCharset", String.class);
 
-        assertEquals("format.zip", option.namespace());
-        assertEquals("commentCharset", option.name());
         assertEquals("format.zip.commentCharset", option.key());
-        assertSame(String.class, option.type());
         assertEquals(option.key(), option.toString());
+        ArchiveOption<String> sameKey = ArchiveOption.of(option.key(), String.class);
+        assertEquals("UTF-8", ArchiveOptions.EMPTY.with(option, "UTF-8").get(sameKey));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> ArchiveOptions.fromEnvironment(Map.of(option.key(), 1)).get(option)
         );
 
-        for (String namespace : List.of("", " ", ".zip", "zip.", "format..zip", "format zip")) {
+        for (String key : List.of("", " ", ".zip", "zip.", "format..zip", "format zip", "entry\tname")) {
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> ArchiveOption.of(namespace, "name", String.class),
-                    namespace
-            );
-        }
-        for (String name : List.of("", " ", "entry.name", "entry name", "entry\tname")) {
-            assertThrows(
-                    IllegalArgumentException.class,
-                    () -> ArchiveOption.of("format", name, String.class),
-                    name
+                    () -> ArchiveOption.of(key, String.class),
+                    key
             );
         }
     }
@@ -73,8 +65,7 @@ final class ArchiveOptionsTest {
     @SuppressWarnings({"rawtypes", "unchecked"})
     void enforcesConverterResultContract() {
         ArchiveOption<String> normalized = ArchiveOption.of(
-                "test",
-                "normalized",
+                "test.normalized",
                 String.class,
                 value -> ((String) value).trim()
         );
@@ -84,8 +75,7 @@ final class ArchiveOptionsTest {
         assertSame(options, options.with(normalized, "value"));
 
         ArchiveOption<String> nullResult = ArchiveOption.of(
-                "test",
-                "nullResult",
+                "test.nullResult",
                 String.class,
                 value -> null
         );
@@ -93,8 +83,7 @@ final class ArchiveOptionsTest {
 
         Function wrongConverter = (Function<Object, Integer>) value -> 1;
         ArchiveOption<String> wrongResult = ArchiveOption.of(
-                "test",
-                "wrongResult",
+                "test.wrongResult",
                 String.class,
                 wrongConverter
         );
@@ -104,7 +93,7 @@ final class ArchiveOptionsTest {
     /// Verifies raw environments are copied, null values are absent, and value semantics use stored entries.
     @Test
     void copiesRawEnvironmentAndExposesValueSemantics() {
-        ArchiveOption<String> option = ArchiveOption.of("test", "value", String.class);
+        ArchiveOption<String> option = ArchiveOption.of("test.value", String.class);
         LinkedHashMap<String, Object> environment = new LinkedHashMap<>();
         environment.put(option.key(), "configured");
         environment.put("test.ignored", null);
@@ -115,10 +104,10 @@ final class ArchiveOptionsTest {
         assertTrue(options.contains(option));
         assertEquals("configured", options.get(option));
         assertEquals("configured", options.getOrDefault(option, "fallback"));
-        assertNull(options.get(ArchiveOption.of("test", "missing", String.class)));
+        assertNull(options.get(ArchiveOption.of("test.missing", String.class)));
         assertEquals(
                 "fallback",
-                options.getOrDefault(ArchiveOption.of("test", "missing", String.class), "fallback")
+                options.getOrDefault(ArchiveOption.of("test.missing", String.class), "fallback")
         );
         assertEquals(options, ArchiveOptions.fromEnvironment(Map.of(option.key(), "configured")));
         assertEquals(options.hashCode(), ArchiveOptions.fromEnvironment(Map.of(option.key(), "configured")).hashCode());
@@ -143,7 +132,7 @@ final class ArchiveOptionsTest {
         nullKey.put(null, "value");
         assertThrows(NullPointerException.class, () -> ArchiveOptions.fromEnvironment(nullKey));
 
-        ArchiveOption<String> option = ArchiveOption.of("test", "value", String.class);
+        ArchiveOption<String> option = ArchiveOption.of("test.value", String.class);
         assertThrows(NullPointerException.class, () -> ArchiveOptions.EMPTY.with(option, null));
         assertThrows(NullPointerException.class, () -> ArchiveOptions.EMPTY.getOrDefault(option, null));
     }
@@ -194,7 +183,7 @@ final class ArchiveOptionsTest {
     @Test
     void normalizesMetadataCharsetDetectorShapes() throws IOException {
         ArchiveOption<ArchiveMetadataCharsetDetector> option =
-                ArchiveEnvironmentOptions.metadataCharsetDetectorOption("format.test", "metadataCharsetDetector");
+                ArchiveEnvironmentOptions.metadataCharsetDetectorOption("format.test.metadataCharsetDetector");
         ArchiveMetadataCharsetDetector direct = ArchiveMetadataCharsetDetector.fixed(StandardCharsets.US_ASCII);
 
         assertSame(

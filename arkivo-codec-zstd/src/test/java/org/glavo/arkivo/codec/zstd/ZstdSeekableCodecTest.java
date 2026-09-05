@@ -10,8 +10,12 @@ import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.SeekableEncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -363,6 +367,80 @@ public final class ZstdSeekableCodecTest {
         }
     }
 
+    /// Verifies failed physical frame loads preserve prior output and retry without caching incomplete decoded data.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 7})
+    public void retriesFailedPhysicalFrameLoads(int partialSize, @TempDir Path directory) throws IOException {
+        byte[] expected = patternedBytes(1300);
+        int frameSize = 512;
+        Path path = directory.resolve("retry.zst");
+        ZstdCodec codec = ZstdCodec.DEFAULT.withFrameChecksum(true);
+        try (SeekableByteChannel target = Files.newByteChannel(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+             var encoder = codec.newSeekableWritableByteChannel(target,
+                     SeekableEncodingOptions.ofMaximumFrameSize(frameSize), ResourceOwnership.BORROWED)) {
+            encoder.encode(ByteBuffer.wrap(expected));
+        }
+        CompressionCodec.Seekable.Index index;
+        try (SeekableByteChannel source = Files.newByteChannel(path)) {
+            index = codec.readIndex(source);
+            assertNotNull(index);
+        }
+        for (Throwable failure : new Throwable[]{
+                new IOException("encoded frame read failed"),
+                new IllegalStateException("encoded frame read failed"),
+                new AssertionError("encoded frame read failed")
+        }) {
+            for (boolean direct : new boolean[]{false, true}) {
+                for (ResourceOwnership ownership : ResourceOwnership.values()) {
+                    try (FailingSeekableChannel source = new FailingSeekableChannel(
+                            Files.newByteChannel(path), index.frameCompressedOffset(1), partialSize, failure
+                    )) {
+                        try (SeekableByteChannel logical = index.newReadableByteChannel(source, ownership)) {
+                            ByteBuffer target = direct
+                                    ? ByteBuffer.allocateDirect(expected.length + 4)
+                                    : ByteBuffer.allocate(expected.length + 4);
+                            for (int offset = 0; offset < target.capacity(); offset++) {
+                                target.put(offset, (byte) 0x5A);
+                            }
+                            target.position(2).limit(2 + expected.length).mark();
+                            assertSame(failure, assertThrows(failure.getClass(), () -> logical.read(target)));
+                            assertEquals(2 + frameSize, target.position());
+                            assertEquals(2 + expected.length, target.limit());
+                            assertEquals(frameSize, logical.position());
+                            assertEquals(index.frameCompressedOffset(1) + partialSize, source.position());
+                            ByteBuffer storage = target.duplicate().clear();
+                            for (int offset = 0; offset < target.capacity(); offset++) {
+                                byte value = offset >= 2 && offset < frameSize + 2 ? expected[offset - 2] : (byte) 0x5A;
+                                assertEquals(value, storage.get(offset));
+                            }
+
+                            assertEquals(expected.length - frameSize, logical.read(target));
+                            assertEquals(expected.length, logical.position());
+                            assertEquals(0, logical.read(target));
+                            assertEquals(-1, logical.read(ByteBuffer.allocate(1)));
+                            assertEquals(2, target.reset().position());
+                            byte[] actual = new byte[expected.length];
+                            target.get(actual);
+                            assertArrayEquals(expected, actual);
+                            assertEquals((byte) 0x5A, storage.get(0));
+                            assertEquals((byte) 0x5A, storage.get(1));
+                            assertEquals((byte) 0x5A, storage.get(expected.length + 2));
+                            assertEquals((byte) 0x5A, storage.get(expected.length + 3));
+
+                            int reads = source.readCount;
+                            logical.position(1100);
+                            ByteBuffer cached = ByteBuffer.allocate(17);
+                            assertEquals(17, logical.read(cached));
+                            assertArrayEquals(java.util.Arrays.copyOfRange(expected, 1100, 1117), cached.array());
+                            assertEquals(reads, source.readCount);
+                        }
+                        assertEquals(ownership == ResourceOwnership.BORROWED, source.isOpen());
+                    }
+                }
+            }
+        }
+    }
+
     /// Verifies pre-existing interruption aborts seekable writers and logical readers together with their endpoints.
     @Test
     public void preservesInterruptibleLifecycle() throws IOException {
@@ -699,5 +777,101 @@ public final class ZstdSeekableCodecTest {
             bytes[index] = (byte) (index * 31 + index / 17);
         }
         return bytes;
+    }
+
+    /// Wraps an encoded file and injects one failure after partial progress at a selected frame origin.
+    @NotNullByDefault
+    private static final class FailingSeekableChannel implements SeekableByteChannel {
+        /// The owned encoded file channel.
+        private final SeekableByteChannel delegate;
+
+        /// Physical position at which the failing read starts.
+        private final long failurePosition;
+
+        /// Bytes accepted by the failing read before it throws.
+        private final int partialSize;
+
+        /// The pending one-shot failure.
+        private @Nullable Throwable failure;
+
+        /// Number of physical read calls, including the failed call.
+        private int readCount;
+
+        /// Creates a failure-injecting view over the supplied encoded source.
+        private FailingSeekableChannel(SeekableByteChannel delegate, long failurePosition, int partialSize, Throwable failure) {
+            this.delegate = delegate;
+            this.failurePosition = failurePosition;
+            this.partialSize = partialSize;
+            this.failure = failure;
+        }
+
+        /// Reads normally except for one partial read at the configured frame origin.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            readCount++;
+            if (failure != null && delegate.position() == failurePosition) {
+                Throwable pending = failure;
+                failure = null;
+                int limit = target.limit();
+                target.limit(target.position() + Math.min(partialSize, target.remaining()));
+                try {
+                    delegate.read(target);
+                } finally {
+                    target.limit(limit);
+                }
+                if (pending instanceof IOException exception) {
+                    throw exception;
+                }
+                if (pending instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) pending;
+            }
+            return delegate.read(target);
+        }
+
+        /// Delegates writes to the underlying channel.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            return delegate.write(source);
+        }
+
+        /// Returns the current encoded-file position.
+        @Override
+        public long position() throws IOException {
+            return delegate.position();
+        }
+
+        /// Repositions the encoded source for a fresh frame load.
+        @Override
+        public SeekableByteChannel position(long position) throws IOException {
+            delegate.position(position);
+            return this;
+        }
+
+        /// Returns the complete encoded size.
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        /// Delegates truncation to the underlying channel.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            delegate.truncate(size);
+            return this;
+        }
+
+        /// Returns whether the physical file remains open.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Closes the encoded file.
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
     }
 }

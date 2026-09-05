@@ -8,11 +8,11 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
-/// Describes an immutable checksum algorithm configuration and creates independent accumulators.
+/// An immutable checksum algorithm that creates independent accumulators.
 ///
-/// Implementations must be safe for concurrent use. Operation progress belongs exclusively to accumulators returned by
-/// [#newAccumulator()]. One-shot buffer operations consume all remaining source bytes without changing the source limit
-/// or retaining the buffer.
+/// Implementations must be safe for concurrent use. Each accumulator holds the state of one computation.
+/// The `compute` methods return a checksum in one call; use an accumulator when input arrives in chunks. Source buffers
+/// are consumed through their limits and are not retained.
 @NotNullByDefault
 public interface ChecksumAlgorithm {
     /// Returns the conventional algorithm name.
@@ -27,7 +27,7 @@ public interface ChecksumAlgorithm {
     /// @return a positive fixed result size
     int checksumSize();
 
-    /// Creates a fresh accumulator in its active initial state.
+    /// Creates an accumulator ready to accept input.
     ///
     /// @return an independent accumulator
     ChecksumAccumulator newAccumulator();
@@ -86,7 +86,7 @@ public interface ChecksumAlgorithm {
         accumulator.finish(target);
     }
 
-    /// Describes a checksum whose complete result fits in a `long` carrier.
+    /// A checksum algorithm whose result fits in a `long`.
     ///
     /// Results narrower than 64 bits are exposed as nonnegative unsigned integers with all unused high bits cleared.
     /// A 64-bit result preserves its complete bit pattern and may be negative in Java's signed representation.

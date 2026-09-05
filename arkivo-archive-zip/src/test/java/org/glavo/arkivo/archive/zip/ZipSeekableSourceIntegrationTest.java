@@ -7,10 +7,13 @@ import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -21,21 +24,110 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
 import static org.glavo.arkivo.archive.zip.ZipTestArchiveFixtures.createTemporaryArchivePath;
 import static org.glavo.arkivo.archive.zip.ZipTestArchiveFixtures.emptyZipWithPreamble;
 import static org.glavo.arkivo.archive.zip.ZipTestArchiveFixtures.singleEntryZipWithPreambleAndAdjustedOffsets;
+import static org.glavo.arkivo.archive.zip.ZipTestArchiveFixtures.singleStoredZipArchive;
 import static org.glavo.arkivo.archive.zip.ZipTestArchiveFixtures.updateSourceZip;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests repeatable seekable ZIP sources, update publication, and ownership cleanup.
 @NotNullByDefault
 public final class ZipSeekableSourceIntegrationTest {
+    /// Verifies public preamble channels retain progress delivered by a failing archive source.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 2, 4})
+    public void preambleReadRetainsPartialSourceProgress(int count) throws IOException {
+        byte[] preamble = {1, 2, 3, 4};
+        TestSeekableChannelSource source = new TestSeekableChannelSource(emptyZipWithPreamble(preamble));
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source);
+             SeekableByteChannel channel = fileSystem.openPreambleChannel()) {
+            IOException failure = new IOException("partial source read failed");
+            source.readFailure = failure;
+            source.bytesBeforeFailure = count;
+            ByteBuffer target = ByteBuffer.allocateDirect(8).position(2).limit(7);
+            assertSame(failure, assertThrows(IOException.class, () -> channel.read(target)));
+            assertEquals(2 + count, target.position());
+            assertEquals(7, target.limit());
+            assertEquals(count, channel.position());
+            assertEquals(count < 4 ? 4 - count : -1, channel.read(target));
+            assertEquals(4L, channel.position());
+            assertEquals(6, target.position());
+            assertEquals(7, target.limit());
+            byte[] actual = new byte[4];
+            target.flip().position(2).get(actual);
+            assertArrayEquals(preamble, actual);
+        }
+        assertEquals(true, source.allOpenedChannelsClosed());
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies a failed stored-entry read cannot bypass CRC validation on continuation or close.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 2, 4})
+    public void storedEntryValidatesAfterPartialSourceFailure(int count) throws IOException {
+        for (Throwable failure : List.of(new IOException("partial source read failed"),
+                new IllegalStateException("partial source read failed"), new AssertionError("partial source read failed"))) {
+            for (boolean corrupt : new boolean[]{false, true}) {
+                for (boolean closeImmediately : new boolean[]{false, true}) {
+                    byte[] content = {1, 2, 3, 4};
+                    byte[] archive = singleStoredZipArchive("entry", content);
+                    if (corrupt) {
+                        int dataOffset = 30 + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(archive, 26))
+                                + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(archive, 28));
+                        archive[dataOffset] ^= 1;
+                        content[0] ^= 1;
+                    }
+                    TestSeekableChannelSource source = new TestSeekableChannelSource(archive);
+                    try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source)) {
+                        SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/entry"));
+                        try {
+                            source.readFailure = failure;
+                            source.bytesBeforeFailure = count;
+                            ByteBuffer target = ByteBuffer.allocateDirect(6).position(1).limit(5);
+                            assertSame(failure, assertThrows(failure.getClass(), () -> channel.read(target)));
+                            assertEquals(1 + count, target.position());
+                            assertEquals(5, target.limit());
+                            assertEquals(count, channel.position());
+                            assertEquals(0, failure.getSuppressed().length);
+                            if (!closeImmediately) {
+                                if (count < content.length) {
+                                    assertEquals(content.length - count, channel.read(target));
+                                }
+                                assertEquals(content.length, channel.position());
+                                byte[] actual = new byte[4];
+                                target.flip().position(1).get(actual);
+                                assertArrayEquals(content, actual);
+                                if (corrupt) {
+                                    IOException mismatch = assertThrows(IOException.class,
+                                            () -> channel.read(ByteBuffer.allocate(1)));
+                                    assertEquals("ZIP entry data does not match central directory", mismatch.getMessage());
+                                } else {
+                                    assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+                                }
+                            } else if (corrupt) {
+                                IOException mismatch = assertThrows(IOException.class, channel::close);
+                                assertEquals("ZIP entry data does not match central directory", mismatch.getMessage());
+                            }
+                        } finally {
+                            channel.close();
+                        }
+                    }
+                    assertEquals(true, source.allOpenedChannelsClosed());
+                    assertEquals(1, source.closeCount());
+                }
+            }
+        }
+    }
+
     /// Verifies that a repeatable seekable channel source supports random-access ZIP file system operations.
     @Test
     public void randomAccessFileSystemFromSeekableChannelSource() throws IOException {
@@ -268,7 +360,13 @@ public final class ZipSeekableSourceIntegrationTest {
         private final byte @Unmodifiable [] content;
 
         /// The channels opened from this source.
-        private final ArrayList<ReadOnlyByteArrayChannel> openedChannels = new ArrayList<>();
+        private final ArrayList<SeekableByteChannel> openedChannels = new ArrayList<>();
+
+        /// A failure consumed by the next physical read after test setup, or `null` while disabled.
+        private @Nullable Throwable readFailure;
+
+        /// Maximum bytes delivered by the pending failing physical read.
+        private int bytesBeforeFailure;
 
         /// Whether the first close attempt should fail.
         private final boolean failFirstClose;
@@ -293,7 +391,7 @@ public final class ZipSeekableSourceIntegrationTest {
             if (closeCount > 0) {
                 throw new IOException("source is closed");
             }
-            ReadOnlyByteArrayChannel channel = new ReadOnlyByteArrayChannel(content);
+            SeekableByteChannel channel = new SourceChannel(new ReadOnlyByteArrayChannel(content));
             openedChannels.add(channel);
             return channel;
         }
@@ -314,7 +412,7 @@ public final class ZipSeekableSourceIntegrationTest {
 
         /// Returns whether every channel opened from this source has been closed.
         private boolean allOpenedChannelsClosed() {
-            for (ReadOnlyByteArrayChannel channel : openedChannels) {
+            for (SeekableByteChannel channel : openedChannels) {
                 if (channel.isOpen()) {
                     return false;
                 }
@@ -325,6 +423,89 @@ public final class ZipSeekableSourceIntegrationTest {
         /// Returns the number of times this source has been closed.
         private int closeCount() {
             return closeCount;
+        }
+
+        /// Delegates archive reads while allowing one post-setup failure with observable partial progress.
+        @NotNullByDefault
+        private final class SourceChannel implements SeekableByteChannel {
+            /// The independent in-memory archive channel.
+            private final SeekableByteChannel delegate;
+
+            /// Creates an independently positioned source view.
+            private SourceChannel(SeekableByteChannel delegate) {
+                this.delegate = delegate;
+            }
+
+            /// Reads normally or delivers a bounded prefix before the armed failure.
+            @Override
+            public int read(ByteBuffer target) throws IOException {
+                @Nullable Throwable failure = readFailure;
+                if (failure == null) {
+                    return delegate.read(target);
+                }
+                readFailure = null;
+                int limit = target.limit();
+                target.limit(target.position() + Math.min(target.remaining(), bytesBeforeFailure));
+                try {
+                    delegate.read(target);
+                } finally {
+                    target.limit(limit);
+                }
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                if (failure instanceof Error error) {
+                    throw error;
+                }
+                throw new AssertionError(failure);
+            }
+
+            /// Delegates the read-only write rejection.
+            @Override
+            public int write(ByteBuffer source) throws IOException {
+                return delegate.write(source);
+            }
+
+            /// Returns the physical archive position.
+            @Override
+            public long position() throws IOException {
+                return delegate.position();
+            }
+
+            /// Changes the physical archive position.
+            @Override
+            public SeekableByteChannel position(long position) throws IOException {
+                delegate.position(position);
+                return this;
+            }
+
+            /// Returns the archive size.
+            @Override
+            public long size() throws IOException {
+                return delegate.size();
+            }
+
+            /// Delegates the read-only truncation rejection.
+            @Override
+            public SeekableByteChannel truncate(long size) throws IOException {
+                delegate.truncate(size);
+                return this;
+            }
+
+            /// Returns whether the underlying archive view remains open.
+            @Override
+            public boolean isOpen() {
+                return delegate.isOpen();
+            }
+
+            /// Closes this independent archive view.
+            @Override
+            public void close() throws IOException {
+                delegate.close();
+            }
         }
     }
 

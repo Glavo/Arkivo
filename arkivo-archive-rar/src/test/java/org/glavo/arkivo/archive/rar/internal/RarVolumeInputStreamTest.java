@@ -8,12 +8,15 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -82,6 +85,54 @@ final class RarVolumeInputStreamTest {
             assertEquals(20, input.read());
             assertTrue(input.advanceAfterEndHeader());
             assertEquals(21, input.read());
+        }
+    }
+
+    /// Verifies retrying a failed volume open neither skips its payload nor treats a continuation signature as data.
+    @ParameterizedTest
+    @ValueSource(strings = {"read", "header-boundary", "end-header"})
+    void retriesTheSameVolumeAfterOpenFailure(String transition) throws IOException {
+        for (int failingIndex = 0; failingIndex < 3; failingIndex++) {
+            if (failingIndex == 0 && !transition.equals("read")) {
+                continue;
+            }
+            for (Throwable failure : new Throwable[]{
+                    new IOException("volume open failed"),
+                    new IllegalStateException("volume open failed"),
+                    new AssertionError("volume open failed")
+            }) {
+                TestSeekableByteChannel first = channel(new byte[]{40});
+                TestSeekableByteChannel second = channel(concatenate(RAR4_SIGNATURE, new byte[]{41}));
+                TestSeekableByteChannel third = channel(concatenate(RAR5_SIGNATURE, new byte[]{42}));
+                TestVolumeSource volumes = new TestVolumeSource(List.of(first, second, third), false);
+                volumes.failOpening(failingIndex, failure);
+                try (RarVolumeInputStream input = new RarVolumeInputStream(volumes, true)) {
+                    assertArrayEquals(Arrays.copyOf(new byte[]{40, 41, 42}, failingIndex), input.readNBytes(failingIndex));
+                    Throwable observed = assertThrows(failure.getClass(), () -> {
+                        switch (transition) {
+                            case "read" -> input.read();
+                            case "header-boundary" -> input.advanceAtHeaderBoundary();
+                            case "end-header" -> input.advanceAfterEndHeader();
+                            default -> throw new AssertionError("Unknown volume transition: " + transition);
+                        }
+                    });
+                    assertSame(failure, observed);
+                    assertEquals(failingIndex + 1, volumes.openCount());
+                    assertEquals(0, volumes.channels.get(failingIndex).position());
+                    assertTrue(volumes.channels.get(failingIndex).isOpen());
+
+                    assertArrayEquals(Arrays.copyOfRange(new byte[]{40, 41, 42}, failingIndex, 3), input.readAllBytes());
+                    List<Long> expectedRequests = new ArrayList<>(List.of(0L, 1L, 2L, 3L));
+                    expectedRequests.add(failingIndex, (long) failingIndex);
+                    assertEquals(expectedRequests, volumes.requestedIndices);
+                    assertEquals(-1, input.read());
+                    assertEquals(expectedRequests, volumes.requestedIndices);
+                }
+                assertFalse(first.isOpen());
+                assertFalse(second.isOpen());
+                assertFalse(third.isOpen());
+                assertEquals(1, volumes.closeCount());
+            }
         }
     }
 
@@ -268,6 +319,15 @@ final class RarVolumeInputStreamTest {
         /// Number of volume-open requests.
         private int openCount;
 
+        /// The requested volume indices, including failed attempts and the final end-of-volumes lookup.
+        private final List<Long> requestedIndices = new ArrayList<>();
+
+        /// The volume index whose next opening fails, or a negative value when unconfigured.
+        private long failingIndex = -1;
+
+        /// The configured one-shot volume-open failure.
+        private @Nullable Throwable openFailure;
+
         /// Number of source close attempts.
         private int closeCount;
 
@@ -291,6 +351,12 @@ final class RarVolumeInputStreamTest {
             this.closeFailure = closeFailure;
         }
 
+        /// Configures one volume-opening attempt to fail before transferring channel ownership.
+        private void failOpening(long index, Throwable failure) {
+            failingIndex = index;
+            openFailure = failure;
+        }
+
         /// Returns the requested channel or reports the end of the fixed sequence.
         @Override
         public @Nullable SeekableByteChannel openVolume(long index) throws IOException {
@@ -298,6 +364,18 @@ final class RarVolumeInputStreamTest {
                 throw new ClosedChannelException();
             }
             openCount++;
+            requestedIndices.add(index);
+            if (index == failingIndex && openFailure != null) {
+                Throwable failure = openFailure;
+                openFailure = null;
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
+            }
             return index >= 0L && index < channels.size() ? channels.get((int) index) : null;
         }
 

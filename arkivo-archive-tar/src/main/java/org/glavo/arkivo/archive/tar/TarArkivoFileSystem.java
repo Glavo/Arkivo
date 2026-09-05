@@ -56,17 +56,16 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     /// Raw NIO environment values may be a policy, a `CompressionCodec`, or a stable compression format name. A codec or
     /// format name selects [TarCompression.Codec].
     private static final ArchiveOption<TarCompression> COMPRESSION =
-            ArchiveOption.of("arkivo.tar", "compression", TarCompression.class);
+            ArchiveOption.of("arkivo.tar.compression", TarCompression.class);
 
     /// The option for decoding compression of an existing archive during an update.
     private static final ArchiveOption<TarCompression> SOURCE_COMPRESSION =
-            ArchiveOption.of("arkivo.tar", "sourceCompression", TarCompression.class);
+            ArchiveOption.of("arkivo.tar.sourceCompression", TarCompression.class);
 
     /// The option for the detector used to select charsets for TAR metadata without an authoritative encoding.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
             ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.tar",
-                    "metadataCharsetDetector"
+                    "arkivo.tar.metadataCharsetDetector"
             );
 
     /// Creates a TAR archive file system base instance.

@@ -67,6 +67,9 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
     }
 
     /// Reads bytes into the destination buffer.
+    ///
+    /// Bytes delivered by a failed sequential physical read remain included in CRC-32 accumulation. The physical
+    /// failure is propagated unchanged; validation continues on subsequent reads or close-time draining.
     @Override
     public int read(ByteBuffer destination) throws IOException {
         ensureOpen();
@@ -78,20 +81,27 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
     private int readUnchecked(ByteBuffer destination) throws IOException {
         int start = destination.position();
         long position = channel.position();
-        int read = channel.read(destination);
-        if (validationActive) {
-            if (read > 0) {
+        int read;
+        try {
+            read = channel.read(destination);
+        } finally {
+            int transferred = destination.position() - start;
+            if (validationActive && transferred > 0) {
                 if (position == validationPosition) {
                     ByteBuffer readBytes = destination.duplicate();
                     readBytes.position(start);
-                    readBytes.limit(start + read);
+                    readBytes.limit(start + transferred);
                     crc32.update(readBytes);
-                    validationPosition += read;
-                    if (validationPosition == size) {
-                        validateCrc32();
-                    }
+                    validationPosition += transferred;
                 } else {
                     validationActive = false;
+                }
+            }
+        }
+        if (validationActive) {
+            if (read > 0) {
+                if (validationPosition == size) {
+                    validateCrc32();
                 }
             } else if (read < 0) {
                 if (validationPosition != size) {

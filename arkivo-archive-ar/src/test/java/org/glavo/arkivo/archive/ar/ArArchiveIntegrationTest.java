@@ -1364,6 +1364,7 @@ public final class ArArchiveIntegrationTest {
         assertEquals("Unexpected end of AR member body", readFailure.getMessage());
         EOFException bodyCloseFailure = assertThrows(EOFException.class, body::close);
         assertEquals("Unexpected end of AR member body", bodyCloseFailure.getMessage());
+        assertThrows(EOFException.class, bodyReader::close);
         bodyReader.close();
 
         byte[] completePaddingArchive = archive(member("padding/", 0, 0, 0, 0100644, new byte[]{3}));
@@ -1376,6 +1377,7 @@ public final class ArArchiveIntegrationTest {
         assertEquals(3, paddingBody.read());
         EOFException paddingFailure = assertThrows(EOFException.class, paddingBody::close);
         assertEquals("Unexpected end of AR member body", paddingFailure.getMessage());
+        assertThrows(EOFException.class, paddingReader::close);
         paddingReader.close();
     }
 

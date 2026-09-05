@@ -63,6 +63,10 @@ final class SharedSeekableChannelSourceTest {
         source.close();
         assertFalse(second.isOpen());
         assertFalse(backing.isOpen());
+        assertThrows(ClosedChannelException.class, source::openChannel);
+        assertThrows(ClosedChannelException.class, () -> second.read(ByteBuffer.allocate(1)));
+        assertThrows(ClosedChannelException.class, second::position);
+        second.close();
     }
 
     /// Verifies delegate progress remains observable when a physical read subsequently fails.

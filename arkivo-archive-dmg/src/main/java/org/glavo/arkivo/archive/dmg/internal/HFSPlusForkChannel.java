@@ -56,6 +56,9 @@ class HFSPlusForkChannel implements SeekableByteChannel {
     }
 
     /// Reads bytes from the current logical fork position.
+    ///
+    /// Bytes delivered before a partition failure advance both the target and fork positions. The target limit is
+    /// unchanged, and a later read resumes after those bytes if the partition remains usable.
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -79,15 +82,21 @@ class HFSPlusForkChannel implements SeekableByteChannel {
             partition.position(location.physicalOffset());
             ByteBuffer slice = target.slice();
             slice.limit(count);
-            int read = partition.read(slice);
+            int read;
+            try {
+                read = partition.read(slice);
+            } finally {
+                // Include bytes delivered inside a physical read that subsequently fails.
+                int transferred = slice.position();
+                target.position(target.position() + transferred);
+                position += transferred;
+            }
             if (read < 0) {
                 throw new IOException("Unexpected end of HFS Plus allocation extent");
             }
             if (read == 0) {
                 throw new IOException("HFS Plus extent read made no progress");
             }
-            target.position(target.position() + read);
-            position += read;
         }
         return initialRemaining - target.remaining();
     }

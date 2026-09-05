@@ -153,18 +153,20 @@ final class RarVolumeInputStream extends InputStream {
 
     /// Opens the next available volume.
     ///
+    /// A failed volume-open attempt retains the requested index for a later read to retry.
     /// A continuation-signature failure makes this stream terminal. If closing that invalid volume also fails, the
     /// channel remains owned by this stream so [#close()] can retry cleanup.
     private boolean openNextVolume() throws IOException {
         if (endOfVolumes) {
             return false;
         }
-        long volumeIndex = nextVolumeIndex++;
-        SeekableByteChannel channel = volumes.openVolume(volumeIndex);
+        long volumeIndex = nextVolumeIndex;
+        @Nullable SeekableByteChannel channel = volumes.openVolume(volumeIndex);
         if (channel == null) {
             endOfVolumes = true;
             return false;
         }
+        nextVolumeIndex = volumeIndex + 1;
         currentChannel = channel;
         if (volumeIndex > 0) {
             try {

@@ -3714,6 +3714,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
 
         /// Reads bytes from the current bounded channel position.
+        ///
+        /// Bytes delivered before a physical read fails advance the bounded position. The destination limit is
+        /// restored on every exit, and a later read resumes after the delivered bytes if the source remains usable.
         @Override
         public int read(ByteBuffer destination) throws IOException {
             ensureOpen();
@@ -3726,6 +3729,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             }
 
             int originalLimit = destination.limit();
+            int originalPosition = destination.position();
             long remaining = size - position;
             if (destination.remaining() > remaining) {
                 destination.limit(destination.position() + (int) remaining);
@@ -3733,13 +3737,10 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
             try {
                 channel.position(checkedZipOffsetAdd(offset, position, "bounded channel offset"));
-                int read = channel.read(destination);
-                if (read > 0) {
-                    position += read;
-                }
-                return read;
+                return channel.read(destination);
             } finally {
                 destination.limit(originalLimit);
+                position += destination.position() - originalPosition;
             }
         }
 
@@ -3955,21 +3956,30 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
 
         /// Reads bytes without checking the wrapper open state for close-time draining.
+        ///
+        /// Partial progress from a failed physical read remains included in sequential CRC and size validation.
+        /// Validation errors are reported at EOF; a physical read failure is propagated unchanged.
         private int readUnchecked(ByteBuffer destination) throws IOException {
             long readPosition = channel.position();
             int startPosition = destination.position();
-            int read = channel.read(destination);
-            if (read > 0) {
-                if (validationActive && readPosition == validationPosition) {
-                    ByteBuffer readBytes = destination.duplicate();
-                    readBytes.position(startPosition);
-                    readBytes.limit(startPosition + read);
-                    crc32.update(readBytes);
-                    validationPosition += read;
-                } else {
-                    validationActive = false;
+            int read;
+            try {
+                read = channel.read(destination);
+            } finally {
+                int transferred = destination.position() - startPosition;
+                if (transferred > 0) {
+                    if (validationActive && readPosition == validationPosition) {
+                        ByteBuffer readBytes = destination.duplicate();
+                        readBytes.position(startPosition);
+                        readBytes.limit(startPosition + transferred);
+                        crc32.update(readBytes);
+                        validationPosition += transferred;
+                    } else {
+                        validationActive = false;
+                    }
                 }
-            } else if (read < 0 && validationActive) {
+            }
+            if (read < 0 && validationActive) {
                 finishEntry();
             }
             return read;

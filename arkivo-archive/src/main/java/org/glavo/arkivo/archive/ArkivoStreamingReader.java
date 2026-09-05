@@ -15,16 +15,16 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Objects;
 
-/// Reads archive entries from a forward-only source through a stateful cursor.
+/// Reads archive entries in order from a forward-only source.
 ///
-/// `next()` positions the cursor without materializing an entry object. Metadata and body access operate on the
-/// current cursor position and may perform format-specific work lazily. Advancing closes any body channel opened for
-/// the previous entry before the format-specific parser moves to the next entry.
+/// [#next()] selects an entry. Its attributes and content are accessed separately and may be parsed only when requested.
+/// Advancing closes any body channel opened for the previous entry before selecting the next entry.
 ///
 /// A reader is stateful and not safe for concurrent use. It begins before the first entry; metadata and body operations
 /// are legal only after `next()` returns true and before the next advance. A reader created by a format factory owns its
 /// archive source. Closing the reader closes the current body first and then releases format-specific source resources;
-/// neither close nor advance drains an unread body unless the body implementation itself does so.
+/// advancing may read or skip the rest of an entry, even if its body was never opened. Whether advancing or closing
+/// validates unread content depends on the format implementation.
 @NotNullByDefault
 public abstract class ArkivoStreamingReader implements Closeable {
     /// Whether the cursor currently identifies an entry.
@@ -73,6 +73,7 @@ public abstract class ArkivoStreamingReader implements Closeable {
     ///
     /// @return an immutable snapshot of the current entry's format-independent attributes
     /// @throws IOException if metadata cannot be decoded or the reader is closed
+    /// @throws IllegalStateException if no entry is current
     public final ArchiveEntryAttributes readAttributes() throws IOException {
         return readAttributes(ArchiveEntryAttributes.class);
     }
@@ -86,6 +87,7 @@ public abstract class ArkivoStreamingReader implements Closeable {
     /// @param type the supported attribute interface or implementation class
     /// @return an immutable snapshot of the current entry's requested attributes
     /// @throws IOException if metadata cannot be decoded or the reader is closed
+    /// @throws IllegalStateException if no entry is current
     /// @throws UnsupportedOperationException if {@code type} is not supported by this format
     public final <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException {
         requireCurrentEntry();
@@ -192,7 +194,7 @@ public abstract class ArkivoStreamingReader implements Closeable {
 
     /// Closes the body channel opened for the previous cursor position.
     private void closeCurrentChannel() throws IOException {
-        ReadableByteChannel channel = currentChannel;
+        @Nullable ReadableByteChannel channel = currentChannel;
         if (channel != null) {
             channel.close();
             currentChannel = null;

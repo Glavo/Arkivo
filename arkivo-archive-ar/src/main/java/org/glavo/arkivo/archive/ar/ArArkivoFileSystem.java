@@ -48,8 +48,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     /// The option for the detector used to select charsets for AR member names.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
             ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.ar",
-                    "metadataCharsetDetector"
+                    "arkivo.ar.metadataCharsetDetector"
             );
 
     /// Creates an AR archive file system base instance.

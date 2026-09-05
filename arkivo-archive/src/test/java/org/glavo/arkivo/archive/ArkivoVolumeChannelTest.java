@@ -3,11 +3,14 @@
 
 package org.glavo.arkivo.archive;
 
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -19,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -141,6 +145,93 @@ final class ArkivoVolumeChannelTest {
         assertFalse(first.isOpen());
         assertFalse(second.isOpen());
         assertFalse(source.closed);
+    }
+
+    /// Verifies source-opening failures close only acquired channels and preserve the original failure and ownership.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 3})
+    void cleansUpAcquiredVolumesAfterSourceOpenFailure(int failingIndex) throws IOException {
+        for (Throwable failure : new Throwable[]{
+                new IOException("volume discovery failed"),
+                new IllegalStateException("volume discovery failed"),
+                new AssertionError("volume discovery failed")
+        }) {
+            for (boolean cleanupFails : new boolean[]{false, true}) {
+                @Nullable Throwable shared = cleanupFails && !(failure instanceof IOException) ? failure : null;
+                IllegalArgumentException cleanupFailure = new IllegalArgumentException("volume cleanup failed");
+                DeclaredSizeChannel first = new DeclaredSizeChannel(1, shared);
+                DeclaredSizeChannel second = new DeclaredSizeChannel(1, cleanupFails ? cleanupFailure : null);
+                DeclaredSizeChannel third = new DeclaredSizeChannel(1);
+                List<DeclaredSizeChannel> physical = List.of(first, second, third);
+                TrackingVolumeSource source = new TrackingVolumeSource(physical);
+                source.failingIndex = failingIndex;
+                source.openFailure = failure;
+
+                assertSame(failure, assertThrows(failure.getClass(), () -> ArkivoVolumeChannel.open(source)));
+                assertEquals(failingIndex + 1, source.requestedIndices.size());
+                for (int index = 0; index <= failingIndex; index++) {
+                    assertEquals((long) index, source.requestedIndices.get(index));
+                }
+                for (int index = 0; index < physical.size(); index++) {
+                    assertEquals(index >= failingIndex, physical.get(index).isOpen());
+                }
+                assertFalse(source.closed);
+                int suppressedCount = cleanupFails && failingIndex == 3 ? 1 : 0;
+                assertEquals(suppressedCount, failure.getSuppressed().length);
+                if (suppressedCount != 0) {
+                    assertSame(cleanupFailure, failure.getSuppressed()[0]);
+                }
+                for (int index = failingIndex; index < physical.size(); index++) {
+                    if (index == 1 && cleanupFails) {
+                        assertSame(cleanupFailure, assertThrows(IllegalArgumentException.class, second::close));
+                    } else if (index == 0 && shared != null) {
+                        assertSame(shared, assertThrows(shared.getClass(), first::close));
+                    } else {
+                        physical.get(index).close();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Verifies boundary lookup and read arithmetic when empty volumes surround a logical size of Long.MAX_VALUE.
+    @Test
+    void readsFinalVolumeAtMaximumLogicalSize() throws IOException {
+        for (boolean direct : new boolean[]{false, true}) {
+            ZeroProgressChannel large = new ZeroProgressChannel(Long.MAX_VALUE - 3);
+            TrackingVolumeSource source = new TrackingVolumeSource(List.of(
+                    new DeclaredSizeChannel(0), large, new DeclaredSizeChannel(0),
+                    new ReadOnlyByteArrayChannel(new byte[]{11, 12, 13}), new DeclaredSizeChannel(0)
+            ));
+            try (ArkivoVolumeChannel channel = ArkivoVolumeChannel.open(source)) {
+                assertEquals(Long.MAX_VALUE, channel.size());
+                assertEquals(Long.MAX_VALUE - 3, channel.volumeStartOffset(2));
+                assertEquals(Long.MAX_VALUE - 3, channel.volumeStartOffset(3));
+                assertEquals(Long.MAX_VALUE, channel.volumeStartOffset(4));
+                channel.position(Long.MAX_VALUE - 4);
+                ByteBuffer target = direct ? ByteBuffer.allocateDirect(7) : ByteBuffer.allocate(7);
+                assertEquals(0, channel.read(target));
+                assertEquals(Long.MAX_VALUE - 4, large.position());
+                assertEquals(Long.MAX_VALUE - 4, channel.position());
+                channel.position(Long.MAX_VALUE - 3);
+                target.position(2).limit(6).mark();
+                assertEquals(3, channel.read(target));
+                assertEquals(Long.MAX_VALUE, channel.position());
+                assertEquals(5, target.position());
+                assertEquals(6, target.limit());
+                assertEquals(-1, channel.read(target));
+                assertEquals(5, target.position());
+                target.reset();
+                byte[] actual = new byte[3];
+                target.get(actual);
+                assertArrayEquals(new byte[]{11, 12, 13}, actual);
+                assertEquals(0, target.get(0));
+                assertEquals(0, target.get(1));
+                assertEquals(0, target.get(5));
+                assertEquals(0, channel.read(ByteBuffer.allocate(0)));
+            }
+            assertFalse(source.closed);
+        }
     }
 
     /// Verifies setup cleanup failures are suppressed without replacing the metadata failure.
@@ -300,6 +391,62 @@ final class ArkivoVolumeChannelTest {
         }
     }
 
+    /// Verifies failures retain progress within a physical volume and resume without replaying delivered bytes.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 3})
+    void preservesPhysicalReadProgressBeforeFailure(int partialSize) throws IOException {
+        for (Throwable failure : List.of(
+                new IOException("physical read failed"),
+                new IllegalStateException("physical read failed"),
+                new AssertionError("physical read failed")
+        )) {
+            for (boolean direct : new boolean[]{false, true}) {
+                SeekableByteChannel first = openVolume(writeVolume("first", "ab"));
+                TrackingChannel middle = new TrackingChannel(
+                        openVolume(writeVolume("middle", "cde")), false, false
+                );
+                middle.readFailure = failure;
+                middle.bytesBeforeReadFailure = partialSize;
+                SeekableByteChannel last = openVolume(writeVolume("last", "fg"));
+                TrackingVolumeSource source = new TrackingVolumeSource(List.of(first, middle, last));
+                try (ArkivoVolumeChannel channel = ArkivoVolumeChannel.open(source)) {
+                    ByteBuffer target = direct ? ByteBuffer.allocateDirect(11) : ByteBuffer.allocate(11);
+                    for (int index = 0; index < target.capacity(); index++) {
+                        target.put(index, (byte) 0x5a);
+                    }
+                    target.position(2).limit(9).mark();
+
+                    assertSame(failure, assertThrows(failure.getClass(), () -> channel.read(target)));
+                    assertEquals(4 + partialSize, target.position());
+                    assertEquals(9, target.limit());
+                    assertEquals(2L + partialSize, channel.position());
+                    assertEquals(partialSize, middle.position());
+                    assertEquals(0L, last.position());
+                    assertTrue(channel.isOpen());
+
+                    assertEquals(5 - partialSize, channel.read(target));
+                    assertEquals(9, target.position());
+                    assertEquals(7L, channel.position());
+                    assertEquals(0, channel.read(target));
+                    assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+                    assertEquals(2, target.reset().position());
+                    byte[] actual = new byte[7];
+                    target.get(actual);
+                    assertArrayEquals(bytes("abcdefg"), actual);
+                    target.clear();
+                    assertEquals((byte) 0x5a, target.get(0));
+                    assertEquals((byte) 0x5a, target.get(1));
+                    assertEquals((byte) 0x5a, target.get(9));
+                    assertEquals((byte) 0x5a, target.get(10));
+                }
+                assertFalse(source.closed);
+                assertFalse(first.isOpen());
+                assertFalse(middle.isOpen());
+                assertFalse(last.isOpen());
+            }
+        }
+    }
+
     /// Writes one UTF-8 test volume and returns its path.
     private Path writeVolume(String name, String content) throws IOException {
         Path path = temporaryDirectory.resolve(name);
@@ -342,6 +489,15 @@ final class ArkivoVolumeChannelTest {
         /// Whether the source itself was closed.
         private boolean closed;
 
+        /// Volume indices requested during discovery.
+        private final List<Long> requestedIndices = new ArrayList<>();
+
+        /// Index that reports an opening failure, or a negative value when unconfigured.
+        private long failingIndex = -1;
+
+        /// The configured volume-opening failure.
+        private @Nullable Throwable openFailure;
+
         /// Creates a source for the given channels.
         private TrackingVolumeSource(List<? extends SeekableByteChannel> channels) {
             this.channels = List.copyOf(channels);
@@ -349,7 +505,17 @@ final class ArkivoVolumeChannelTest {
 
         /// Returns one configured volume or signals the end of the sequence.
         @Override
-        public @Nullable SeekableByteChannel openVolume(long index) {
+        public @Nullable SeekableByteChannel openVolume(long index) throws IOException {
+            requestedIndices.add(index);
+            if (index == failingIndex && openFailure != null) {
+                if (openFailure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (openFailure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) openFailure;
+            }
             return index >= 0L && index < channels.size() ? channels.get((int) index) : null;
         }
 
@@ -463,7 +629,7 @@ final class ArkivoVolumeChannelTest {
         }
     }
 
-    /// Wraps a test channel with configurable size and first-close failures.
+    /// Wraps a test channel with configurable metadata, partial-read, and first-close failures.
     @NotNullByDefault
     private static final class TrackingChannel implements SeekableByteChannel {
         /// Backing file channel.
@@ -478,6 +644,12 @@ final class ArkivoVolumeChannelTest {
         /// Number of close attempts.
         private int closeAttempts;
 
+        /// Failure thrown once after the configured physical read progress.
+        private @Nullable Throwable readFailure;
+
+        /// Maximum bytes delivered before the pending physical read failure.
+        private int bytesBeforeReadFailure;
+
         /// Creates a tracking wrapper.
         private TrackingChannel(SeekableByteChannel delegate, boolean failSize, boolean failFirstClose) {
             this.delegate = delegate;
@@ -488,6 +660,27 @@ final class ArkivoVolumeChannelTest {
         /// Reads from the backing channel.
         @Override
         public int read(ByteBuffer destination) throws IOException {
+            @Nullable Throwable failure = readFailure;
+            if (failure != null) {
+                readFailure = null;
+                int limit = destination.limit();
+                destination.limit(destination.position() + Math.min(destination.remaining(), bytesBeforeReadFailure));
+                try {
+                    delegate.read(destination);
+                } finally {
+                    destination.limit(limit);
+                }
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                if (failure instanceof Error error) {
+                    throw error;
+                }
+                throw new AssertionError(failure);
+            }
             return delegate.read(destination);
         }
 

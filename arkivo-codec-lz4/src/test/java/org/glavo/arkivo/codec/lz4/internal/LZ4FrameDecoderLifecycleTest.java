@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.lz4.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.lz4.LZ4BlockCodec;
+import org.glavo.arkivo.codec.lz4.LZ4BlockSize;
 import org.glavo.arkivo.codec.lz4.LZ4Codec;
 import org.glavo.arkivo.codec.lz4.LZ4Dictionary;
 import org.glavo.arkivo.codec.lz4.LZ4DictionaryRequest;
@@ -105,7 +106,111 @@ final class LZ4FrameDecoderLifecycleTest {
                 decoder::dictionaryRequest
         );
         assertEquals("LZ4 decoder is not waiting for a dictionary", completedRequest.getMessage());
+
+        decoder.reset();
+        ByteBuffer requestedAgain = ByteBuffer.wrap(encoded);
+        ByteBuffer resetTarget = ByteBuffer.allocate(expected.length + 1);
+        assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.finish(requestedAgain, resetTarget));
+        assertEquals(23L, decoder.dictionaryRequest().dictionaryId());
+        assertEquals(0, resetTarget.position());
+
+        decoder.reset();
+        assertThrows(IllegalStateException.class, decoder::dictionaryRequest);
+        byte[] initialFrame = encode(LZ4Codec.DEFAULT.withDictionary(initial), expected);
+        ByteBuffer initialSource = ByteBuffer.wrap(initialFrame);
+        assertEquals(CodecOutcome.FINISHED, decoder.finish(initialSource, resetTarget));
+        assertFalse(initialSource.hasRemaining());
+        assertBufferEquals(expected, resetTarget);
         decoder.close();
+    }
+
+    /// Verifies reset abandons partial standard frames, pending output, and rejected block or content checksums.
+    @Test
+    void resetsEveryPartialStandardFramePhase() throws IOException {
+        byte[] discardedContent = patternedBytes(257);
+        byte[] expected = patternedBytes(131);
+        LZ4Dictionary dictionary = LZ4Dictionary.identified(7, patternedBytes(513));
+        LZ4Codec codec = LZ4Codec.DEFAULT.withBlockSize(LZ4BlockSize.KIB_64)
+                .withBlockChecksum(true).withContentChecksum(true).withDictionary(dictionary);
+        byte[] discardedFrame = encode(codec, discardedContent);
+        byte[] expectedFrame = encode(codec, expected);
+        try (LZ4FrameDecoder decoder = decoder(dictionary, 1L << 20)) {
+            for (int cut = 0; cut < discardedFrame.length; cut++) {
+                ByteBuffer prefix = ByteBuffer.allocateDirect(cut + 4);
+                prefix.position(2).put(discardedFrame, 0, cut).flip().position(2);
+                ByteBuffer source = prefix.asReadOnlyBuffer();
+                ByteBuffer discarded = ByteBuffer.allocateDirect(discardedContent.length + 1);
+                assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(source, discarded), "cut at " + cut);
+                assertEquals(cut + 2, source.position());
+                assertEquals(cut + 2, source.limit());
+                assertEquals(2, prefix.position());
+
+                decoder.reset();
+                ByteBuffer completeSource = ByteBuffer.wrap(expectedFrame).asReadOnlyBuffer();
+                ByteBuffer target = ByteBuffer.allocateDirect(expected.length + 1);
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(completeSource, target), "reset after " + cut);
+                assertFalse(completeSource.hasRemaining());
+                assertBufferEquals(expected, target);
+                decoder.reset();
+            }
+
+            ByteBuffer source = ByteBuffer.wrap(discardedFrame);
+            ByteBuffer tinyTarget = ByteBuffer.allocate(1);
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.finish(source, tinyTarget));
+            assertEquals(discardedContent[0], tinyTarget.get(0));
+            int discardedPosition = source.position();
+            decoder.reset();
+            assertEquals(discardedPosition, source.position());
+            ByteBuffer target = ByteBuffer.allocate(expected.length + 1);
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(expectedFrame), target));
+            assertBufferEquals(expected, target);
+
+            // A single-block frame ends with its block checksum, EndMark, and content checksum.
+            int[] checksumOffsets = {discardedFrame.length - 3 * Integer.BYTES, discardedFrame.length - Integer.BYTES};
+            for (int checksumIndex = 0; checksumIndex < checksumOffsets.length; checksumIndex++) {
+                decoder.reset();
+                byte[] corrupted = discardedFrame.clone();
+                corrupted[checksumOffsets[checksumIndex]] ^= 1;
+                ByteBuffer corruptSource = ByteBuffer.wrap(corrupted);
+                ByteBuffer corruptTarget = ByteBuffer.allocate(discardedContent.length + 1);
+                IOException failure = assertThrows(IOException.class, () -> decoder.finish(corruptSource, corruptTarget));
+                assertEquals(checksumIndex == 0 ? "LZ4 block checksum mismatch" : "LZ4 content checksum mismatch",
+                        failure.getMessage());
+                assertEquals(checksumOffsets[checksumIndex] + Integer.BYTES, corruptSource.position());
+                assertEquals(checksumIndex == 0 ? 0 : discardedContent.length, corruptTarget.position());
+                decoder.reset();
+                ByteBuffer recovered = ByteBuffer.allocate(expected.length + 1);
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(expectedFrame), recovered));
+                assertBufferEquals(expected, recovered);
+            }
+        }
+    }
+
+    /// Verifies reset abandons partial skippable sizes and payloads without skipping bytes from the next frame.
+    @Test
+    void resetsEveryPartialSkippableFramePhase() throws IOException {
+        byte[] payload = patternedBytes(17);
+        ByteBuffer skippable = ByteBuffer.allocate(2 * Integer.BYTES + payload.length)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt((int) SKIPPABLE_FRAME_MAGIC).putInt(payload.length).put(payload);
+        byte[] expected = patternedBytes(31);
+        byte[] frame = encode(LZ4Codec.DEFAULT.withBlockSize(LZ4BlockSize.KIB_64), expected);
+        try (LZ4FrameDecoder decoder = decoder(null, 1L << 20)) {
+            for (int cut = 0; cut < skippable.capacity(); cut++) {
+                ByteBuffer prefix = skippable.duplicate().flip().limit(cut).asReadOnlyBuffer();
+                ByteBuffer target = ByteBuffer.allocate(expected.length + 1);
+                assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(prefix, target), "cut at " + cut);
+                assertFalse(prefix.hasRemaining());
+                assertEquals(0, target.position());
+
+                decoder.reset();
+                ByteBuffer source = ByteBuffer.wrap(frame);
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
+                assertFalse(source.hasRemaining());
+                assertBufferEquals(expected, target);
+                decoder.reset();
+            }
+        }
     }
 
     /// Verifies a legacy frame leaves following legacy and skippable magic values untouched.

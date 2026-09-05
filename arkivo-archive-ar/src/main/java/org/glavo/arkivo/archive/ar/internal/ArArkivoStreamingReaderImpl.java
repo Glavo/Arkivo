@@ -37,8 +37,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// The internal NIO environment key for name detection.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
             ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.ar",
-                    "metadataCharsetDetector"
+                    "arkivo.ar.metadataCharsetDetector"
             );
     /// The global AR archive signature.
     private static final byte @Unmodifiable [] GLOBAL_HEADER = "!<arch>\n".getBytes(StandardCharsets.US_ASCII);
@@ -418,10 +417,17 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     }
 
     /// Skips any unread bytes from the current member and its alignment padding.
+    /// Successful reads are accounted for immediately so a later call can resume after a source failure.
     private void skipCurrentEntry() throws IOException {
         if (remainingEntryBytes > 0) {
-            skipBytes(remainingEntryBytes);
-            remainingEntryBytes = 0L;
+            byte[] discard = new byte[8192];
+            while (remainingEntryBytes > 0) {
+                int read = source.read(discard, 0, (int) Math.min(discard.length, remainingEntryBytes));
+                if (read < 0) {
+                    throw new EOFException("Unexpected end of AR member body");
+                }
+                remainingEntryBytes -= read;
+            }
         }
         if (pendingEntryPadding) {
             skipBytes(1L);
@@ -572,6 +578,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     }
 
     /// Reads bytes from the current member body.
+    @NotNullByDefault
     private final class EntryInputStream extends InputStream {
         /// Whether this entry stream has been closed.
         private boolean closed;
@@ -612,8 +619,8 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             if (closed) {
                 return;
             }
-            closed = true;
             skipCurrentEntry();
+            closed = true;
         }
     }
 }

@@ -11,6 +11,8 @@ import org.glavo.arkivo.codec.lzip.internal.LzipSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
@@ -214,7 +216,7 @@ public final class LzipBufferEngineTest {
         byte[] encoded = encode(content, CODEC, EncodingOptions.DEFAULT, 31, 7);
         int trailerOffset = encoded.length - LzipSupport.TRAILER_SIZE;
 
-        int[] strictEofOffsets = {0, 1, LzipSupport.HEADER_SIZE - 1, LzipSupport.HEADER_SIZE, trailerOffset};
+        int[] strictEofOffsets = {0, 1, LzipSupport.HEADER_SIZE - 1, LzipSupport.HEADER_SIZE};
         for (int offset : strictEofOffsets) {
             IOException exception = decodeFailure(Arrays.copyOf(encoded, offset), content.length + 1);
             assertInstanceOf(EOFException.class, exception, "cut at byte " + offset);
@@ -222,10 +224,85 @@ public final class LzipBufferEngineTest {
 
         int payloadCut = Math.max(LzipSupport.HEADER_SIZE, trailerOffset - 1);
         decodeFailure(Arrays.copyOf(encoded, payloadCut), content.length + 1);
-        assertInstanceOf(
-                EOFException.class,
-                decodeFailure(Arrays.copyOf(encoded, encoded.length - 1), content.length + 1)
-        );
+        for (int offset = trailerOffset; offset < encoded.length; offset++) {
+            assertInstanceOf(
+                    EOFException.class,
+                    decodeFailure(Arrays.copyOf(encoded, offset), content.length + 1),
+                    "trailer truncated at byte " + offset
+            );
+        }
+    }
+
+    /// Verifies split trailer validation preserves output guards and following input, and reset clears rejected metadata.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 4, 12})
+    public void validatesFragmentedTrailersWithoutConsumingFollowingInput(int fieldOffset) throws IOException {
+        byte[] content = patternedData(257);
+        byte[] encoded = encode(content, CODEC, EncodingOptions.DEFAULT, 31, 7);
+        byte[] corrupted = encoded.clone();
+        int trailerOffset = encoded.length - LzipSupport.TRAILER_SIZE;
+        corrupted[trailerOffset + fieldOffset] ^= 1;
+        String expectedMessage = switch (fieldOffset) {
+            case 0 -> "Lzip member CRC-32 mismatch";
+            case 4 -> "Lzip data size mismatch";
+            case 12 -> "Lzip member size mismatch";
+            default -> throw new AssertionError("Unknown trailer field: " + fieldOffset);
+        };
+        byte[] following = {'L', 'Z', 'I', 'P', 1, 16};
+        for (int split = 0; split < LzipSupport.TRAILER_SIZE; split++) {
+            for (boolean direct : new boolean[]{false, true}) {
+                int prefixSize = trailerOffset + split;
+                ByteBuffer prefixStorage = direct
+                        ? ByteBuffer.allocateDirect(prefixSize + 4)
+                        : ByteBuffer.allocate(prefixSize + 4);
+                prefixStorage.position(2).put(corrupted, 0, prefixSize).flip().position(2);
+                ByteBuffer prefix = prefixStorage.asReadOnlyBuffer();
+                ByteBuffer targetStorage = direct
+                        ? ByteBuffer.allocateDirect(content.length + 8)
+                        : ByteBuffer.allocate(content.length + 8);
+                for (int index = 0; index < targetStorage.capacity(); index++) {
+                    targetStorage.put(index, (byte) 0x5A);
+                }
+                ByteBuffer target = targetStorage.slice(2, content.length + 5);
+                target.position(2).limit(content.length + 3).mark();
+                try (CompressionDecoder.Framed decoder = CODEC.newDecoder()) {
+                    assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(prefix, target));
+                    assertEquals(prefixSize + 2, prefix.position());
+                    assertEquals(prefixSize + 2, prefix.limit());
+                    assertEquals(2, prefixStorage.position());
+                    assertEquals(content.length + 2, target.position());
+                    assertEquals(content.length + 3, target.limit());
+                    for (int index = 0; index < targetStorage.capacity(); index++) {
+                        byte expected = index >= 4 && index < 4 + content.length
+                                ? content[index - 4] : (byte) 0x5A;
+                        assertEquals(expected, targetStorage.get(index));
+                    }
+                    assertEquals(2, target.reset().position());
+
+                    int remainingTrailer = LzipSupport.TRAILER_SIZE - split;
+                    ByteBuffer suffixStorage = direct
+                            ? ByteBuffer.allocateDirect(remainingTrailer + following.length + 2)
+                            : ByteBuffer.allocate(remainingTrailer + following.length + 2);
+                    suffixStorage.position(2).put(corrupted, prefixSize, remainingTrailer).put(following);
+                    suffixStorage.flip().position(2);
+                    ByteBuffer suffix = suffixStorage.asReadOnlyBuffer();
+                    ByteBuffer emptyTarget = ByteBuffer.allocate(3).position(1).limit(1);
+                    IOException failure = assertThrows(IOException.class, () -> decoder.finish(suffix, emptyTarget));
+                    assertTrue(failure.getMessage().startsWith(expectedMessage));
+                    assertEquals(1, emptyTarget.position());
+                    assertEquals(1, emptyTarget.limit());
+                    assertEquals(remainingTrailer + 2, suffix.position());
+                    assertEquals(following.length, suffix.remaining());
+                    assertEquals(2, suffixStorage.position());
+                    byte[] tail = new byte[following.length];
+                    suffix.get(tail);
+                    assertArrayEquals(following, tail);
+
+                    decoder.reset();
+                    assertArrayEquals(content, decodeComplete(decoder, encoded));
+                }
+            }
+        }
     }
 
     /// Verifies all defined dictionary header codes round-trip and all other exponent codes are rejected.

@@ -50,7 +50,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
 
     /// The environment option selecting a present partition index.
     private static final ArchiveOption<Integer> PARTITION_INDEX =
-            ArchiveOption.of("arkivo.dmg", "partitionIndex", Integer.class);
+            ArchiveOption.of("arkivo.dmg.partitionIndex", Integer.class);
 
     /// The shared provider used by public convenience factories.
     private static final DMGArkivoFileSystemProvider INSTANCE = new DMGArkivoFileSystemProvider();

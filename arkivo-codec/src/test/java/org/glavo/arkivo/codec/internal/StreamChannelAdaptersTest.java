@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.ResourceOwnership;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -18,10 +19,13 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -81,6 +85,119 @@ final class StreamChannelAdaptersTest {
         assertArrayEquals(new byte[]{1, 2, 3, 4}, output.toByteArray());
     }
 
+    /// Verifies sliced targets preserve guards, marks, and limits across temporary-buffer boundaries and EOF.
+    @Test
+    void readsSlicedTargetsAcrossTransferBoundaries() throws IOException {
+        for (int size : new int[]{8_191, 8_192, 8_193, 16_385}) {
+            byte[] expected = new byte[size];
+            for (int index = 0; index < size; index++) {
+                expected[index] = (byte) (index * 31 + index / 251);
+            }
+            for (boolean direct : new boolean[]{false, true}) {
+                ByteBuffer storage = direct ? ByteBuffer.allocateDirect(size + 9) : ByteBuffer.allocate(size + 9);
+                byte[] initial = new byte[storage.capacity()];
+                Arrays.fill(initial, (byte) 0x5a);
+                storage.put(initial).position(3).limit(size + 7);
+                ByteBuffer target = storage.slice().position(2).limit(size + 2).mark();
+                CountingInputStream source = new CountingInputStream(expected);
+                try (ReadableByteChannel channel = StreamChannelAdapters.readableChannel(source)) {
+                    int total = 0;
+                    while (target.hasRemaining()) {
+                        int position = target.position();
+                        int count = channel.read(target);
+                        assertTrue(count > 0);
+                        assertEquals(position + count, target.position());
+                        assertEquals(size + 2, target.limit());
+                        total += count;
+                    }
+                    assertEquals(size, total);
+                    assertEquals(3, storage.position());
+                    assertEquals(size + 7, storage.limit());
+                    int reads = source.readCount();
+                    assertEquals(0, channel.read(target));
+                    assertEquals(reads, source.readCount());
+                    assertEquals(2, target.reset().position());
+                    assertEquals(-1, channel.read(target));
+                    assertEquals(2, target.position());
+                    System.arraycopy(expected, 0, initial, 5, size);
+                    byte[] actual = new byte[initial.length];
+                    storage.clear().get(actual);
+                    assertArrayEquals(initial, actual);
+                }
+            }
+        }
+    }
+
+    /// Verifies array offsets and read-only or direct sources across multiple temporary-buffer writes.
+    @Test
+    void writesSlicedSourcesAcrossTransferBoundaries() throws IOException {
+        for (int size : new int[]{8_191, 8_192, 8_193, 16_385}) {
+            byte[] bytes = new byte[size + 9];
+            for (int index = 0; index < bytes.length; index++) {
+                bytes[index] = (byte) (index * 17 + index / 127);
+            }
+            for (boolean direct : new boolean[]{false, true}) {
+                for (boolean readOnly : new boolean[]{false, true}) {
+                    ByteBuffer storage = direct ? ByteBuffer.allocateDirect(bytes.length) : ByteBuffer.allocate(bytes.length);
+                    storage.put(bytes).position(3).limit(size + 7);
+                    ByteBuffer slice = storage.slice();
+                    ByteBuffer source = (readOnly ? slice.asReadOnlyBuffer() : slice).position(2).limit(size + 2).mark();
+                    CountingOutputStream target = new CountingOutputStream();
+                    try (WritableByteChannel channel = StreamChannelAdapters.writableChannel(target)) {
+                        assertEquals(size, channel.write(source));
+                        assertEquals(size + 2, source.position());
+                        assertEquals(size + 2, source.limit());
+                        assertEquals(3, storage.position());
+                        assertEquals(size + 7, storage.limit());
+                        int writes = target.writeCount();
+                        assertEquals(0, channel.write(source));
+                        assertEquals(writes, target.writeCount());
+                        assertEquals(2, source.reset().position());
+                        assertArrayEquals(Arrays.copyOfRange(bytes, 5, size + 5), target.toByteArray());
+                        byte[] actual = new byte[bytes.length];
+                        storage.clear().get(actual);
+                        assertArrayEquals(bytes, actual);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Verifies failed stream writes advance the source only for fully completed transfer chunks.
+    @Test
+    void failedWritesPreserveCompletedChunkProgress() throws IOException {
+        for (boolean direct : new boolean[]{false, true}) {
+            for (boolean readOnly : new boolean[]{false, true}) {
+                for (Throwable failure : List.of(new IOException("partial write failed"),
+                        new IllegalStateException("partial write failed"), new AssertionError("partial write failed"))) {
+                    byte[] expected = new byte[16_400];
+                    for (int index = 0; index < expected.length; index++) {
+                        expected[index] = (byte) (index * 31 + index / 251);
+                    }
+                    ByteBuffer storage = direct ? ByteBuffer.allocateDirect(expected.length) : ByteBuffer.allocate(expected.length);
+                    storage.put(expected).position(3).limit(expected.length - 3);
+                    ByteBuffer source = (readOnly ? storage.asReadOnlyBuffer() : storage.duplicate()).mark();
+                    CountingOutputStream target = new CountingOutputStream();
+                    target.writeFailure = failure;
+                    target.failingWrite = source.hasArray() ? 1 : 2;
+                    try (WritableByteChannel channel = StreamChannelAdapters.writableChannel(target)) {
+                        assertSame(failure, assertThrows(failure.getClass(), () -> channel.write(source)));
+                        int completed = source.hasArray() ? 0 : 8_192;
+                        assertEquals(3 + completed, source.position());
+                        assertEquals(expected.length - 3, source.limit());
+                        assertEquals(3, source.reset().position());
+                        assertEquals(3, storage.position());
+                        assertEquals(target.failingWrite, target.writeCount());
+                        assertArrayEquals(Arrays.copyOfRange(expected, 3, 3 + completed + 1), target.toByteArray());
+                        byte[] actual = new byte[expected.length];
+                        storage.clear().get(actual);
+                        assertArrayEquals(expected, actual);
+                    }
+                }
+            }
+        }
+    }
+
     /// Verifies channel-backed streams reject zero progress instead of spinning.
     @Test
     void rejectsZeroProgressChannels() throws IOException {
@@ -131,6 +248,42 @@ final class StreamChannelAdaptersTest {
         output.close();
         assertEquals(1, encoder.finishCount());
         assertEquals(3, downstream.flushCount());
+    }
+
+    /// Verifies codec flush failures retain their identity while downstream flush is attempted and remains retryable.
+    @Test
+    void composesCheckedAndUncheckedFlushFailures() throws IOException {
+        for (ResourceOwnership ownership : ResourceOwnership.values()) {
+            for (boolean sharedFailure : new boolean[]{false, true}) {
+                for (Throwable primary : List.of(new IOException("encoder flush failed"),
+                        new IllegalStateException("encoder flush failed"), new AssertionError("encoder flush failed"))) {
+                    TrackingCompressingWritableByteChannel encoder = new TrackingCompressingWritableByteChannel();
+                    encoder.flushFailure = primary;
+                    FailingOnceFlushOutputStream downstream = new FailingOnceFlushOutputStream();
+                    if (sharedFailure) {
+                        downstream.flushFailure = primary;
+                    }
+                    Throwable secondary = downstream.flushFailure;
+                    OutputStream output = StreamChannelAdapters.outputStream(encoder, downstream, ownership);
+                    assertSame(primary, assertThrows(primary.getClass(), output::flush));
+                    assertEquals(1, encoder.flushCount());
+                    assertEquals(1, downstream.flushCount());
+                    assertEquals(sharedFailure ? 0 : 1, primary.getSuppressed().length);
+                    if (!sharedFailure) {
+                        assertSame(secondary, primary.getSuppressed()[0]);
+                    }
+                    output.write(7);
+                    output.flush();
+                    assertEquals(1, encoder.inputBytes());
+                    assertEquals(2, encoder.flushCount());
+                    assertEquals(2, downstream.flushCount());
+                    output.close();
+                    output.close();
+                    assertEquals(1, encoder.finishCount());
+                    assertEquals(ownership == ResourceOwnership.BORROWED ? 3 : 2, downstream.flushCount());
+                }
+            }
+        }
     }
 
     /// Verifies every adapter retries a failed endpoint close.
@@ -197,30 +350,39 @@ final class StreamChannelAdaptersTest {
         assertEquals("Stream closed", writeFailure.getMessage());
     }
 
-    /// Verifies close retains the target failure and suppresses a simultaneous downstream flush failure.
+    /// Verifies close retains checked or unchecked target failures without suppressing an exception onto itself.
     @Test
     void composesTargetCloseAndBorrowedDownstreamFlushFailures() throws IOException {
-        FailingCloseWritableChannel target = new FailingCloseWritableChannel();
-        FailingOnceFlushOutputStream downstream = new FailingOnceFlushOutputStream();
-        OutputStream output = StreamChannelAdapters.outputStream(
-                target,
-                downstream,
-                ResourceOwnership.BORROWED
-        );
+        for (boolean sharedFailure : new boolean[]{false, true}) {
+            for (Throwable primary : List.of(new IOException("close failed"),
+                    new IllegalStateException("close failed"), new AssertionError("close failed"))) {
+                FailingCloseWritableChannel target = new FailingCloseWritableChannel();
+                target.closeFailure = primary;
+                FailingOnceFlushOutputStream downstream = new FailingOnceFlushOutputStream();
+                if (sharedFailure) {
+                    downstream.flushFailure = primary;
+                }
+                Throwable secondary = downstream.flushFailure;
+                OutputStream output = StreamChannelAdapters.outputStream(target, downstream, ResourceOwnership.BORROWED);
 
-        IOException failure = assertThrows(IOException.class, output::close);
-        assertEquals("close failed", failure.getMessage());
-        assertEquals(1, failure.getSuppressed().length);
-        assertEquals("flush failed", failure.getSuppressed()[0].getMessage());
-        assertEquals(1, target.closeCount());
-        assertEquals(1, downstream.flushCount());
+                assertSame(primary, assertThrows(primary.getClass(), output::close));
+                assertEquals(sharedFailure ? 0 : 1, primary.getSuppressed().length);
+                if (!sharedFailure) {
+                    assertSame(secondary, primary.getSuppressed()[0]);
+                }
+                assertEquals(1, target.closeCount());
+                assertEquals(1, downstream.flushCount());
 
-        output.close();
-        assertEquals(2, target.closeCount());
-        assertEquals(2, downstream.flushCount());
-        output.close();
-        assertEquals(2, target.closeCount());
-        assertEquals(2, downstream.flushCount());
+                output.close();
+                assertEquals(2, target.closeCount());
+                assertEquals(2, downstream.flushCount());
+                output.close();
+                assertEquals(2, target.closeCount());
+                assertEquals(2, downstream.flushCount());
+                assertThrows(IOException.class, () -> output.write(1));
+                assertThrows(IOException.class, output::flush);
+            }
+        }
     }
 
     /// Verifies close retries only a failed downstream flush after codec finalization has completed.
@@ -256,6 +418,9 @@ final class StreamChannelAdaptersTest {
         /// The number of flush calls.
         private int flushCount;
 
+        /// Failure thrown once by the next compression flush, or `null` when disabled.
+        private @Nullable Throwable flushFailure;
+
         /// Number of encoder finalizations.
         private int finishCount;
 
@@ -273,8 +438,19 @@ final class StreamChannelAdaptersTest {
 
         /// Records one compression flush.
         @Override
-        public void flush() {
+        public void flush() throws IOException {
             flushCount++;
+            @Nullable Throwable failure = flushFailure;
+            flushFailure = null;
+            if (failure instanceof IOException exception) {
+                throw exception;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (failure instanceof Error error) {
+                throw error;
+            }
         }
 
         /// Finishes this encoder.
@@ -347,15 +523,48 @@ final class StreamChannelAdaptersTest {
 
     /// Counts target write attempts.
     @NotNullByDefault
-    private static final class CountingOutputStream extends ByteArrayOutputStream {
+    private static final class CountingOutputStream extends OutputStream {
+        /// Collected output bytes.
+        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
         /// Number of write attempts.
         private int writeCount;
 
+        /// Failure thrown once after accepting one byte on the selected bulk write.
+        private @Nullable Throwable writeFailure;
+
+        /// One-based bulk write on which to inject a failure.
+        private int failingWrite = 1;
+
+        /// Writes one byte to the collected output.
+        @Override
+        public void write(int value) {
+            writeCount++;
+            bytes.write(value);
+        }
+
         /// Writes and counts one byte range.
         @Override
-        public void write(byte[] bytes, int offset, int length) {
+        public void write(byte[] source, int offset, int length) throws IOException {
             writeCount++;
-            super.write(bytes, offset, length);
+            @Nullable Throwable failure = writeFailure;
+            if (failure != null && writeCount == failingWrite && length > 0) {
+                writeFailure = null;
+                bytes.write(source[offset]);
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
+            }
+            bytes.write(source, offset, length);
+        }
+
+        /// Returns a snapshot of collected bytes.
+        private byte[] toByteArray() {
+            return bytes.toByteArray();
         }
 
         /// Returns the number of write attempts.
@@ -478,6 +687,9 @@ final class StreamChannelAdaptersTest {
     /// Fails its first flush while accepting all writes.
     @NotNullByDefault
     private static final class FailingOnceFlushOutputStream extends OutputStream {
+        /// Failure thrown by the first flush attempt.
+        private Throwable flushFailure = new IOException("flush failed");
+
         /// Number of flush attempts.
         private int flushCount;
 
@@ -491,7 +703,13 @@ final class StreamChannelAdaptersTest {
         public void flush() throws IOException {
             flushCount++;
             if (flushCount == 1) {
-                throw new IOException("flush failed");
+                if (flushFailure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (flushFailure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) flushFailure;
             }
         }
 
@@ -537,6 +755,9 @@ final class StreamChannelAdaptersTest {
     /// Fails its first close attempt.
     @NotNullByDefault
     private static final class FailingCloseWritableChannel implements WritableByteChannel {
+        /// Failure thrown by the first close attempt.
+        private Throwable closeFailure = new IOException("close failed");
+
         /// Number of close attempts.
         private int closeCount;
 
@@ -559,7 +780,13 @@ final class StreamChannelAdaptersTest {
         public void close() throws IOException {
             closeCount++;
             if (closeCount == 1) {
-                throw new IOException("close failed");
+                if (closeFailure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (closeFailure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) closeFailure;
             }
         }
 

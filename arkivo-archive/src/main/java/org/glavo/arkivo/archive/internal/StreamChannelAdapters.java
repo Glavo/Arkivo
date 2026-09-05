@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -210,6 +211,9 @@ public final class StreamChannelAdapters {
         /// The reusable single-byte target.
         private final byte[] singleByte = new byte[1];
 
+        /// Lazily allocated storage for one bounded skip from a non-seekable source.
+        private byte @Nullable [] skipBuffer;
+
         /// Whether this adapter remains open.
         private boolean open = true;
 
@@ -240,7 +244,8 @@ public final class StreamChannelAdapters {
             return read;
         }
 
-        /// Skips by repositioning a seekable source or by using the ordinary bounded input-stream fallback.
+        /// Skips by repositioning a seekable source or by performing one bounded read.
+        /// A non-seekable source may skip fewer bytes than requested, exposing progress before another read can fail.
         @Override
         public long skip(long count) throws IOException {
             ensureOpen();
@@ -254,7 +259,11 @@ public final class StreamChannelAdapters {
                 seekableSource.position(position + skipped);
                 return skipped;
             }
-            return super.skip(count);
+            if (skipBuffer == null) {
+                skipBuffer = new byte[TRANSFER_SIZE];
+            }
+            int read = read(skipBuffer, 0, (int) Math.min(count, skipBuffer.length));
+            return Math.max(0, read);
         }
 
         /// Closes the channel and commits closure only after success.

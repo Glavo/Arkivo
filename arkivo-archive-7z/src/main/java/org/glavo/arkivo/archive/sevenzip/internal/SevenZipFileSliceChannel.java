@@ -47,6 +47,9 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
     }
 
     /// Reads bytes into the destination buffer.
+    ///
+    /// Bytes delivered before a physical read fails advance the slice position. The destination limit is restored
+    /// before returning or propagating a failure, so a later read resumes after any delivered bytes.
     @Override
     public int read(ByteBuffer destination) throws IOException {
         ensureOpen();
@@ -59,19 +62,17 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
         }
 
         int originalLimit = destination.limit();
+        int originalPosition = destination.position();
         long remaining = size - position;
         if (destination.remaining() > remaining) {
             destination.limit(destination.position() + (int) remaining);
         }
         try {
             channel.position(absolutePosition(start, position));
-            int read = channel.read(destination);
-            if (read > 0) {
-                position += read;
-            }
-            return read;
+            return channel.read(destination);
         } finally {
             destination.limit(originalLimit);
+            position += destination.position() - originalPosition;
         }
     }
 

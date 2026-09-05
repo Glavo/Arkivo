@@ -52,6 +52,11 @@ subprojects {
         (options as org.gradle.external.javadoc.StandardJavadocDocletOptions).apply {
             addBooleanOption("Xdoclint:all", true)
             addBooleanOption("Werror", true)
+            tags(
+                "apiNote:a:API Note:",
+                "implSpec:a:Implementation Requirements:",
+                "implNote:a:Implementation Note:"
+            )
         }
     }
 

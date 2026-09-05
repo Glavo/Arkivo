@@ -3,12 +3,19 @@ import java.lang.module.ModuleFinder
 import java.util.Properties
 import java.util.jar.JarFile
 import org.glavo.arkivo.gradle.DownloadVerifiedFile
+import org.gradle.api.component.AdhocComponentWithVariants
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.bundling.Jar
 import org.gradle.api.file.RelativePath
 
 plugins {
     `java-test-fixtures`
+}
+
+// Test fixtures are shared by local suites and are not part of the published library.
+(components["java"] as AdhocComponentWithVariants).apply {
+    withVariantsFromConfiguration(configurations["testFixturesApiElements"]) { skip() }
+    withVariantsFromConfiguration(configurations["testFixturesRuntimeElements"]) { skip() }
 }
 
 val benchmarkSourceSet = sourceSets.create("benchmark") {

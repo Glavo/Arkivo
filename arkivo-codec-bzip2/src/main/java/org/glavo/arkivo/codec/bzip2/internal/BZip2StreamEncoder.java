@@ -193,7 +193,8 @@ final class BZip2StreamEncoder {
         int[] codeLengths = createCodeLengths(sequence.frequencies());
         int[] codes = createCanonicalCodes(codeLengths);
         int blockCrcValue = blockCrc.finishInt();
-        combinedCrc = BZip2CRC.combine(combinedCrc, blockCrcValue);
+        // BZip2 rotates the stream CRC once for each completed block.
+        combinedCrc = Integer.rotateLeft(combinedCrc, 1) ^ blockCrcValue;
 
         bits.writeBits(48, BLOCK_MAGIC);
         bits.writeBits(32, Integer.toUnsignedLong(blockCrcValue));

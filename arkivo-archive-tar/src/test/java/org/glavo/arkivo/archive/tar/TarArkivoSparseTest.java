@@ -4,8 +4,12 @@
 package org.glavo.arkivo.archive.tar;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -14,6 +18,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,11 +29,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -42,6 +50,244 @@ final class TarArkivoSparseTest {
 
     /// The packed non-hole bytes represented by the standard sparse test map.
     private static final byte[] PACKED_CONTENT = {'a', 'b', 'c', 'd', 'e'};
+
+    /// Compares mixed reads and skips with an expanded model for empty, all-hole, and multi-extent files.
+    @ParameterizedTest
+    @ValueSource(strings = {"old-gnu", "pax-0.0", "pax-0.1", "pax-1.0"})
+    void matchesExpandedModelAcrossSparseRepresentations(String format) throws IOException {
+        for (int logicalSize : new int[]{0, 1, 8193, 16387}) {
+            List<OldGnuSparseBlock> blocks = logicalSize == 16387
+                    ? List.of(
+                    new OldGnuSparseBlock(0, 1),
+                    new OldGnuSparseBlock(1, 510),
+                    new OldGnuSparseBlock(512, 2),
+                    new OldGnuSparseBlock(8191, 3),
+                    new OldGnuSparseBlock(16383, 2)
+            ) : List.of();
+            byte[] expected = new byte[logicalSize];
+            ByteArrayOutputStream packed = new ByteArrayOutputStream();
+            for (OldGnuSparseBlock block : blocks) {
+                for (long index = block.offset(); index < block.offset() + block.size(); index++) {
+                    byte value = (byte) (index * 37 + 11);
+                    expected[(int) index] = value;
+                    packed.write(value);
+                }
+            }
+            byte[] archive = sparseArchive(format, blocks, logicalSize, packed.toByteArray());
+            try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive)
+            )) {
+                assertTrue(reader.next());
+                assertEquals(logicalSize, reader.readAttributes(BasicFileAttributes.class).size());
+                try (InputStream body = reader.openInputStream()) {
+                    Random random = new Random(0x5A125EL);
+                    int position = 0;
+                    while (position < logicalSize) {
+                        assertEquals(0, body.read(new byte[3], 1, 0));
+                        assertEquals(0, body.skip(-1));
+                        int requested = Math.min(1 + random.nextInt(1025), logicalSize - position);
+                        switch (random.nextInt(3)) {
+                            case 0 -> {
+                                long skipped = body.skip(requested);
+                                assertTrue(skipped > 0 && skipped <= requested);
+                                position += (int) skipped;
+                            }
+                            case 1 -> {
+                                assertEquals(Byte.toUnsignedInt(expected[position]), body.read());
+                                position++;
+                            }
+                            default -> {
+                                byte[] target = new byte[requested + 4];
+                                Arrays.fill(target, (byte) 0x6D);
+                                int count = body.read(target, 2, requested);
+                                assertTrue(count > 0 && count <= requested);
+                                byte[] expectedTarget = new byte[target.length];
+                                Arrays.fill(expectedTarget, (byte) 0x6D);
+                                System.arraycopy(expected, position, expectedTarget, 2, count);
+                                assertArrayEquals(expectedTarget, target);
+                                position += count;
+                            }
+                        }
+                    }
+                    assertEquals(-1, body.read());
+                    assertEquals(-1, body.read(new byte[5], 1, 3));
+                    assertEquals(0, body.read(new byte[5], 1, 0));
+                    assertEquals(0, body.skip(Long.MAX_VALUE));
+                }
+                assertFollowingRegularEntry(reader);
+            }
+
+            for (boolean direct : new boolean[]{false, true}) {
+                try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                        new ByteArrayInputStream(archive)
+                )) {
+                    assertTrue(reader.next());
+                    try (ReadableByteChannel body = reader.openChannel()) {
+                        int position = 0;
+                        int iteration = 0;
+                        while (position < logicalSize) {
+                            int capacity = new int[]{1, 511, 512, 513, 8191, 8192, 8193}[iteration++ % 7];
+                            ByteBuffer storage = direct
+                                    ? ByteBuffer.allocateDirect(capacity + 8)
+                                    : ByteBuffer.allocate(capacity + 8);
+                            for (int index = 0; index < storage.capacity(); index++) {
+                                storage.put(index, (byte) 0x6D);
+                            }
+                            ByteBuffer target = storage.slice(2, capacity + 4);
+                            target.position(2).limit(2 + capacity).mark();
+                            int count = body.read(target);
+                            assertTrue(count > 0 && count <= Math.min(capacity, logicalSize - position));
+                            assertEquals(2 + count, target.position());
+                            assertEquals(2 + capacity, target.limit());
+                            target.reset();
+                            assertEquals(2, target.position());
+                            for (int index = 0; index < storage.capacity(); index++) {
+                                byte value = index >= 4 && index < 4 + count
+                                        ? expected[position + index - 4] : (byte) 0x6D;
+                                assertEquals(value, storage.get(index));
+                            }
+                            position += count;
+                        }
+                        assertEquals(-1, body.read(ByteBuffer.allocate(1)));
+                        assertEquals(0, body.read(ByteBuffer.allocate(0)));
+                    }
+                    assertFollowingRegularEntry(reader);
+                }
+            }
+        }
+    }
+
+    /// Verifies advancing inside holes or packed extents drains only the remaining physical body and padding.
+    @ParameterizedTest
+    @ValueSource(strings = {"old-gnu", "pax-0.0", "pax-0.1", "pax-1.0"})
+    void advancesAtEverySparseBoundary(String format) throws IOException {
+        byte[] archive = sparseArchive(format, List.of(
+                new OldGnuSparseBlock(2, 3), new OldGnuSparseBlock(8, 2)
+        ), EXPANDED_CONTENT.length, PACKED_CONTENT);
+        for (int position = 0; position <= EXPANDED_CONTENT.length; position++) {
+            try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive)
+            )) {
+                assertTrue(reader.next());
+                InputStream body = reader.openInputStream();
+                assertArrayEquals(Arrays.copyOf(EXPANDED_CONTENT, position), body.readNBytes(position));
+                assertFollowingRegularEntry(reader);
+                assertThrows(IOException.class, body::read);
+                body.close();
+            }
+        }
+    }
+
+    /// Verifies completed holes and physical reads remain visible when a later sparse source read fails.
+    @ParameterizedTest
+    @ValueSource(strings = {"old-gnu", "pax-0.0", "pax-0.1", "pax-1.0"})
+    void preservesSparseProgressBeforeSourceFailure(String format) throws IOException {
+        byte[] archive = sparseArchive(format, List.of(
+                new OldGnuSparseBlock(2, 3), new OldGnuSparseBlock(8, 2)
+        ), EXPANDED_CONTENT.length, PACKED_CONTENT);
+        int packedOffset = findSequence(archive, PACKED_CONTENT);
+        for (int accepted : new int[]{0, 2, 3, 4}) {
+            for (Throwable failure : new Throwable[]{
+                    new IOException("sparse source failed"),
+                    new IllegalStateException("sparse source failed"),
+                    new AssertionError("sparse source failed")
+            }) {
+                for (boolean direct : new boolean[]{false, true}) {
+                    FailingInputStream source = new FailingInputStream(archive);
+                    try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                            source, TarArchiveOptions.READ_DEFAULTS.withoutCompression()
+                    )) {
+                        assertTrue(reader.next());
+                        source.failAt(packedOffset + accepted, failure);
+                        try (ReadableByteChannel body = reader.openChannel()) {
+                            ByteArrayOutputStream actual = new ByteArrayOutputStream();
+                            ByteBuffer target = direct ? ByteBuffer.allocateDirect(16) : ByteBuffer.allocate(16);
+                            Throwable observed = assertThrows(failure.getClass(), () -> {
+                                for (int attempt = 0; attempt < EXPANDED_CONTENT.length + 1; attempt++) {
+                                    target.clear();
+                                    int count = body.read(target);
+                                    assertTrue(count > 0);
+                                    assertEquals(count, target.position());
+                                    byte[] fragment = new byte[count];
+                                    target.flip().get(fragment);
+                                    actual.writeBytes(fragment);
+                                }
+                            });
+                            assertSame(failure, observed);
+                            int logicalProgress = accepted < 3 ? 2 + accepted : 5 + accepted;
+                            assertArrayEquals(Arrays.copyOf(EXPANDED_CONTENT, logicalProgress), actual.toByteArray());
+                            assertEquals(0, target.position());
+                            assertEquals(16, target.limit());
+                            while (true) {
+                                target.clear();
+                                int count = body.read(target);
+                                if (count < 0) {
+                                    break;
+                                }
+                                assertTrue(count > 0);
+                                byte[] fragment = new byte[count];
+                                target.flip().get(fragment);
+                                actual.writeBytes(fragment);
+                            }
+                            assertArrayEquals(EXPANDED_CONTENT, actual.toByteArray());
+                        }
+                        assertFollowingRegularEntry(reader);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Encodes one sparse layout in the requested GNU representation and appends a regular entry.
+    private static byte[] sparseArchive(
+            String format, @Unmodifiable List<OldGnuSparseBlock> blocks, int logicalSize, byte[] packed
+    ) throws IOException {
+        if (format.equals("old-gnu")) {
+            return oldGnuSparseArchive(blocks, logicalSize, packed, true);
+        }
+        List<Map.Entry<String, String>> records = new ArrayList<>();
+        records.add(Map.entry("GNU.sparse.name", "value.bin"));
+        if (format.equals("pax-1.0")) {
+            records.add(Map.entry("GNU.sparse.major", "1"));
+            records.add(Map.entry("GNU.sparse.minor", "0"));
+            records.add(Map.entry("GNU.sparse.realsize", Integer.toString(logicalSize)));
+            StringBuilder map = new StringBuilder().append(blocks.size()).append('\n');
+            for (OldGnuSparseBlock block : blocks) {
+                map.append(block.offset()).append('\n').append(block.size()).append('\n');
+            }
+            return paxSparseArchive(records, sparseVersion10Body(map.toString(), packed), true);
+        }
+        records.add(Map.entry("GNU.sparse.size", Integer.toString(logicalSize)));
+        records.add(Map.entry("GNU.sparse.numblocks", Integer.toString(blocks.size())));
+        if (format.equals("pax-0.0")) {
+            for (OldGnuSparseBlock block : blocks) {
+                records.add(Map.entry("GNU.sparse.offset", Long.toString(block.offset())));
+                records.add(Map.entry("GNU.sparse.numbytes", Long.toString(block.size())));
+            }
+        } else if (format.equals("pax-0.1")) {
+            StringBuilder map = new StringBuilder();
+            for (OldGnuSparseBlock block : blocks) {
+                if (!map.isEmpty()) {
+                    map.append(',');
+                }
+                map.append(block.offset()).append(',').append(block.size());
+            }
+            records.add(Map.entry("GNU.sparse.map", map.toString()));
+        } else {
+            throw new IllegalArgumentException("Unknown sparse representation: " + format);
+        }
+        return paxSparseArchive(records, packed, true);
+    }
+
+    /// Verifies the regular entry immediately following a generated sparse body and the archive terminator.
+    private static void assertFollowingRegularEntry(TarArkivoStreamingReader reader) throws IOException {
+        assertTrue(reader.next());
+        assertEquals("next.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+        try (InputStream body = reader.openInputStream()) {
+            assertArrayEquals("next".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
+        }
+        assertFalse(reader.next());
+    }
 
     /// Verifies GNU sparse format 0.0 repeated PAX map records.
     @Test
@@ -85,7 +331,7 @@ final class TarArkivoSparseTest {
             BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
             assertEquals(logicalSize, attributes.size());
             try (InputStream body = reader.openInputStream()) {
-                assertEquals(dataOffset, body.skip(dataOffset));
+                body.skipNBytes(dataOffset);
                 assertEquals('x', body.read());
                 assertEquals(0, body.read());
                 assertEquals(0L, body.skip(1L));
@@ -198,10 +444,10 @@ final class TarArkivoSparseTest {
                 assertEquals(0L, body.skip(-1L));
                 assertEquals(0L, body.skip(0L));
 
-                assertEquals(2L, body.skip(2L));
+                body.skipNBytes(2L);
                 assertEquals('b', body.read());
 
-                assertEquals(4L, body.skip(4L));
+                body.skipNBytes(4L);
                 assertEquals(1L, body.skip(1L));
                 assertEquals('e', body.read());
 
@@ -261,7 +507,7 @@ final class TarArkivoSparseTest {
                 false
         );
 
-        ZeroProgressInputStream zeroProgressSource = new ZeroProgressInputStream(archive);
+        FailingInputStream zeroProgressSource = new FailingInputStream(archive);
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(zeroProgressSource)) {
             assertTrue(reader.next());
             try (ReadableByteChannel body = reader.openChannel()) {
@@ -361,54 +607,46 @@ final class TarArkivoSparseTest {
         }
     }
 
-    /// Verifies that indexed TAR file systems expose expanded sparse content.
-    @Test
-    void exposesExpandedSparseContentThroughFileSystem() throws IOException {
-        byte[] archive = paxSparseArchive(
-                List.of(
-                        Map.entry("GNU.sparse.size", "12"),
-                        Map.entry("GNU.sparse.numblocks", "2"),
-                        Map.entry("GNU.sparse.name", "value.bin"),
-                        Map.entry("GNU.sparse.map", "2,3,8,2")
-                ),
-                PACKED_CONTENT,
-                false
-        );
-        Path archivePath = Files.createTempFile("arkivo-sparse-", ".tar");
-        try {
+    /// Verifies logical file sizes, random-access expansion, and independent cursors for all sparse representations.
+    @ParameterizedTest
+    @ValueSource(strings = {"old-gnu", "pax-0.0", "pax-0.1", "pax-1.0"})
+    void exposesExpandedSparseContentThroughFileSystem(String format, @TempDir Path directory) throws IOException {
+        for (byte[] expected : new byte[][]{new byte[0], new byte[8193], EXPANDED_CONTENT}) {
+            boolean hasData = expected.length == EXPANDED_CONTENT.length;
+            byte[] archive = sparseArchive(format, hasData ? List.of(
+                    new OldGnuSparseBlock(2, 3), new OldGnuSparseBlock(8, 2)
+            ) : List.of(), expected.length, hasData ? PACKED_CONTENT : new byte[0]);
+            Path archivePath = directory.resolve("sparse-" + expected.length + ".tar");
             Files.write(archivePath, archive);
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
                 Path entry = fileSystem.getPath("/value.bin");
-                assertEquals(EXPANDED_CONTENT.length, Files.size(entry));
-                assertArrayEquals(EXPANDED_CONTENT, Files.readAllBytes(entry));
+                assertEquals(expected.length, Files.size(entry));
+                assertArrayEquals(expected, Files.readAllBytes(entry));
+                for (boolean direct : new boolean[]{false, true}) {
+                    try (SeekableByteChannel body = Files.newByteChannel(entry);
+                         SeekableByteChannel independent = Files.newByteChannel(entry)) {
+                        assertEquals(expected.length, body.size());
+                        for (int position : new int[]{expected.length + 1, expected.length, 10, 8, 5, 4, 2, 1, 0}) {
+                            body.position(position);
+                            ByteBuffer target = direct ? ByteBuffer.allocateDirect(7) : ByteBuffer.allocate(7);
+                            int count = body.read(target);
+                            if (position >= expected.length) {
+                                assertEquals(-1, count);
+                                assertEquals(position, body.position());
+                            } else {
+                                assertTrue(count > 0 && count <= Math.min(7, expected.length - position));
+                                assertEquals(position + count, body.position());
+                                byte[] actual = new byte[count];
+                                target.flip().get(actual);
+                                assertArrayEquals(Arrays.copyOfRange(expected, position, position + count), actual);
+                            }
+                            assertEquals(0, independent.position());
+                            assertEquals(expected.length, body.size());
+                        }
+                    }
+                }
+                assertEquals("next", Files.readString(fileSystem.getPath("/next.txt")));
             }
-        } finally {
-            Files.deleteIfExists(archivePath);
-        }
-    }
-
-    /// Verifies that indexed TAR file systems expose expanded old GNU sparse content.
-    @Test
-    void exposesExpandedOldGnuSparseContentThroughFileSystem() throws IOException {
-        byte[] archive = oldGnuSparseArchive(
-                List.of(
-                        new OldGnuSparseBlock(2L, 3L),
-                        new OldGnuSparseBlock(8L, 2L)
-                ),
-                EXPANDED_CONTENT.length,
-                PACKED_CONTENT,
-                false
-        );
-        Path archivePath = Files.createTempFile("arkivo-old-gnu-sparse-", ".tar");
-        try {
-            Files.write(archivePath, archive);
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
-                Path entry = fileSystem.getPath("/value.bin");
-                assertEquals(EXPANDED_CONTENT.length, Files.size(entry));
-                assertArrayEquals(EXPANDED_CONTENT, Files.readAllBytes(entry));
-            }
-        } finally {
-            Files.deleteIfExists(archivePath);
         }
     }
 
@@ -904,15 +1142,58 @@ final class TarArkivoSparseTest {
         }
     }
 
-    /// Provides an in-memory archive stream that can report one armed zero-progress bulk read.
+    /// Provides an in-memory archive stream with an armed stall or recoverable failure boundary.
     @NotNullByDefault
-    private static final class ZeroProgressInputStream extends ByteArrayInputStream {
+    private static final class FailingInputStream extends InputStream {
+        /// The immutable archive bytes.
+        private final byte @Unmodifiable [] bytes;
+
+        /// The next physical byte offset.
+        private int position;
+
+        /// The offset of the armed source failure, or a negative value when unarmed.
+        private int failureOffset = -1;
+
+        /// The failure to emit once at the configured boundary.
+        private @Nullable Throwable failure;
+
         /// Whether the next nonempty bulk read must return zero.
         private boolean zeroProgressPending;
 
         /// Creates a stream over the supplied archive bytes.
-        private ZeroProgressInputStream(byte[] archive) {
-            super(archive);
+        private FailingInputStream(byte[] archive) {
+            bytes = archive.clone();
+        }
+
+        /// Arms a failure before reading the byte at the supplied absolute offset.
+        private void failAt(int offset, Throwable failure) {
+            if (offset < position || offset > bytes.length) {
+                throw new IllegalArgumentException("Failure offset is outside the unread source range");
+            }
+            this.failureOffset = offset;
+            this.failure = failure;
+        }
+
+        /// Emits and clears an armed failure when its boundary is reached.
+        private void checkFailure() throws IOException {
+            if (position == failureOffset && failure != null) {
+                Throwable pending = failure;
+                failure = null;
+                if (pending instanceof IOException exception) {
+                    throw exception;
+                }
+                if (pending instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) pending;
+            }
+        }
+
+        /// Reads one unsigned byte after checking the armed failure boundary.
+        @Override
+        public int read() throws IOException {
+            checkFailure();
+            return position == bytes.length ? -1 : Byte.toUnsignedInt(bytes[position++]);
         }
 
         /// Arms one zero-progress result for the next nonempty bulk read.
@@ -920,14 +1201,28 @@ final class TarArkivoSparseTest {
             zeroProgressPending = true;
         }
 
-        /// Returns zero once when armed, otherwise delegates to the in-memory source.
+        /// Returns zero once when armed, otherwise reads no farther than the failure boundary.
         @Override
-        public synchronized int read(byte[] buffer, int offset, int length) {
-            if (zeroProgressPending && length > 0) {
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, buffer.length);
+            if (length == 0) {
+                return 0;
+            }
+            if (zeroProgressPending) {
                 zeroProgressPending = false;
                 return 0;
             }
-            return super.read(buffer, offset, length);
+            checkFailure();
+            if (position == bytes.length) {
+                return -1;
+            }
+            int count = Math.min(length, bytes.length - position);
+            if (failure != null) {
+                count = Math.min(count, failureOffset - position);
+            }
+            System.arraycopy(bytes, position, buffer, offset, count);
+            position += count;
+            return count;
         }
     }
 }

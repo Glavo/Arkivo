@@ -498,8 +498,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Returns the internal TAR compression-policy option.
     private static ArchiveOption<TarCompression> compressionOption(String name) {
         return ArchiveOption.of(
-                "arkivo.tar",
-                name,
+                "arkivo.tar." + name,
                 TarCompression.class,
                 value -> {
                     if (value instanceof TarCompression compression) {

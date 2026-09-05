@@ -14,16 +14,21 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
 
-/// Opens independent readable channels for split archive volumes.
+/// A source of readable channels for the volumes of an archive.
 ///
-/// Each successful call to `openVolume(long)` transfers ownership of the returned channel to the consumer. Repeated
-/// calls for the same index must return newly opened channels with independent positions and lifecycles.
-/// Closing the source releases future volume-discovery resources but does not close channels returned by earlier calls.
-/// ArkivoVolumeChannel opens a finite source as one read-only logical seekable channel.
+/// Each non-null result of [#openVolume(long)] is owned by the caller. Repeated calls for the same index must return
+/// channels with independent positions. Closing one returned channel must not close another.
+///
+/// Channels may share resources owned by the source. Callers should close all returned channels before closing the
+/// source; a channel backed by such a shared resource may become unusable when the source is closed.
+/// [ArkivoVolumeChannel] combines a finite sequence of volumes into one read-only seekable channel.
 @FunctionalInterface
 @NotNullByDefault
 public interface ArkivoVolumeSource extends Closeable {
     /// Returns a source backed by a finite list of volume paths.
+    ///
+    /// Each call opens the requested path anew; file contents are not snapshotted. Closing this source has no effect
+    /// on channels it has returned and does not prevent later opens.
     ///
     /// @param paths the volume paths in logical order; the list is copied
     /// @return a source that opens each listed path as an independent read-only channel
@@ -46,7 +51,9 @@ public interface ArkivoVolumeSource extends Closeable {
 
     /// Closes resources owned by this source when the archive consumer no longer needs to open volume channels.
     ///
-    /// This method does not close independently returned volume channels.
+    /// Implementations must document any effect on returned channels and whether further opens are permitted.
+    ///
+    /// @implSpec The default implementation does nothing.
     ///
     /// @throws IOException if source-owned discovery resources cannot be released
     @Override

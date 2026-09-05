@@ -8,17 +8,11 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.util.Objects;
 import java.util.function.Function;
 
-/// Describes one typed archive option.
+/// Associates an NIO environment key with its value type and conversion rule.
 ///
 /// @param <T> the value type accepted by this option
 @NotNullByDefault
 public final class ArchiveOption<T> {
-    /// The namespace that owns this option.
-    private final String namespace;
-
-    /// The local option name inside the namespace.
-    private final String name;
-
     /// The stable NIO environment key used by this option.
     private final String key;
 
@@ -29,10 +23,8 @@ public final class ArchiveOption<T> {
     private final Function<Object, T> converter;
 
     /// Creates a typed option descriptor.
-    private ArchiveOption(String namespace, String name, Class<T> type, Function<Object, T> converter) {
-        this.namespace = validateNamespace(namespace);
-        this.name = validateName(name);
-        this.key = this.namespace + "." + this.name;
+    private ArchiveOption(String key, Class<T> type, Function<Object, T> converter) {
+        this.key = validateKey(key);
         this.type = Objects.requireNonNull(type, "type");
         this.converter = Objects.requireNonNull(converter, "converter");
     }
@@ -40,14 +32,12 @@ public final class ArchiveOption<T> {
     /// Returns an option that accepts only values of the given type.
     ///
     /// @param <T> the option value type
-    /// @param namespace the non-blank dot-separated owner namespace
-    /// @param name the non-blank local name without dots or whitespace
+    /// @param key the dot-separated environment key, without empty segments or whitespace
     /// @param type the runtime value class
-    /// @return a typed option that rejects values not assignable to {@code type}
-    /// @throws IllegalArgumentException if {@code namespace} or {@code name} is invalid
-    public static <T> ArchiveOption<T> of(String namespace, String name, Class<T> type) {
-        String key = key(namespace, name);
-        return new ArchiveOption<>(namespace, name, type, value -> {
+    /// @return an option that accepts instances of `type`
+    /// @throws IllegalArgumentException if `key` is invalid
+    public static <T> ArchiveOption<T> of(String key, Class<T> type) {
+        return new ArchiveOption<>(key, type, value -> {
             if (type.isInstance(value)) {
                 return type.cast(value);
             }
@@ -58,47 +48,24 @@ public final class ArchiveOption<T> {
     /// Returns an option that normalizes values through the given converter.
     ///
     /// @param <T> the option value type
-    /// @param namespace the non-blank dot-separated owner namespace
-    /// @param name the non-blank local name without dots or whitespace
+    /// @param key the dot-separated environment key, without empty segments or whitespace
     /// @param type the runtime value class
     /// @param converter the raw-value validator and normalizer
-    /// @return a typed option using {@code converter}
-    /// @throws IllegalArgumentException if {@code namespace} or {@code name} is invalid
+    /// @return an option using `converter`
+    /// @throws IllegalArgumentException if `key` is invalid
     public static <T> ArchiveOption<T> of(
-            String namespace,
-            String name,
+            String key,
             Class<T> type,
             Function<Object, T> converter
     ) {
-        return new ArchiveOption<>(namespace, name, type, converter);
-    }
-
-    /// Returns the namespace that owns this option.
-    ///
-    /// @return the stable dot-separated namespace
-    public String namespace() {
-        return namespace;
-    }
-
-    /// Returns the local option name inside the namespace.
-    ///
-    /// @return the stable local option name
-    public String name() {
-        return name;
+        return new ArchiveOption<>(key, type, converter);
     }
 
     /// Returns the stable NIO environment key used by this option.
     ///
-    /// @return {@code namespace() + "." + name()}
+    /// @return the environment key
     public String key() {
         return key;
-    }
-
-    /// Returns the typed value class accepted by this option.
-    ///
-    /// @return the runtime value class
-    public Class<T> type() {
-        return type;
     }
 
     /// Converts and validates one raw value.
@@ -119,27 +86,13 @@ public final class ArchiveOption<T> {
         return key;
     }
 
-    /// Returns the environment key for an option namespace and local name.
-    private static String key(String namespace, String name) {
-        return validateNamespace(namespace) + "." + validateName(name);
-    }
-
-    /// Returns a validated option namespace.
-    private static String validateNamespace(String namespace) {
-        Objects.requireNonNull(namespace, "namespace");
-        if (namespace.isBlank() || namespace.startsWith(".") || namespace.endsWith(".")
-                || namespace.contains("..") || namespace.chars().anyMatch(Character::isWhitespace)) {
-            throw new IllegalArgumentException("namespace must contain non-empty dot-separated segments");
+    /// Rejects empty key segments and whitespace.
+    private static String validateKey(String key) {
+        Objects.requireNonNull(key, "key");
+        if (key.isBlank() || key.startsWith(".") || key.endsWith(".")
+                || key.contains("..") || key.chars().anyMatch(Character::isWhitespace)) {
+            throw new IllegalArgumentException("key must contain non-empty dot-separated segments without whitespace");
         }
-        return namespace;
-    }
-
-    /// Returns a validated local option name.
-    private static String validateName(String name) {
-        Objects.requireNonNull(name, "name");
-        if (name.isBlank() || name.indexOf('.') >= 0 || name.chars().anyMatch(Character::isWhitespace)) {
-            throw new IllegalArgumentException("name must be a non-empty local option name");
-        }
-        return name;
+        return key;
     }
 }

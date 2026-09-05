@@ -9,6 +9,8 @@ import org.gradle.testfixtures.ProjectBuilder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -18,6 +20,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -191,10 +194,14 @@ final class DownloadVerifiedFileTest {
         assertTrue(exception.getMessage().contains("downloads require HTTPS"));
     }
 
-    /// Verifies that an exact response is copied completely.
-    @Test
-    void copiesExactResponse() throws IOException {
-        byte[] content = {1, 2, 3, 4};
+    /// Verifies empty responses and exact responses spanning internal copy-buffer boundaries.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 8191, 8192, 8193, 16385})
+    void copiesExactResponse(int size) throws IOException {
+        byte[] content = new byte[size];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index * 37 + 11);
+        }
         ByteArrayOutputStream output = new ByteArrayOutputStream();
 
         DownloadVerifiedFile.copyExpectedResponse(
@@ -205,6 +212,59 @@ final class DownloadVerifiedFileTest {
         );
 
         assertArrayEquals(content, output.toByteArray());
+    }
+
+    /// Verifies a zero-progress response fails immediately without losing already copied bytes or reading again.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1})
+    void rejectsZeroProgressResponse(int successfulReads) {
+        byte[] content = new byte[16385];
+        Arrays.fill(content, (byte) 0x5a);
+        ZeroProgressResponse input = new ZeroProgressResponse(content, successfulReads);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        IOException failure = assertThrows(IOException.class, () ->
+                DownloadVerifiedFile.copyExpectedResponse(
+                        input,
+                        output,
+                        content.length,
+                        URI.create("https://example.invalid/payload.bin")
+                )
+        );
+
+        assertTrue(failure.getMessage().contains("made no progress"));
+        assertEquals(successfulReads + 1, input.readCalls);
+        assertArrayEquals(Arrays.copyOf(content, successfulReads * 8192), output.toByteArray());
+        assertEquals(content.length - successfulReads * 8192, input.available());
+    }
+
+    /// Returns zero after a fixed number of successful bulk reads and rejects any subsequent read attempt.
+    @NotNullByDefault
+    private static final class ZeroProgressResponse extends ByteArrayInputStream {
+        /// The number of successful reads before the injected zero-progress response.
+        private final int successfulReads;
+
+        /// The number of attempted bulk reads.
+        private int readCalls;
+
+        /// Creates a response whose bytes remain available after the injected zero-progress read.
+        private ZeroProgressResponse(byte[] content, int successfulReads) {
+            super(content);
+            this.successfulReads = successfulReads;
+        }
+
+        /// Copies an initial prefix, injects zero progress, and fails if the caller attempts to spin.
+        @Override
+        public int read(byte[] buffer, int offset, int length) {
+            readCalls++;
+            if (readCalls <= successfulReads) {
+                return super.read(buffer, offset, length);
+            }
+            if (readCalls == successfulReads + 1) {
+                return 0;
+            }
+            throw new AssertionError("Response was read again after making no progress");
+        }
     }
 
     /// Verifies that an oversized response is detected after consuming only one excess byte.

@@ -252,6 +252,7 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
     }
 
     /// Copies a response while refusing to consume more than one byte beyond the declared size.
+    /// A positive-length read returning zero fails immediately; bytes already copied remain in the output.
     static void copyExpectedResponse(
             InputStream input,
             OutputStream output,
@@ -264,6 +265,9 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
             int count = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
             if (count < 0) {
                 return;
+            }
+            if (count == 0) {
+                throw new IOException("Test data response read made no progress: " + uri);
             }
             output.write(buffer, 0, count);
             remaining -= count;

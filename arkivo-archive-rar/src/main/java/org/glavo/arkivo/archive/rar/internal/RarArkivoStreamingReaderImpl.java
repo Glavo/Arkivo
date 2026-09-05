@@ -51,8 +51,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The internal NIO environment key for legacy name detection.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
             ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.rar",
-                    "legacyCharsetDetector"
+                    "arkivo.rar.legacyCharsetDetector"
             );
     /// The maximum self-extracting stub size searched before the RAR signature.
     private static final int MAX_SFX_SIZE = 1024 * 1024;

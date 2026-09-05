@@ -21,6 +21,9 @@ import java.util.Objects;
 /// unchanged, leaves the downstream stream open, and permanently ends writes through this wrapper. [#close()] finishes
 /// once and owns the downstream stream: a finish failure does not prevent a close attempt, and a failed downstream close
 /// can be retried by calling `close` again.
+///
+/// A transform or downstream-write failure is terminal. Later writes, flushes, and finish calls rethrow that failure
+/// without invoking the transform or writing buffered bytes again. Argument validation failures do not enter this state.
 @NotNullByDefault
 public final class TransformingOutputStream extends OutputStream {
     /// The bounded working-buffer size.
@@ -45,7 +48,7 @@ public final class TransformingOutputStream extends OutputStream {
     private int pending;
 
     /// A deferred output or filter failure.
-    private @Nullable IOException failure;
+    private @Nullable Throwable failure;
 
     /// Whether all pending filter bytes have been forwarded.
     private boolean finished;
@@ -80,19 +83,24 @@ public final class TransformingOutputStream extends OutputStream {
     public void write(byte[] bytes, int offset, int length) throws IOException {
         Objects.checkFromIndexSize(offset, length, bytes.length);
         ensureWritable();
-        while (length > 0) {
-            int copied = Math.min(length, buffer.length - position - pending);
-            System.arraycopy(bytes, offset, buffer, position + pending, copied);
-            offset += copied;
-            length -= copied;
-            pending += copied;
-            filterPending();
-            if (position + pending == buffer.length) {
-                compact();
-                if (pending == buffer.length) {
-                    throw new IOException("Byte filter made no progress with a full buffer");
+        try {
+            while (length > 0) {
+                int copied = Math.min(length, buffer.length - position - pending);
+                System.arraycopy(bytes, offset, buffer, position + pending, copied);
+                offset += copied;
+                length -= copied;
+                pending += copied;
+                filterPending();
+                if (position + pending == buffer.length) {
+                    compact();
+                    if (pending == buffer.length) {
+                        throw new IOException("Byte filter made no progress with a full buffer");
+                    }
                 }
             }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
         }
     }
 
@@ -102,9 +110,7 @@ public final class TransformingOutputStream extends OutputStream {
     @Override
     public void flush() throws IOException {
         ensureOpen();
-        if (failure != null) {
-            throw failure;
-        }
+        rethrow(failure);
         output.flush();
     }
 
@@ -118,15 +124,13 @@ public final class TransformingOutputStream extends OutputStream {
         if (finished) {
             return;
         }
-        if (failure != null) {
-            throw failure;
-        }
+        rethrow(failure);
         try {
             output.write(buffer, position, pending);
             position = 0;
             pending = 0;
             finished = true;
-        } catch (IOException exception) {
+        } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
         }
@@ -168,12 +172,7 @@ public final class TransformingOutputStream extends OutputStream {
         if (transformed < 0 || transformed > pending) {
             throw new IOException("Byte filter returned an invalid transformed byte count");
         }
-        try {
-            output.write(buffer, position, transformed);
-        } catch (IOException exception) {
-            failure = exception;
-            throw exception;
-        }
+        output.write(buffer, position, transformed);
         position += transformed;
         pending -= transformed;
     }
@@ -190,9 +189,7 @@ public final class TransformingOutputStream extends OutputStream {
         if (finished) {
             throw new IOException("Byte filter stream has already finished");
         }
-        if (failure != null) {
-            throw failure;
-        }
+        rethrow(failure);
     }
 
     /// Requires this stream to remain open.
@@ -202,7 +199,7 @@ public final class TransformingOutputStream extends OutputStream {
         }
     }
 
-    /// Rethrows a close-time failure with its original type.
+    /// Rethrows an operation or close-time failure with its original type.
     private static void rethrow(@Nullable Throwable throwable) throws IOException {
         if (throwable == null) {
             return;

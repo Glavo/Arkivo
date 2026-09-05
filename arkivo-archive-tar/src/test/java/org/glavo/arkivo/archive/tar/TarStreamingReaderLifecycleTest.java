@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.tar;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -15,10 +16,13 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -39,6 +43,31 @@ final class TarStreamingReaderLifecycleTest {
                 () -> reader.readAttributes(TarArkivoEntryAttributes.class)
         );
         assertThrows(ClosedChannelException.class, reader::openChannel);
+    }
+
+    /// Verifies advancing resumes body and block-padding skips without consuming the following entry header.
+    @Test
+    void retriesBodyAndPaddingDrainWithoutSkippingFollowingEntry() throws IOException {
+        byte[] bytes = archive();
+        for (int failureOffset : new int[]{1_025, 1_028, 1_029, 1_100, 1_535}) {
+            for (Throwable failure : List.of(new IOException("drain failed"),
+                    new IllegalStateException("drain failed"), new AssertionError("drain failed"))) {
+                FailOnceInputStream source = new FailOnceInputStream(bytes, failureOffset, failure);
+                try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(source)) {
+                    assertTrue(reader.next());
+                    assertTrue(reader.next());
+                    assertEquals(1_024, source.position);
+                    InputStream body = reader.openInputStream();
+                    assertSame(failure, assertThrows(failure.getClass(), reader::next));
+                    assertEquals(failureOffset, source.position);
+                    assertThrows(ClosedChannelException.class, body::read);
+                    assertTrue(reader.next());
+                    assertEquals("link", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+                    assertEquals("dir/hello.txt", reader.readAttributes(TarArkivoEntryAttributes.class).linkName());
+                    assertFalse(reader.next());
+                }
+            }
+        }
     }
 
     /// Verifies that source cleanup can be retried after a close failure.
@@ -143,6 +172,74 @@ final class TarStreamingReaderLifecycleTest {
         try (OutputStream body = writer.beginFile(path).openOutputStream()) {
             body.write(content);
         }
+    }
+
+    /// Supplies a byte array while failing once at an exact read boundary.
+    @NotNullByDefault
+    private static final class FailOnceInputStream extends InputStream {
+        /// Immutable source bytes retained for this test.
+        private final byte @Unmodifiable [] bytes;
+
+        /// Offset at which the configured failure is emitted.
+        private final int failureOffset;
+
+        /// Failure emitted at the boundary.
+        private final Throwable failure;
+
+        /// Current physical source offset.
+        private int position;
+
+        /// Whether the failure has already been emitted.
+        private boolean failed;
+
+        /// Creates a source with one recoverable boundary failure.
+        private FailOnceInputStream(byte[] bytes, int failureOffset, Throwable failure) {
+            this.bytes = bytes.clone();
+            this.failureOffset = failureOffset;
+            this.failure = failure;
+        }
+
+        /// Checks the current failure boundary before consuming input.
+        private void checkFailure() throws IOException {
+            if (!failed && position == failureOffset) {
+                failed = true;
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
+            }
+        }
+
+        /// Reads one unsigned source byte.
+        @Override
+        public int read() throws IOException {
+            checkFailure();
+            return position == bytes.length ? -1 : Byte.toUnsignedInt(bytes[position++]);
+        }
+
+        /// Reads no farther than the configured failure boundary.
+        @Override
+        public int read(byte[] target, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, target.length);
+            if (length == 0) {
+                return 0;
+            }
+            checkFailure();
+            if (position == bytes.length) {
+                return -1;
+            }
+            int count = Math.min(length, bytes.length - position);
+            if (!failed) {
+                count = Math.min(count, failureOffset - position);
+            }
+            System.arraycopy(bytes, position, target, offset, count);
+            position += count;
+            return count;
+        }
+
     }
 
     /// Input stream that fails its first close call.

@@ -22,7 +22,8 @@ import java.nio.ByteBuffer;
 /// contains the final available bytes and therefore reports truncation as an `IOException`. Once an operation returns
 /// [CodecOutcome#FINISHED], call [#reset()] before decoding another independent or concatenated frame.
 ///
-/// A buffer-driven decoding loop can switch to `finish` only after a blocking source reports physical end-of-input:
+/// The following example decodes from a blocking channel. It calls `finish` when the channel reaches end-of-input.
+/// A caller that already knows the complete compressed input can call `finish` directly.
 ///
 /// ```java
 /// try (CompressionDecoder decoder = codec.newDecoder()) {
@@ -56,8 +57,8 @@ import java.nio.ByteBuffer;
 /// }
 /// ```
 ///
-/// Dictionary-aware callers replace the final branch with [DictionaryAware#dictionaryRequest()] and
-/// [DictionaryAware#provideDictionary(CompressionDictionary)]. A `FINISHED` result may leave trailing compressed bytes
+/// Dictionary-aware callers replace the final branch with [CompressionDecoder.DictionaryAware#dictionaryRequest()] and
+/// [CompressionDecoder.DictionaryAware#provideDictionary(CompressionDictionary)]. A `FINISHED` result may leave trailing compressed bytes
 /// between the input position and limit.
 @NotNullByDefault
 public interface CompressionDecoder extends AutoCloseable {
@@ -69,7 +70,7 @@ public interface CompressionDecoder extends AutoCloseable {
     ///
     /// @param source the compressed input buffer
     /// @param target the distinct writable decoded-output buffer
-    /// @return the actionable reason this operation returned
+    /// @return the reason decoding stopped
     /// @throws IOException if the compressed data is invalid or decoding fails
     CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException;
 
@@ -80,7 +81,7 @@ public interface CompressionDecoder extends AutoCloseable {
     ///
     /// @param source the final compressed input buffer
     /// @param target the distinct writable decoded-output buffer
-    /// @return the actionable reason this operation returned
+    /// @return the reason decoding stopped
     /// @throws IOException if the encoding is truncated, invalid, or cannot be decoded
     CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException;
 

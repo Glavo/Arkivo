@@ -4,19 +4,24 @@
 package org.glavo.arkivo.archive.ar;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.DosFileAttributes;
+import java.util.List;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,6 +48,36 @@ final class ArStreamingReaderLifecycleTest {
             }
 
             assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies body-close retries retain successful drain progress and preserve the following member header.
+    @Test
+    void retriesBodyDrainWithoutSkippingFollowingMember() throws IOException {
+        byte[] archive = twoFileArchive();
+        for (int failureOffset : new int[]{69, 70, 71}) {
+            for (Throwable failure : List.of(new IOException("drain failed"),
+                    new IllegalStateException("drain failed"), new AssertionError("drain failed"))) {
+                FailOnceInputStream source = new FailOnceInputStream(archive, failureOffset, failure);
+                try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(source)) {
+                    assertTrue(reader.next());
+                    assertEquals(68, source.position);
+                    InputStream body = reader.openInputStream();
+                    assertSame(failure, assertThrows(failure.getClass(), body::close));
+                    assertEquals(failureOffset, source.position);
+                    body.close();
+                    assertEquals(72, source.position);
+                    body.close();
+                    assertEquals(72, source.position);
+                    assertTrue(reader.next());
+                    assertEquals("second", reader.readAttributes(ArArkivoEntryAttributes.class).path());
+                    try (InputStream second = reader.openInputStream()) {
+                        assertEquals(4, second.read());
+                        assertEquals(-1, second.read());
+                    }
+                    assertFalse(reader.next());
+                }
+            }
         }
     }
 
@@ -153,6 +188,74 @@ final class ArStreamingReaderLifecycleTest {
         try (OutputStream body = writer.beginFile(path).openOutputStream()) {
             body.write(content);
         }
+    }
+
+    /// Supplies a byte array while failing once at an exact read boundary.
+    @NotNullByDefault
+    private static final class FailOnceInputStream extends InputStream {
+        /// Immutable source bytes retained for this test.
+        private final byte @Unmodifiable [] bytes;
+
+        /// Offset at which the configured failure is emitted.
+        private final int failureOffset;
+
+        /// Failure emitted at the boundary.
+        private final Throwable failure;
+
+        /// Current physical source offset.
+        private int position;
+
+        /// Whether the failure has already been emitted.
+        private boolean failed;
+
+        /// Creates a source with one recoverable boundary failure.
+        private FailOnceInputStream(byte[] bytes, int failureOffset, Throwable failure) {
+            this.bytes = bytes.clone();
+            this.failureOffset = failureOffset;
+            this.failure = failure;
+        }
+
+        /// Checks the current failure boundary before consuming input.
+        private void checkFailure() throws IOException {
+            if (!failed && position == failureOffset) {
+                failed = true;
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
+            }
+        }
+
+        /// Reads one unsigned source byte.
+        @Override
+        public int read() throws IOException {
+            checkFailure();
+            return position == bytes.length ? -1 : Byte.toUnsignedInt(bytes[position++]);
+        }
+
+        /// Reads no farther than the configured failure boundary.
+        @Override
+        public int read(byte[] target, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, target.length);
+            if (length == 0) {
+                return 0;
+            }
+            checkFailure();
+            if (position == bytes.length) {
+                return -1;
+            }
+            int count = Math.min(length, bytes.length - position);
+            if (!failed) {
+                count = Math.min(count, failureOffset - position);
+            }
+            System.arraycopy(bytes, position, target, offset, count);
+            position += count;
+            return count;
+        }
+
     }
 
     /// Input stream that fails its first close call.

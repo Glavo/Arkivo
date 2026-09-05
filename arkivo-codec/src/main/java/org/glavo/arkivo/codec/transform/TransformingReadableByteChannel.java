@@ -10,6 +10,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
@@ -20,7 +21,9 @@ import java.util.Objects;
 /// advances only the target position; its limit is unchanged. When the source reaches end-of-input, an incomplete suffix
 /// retained by the transform is returned unchanged before this channel reports `-1`.
 ///
-/// An `IOException` from the source or an invalid/no-progress transform is retained and rethrown by later reads. Closing
+/// A source or transform failure (`IOException`, `RuntimeException`, or `Error`) is retained and rethrown by later
+/// nonempty reads without reading or transforming more data. Bytes already delivered to the target remain there.
+/// Rejected arguments do not put this channel into a failed state. Closing
 /// does not drain input. It leaves a borrowed source open and closes an owned source; a failed owned-source close can be
 /// retried by calling [#close()] again.
 @NotNullByDefault
@@ -53,7 +56,7 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     private int pending;
 
     /// A deferred source or transform failure.
-    private @Nullable IOException failure;
+    private @Nullable Throwable failure;
 
     /// Whether the upstream source reached end-of-input.
     private boolean endReached;
@@ -91,6 +94,9 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     ///
     /// An empty target returns zero without reading the source. Otherwise this method returns a positive count or `-1`;
     /// a source that returns zero before producing data causes `IOException` rather than a zero-progress result.
+    /// A nonempty read-only target is rejected before consuming input or buffered data.
+    ///
+    /// @throws ReadOnlyBufferException if this channel is open and has not failed, and the target is nonempty and read-only
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -98,8 +104,9 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
         if (!target.hasRemaining()) {
             return 0;
         }
-        if (failure != null) {
-            throw failure;
+        rethrowFailure();
+        if (target.isReadOnly()) {
+            throw new ReadOnlyBufferException();
         }
 
         try {
@@ -132,7 +139,7 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
                     filterPending(count);
                 }
             }
-        } catch (IOException exception) {
+        } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
         }
@@ -171,6 +178,19 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     private void compact() {
         System.arraycopy(buffer, position, buffer, 0, ready + pending);
         position = 0;
+    }
+
+    /// Rethrows a retained read failure without invoking the source or transform again.
+    private void rethrowFailure() throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
     }
 
     /// Requires this channel to remain open.

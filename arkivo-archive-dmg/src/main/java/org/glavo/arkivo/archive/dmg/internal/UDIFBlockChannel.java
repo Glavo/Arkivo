@@ -72,6 +72,9 @@ class UDIFBlockChannel implements SeekableByteChannel {
     }
 
     /// Reads decoded bytes at the current logical position.
+    ///
+    /// Bytes delivered before a failure, including a partial raw-run read, advance both the target and logical
+    /// positions. The target limit is unchanged. A later read resumes after those bytes if the source remains usable.
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -104,15 +107,21 @@ class UDIFBlockChannel implements SeekableByteChannel {
                 source.position(run.physicalOffset() + offsetInRun);
                 ByteBuffer slice = target.slice();
                 slice.limit(count);
-                int read = source.read(slice);
+                int read;
+                try {
+                    read = source.read(slice);
+                } finally {
+                    // Include raw bytes delivered before the physical source reports a failure.
+                    int transferred = slice.position();
+                    target.position(target.position() + transferred);
+                    position += transferred;
+                }
                 if (read < 0) {
                     throw new IOException("Unexpected end of raw UDIF run");
                 }
                 if (read == 0) {
                     throw new IOException("Raw UDIF run read made no progress");
                 }
-                target.position(target.position() + read);
-                position += read;
             } else {
                 byte[] decoded = decodedRun(run);
                 target.put(decoded, Math.toIntExact(offsetInRun), count);

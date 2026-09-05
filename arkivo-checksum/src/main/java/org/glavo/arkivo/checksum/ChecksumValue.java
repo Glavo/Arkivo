@@ -15,10 +15,10 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Objects;
 
-/// Represents an immutable checksum value in its canonical byte representation.
+/// An immutable sequence of checksum bytes.
 ///
-/// The first byte is the most significant byte for numeric checksums. Format-specific truncation and byte order are
-/// deliberately not part of this type. Instances never expose mutable access to their storage.
+/// Numeric checksums are stored with the most significant byte first. This representation is independent of the byte
+/// order used by an archive or compression format. Instances do not expose mutable access to their storage.
 @NotNullByDefault
 public final class ChecksumValue {
     /// The owned canonical checksum bytes.
@@ -106,8 +106,8 @@ public final class ChecksumValue {
 
     /// Returns a new read-only view of the canonical bytes.
     ///
-    /// The returned buffer has position zero and a limit equal to [#byteSize()]. Its content remains valid for the
-    /// lifetime of this value.
+    /// The returned buffer has position zero and a limit and capacity equal to [#byteSize()]. Each call returns a
+    /// buffer with independent position, limit, and mark. Changing these does not change the checksum bytes.
     ///
     /// @return a read-only checksum view
     public @UnmodifiableView ByteBuffer toByteBuffer() {

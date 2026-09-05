@@ -17,14 +17,13 @@ import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-/// Defines internal typed keys used only while translating a NIO file-system environment.
+/// Defines common environment keys and their accepted value representations.
 @NotNullByDefault
 public final class ArchiveEnvironmentOptions {
     /// The NIO environment key for file-system synchronization.
     public static final ArchiveOption<ArkivoFileSystemThreadSafety> THREAD_SAFETY =
             ArchiveOption.of(
-                    "arkivo",
-                    "threadSafety",
+                    "arkivo.threadSafety",
                     ArkivoFileSystemThreadSafety.class,
                     ArchiveEnvironmentOptions::threadSafetyValue
             );
@@ -32,23 +31,22 @@ public final class ArchiveEnvironmentOptions {
     /// The NIO environment key for archive path open options.
     public static final ArchiveOption<Set<OpenOption>> OPEN_OPTIONS =
             ArchiveOption.of(
-                    "arkivo",
-                    "openOptions",
+                    "arkivo.openOptions",
                     openOptionsType(),
                     ArchiveEnvironmentOptions::openOptionsValue
             );
 
     /// The NIO environment key for the operation-owned edit-storage factory.
     public static final ArchiveOption<ArkivoEditStorageFactory> EDIT_STORAGE_FACTORY =
-            ArchiveOption.of("arkivo", "editStorageFactory", ArkivoEditStorageFactory.class);
+            ArchiveOption.of("arkivo.editStorageFactory", ArkivoEditStorageFactory.class);
 
     /// The NIO environment key for update publication.
     public static final ArchiveOption<ArkivoCommitTarget> COMMIT_TARGET =
-            ArchiveOption.of("arkivo", "commitTarget", ArkivoCommitTarget.class);
+            ArchiveOption.of("arkivo.commitTarget", ArkivoCommitTarget.class);
 
     /// The NIO environment key for archive read limits.
     public static final ArchiveOption<ArchiveReadLimits> READ_LIMITS =
-            ArchiveOption.of("arkivo", "readLimits", ArchiveReadLimits.class);
+            ArchiveOption.of("arkivo.readLimits", ArchiveReadLimits.class);
 
     /// Creates no instances.
     private ArchiveEnvironmentOptions() {
@@ -56,19 +54,16 @@ public final class ArchiveEnvironmentOptions {
 
     /// Returns a format-specific option that normalizes metadata charset detectors, charsets, and charset names.
     ///
-    /// @param namespace the non-blank option namespace
-    /// @param name the non-blank local option name
+    /// @param key the dot-separated environment key
     /// @return an option whose raw values may be an [ArchiveMetadataCharsetDetector], [Charset], or charset-name string
-    /// @throws IllegalArgumentException if `namespace` or `name` is invalid
+    /// @throws IllegalArgumentException if `key` contains empty segments or whitespace
     public static ArchiveOption<ArchiveMetadataCharsetDetector> metadataCharsetDetectorOption(
-            String namespace,
-            String name
+            String key
     ) {
         return ArchiveOption.of(
-                namespace,
-                name,
+                key,
                 ArchiveMetadataCharsetDetector.class,
-                value -> metadataCharsetDetectorValue(value, namespace + "." + name)
+                value -> metadataCharsetDetectorValue(value, key)
         );
     }
 

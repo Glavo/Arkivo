@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.transform;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -13,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.channels.ClosedChannelException;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -129,6 +131,8 @@ public final class TransformingStreamContractsTest {
         );
         assertEquals(0, input.read(new byte[1], 1, 0));
         assertThrows(IndexOutOfBoundsException.class, () -> input.read(new byte[1], 2, 0));
+        assertEquals(1, input.read());
+        assertEquals(-1, input.read());
         input.close();
         assertThrows(IndexOutOfBoundsException.class, () -> input.read(new byte[1], 2, 0));
         assertThrows(ClosedChannelException.class, () -> input.read(new byte[1], 0, 0));
@@ -146,7 +150,7 @@ public final class TransformingStreamContractsTest {
 
     /// Verifies invalid transform result counts fail rather than corrupting buffered state.
     @Test
-    public void rejectsInvalidTransformCounts() {
+    public void rejectsInvalidTransformCounts() throws IOException {
         for (ByteTransform transform : new ByteTransform[]{
                 (buffer, offset, length) -> -1,
                 (buffer, offset, length) -> length + 1
@@ -160,16 +164,22 @@ public final class TransformingStreamContractsTest {
             assertSame(inputFailure, assertThrows(IOException.class, () -> input.read(new byte[1])));
             assertSame(inputFailure, assertThrows(IOException.class, input::available));
 
-            TransformingOutputStream output = new TransformingOutputStream(new ByteArrayOutputStream(), transform);
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            TransformingOutputStream output = new TransformingOutputStream(bytes, transform);
             IOException outputFailure = assertThrows(IOException.class, () -> output.write(new byte[]{1}));
             assertEquals("Byte filter returned an invalid transformed byte count", outputFailure.getMessage());
+            assertSame(outputFailure, assertThrows(IOException.class, output::finish));
+            assertSame(outputFailure, assertThrows(IOException.class, output::flush));
+            assertSame(outputFailure, assertThrows(IOException.class, output::close));
+            output.close();
+            assertEquals(0, bytes.size());
         }
     }
 
     /// Verifies transforms that retain a complete bounded buffer fail promptly on both stream directions.
     @Test
     @Timeout(5)
-    public void rejectsTransformsThatNeverCommit() {
+    public void rejectsTransformsThatNeverCommit() throws IOException {
         ByteTransform noProgress = (buffer, offset, length) -> 0;
         byte[] fullBuffer = new byte[8_192];
 
@@ -183,6 +193,114 @@ public final class TransformingStreamContractsTest {
         TransformingOutputStream output = new TransformingOutputStream(new ByteArrayOutputStream(), noProgress);
         IOException outputFailure = assertThrows(IOException.class, () -> output.write(fullBuffer));
         assertEquals("Byte filter made no progress with a full buffer", outputFailure.getMessage());
+        assertSame(outputFailure, assertThrows(IOException.class, output::finish));
+        assertSame(outputFailure, assertThrows(IOException.class, output::close));
+        output.close();
+    }
+
+    /// Verifies a partial downstream failure prevents subsequent output and still permits ownership cleanup.
+    @Test
+    public void partialOutputFailuresDoNotReplayBytes() throws IOException {
+        for (Throwable failure : List.of(new IOException("partial output failure"),
+                new IllegalStateException("partial output failure"), new AssertionError("partial output failure"))) {
+            for (boolean finishing : new boolean[]{false, true}) {
+                TrackingOutputStream target = new TrackingOutputStream();
+                target.writeFailure = failure;
+                TransformingOutputStream output = new TransformingOutputStream(
+                        target, finishing ? (buffer, offset, length) -> 0 : IDENTITY
+                );
+                if (finishing) {
+                    output.write(new byte[]{1, 2, 3});
+                    assertSame(failure, assertThrows(failure.getClass(), output::finish));
+                } else {
+                    assertSame(failure, assertThrows(failure.getClass(), () -> output.write(new byte[]{1, 2, 3})));
+                }
+                assertSame(failure, assertThrows(failure.getClass(), () -> output.write(7)));
+                assertSame(failure, assertThrows(failure.getClass(), output::flush));
+                assertSame(failure, assertThrows(failure.getClass(), output::finish));
+                assertSame(failure, assertThrows(failure.getClass(), output::close));
+                output.close();
+                assertArrayEquals(new byte[]{1}, target.bytes());
+                assertEquals(0, target.flushCount());
+                assertTrue(target.isClosed());
+            }
+        }
+    }
+
+    /// Verifies an unchecked transform failure is retained without transforming or publishing buffered bytes again.
+    @Test
+    public void retainsUncheckedTransformFailures() throws IOException {
+        for (Throwable failure : List.of(new IllegalStateException("transform failed"), new AssertionError("transform failed"))) {
+            int[] calls = {0};
+            ByteTransform transform = (buffer, offset, length) -> {
+                calls[0]++;
+                buffer[offset] ^= 0x5a;
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
+            };
+            TrackingOutputStream target = new TrackingOutputStream();
+            TransformingOutputStream output = new TransformingOutputStream(target, transform);
+            assertSame(failure, assertThrows(failure.getClass(), () -> output.write(1)));
+            assertSame(failure, assertThrows(failure.getClass(), () -> output.write(2)));
+            assertSame(failure, assertThrows(failure.getClass(), output::close));
+            output.close();
+            assertEquals(1, calls[0]);
+            assertEquals(0, target.bytes().length);
+            assertTrue(target.isClosed());
+        }
+    }
+
+    /// Verifies failed input transforms cannot publish mutated bytes or be invoked again.
+    @Test
+    public void inputRetainsUncheckedTransformFailures() throws IOException {
+        for (Throwable failure : List.of(new IllegalStateException("transform failed"), new AssertionError("transform failed"))) {
+            int[] calls = {0};
+            TrackingInputStream source = new TrackingInputStream(new byte[]{1, 2});
+            TransformingInputStream input = new TransformingInputStream(source, (buffer, offset, length) -> {
+                calls[0]++;
+                buffer[offset] ^= 0x5a;
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
+            });
+            byte[] target = {9, 8, 7, 6};
+            assertSame(failure, assertThrows(failure.getClass(), () -> input.read(target, 1, 2)));
+            assertSame(failure, assertThrows(failure.getClass(), () -> input.read(target, 1, 2)));
+            assertSame(failure, assertThrows(failure.getClass(), input::read));
+            assertSame(failure, assertThrows(failure.getClass(), input::available));
+            assertEquals(0, input.read(target, 1, 0));
+            assertArrayEquals(new byte[]{9, 8, 7, 6}, target);
+            assertEquals(1, source.readCount);
+            assertEquals(1, calls[0]);
+            input.close();
+            input.close();
+            assertTrue(source.isClosed());
+        }
+    }
+
+    /// Verifies partial upstream failures preserve the delivered prefix but prevent further physical reads.
+    @Test
+    public void partialInputFailuresAreTerminal() throws IOException {
+        for (Throwable failure : List.of(new IOException("partial input failure"),
+                new IllegalStateException("partial input failure"), new AssertionError("partial input failure"))) {
+            TrackingInputStream source = new TrackingInputStream(new byte[]{1, 2, 3});
+            source.maximumReadSize = 1;
+            source.readFailure = failure;
+            source.failingRead = 2;
+            try (TransformingInputStream input = new TransformingInputStream(source, IDENTITY)) {
+                byte[] target = {9, 8, 7, 6, 5};
+                assertSame(failure, assertThrows(failure.getClass(), () -> input.read(target, 1, 3)));
+                assertArrayEquals(new byte[]{9, 1, 7, 6, 5}, target);
+                assertSame(failure, assertThrows(failure.getClass(), () -> input.read(target, 2, 2)));
+                assertSame(failure, assertThrows(failure.getClass(), input::available));
+                assertEquals(2, source.readCount);
+                assertArrayEquals(new byte[]{9, 1, 7, 6, 5}, target);
+            }
+            assertTrue(source.isClosed());
+        }
     }
 
     /// Verifies upstream and downstream I/O failures are retained and rethrown by later operations.
@@ -268,6 +386,9 @@ public final class TransformingStreamContractsTest {
         /// Collected bytes.
         private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
+        /// A failure thrown once after accepting one byte of a nonempty bulk write.
+        private @Nullable Throwable writeFailure;
+
         /// Number of flush calls.
         private int flushCount;
 
@@ -282,7 +403,19 @@ public final class TransformingStreamContractsTest {
 
         /// Writes a byte range to the collected output.
         @Override
-        public void write(byte[] source, int offset, int length) {
+        public void write(byte[] source, int offset, int length) throws IOException {
+            @Nullable Throwable failure = writeFailure;
+            if (failure != null && length > 0) {
+                writeFailure = null;
+                bytes.write(source[offset]);
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
+            }
             bytes.write(source, offset, length);
         }
 
@@ -320,6 +453,18 @@ public final class TransformingStreamContractsTest {
         /// Readable byte-array delegate.
         private final ByteArrayInputStream delegate;
 
+        /// Failure thrown once after transferring bytes on the selected bulk read.
+        private @Nullable Throwable readFailure;
+
+        /// One-based physical read on which to inject the failure.
+        private int failingRead = 1;
+
+        /// Maximum number of bytes returned by one bulk read.
+        private int maximumReadSize = Integer.MAX_VALUE;
+
+        /// Number of physical read attempts.
+        private int readCount;
+
         /// Whether this stream has been closed.
         private boolean closed;
 
@@ -331,13 +476,27 @@ public final class TransformingStreamContractsTest {
         /// Reads one byte from the delegate.
         @Override
         public int read() {
+            readCount++;
             return delegate.read();
         }
 
         /// Reads a byte range from the delegate.
         @Override
-        public int read(byte[] target, int offset, int length) {
-            return delegate.read(target, offset, length);
+        public int read(byte[] target, int offset, int length) throws IOException {
+            readCount++;
+            int count = delegate.read(target, offset, Math.min(length, maximumReadSize));
+            @Nullable Throwable failure = readFailure;
+            if (failure != null && readCount == failingRead) {
+                readFailure = null;
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
+            }
+            return count;
         }
 
         /// Marks this stream closed.

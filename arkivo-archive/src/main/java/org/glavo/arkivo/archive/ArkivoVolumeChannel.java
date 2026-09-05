@@ -150,7 +150,9 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
     ///
     /// An empty destination returns zero. A position at or beyond the snapshotted logical size returns `-1`. If a volume
     /// reaches EOF before its snapshotted size, this method throws [EOFException] after preserving completed progress in
-    /// the destination and logical position.
+    /// the destination and logical position. Bytes delivered before a physical read throws also advance the logical
+    /// position, and the destination limit is restored before the failure is propagated. A subsequent read resumes
+    /// after those bytes if the underlying channels remain usable.
     @Override
     public int read(ByteBuffer destination) throws IOException {
         Objects.requireNonNull(destination, "destination");
@@ -171,6 +173,7 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
             channel.position(localPosition);
 
             int originalLimit = destination.limit();
+            int originalPosition = destination.position();
             int chunkSize = (int) Math.min(destination.remaining(), volumeRemaining);
             destination.limit(destination.position() + chunkSize);
             int read;
@@ -178,6 +181,8 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
                 read = channel.read(destination);
             } finally {
                 destination.limit(originalLimit);
+                // A physical read may deliver bytes before reporting a failure.
+                position += destination.position() - originalPosition;
             }
 
             if (read < 0) {
@@ -186,7 +191,6 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
             if (read == 0) {
                 return totalRead > 0 ? totalRead : 0;
             }
-            position += read;
             totalRead += read;
         }
         return totalRead;

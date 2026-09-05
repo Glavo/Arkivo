@@ -8,7 +8,10 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
+import java.util.ArrayDeque;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -102,6 +105,103 @@ final class PendingOutputChannelTest {
         assertThrows(NullPointerException.class, () -> channel.write(null));
         assertThrows(NullPointerException.class, () -> channel.drainTo(null));
         assertArrayEquals(new byte[]{7, 8}, drainAll(channel, 1));
+    }
+
+    /// Verifies a rejected target cannot discard pending bytes, even when draining after channel closure.
+    @Test
+    void rejectsReadOnlyTargetsWithoutLosingPendingBytes() throws ClosedChannelException {
+        for (boolean direct : new boolean[]{false, true}) {
+            for (boolean closed : new boolean[]{false, true}) {
+                PendingOutputChannel channel = new PendingOutputChannel();
+                channel.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
+                ByteBuffer prefix = ByteBuffer.allocate(1);
+                channel.drainTo(prefix);
+                assertEquals(1, prefix.get(0));
+                if (closed) {
+                    channel.close();
+                }
+                ByteBuffer storage = direct ? ByteBuffer.allocateDirect(5) : ByteBuffer.allocate(5);
+                storage.put(new byte[]{9, 8, 7, 6, 5}).position(1).limit(4);
+                ByteBuffer rejected = storage.asReadOnlyBuffer().mark();
+                assertThrows(ReadOnlyBufferException.class, () -> channel.drainTo(rejected));
+                assertEquals(1, rejected.position());
+                assertEquals(4, rejected.limit());
+                assertEquals(1, rejected.reset().position());
+                assertTrue(channel.hasRemaining());
+                channel.drainTo(ByteBuffer.allocate(0));
+                assertTrue(channel.hasRemaining());
+                channel.drainTo(storage);
+                assertEquals(3, storage.position());
+                assertEquals(4, storage.limit());
+                byte[] actual = new byte[5];
+                storage.clear().get(actual);
+                assertArrayEquals(new byte[]{9, 2, 3, 6, 5}, actual);
+                assertFalse(channel.hasRemaining());
+            }
+        }
+    }
+
+    /// Verifies interleaved writes, drains, and clears against an independent byte queue with reusable source storage.
+    @Test
+    void interleavedOperationsPreserveQueueContents() throws ClosedChannelException {
+        for (long seed : new long[]{0x13579bdfL, 0x2468ace0L, 0x5eedL}) {
+            Random random = new Random(seed);
+            ArrayDeque<Byte> expected = new ArrayDeque<>();
+            PendingOutputChannel channel = new PendingOutputChannel();
+            for (int step = 0; step < 256; step++) {
+                int operation = random.nextInt(16);
+                if (operation == 0) {
+                    channel.clear();
+                    expected.clear();
+                } else if (operation < 9) {
+                    byte[] bytes = new byte[random.nextInt(2_049)];
+                    random.nextBytes(bytes);
+                    ByteBuffer storage = random.nextBoolean() ? ByteBuffer.allocateDirect(bytes.length + 4)
+                            : ByteBuffer.allocate(bytes.length + 4);
+                    storage.position(2).put(bytes).position(2).limit(bytes.length + 2);
+                    ByteBuffer source = (random.nextBoolean() ? storage.asReadOnlyBuffer() : storage.duplicate()).mark();
+                    assertEquals(bytes.length, channel.write(source));
+                    assertEquals(bytes.length + 2, source.position());
+                    assertEquals(bytes.length + 2, source.limit());
+                    assertEquals(2, source.reset().position());
+                    for (byte value : bytes) {
+                        expected.addLast(value);
+                    }
+                    // Reusing caller storage must not change the channel's queued copy.
+                    storage.clear();
+                    while (storage.hasRemaining()) {
+                        storage.put((byte) 0);
+                    }
+                } else {
+                    int requested = random.nextInt(3_073);
+                    ByteBuffer target = random.nextBoolean() ? ByteBuffer.allocateDirect(requested + 4)
+                            : ByteBuffer.allocate(requested + 4);
+                    target.put(0, (byte) 0x55).put(target.capacity() - 1, (byte) 0x66);
+                    target.position(2).limit(requested + 2).mark();
+                    int count = Math.min(requested, expected.size());
+                    channel.drainTo(target);
+                    assertEquals(count + 2, target.position());
+                    assertEquals(requested + 2, target.limit());
+                    assertEquals(2, target.reset().position());
+                    for (int index = 0; index < count; index++) {
+                        assertEquals(expected.removeFirst().byteValue(), target.get());
+                    }
+                    target.clear();
+                    assertEquals(0x55, target.get(0));
+                    assertEquals(0x66, target.get(target.capacity() - 1));
+                }
+                assertEquals(!expected.isEmpty(), channel.hasRemaining());
+            }
+            channel.close();
+            ByteBuffer tail = ByteBuffer.allocate(expected.size() + 1);
+            channel.drainTo(tail);
+            assertEquals(expected.size(), tail.position());
+            tail.flip();
+            while (!expected.isEmpty()) {
+                assertEquals(expected.removeFirst().byteValue(), tail.get());
+            }
+            assertFalse(channel.hasRemaining());
+        }
     }
 
     /// Returns deterministic bytes of the requested length.

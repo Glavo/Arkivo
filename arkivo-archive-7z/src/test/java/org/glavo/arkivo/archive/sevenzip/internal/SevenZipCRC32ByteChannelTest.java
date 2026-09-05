@@ -6,6 +6,9 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -15,15 +18,83 @@ import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.stream.Stream;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests CRC-32 validating 7z entry byte channels.
 @NotNullByDefault
 public final class SevenZipCRC32ByteChannelTest {
+    /// Combines failures, delivered-byte counts, and direct versus bounded archive sources.
+    private static Stream<Arguments> partialReadCases() {
+        return Stream.of(
+                new IOException("partial read failed"),
+                new IllegalStateException("partial read failed"),
+                new AssertionError("partial read failed")
+        ).flatMap(failure -> Stream.of(0, 2, 4).flatMap(count -> Stream.of(false, true)
+                .map(sliced -> Arguments.of(failure, count, sliced))));
+    }
+
+    /// Verifies partial physical failures do not silently disable sequential CRC validation.
+    @ParameterizedTest
+    @MethodSource("partialReadCases")
+    public void validatesAfterPartialReadFailure(Throwable failure, int count, boolean sliced) throws IOException {
+        byte[] content = {1, 2, 3, 4};
+        for (boolean corrupt : new boolean[]{false, true}) {
+            for (boolean closeImmediately : new boolean[]{false, true}) {
+                MemorySeekableByteChannel physical = new MemorySeekableByteChannel(
+                        sliced ? new byte[]{9, 8, 1, 2, 3, 4, 7, 6} : content
+                );
+                physical.partialReadFailure = failure;
+                physical.bytesBeforeFailure = count;
+                SeekableByteChannel body = sliced ? new SevenZipFileSliceChannel(physical, 2, 4) : physical;
+                SevenZipCRC32ByteChannel channel = new SevenZipCRC32ByteChannel(
+                        body, content.length, crc32(content) ^ (corrupt ? 1L : 0L)
+                );
+                try {
+                    ByteBuffer target = ByteBuffer.allocateDirect(6).position(1).limit(5);
+                    assertSame(failure, assertThrows(failure.getClass(), () -> channel.read(target)));
+                    assertEquals(1 + count, target.position());
+                    assertEquals(5, target.limit());
+                    assertEquals(count, channel.position());
+                    assertEquals(0, failure.getSuppressed().length);
+
+                    if (closeImmediately) {
+                        if (corrupt) {
+                            IOException mismatch = assertThrows(IOException.class, channel::close);
+                            assertEquals("7z entry data does not match CRC-32", mismatch.getMessage());
+                        } else {
+                            channel.close();
+                        }
+                        assertFalse(physical.isOpen());
+                    } else {
+                        ByteBuffer remaining = count < content.length ? target : ByteBuffer.allocate(1);
+                        if (corrupt) {
+                            IOException mismatch = assertThrows(IOException.class, () -> channel.read(remaining));
+                            assertEquals("7z entry data does not match CRC-32", mismatch.getMessage());
+                        } else {
+                            assertEquals(count < content.length ? content.length - count : -1, channel.read(remaining));
+                        }
+                        assertEquals(content.length, channel.position());
+                        assertEquals(5, target.position());
+                        target.position(1);
+                        byte[] actual = new byte[content.length];
+                        target.get(actual);
+                        assertArrayEquals(content, actual);
+                    }
+                } finally {
+                    channel.close();
+                }
+                assertEquals(1, physical.closeCount());
+            }
+        }
+    }
+
     /// Verifies that closing a partially consumed channel drains and validates the remaining bytes.
     @Test
     public void closeDrainsAndValidatesRemainingBytes() throws IOException {
@@ -234,6 +305,12 @@ public final class SevenZipCRC32ByteChannelTest {
         /// Failure reported by reads, or `null` for ordinary reads.
         private final @Nullable IOException readFailure;
 
+        /// Failure thrown once after delivering the configured byte count.
+        private @Nullable Throwable partialReadFailure;
+
+        /// Maximum bytes delivered before the pending partial read failure.
+        private int bytesBeforeFailure;
+
         /// Failure reported by the first scheduled close failure, or `null` for successful close.
         private final @Nullable IOException closeFailure;
 
@@ -284,8 +361,22 @@ public final class SevenZipCRC32ByteChannelTest {
             }
 
             int length = Math.min(destination.remaining(), bytes.length - position);
+            @Nullable Throwable failure = partialReadFailure;
+            if (failure != null) {
+                partialReadFailure = null;
+                length = Math.min(length, bytesBeforeFailure);
+            }
             destination.put(bytes, position, length);
             position += length;
+            if (failure instanceof IOException exception) {
+                throw exception;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (failure instanceof Error error) {
+                throw error;
+            }
             return length;
         }
 

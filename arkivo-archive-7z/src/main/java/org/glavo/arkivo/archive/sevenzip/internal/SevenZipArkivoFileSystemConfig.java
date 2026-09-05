@@ -34,13 +34,12 @@ import java.util.Set;
 public final class SevenZipArkivoFileSystemConfig {
     /// The NIO environment key for a password provider.
     private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
-            ArchiveOption.of("arkivo.7z", "passwordProvider", ArkivoPasswordProvider.class);
+            ArchiveOption.of("arkivo.7z.passwordProvider", ArkivoPasswordProvider.class);
 
     /// The NIO environment key for compression.
     private static final ArchiveOption<SevenZipCompression> COMPRESSION =
             ArchiveOption.of(
-                    "arkivo.7z",
-                    "compression",
+                    "arkivo.7z.compression",
                     SevenZipCompression.class,
                     SevenZipArkivoFileSystemConfig::compressionOptionValue
             );
@@ -48,8 +47,7 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The NIO environment key for one filter.
     private static final ArchiveOption<SevenZipFilter> FILTER =
             ArchiveOption.of(
-                    "arkivo.7z",
-                    "filter",
+                    "arkivo.7z.filter",
                     SevenZipFilter.class,
                     SevenZipArkivoFileSystemConfig::filterOptionValue
             );
@@ -57,8 +55,7 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The NIO environment key for a filter chain.
     private static final ArchiveOption<SevenZipFilterChain> FILTERS =
             ArchiveOption.of(
-                    "arkivo.7z",
-                    "filters",
+                    "arkivo.7z.filters",
                     SevenZipFilterChain.class,
                     SevenZipArkivoFileSystemConfig::filterChainOptionValue
             );
@@ -66,8 +63,7 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The NIO environment key for solid grouping.
     private static final ArchiveOption<Integer> SOLID_FILE_COUNT =
             ArchiveOption.of(
-                    "arkivo.7z",
-                    "solidFileCount",
+                    "arkivo.7z.solidFileCount",
                     Integer.class,
                     SevenZipArkivoFileSystemConfig::solidFileCountOptionValue
             );
@@ -75,8 +71,7 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The NIO environment key for split output.
     private static final ArchiveOption<Long> SPLIT_SIZE =
             ArchiveOption.of(
-                    "arkivo.7z",
-                    "splitSize",
+                    "arkivo.7z.splitSize",
                     Long.class,
                     SevenZipArkivoFileSystemConfig::splitSizeOptionValue
             );
@@ -84,8 +79,7 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The NIO environment key for header encryption.
     private static final ArchiveOption<Boolean> ENCRYPT_HEADERS =
             ArchiveOption.of(
-                    "arkivo.7z",
-                    "encryptHeaders",
+                    "arkivo.7z.encryptHeaders",
                     Boolean.class,
                     SevenZipArkivoFileSystemConfig::booleanOptionValue
             );

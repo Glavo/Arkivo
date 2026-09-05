@@ -53,13 +53,12 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// Legacy RAR 1.3 through 2.x treats provider bytes as a raw single-byte password terminated by the first zero byte.
     /// RAR 3.x AES treats provider bytes as UTF-16LE, and RAR5 treats provider bytes as UTF-8.
     private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
-            ArchiveOption.of("arkivo.rar", "passwordProvider", ArkivoPasswordProvider.class);
+            ArchiveOption.of("arkivo.rar.passwordProvider", ArkivoPasswordProvider.class);
 
     /// The option for the detector used to select charsets for legacy non-Unicode RAR4 entry names.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
             ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.rar",
-                    "legacyCharsetDetector"
+                    "arkivo.rar.legacyCharsetDetector"
             );
 
     /// Creates a RAR archive file system base instance.

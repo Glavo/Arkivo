@@ -1,20 +1,22 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Provides compression-format discovery, immutable codec configuration, buffer-driven engines, blocking channel and
-/// stream contexts, dictionary negotiation, and operation-scoped encoding metadata.
+/// Compresses and decompresses bytes using buffers, channels, or streams.
 ///
-/// Format and codec values are safe to share. Encoders, decoders, and their channel or stream contexts are stateful and
-/// must be confined to one operation unless a type explicitly documents stronger thread safety. Buffer-driven methods
-/// communicate byte progress through [java.nio.ByteBuffer#position()] and never take ownership of caller buffers.
-/// Every codec accepts exact source-size metadata through [EncodingOptions]; implementations may use or ignore it
-/// according to their format and algorithm. [CompressionCodec] values carry reusable decoded-output, history-window,
-/// and decoder working-memory limits; their `withMaximum...` methods return independently configured immutable values.
-/// [CompressionCodec.Seekable] describes formats that append a terminal frame index and can expose the decoded byte
-/// sequence as a read-only [java.nio.channels.SeekableByteChannel]. [SeekableEncodingOptions] controls the independent
-/// frame size for one such encoding operation.
-/// The default [CompressionCodec] channel factories preserve [java.nio.channels.InterruptibleChannel] when their backing
-/// channel implements it, including terminal interruption and asynchronous-close behavior.
+/// [CompressionFormats] locates installed formats. Each [CompressionFormat] supplies a default [CompressionCodec],
+/// an immutable configuration containing algorithm settings and decompression limits. Format and codec objects can be
+/// shared between threads.
+///
+/// A codec creates stateful [CompressionEncoder] and [CompressionDecoder] instances. Their buffer operations advance
+/// input and output positions without retaining the buffers. Encoders, decoders, and their stream or channel adapters
+/// are not safe for concurrent use unless their documentation states otherwise. [EncodingOptions] supplies the exact
+/// input size for an encoding operation when it is known.
+///
+/// [CompressionCodec.Seekable] provides indexed compression and read-only random access to decoded bytes.
+/// [SeekableEncodingOptions] controls the frame size when writing such an index.
+///
+/// The default codec channel factories return an [java.nio.channels.InterruptibleChannel] when the supplied channel
+/// implements that interface. See [CompressionCodec] for interruption, asynchronous close, and resource ownership.
 @NotNullByDefault
 package org.glavo.arkivo.codec;
 

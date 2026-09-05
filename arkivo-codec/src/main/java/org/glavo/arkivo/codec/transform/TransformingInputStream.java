@@ -17,7 +17,9 @@ import java.util.Objects;
 /// transform. At upstream end-of-input, an incomplete suffix retained by the transform is returned unchanged before this
 /// stream reports `-1`.
 ///
-/// An `IOException` from the input or an invalid/no-progress transform is retained and rethrown by later reads. Closing
+/// An input or transform failure (`IOException`, `RuntimeException`, or `Error`) is retained and rethrown by later
+/// nonempty reads and [#available()] without reading or transforming more data. Bytes already delivered to a destination
+/// array remain there. Rejected arguments do not put this stream into a failed state. Closing
 /// does not drain input; it marks this stream closed and closes the upstream stream. If upstream close fails, a later
 /// [#close()] retries it.
 @NotNullByDefault
@@ -47,7 +49,7 @@ public final class TransformingInputStream extends InputStream {
     private int pending;
 
     /// A deferred source or filter failure.
-    private @Nullable IOException failure;
+    private @Nullable Throwable failure;
 
     /// Whether the upstream stream reached end-of-input.
     private boolean endReached;
@@ -85,9 +87,7 @@ public final class TransformingInputStream extends InputStream {
         if (length == 0) {
             return 0;
         }
-        if (failure != null) {
-            throw failure;
-        }
+        rethrowFailure();
 
         try {
             int total = 0;
@@ -127,7 +127,7 @@ public final class TransformingInputStream extends InputStream {
                     filterPending(count);
                 }
             }
-        } catch (IOException exception) {
+        } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
         }
@@ -139,9 +139,7 @@ public final class TransformingInputStream extends InputStream {
     @Override
     public int available() throws IOException {
         ensureOpen();
-        if (failure != null) {
-            throw failure;
-        }
+        rethrowFailure();
         return ready;
     }
 
@@ -176,6 +174,19 @@ public final class TransformingInputStream extends InputStream {
     private void compact() {
         System.arraycopy(buffer, position, buffer, 0, ready + pending);
         position = 0;
+    }
+
+    /// Rethrows a retained read failure without invoking the input or transform again.
+    private void rethrowFailure() throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
     }
 
     /// Requires this stream to remain open.

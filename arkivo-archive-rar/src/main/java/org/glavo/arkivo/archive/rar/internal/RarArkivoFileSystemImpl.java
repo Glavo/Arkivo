@@ -76,7 +76,7 @@ import java.util.Set;
 public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// The internal NIO environment key for a password provider.
     private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
-            ArchiveOption.of("arkivo.rar", "passwordProvider", ArkivoPasswordProvider.class);
+            ArchiveOption.of("arkivo.rar.passwordProvider", ArkivoPasswordProvider.class);
     /// The supported file attribute view names.
     private static final @Unmodifiable Set<String> SUPPORTED_ATTRIBUTE_VIEWS =
             Set.of("basic", "owner", "posix", "rar");

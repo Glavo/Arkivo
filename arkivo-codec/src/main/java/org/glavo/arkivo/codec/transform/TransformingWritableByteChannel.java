@@ -24,6 +24,9 @@ import java.util.Objects;
 /// [#finish()] forwards the incomplete suffix unchanged, leaves the target open, and permanently ends writes through
 /// this wrapper. [#close()] finishes once and then leaves a borrowed target open or closes an owned target. A finish
 /// failure still closes this wrapper for writes and is not retried; a failed owned-target close can be retried.
+///
+/// A transform or downstream-write failure is terminal. Later writes and finish calls rethrow that failure without
+/// invoking the transform or writing buffered bytes again. Argument validation failures do not enter this state.
 @NotNullByDefault
 public final class TransformingWritableByteChannel implements WritableByteChannel {
     /// The bounded filter working-buffer size.
@@ -48,7 +51,7 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     private int pending;
 
     /// A deferred target or transform failure.
-    private @Nullable IOException failure;
+    private @Nullable Throwable failure;
 
     /// Whether all pending filter bytes have been forwarded.
     private boolean finished;
@@ -88,17 +91,22 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         Objects.requireNonNull(source, "source");
         ensureWritable();
         int start = source.position();
-        while (source.hasRemaining()) {
-            int copied = Math.min(source.remaining(), buffer.length - position - pending);
-            source.get(buffer, position + pending, copied);
-            pending += copied;
-            filterPending();
-            if (position + pending == buffer.length) {
-                compact();
-                if (pending == buffer.length) {
-                    throw new IOException("Byte filter made no progress with a full buffer");
+        try {
+            while (source.hasRemaining()) {
+                int copied = Math.min(source.remaining(), buffer.length - position - pending);
+                source.get(buffer, position + pending, copied);
+                pending += copied;
+                filterPending();
+                if (position + pending == buffer.length) {
+                    compact();
+                    if (pending == buffer.length) {
+                        throw new IOException("Byte filter made no progress with a full buffer");
+                    }
                 }
             }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
         }
         return source.position() - start;
     }
@@ -113,15 +121,13 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         if (finished) {
             return;
         }
-        if (failure != null) {
-            throw failure;
-        }
+        rethrowFailure();
         try {
             writeFully(ByteBuffer.wrap(buffer, position, pending));
             position = 0;
             pending = 0;
             finished = true;
-        } catch (IOException exception) {
+        } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
         }
@@ -157,12 +163,7 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         if (transformed < 0 || transformed > pending) {
             throw new IOException("Byte filter returned an invalid transformed byte count");
         }
-        try {
-            writeFully(ByteBuffer.wrap(buffer, position, transformed));
-        } catch (IOException exception) {
-            failure = exception;
-            throw exception;
-        }
+        writeFully(ByteBuffer.wrap(buffer, position, transformed));
         position += transformed;
         pending -= transformed;
     }
@@ -189,8 +190,19 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         if (finished) {
             throw new IOException("Byte filter channel has already finished");
         }
-        if (failure != null) {
-            throw failure;
+        rethrowFailure();
+    }
+
+    /// Rethrows the terminal operation failure without changing its type or identity.
+    private void rethrowFailure() throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error error) {
+            throw error;
         }
     }
 

@@ -32,26 +32,24 @@ import java.util.Set;
 public final class ZipArkivoFileSystemConfig {
     /// The NIO environment key for a password provider.
     private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
-            ArchiveOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);
+            ArchiveOption.of("arkivo.zip.passwordProvider", ArkivoPasswordProvider.class);
 
     /// The NIO environment key for default entry encryption.
     private static final ArchiveOption<ZipEncryption> DEFAULT_ENCRYPTION =
             ArchiveOption.of(
-                    "arkivo.zip",
-                    "defaultEncryption",
+                    "arkivo.zip.defaultEncryption",
                     ZipEncryption.class,
                     ZipArkivoFileSystemConfig::encryptionValue
             );
 
     /// The NIO environment key for split output size.
     private static final ArchiveOption<Long> SPLIT_SIZE =
-            ArchiveOption.of("arkivo.zip", "splitSize", Long.class, ZipArkivoFileSystemConfig::longValue);
+            ArchiveOption.of("arkivo.zip.splitSize", Long.class, ZipArkivoFileSystemConfig::longValue);
 
     /// The NIO environment key for legacy metadata charset detection.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
             ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.zip",
-                    "legacyCharsetDetector"
+                    "arkivo.zip.legacyCharsetDetector"
             );
 
     /// The split size value used when split output is disabled.

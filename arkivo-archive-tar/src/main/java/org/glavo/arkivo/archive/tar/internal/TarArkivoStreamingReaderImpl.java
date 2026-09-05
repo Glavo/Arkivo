@@ -43,8 +43,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// The internal NIO environment key for metadata charset detection.
     private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
             ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.tar",
-                    "metadataCharsetDetector"
+                    "arkivo.tar.metadataCharsetDetector"
             );
     /// The TAR record size.
     private static final int RECORD_SIZE = 512;
@@ -1420,28 +1419,28 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Skips unread current entry body and padding bytes.
+    /// Each successful source operation advances the retained counters before another operation can fail.
     private void skipCurrentEntryBody() throws IOException {
-        skipFully(currentBodyRemaining);
-        skipFully(currentPaddingRemaining);
-        currentBodyRemaining = 0L;
-        currentPaddingRemaining = 0L;
+        while (currentBodyRemaining > 0) {
+            currentBodyRemaining -= skipSome(currentBodyRemaining);
+        }
+        while (currentPaddingRemaining > 0) {
+            currentPaddingRemaining -= skipSome(currentPaddingRemaining);
+        }
         currentBodyOpened = false;
         currentSparseMap = null;
     }
 
-    /// Skips the requested number of bytes from the archive source.
-    private void skipFully(long count) throws IOException {
-        long remaining = count;
-        while (remaining > 0) {
-            long skipped = source.skip(remaining);
-            if (skipped == 0) {
-                if (source.read() < 0) {
-                    throw new EOFException("Unexpected end of TAR entry body");
-                }
-                skipped = 1;
+    /// Skips a positive number of source bytes, falling back to one read when skip makes no progress.
+    private long skipSome(long count) throws IOException {
+        long skipped = source.skip(count);
+        if (skipped == 0) {
+            if (source.read() < 0) {
+                throw new EOFException("Unexpected end of TAR entry body");
             }
-            remaining -= skipped;
+            return 1;
         }
+        return skipped;
     }
 
     /// Requires this reader to be open.
@@ -1745,7 +1744,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
         }
 
-        /// Reads expanded logical bytes, synthesizing zeros for sparse holes.
+        /// Reads one hole fragment or performs one physical read from the current sparse extent.
+        /// Completed progress is returned before another source operation can fail.
         @Override
         public int read(byte[] buffer, int offset, int length) throws IOException {
             ensureOpen();
@@ -1757,33 +1757,28 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 return -1;
             }
 
-            int total = 0;
-            while (total < length && logicalPosition < sparseMap.logicalSize()) {
-                advanceCompletedBlocks();
-                @Nullable SparseBlock block = currentBlock();
-                if (block == null || logicalPosition < block.offset()) {
-                    long holeEnd = block != null ? block.offset() : sparseMap.logicalSize();
-                    int count = (int) Math.min(length - total, holeEnd - logicalPosition);
-                    java.util.Arrays.fill(buffer, offset + total, offset + total + count, (byte) 0);
-                    logicalPosition += count;
-                    total += count;
-                    continue;
-                }
-
-                long blockEnd = block.offset() + block.size();
-                int requested = (int) Math.min(length - total, blockEnd - logicalPosition);
-                int read = source.read(buffer, offset + total, requested);
-                if (read < 0) {
-                    throw new EOFException("Unexpected end of GNU sparse entry data");
-                }
-                if (read == 0) {
-                    throw new IOException("GNU sparse entry read made no progress");
-                }
-                currentBodyRemaining -= read;
-                logicalPosition += read;
-                total += read;
+            advanceCompletedBlocks();
+            @Nullable SparseBlock block = currentBlock();
+            if (block == null || logicalPosition < block.offset()) {
+                long holeEnd = block != null ? block.offset() : sparseMap.logicalSize();
+                int count = (int) Math.min(length, holeEnd - logicalPosition);
+                java.util.Arrays.fill(buffer, offset, offset + count, (byte) 0);
+                logicalPosition += count;
+                return count;
             }
-            return total;
+
+            long blockEnd = block.offset() + block.size();
+            int requested = (int) Math.min(length, blockEnd - logicalPosition);
+            int read = source.read(buffer, offset, requested);
+            if (read < 0) {
+                throw new EOFException("Unexpected end of GNU sparse entry data");
+            }
+            if (read == 0) {
+                throw new IOException("GNU sparse entry read made no progress");
+            }
+            currentBodyRemaining -= read;
+            logicalPosition += read;
+            return read;
         }
 
         /// Advances past sparse blocks ending at the current logical position.

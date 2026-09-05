@@ -15,10 +15,12 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -184,6 +186,29 @@ final class StreamChannelAdaptersTest {
         }
     }
 
+    /// Verifies streaming skips return each successful fragment before a later physical read can fail.
+    @Test
+    void streamingSkipPreservesProgressBeforeFailure() throws IOException {
+        for (Throwable failure : List.of(new IOException("read failed"),
+                new IllegalStateException("read failed"), new AssertionError("read failed"))) {
+            FragmentedFailingReadableChannel source = new FragmentedFailingReadableChannel(failure);
+            try (InputStream input = StreamChannelAdapters.inputStream(source)) {
+                assertEquals(0, input.skip(0));
+                assertEquals(0, input.skip(-1));
+                assertEquals(0, source.readCalls);
+                assertEquals(1, input.skip(Long.MAX_VALUE));
+                assertEquals(1, source.readCalls);
+                assertSame(failure, assertThrows(failure.getClass(), () -> input.skip(Long.MAX_VALUE)));
+                assertEquals(2, source.readCalls);
+                assertEquals(1, input.skip(Long.MAX_VALUE));
+                assertEquals(3, input.read());
+                assertEquals(0, input.skip(Long.MAX_VALUE));
+                assertEquals(-1, input.read());
+            }
+            assertFalse(source.isOpen());
+        }
+    }
+
     /// Verifies every adapter retries a failed endpoint close and then becomes idempotent.
     @Test
     void retriesFailedEndpointClosure() throws IOException {
@@ -218,6 +243,62 @@ final class StreamChannelAdaptersTest {
         output.close();
         output.close();
         assertEquals(2, writableChannel.closeCount());
+    }
+
+    /// Supplies three bytes one at a time and fails its second physical read.
+    @NotNullByDefault
+    private static final class FragmentedFailingReadableChannel implements ReadableByteChannel {
+        /// Failure emitted by the second read attempt.
+        private final Throwable failure;
+
+        /// Number of physical read attempts.
+        private int readCalls;
+
+        /// Next unsigned byte value to return.
+        private int nextValue = 1;
+
+        /// Whether this source remains open.
+        private boolean open = true;
+
+        /// Creates a fragmented source with the selected failure.
+        private FragmentedFailingReadableChannel(Throwable failure) {
+            this.failure = failure;
+        }
+
+        /// Returns one byte or reports the injected failure without consuming that byte.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+            readCalls++;
+            if (readCalls == 2) {
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) failure;
+            }
+            if (nextValue > 3) {
+                return -1;
+            }
+            target.put((byte) nextValue++);
+            return 1;
+        }
+
+        /// Returns whether this source remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this source.
+        @Override
+        public void close() {
+            open = false;
+        }
     }
 
     /// Counts target write attempts.

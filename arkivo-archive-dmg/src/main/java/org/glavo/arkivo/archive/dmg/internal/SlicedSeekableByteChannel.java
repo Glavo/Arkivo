@@ -52,6 +52,9 @@ class SlicedSeekableByteChannel implements SeekableByteChannel {
     }
 
     /// Reads bytes from the current slice-relative position.
+    ///
+    /// Bytes delivered before a source failure advance both the target and slice positions. The target limit is
+    /// unchanged, and a later read resumes after those bytes if the source remains usable.
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -69,12 +72,14 @@ class SlicedSeekableByteChannel implements SeekableByteChannel {
         source.position(offset + position);
         ByteBuffer slice = target.slice();
         slice.limit(count);
-        int read = source.read(slice);
-        if (read > 0) {
-            target.position(target.position() + read);
-            position += read;
+        try {
+            return source.read(slice);
+        } finally {
+            // The slice exposes progress even when the physical read does not return normally.
+            int transferred = slice.position();
+            target.position(target.position() + transferred);
+            position += transferred;
         }
-        return read;
     }
 
     /// Rejects writes because slices are read-only.
