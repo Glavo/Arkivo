@@ -169,7 +169,8 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
         }
         ready = transformed;
         pending -= transformed;
-        if (ready == 0 && position + pending == buffer.length) {
+        // The next read-loop iteration reclaims the consumed prefix before requesting more lookahead.
+        if (ready == 0 && pending == buffer.length) {
             throw new IOException("Byte filter made no progress with a full buffer");
         }
     }

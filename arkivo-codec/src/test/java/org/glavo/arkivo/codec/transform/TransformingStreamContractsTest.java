@@ -7,6 +7,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -14,6 +16,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.channels.ClosedChannelException;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -28,6 +31,87 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public final class TransformingStreamContractsTest {
     /// A transform that immediately commits every supplied byte without changing it.
     private static final ByteTransform IDENTITY = (buffer, offset, length) -> length;
+
+    /// XORs complete four-byte blocks and leaves an incomplete block for the next invocation.
+    private static final ByteTransform BLOCK_XOR = (buffer, offset, length) -> {
+        int committed = length & ~3;
+        for (int index = 0; index < committed; index++) {
+            buffer[offset + index] ^= 0x5a;
+        }
+        return committed;
+    };
+
+    /// Verifies an incomplete block at the buffer end can reclaim a consumed prefix instead of failing for no progress.
+    @ParameterizedTest
+    @ValueSource(ints = {16385, 16386, 16387, 24577, 24578, 24579})
+    public void inputCompactsIncompleteBlocksAfterPartialDrain(int length) throws IOException {
+        byte[] plain = new byte[length];
+        for (int index = 0; index < length; index++) {
+            plain[index] = (byte) (index * 29 + (index >>> 8));
+        }
+        byte[] expected = plain.clone();
+        for (int index = 0; index < (length & ~3); index++) {
+            expected[index] ^= 0x5a;
+        }
+        TrackingInputStream source = new TrackingInputStream(plain);
+        try (TransformingInputStream input = new TransformingInputStream(source, BLOCK_XOR)) {
+            byte[] fragment = new byte[8195];
+            ByteArrayOutputStream actual = new ByteArrayOutputStream();
+            while (true) {
+                Arrays.fill(fragment, (byte) 0x55);
+                int read = input.read(fragment, 1, 8193);
+                assertEquals(0x55, fragment[0]);
+                assertEquals(0x55, fragment[8194]);
+                if (read < 0) {
+                    break;
+                }
+                assertTrue(read > 0);
+                actual.write(fragment, 1, read);
+            }
+            assertArrayEquals(expected, actual.toByteArray());
+            assertEquals(-1, input.read());
+            assertEquals(0, input.available());
+        }
+        assertTrue(source.isClosed());
+    }
+
+    /// Verifies flush retains partial blocks across compaction and finish emits their bytes unchanged exactly once.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 3, 4, 5, 8191, 8192, 8193, 16385})
+    public void flushRetainsPartialBlocksUntilFinish(int length) throws IOException {
+        byte[] plain = new byte[length];
+        for (int index = 0; index < length; index++) {
+            plain[index] = (byte) (index * 29 + (index >>> 8));
+        }
+        byte[] expected = plain.clone();
+        for (int index = 0; index < (length & ~3); index++) {
+            expected[index] ^= 0x5a;
+        }
+        TrackingOutputStream target = new TrackingOutputStream();
+        try (TransformingOutputStream output = new TransformingOutputStream(target, BLOCK_XOR)) {
+            int split = length / 2;
+            output.write(plain, 0, split);
+            output.flush();
+            assertArrayEquals(Arrays.copyOf(expected, split & ~3), target.bytes());
+            assertEquals(1, target.flushCount());
+
+            output.write(plain, split, length - split);
+            // Caller mutation must not affect bytes retained until finish.
+            Arrays.fill(plain, (byte) 0);
+            output.flush();
+            assertArrayEquals(Arrays.copyOf(expected, length & ~3), target.bytes());
+            assertEquals(2, target.flushCount());
+            output.finish();
+            assertArrayEquals(expected, target.bytes());
+            output.finish();
+            output.flush();
+            assertArrayEquals(expected, target.bytes());
+            assertEquals(3, target.flushCount());
+            assertFalse(target.isClosed());
+        }
+        assertTrue(target.isClosed());
+        assertArrayEquals(expected, target.bytes());
+    }
 
     /// Verifies deferred tails round-trip and finish remains distinct from downstream closure.
     @Test
