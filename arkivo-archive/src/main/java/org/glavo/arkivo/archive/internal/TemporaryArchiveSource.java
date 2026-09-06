@@ -105,9 +105,12 @@ public final class TemporaryArchiveSource implements ArkivoSeekableChannelSource
         return Files.newByteChannel(path, StandardOpenOption.READ);
     }
 
-    /// Deletes the owned temporary archive after all consumer channels have closed.
+    /// Deletes the owned temporary archive.
     ///
-    /// A failed deletion leaves the source open so cleanup can be retried.
+    /// This method neither closes nor waits for channels returned by [#openChannel()]. Callers should close those
+    /// channels first: whether a file with open channels can be deleted depends on the file system.
+    /// A failed deletion leaves the source open so cleanup can be retried. After successful deletion, further calls
+    /// have no effect and [#openChannel()] fails.
     ///
     /// @throws IOException if the temporary archive cannot be deleted
     @Override

@@ -5,13 +5,11 @@ package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.internal.NamedGroupPrincipal;
 import org.glavo.arkivo.archive.internal.NamedUserPrincipal;
-import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.UserPrincipal;
-import java.nio.file.attribute.UserPrincipalLookupService;
 
 /// Provides POSIX metadata helpers for TAR file systems.
 @NotNullByDefault
@@ -24,11 +22,6 @@ final class TarPosixSupport {
 
     /// Prevents instantiation.
     private TarPosixSupport() {
-    }
-
-    /// Returns the lookup service for TAR owner and group principals.
-    static UserPrincipalLookupService userPrincipalLookupService() {
-        return PreservingUserPrincipalLookupService.instance();
     }
 
     /// Returns the owner principal represented by a TAR user name.

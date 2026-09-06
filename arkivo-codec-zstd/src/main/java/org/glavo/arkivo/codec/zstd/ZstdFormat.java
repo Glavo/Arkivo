@@ -14,7 +14,7 @@ import java.util.List;
 /// Describes the discoverable standard Zstandard compression format.
 ///
 /// This immutable descriptor recognizes standard and skippable four-byte frame magic values without changing the
-/// supplied buffer. It deliberately does not recognize magicless frames, which require explicit
+/// supplied buffer. Magicless frames are not recognized and require explicit
 /// [ZstdFrameFormat#MAGICLESS] selection.
 @NotNullByDefault
 public final class ZstdFormat implements CompressionFormat {

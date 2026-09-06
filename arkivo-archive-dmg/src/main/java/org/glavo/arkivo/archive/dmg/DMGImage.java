@@ -18,21 +18,21 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Objects;
 
-/// Opens one flattened Apple UDIF image as a read-only random-access disk.
+/// Provides read-only random access to a flattened Apple UDIF disk image.
 ///
 /// An image owns the supplied channel source. Each channel returned by [#openChannel()] or [#openPartition(DMGPartition)]
 /// has an independent logical position and must be closed by its caller. Callers must close derived channels before
 /// closing the image; closing the image prevents new channels and may invalidate channels backed by a shared physical
 /// source.
 ///
-/// The current implementation accepts unencrypted, single-segment flattened UDIF images. It decodes raw, sparse, ADC,
-/// zlib, BZip2, and XZ-encoded runs. An unsupported run encoding is reported when bytes from that run are requested.
+/// Supports unencrypted, single-segment flattened UDIF images with raw, sparse, ADC, zlib, BZip2, and XZ-encoded runs.
+/// An unsupported run encoding is reported when bytes from that run are requested.
 @NotNullByDefault
 public final class DMGImage implements Closeable {
     /// The owned UDIF implementation.
     private final UDIFImage image;
 
-    /// Creates one public image facade.
+    /// Creates an image that owns the supplied UDIF image.
     private DMGImage(UDIFImage image) {
         this.image = Objects.requireNonNull(image, "image");
     }

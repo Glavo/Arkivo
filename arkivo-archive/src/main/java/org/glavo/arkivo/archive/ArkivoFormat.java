@@ -83,10 +83,13 @@ public interface ArkivoFormat {
 
     /// Returns whether the seekable bytes from the channel's current position identify this archive format.
     ///
-    /// The channel is borrowed. This method must restore its position before returning or throwing. The default
-    /// implementation reads at most [#probeSize()] leading bytes and delegates to [#matches(ByteBuffer)]. Formats whose
-    /// identifying data is not located at the beginning of the archive may override this method and perform bounded
-    /// random-access reads.
+    /// The channel is borrowed. Its position must be restored before a normal return. If probing fails, implementations
+    /// must attempt to restore the position before propagating the failure. A restoration failure is thrown if there
+    /// is no earlier failure; otherwise it is suppressed on the earlier failure, unless both are the same exception.
+    ///
+    /// @implSpec The default implementation reads at most [#probeSize()] leading bytes and delegates to
+    /// [#matches(ByteBuffer)]. Formats whose identifying data is not at the beginning of the archive may override this
+    /// method and perform bounded random-access reads.
     ///
     /// @param source the borrowed channel whose current position is logical archive offset zero
     /// @return {@code true} if the seekable source identifies this format

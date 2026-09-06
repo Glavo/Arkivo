@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Identifies the actionable reason that a buffer-driven codec operation returned.
+/// Identifies why a buffer-driven codec operation stopped.
 @NotNullByDefault
 public enum CodecOutcome {
     /// The supplied source was exhausted before the current encoding completed; preserve codec state and supply input.

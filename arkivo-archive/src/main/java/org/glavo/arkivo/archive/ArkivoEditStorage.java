@@ -30,10 +30,14 @@ public interface ArkivoEditStorage extends AutoCloseable {
         return ArkivoEditStorageSupport.temporaryFiles(directory);
     }
 
-    /// Returns an edit storage that keeps small staged content in memory and larger content in temporary files.
+    /// Returns storage that selects memory or temporary files according to each entry's expected size.
     ///
-    /// @param memoryThreshold the non-negative maximum expected size retained in memory
-    /// @param directory the directory in which larger temporary content files are created
+    /// Content with a known expected size at or below `memoryThreshold` is stored in memory. Larger or unknown
+    /// expected sizes select temporary files. The choice is made by [#createContent(String, long)] and does not change
+    /// as content grows; the threshold is not a limit on actual memory use.
+    ///
+    /// @param memoryThreshold the non-negative maximum expected size, in bytes, that selects memory storage
+    /// @param directory the directory in which file-backed content is created
     /// @return a new hybrid storage
     /// @throws IllegalArgumentException if {@code memoryThreshold} is negative
     static ArkivoEditStorage hybrid(long memoryThreshold, Path directory) {

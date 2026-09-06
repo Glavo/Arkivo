@@ -14,6 +14,7 @@ import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
+import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
@@ -436,7 +437,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
         try (Operation ignored = beginReadOperation()) {
-            return RarPosixSupport.userPrincipalLookupService();
+            return PreservingUserPrincipalLookupService.instance();
         }
     }
 

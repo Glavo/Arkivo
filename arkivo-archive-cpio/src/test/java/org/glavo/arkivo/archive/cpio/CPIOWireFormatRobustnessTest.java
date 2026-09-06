@@ -186,10 +186,10 @@ public final class CPIOWireFormatRobustnessTest {
         }
     }
 
-    /// Verifies special POSIX types are reported as other and cannot carry entry data.
+    /// Verifies special and unspecified POSIX types are reported as other and cannot carry entry data.
     @Test
     public void classifiesSpecialTypesAndRejectsTheirBodies() throws IOException {
-        for (int mode : new int[]{0010644, 0020644, 0060644, 0140644}) {
+        for (int mode : new int[]{0, 0644, 0010644, 0020644, 0060644, 0140644}) {
             byte[] emptyArchive = writeEmptyArchive(CPIODialect.NEW_ASCII, mode);
             try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
                     new ByteArrayInputStream(emptyArchive)
@@ -197,6 +197,7 @@ public final class CPIOWireFormatRobustnessTest {
                 assertTrue(reader.next());
                 CPIOArkivoEntryAttributes attributes = reader.readAttributes(CPIOArkivoEntryAttributes.class);
                 assertTrue(attributes.isOther(), Integer.toOctalString(mode));
+                assertFalse(attributes.isRegularFile(), Integer.toOctalString(mode));
             }
 
             byte[] nonEmptyArchive = writeArchive(CPIODialect.NEW_ASCII, CPIOBinaryByteOrder.BIG_ENDIAN, 1);

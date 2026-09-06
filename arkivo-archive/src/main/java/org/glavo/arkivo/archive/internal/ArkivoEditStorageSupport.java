@@ -44,7 +44,7 @@ public final class ArkivoEditStorageSupport {
         return new TemporaryFileStorage(directory);
     }
 
-    /// Returns an edit storage that keeps small staged content in memory and larger content in temporary files.
+    /// Returns storage that selects memory or temporary files from each content's expected size.
     ///
     /// @param memoryThreshold the non-negative maximum known size retained in memory
     /// @param directory the fallback temporary-content directory

@@ -39,10 +39,13 @@ public interface ArkivoEditStorageFactory {
         return () -> ArkivoEditStorage.temporaryFiles(checkedDirectory);
     }
 
-    /// Returns a reusable factory for storage that spills large content from memory to temporary files.
+    /// Returns a reusable factory for [hybrid storage][ArkivoEditStorage#hybrid(long, Path)].
     ///
-    /// @param memoryThreshold the non-negative maximum expected size retained in memory
-    /// @param directory the directory in which larger temporary content files are created
+    /// Each content's expected size selects its backing when it is created. Content is not moved between memory and
+    /// files as it grows.
+    ///
+    /// @param memoryThreshold the non-negative maximum expected size, in bytes, that selects memory storage
+    /// @param directory the directory in which file-backed content is created
     /// @return a factory that creates new hybrid storage for each operation
     /// @throws IllegalArgumentException if `memoryThreshold` is negative
     static ArkivoEditStorageFactory hybrid(long memoryThreshold, Path directory) {

@@ -7,9 +7,7 @@ import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,15 +29,6 @@ final class RarPosixSupportTest {
         assertEquals("staff", RarPosixSupport.group("staff", 100L).getName());
         assertEquals("100", RarPosixSupport.group(null, 100L).getName());
         assertSame(RarPosixSupport.DEFAULT_GROUP, RarPosixSupport.group(null, unknown));
-    }
-
-    /// Verifies the preserving lookup service accepts arbitrary archive principal names.
-    @Test
-    void preservesLookupNames() throws IOException {
-        UserPrincipalLookupService lookup = RarPosixSupport.userPrincipalLookupService();
-
-        assertEquals("archive-owner", lookup.lookupPrincipalByName("archive-owner").getName());
-        assertEquals("archive-group", lookup.lookupPrincipalByGroupName("archive-group").getName());
     }
 
     /// Verifies permissions are decoded only for Unix-hosted entries and returned immutably.

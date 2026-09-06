@@ -35,9 +35,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/// Discovers installed official archive formats and opens their unified file-system and streaming APIs.
+/// Finds installed archive formats and opens archive file systems, readers, and writers.
 ///
-/// Detection methods borrow caller-supplied sources and restore seekable positions before returning. Factory overloads
+/// Detection methods borrow caller-supplied sources and restore seekable positions before a normal return. Factory overloads
 /// that accept a closeable source or target validate their arguments before taking ownership. A successful factory
 /// transfers that ownership to the returned file system, reader, or writer; lookup, capability, detection, and setup
 /// failures close the endpoint without hiding the primary failure.
@@ -92,7 +92,9 @@ public final class ArkivoFormats {
 
     /// Detects the first matching installed archive format from bytes at the channel's current position.
     ///
-    /// The channel position is restored before this method returns or throws.
+    /// The channel position is restored before a normal return. If probing fails, restoration is attempted before
+    /// propagating the failure. A restoration failure is thrown if there is no earlier failure; otherwise it is
+    /// suppressed on the earlier failure, unless both are the same exception.
     ///
     /// @param channel the borrowed seekable channel to probe
     /// @return the highest-priority matching installed format, or {@code null} if none matches

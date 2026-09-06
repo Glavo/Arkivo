@@ -15,9 +15,8 @@ import java.util.Objects;
 
 /// Selects a charset for archive metadata whose encoding is not authoritatively identified by its format.
 ///
-/// The basic contract deliberately depends only on the undecoded bytes. Format-specific subinterfaces can expose
-/// richer metadata when it is available without requiring every archive reader to collect it. Implementations may be
-/// shared by concurrent readers and therefore should be thread-safe.
+/// Format-specific subinterfaces may supply additional metadata. Implementations may be shared by concurrent readers
+/// and therefore should be thread-safe.
 ///
 /// A supplied array or buffer is valid only for the duration of the call and must not be modified or retained.
 /// Returning `null` reports that the charset could not be determined and asks the archive format to use its fallback.
@@ -33,8 +32,8 @@ public interface ArchiveMetadataCharsetDetector {
 
     /// Detects the charset of one complete metadata value represented by an array.
     ///
-    /// The default implementation exposes the array through an independent read-only buffer and delegates to
-    /// `detect(ByteBuffer)`.
+    /// @implSpec The default implementation wraps the array in a read-only buffer with an independent position and
+    /// limit, then delegates to [#detect(ByteBuffer)]. The buffer shares the array's contents.
     ///
     /// @param bytes the complete encoded metadata value
     /// @return the detected charset, or {@code null} when the encoding cannot be determined

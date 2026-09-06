@@ -23,6 +23,7 @@ import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
 import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
+import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -583,7 +584,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
         try (Operation ignored = beginReadOperation()) {
-            return ArPosixSupport.userPrincipalLookupService();
+            return PreservingUserPrincipalLookupService.instance();
         }
     }
 

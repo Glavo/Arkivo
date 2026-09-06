@@ -6,7 +6,6 @@ package org.glavo.arkivo.archive.rar.internal;
 import org.glavo.arkivo.archive.internal.NamedGroupPrincipal;
 import org.glavo.arkivo.archive.internal.NamedUserPrincipal;
 import org.glavo.arkivo.archive.internal.PosixModes;
-import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -15,7 +14,6 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
-import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.Set;
 
 /// Provides POSIX metadata helpers for RAR file systems.
@@ -29,11 +27,6 @@ final class RarPosixSupport {
 
     /// Prevents instantiation.
     private RarPosixSupport() {
-    }
-
-    /// Returns the lookup service for RAR owner and group principals.
-    static UserPrincipalLookupService userPrincipalLookupService() {
-        return PreservingUserPrincipalLookupService.instance();
     }
 
     /// Returns the owner principal represented by RAR Unix owner metadata.

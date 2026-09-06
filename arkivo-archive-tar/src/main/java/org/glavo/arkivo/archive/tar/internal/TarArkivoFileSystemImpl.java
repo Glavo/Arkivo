@@ -24,6 +24,7 @@ import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
 import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
+import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
@@ -727,7 +728,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
         try (Operation ignored = beginReadOperation()) {
-            return TarPosixSupport.userPrincipalLookupService();
+            return PreservingUserPrincipalLookupService.instance();
         }
     }
 

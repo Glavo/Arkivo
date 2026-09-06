@@ -12,7 +12,7 @@ import java.util.Objects;
 import java.util.function.Supplier;
 import java.util.zip.Checksum;
 
-/// Adapts one mandatory JDK 32-bit checksum implementation to the Arkivo lifecycle.
+/// Adapts a JDK 32-bit checksum implementation to [ChecksumAlgorithm.Width32].
 @NotNullByDefault
 public final class JdkChecksumAlgorithm32 implements ChecksumAlgorithm.Width32 {
     /// The diagnostic algorithm name.

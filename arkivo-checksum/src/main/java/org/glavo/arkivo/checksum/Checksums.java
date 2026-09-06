@@ -29,7 +29,7 @@ public final class Checksums {
     public static final ChecksumAlgorithm.Width32 CRC32C =
             new JdkChecksumAlgorithm32("CRC-32C", CRC32C::new);
 
-    /// The mandatory SHA-256 message digest used as an XZ integrity check.
+    /// The SHA-256 message digest, one of the integrity checks supported by XZ.
     public static final ChecksumAlgorithm SHA256 = new MessageDigestChecksumAlgorithm("SHA-256", 32);
 
     /// Prevents catalogue construction.

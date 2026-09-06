@@ -207,7 +207,22 @@ public final class ArkivoEditStorageContractTest {
         assertThrows(IllegalArgumentException.class, () -> ArkivoEditStorage.hybrid(-1L, directory));
 
         try (ArkivoEditStorage storage = ArkivoEditStorage.hybrid(4L, directory)) {
-            try (ArkivoStoredContent memory = storage.createContent("small.bin", 4L)) {
+            try (ArkivoStoredContent empty = storage.createContent("empty.bin", 0L);
+                 ArkivoStoredContent small = storage.createContent("small.bin", 3L);
+                 ArkivoStoredContent memory = storage.createContent("threshold.bin", 4L)) {
+                assertEquals(0L, empty.size());
+                assertEquals(0L, small.size());
+                assertFalse(Files.exists(directory));
+                byte[] content = new byte[]{1, 2, 3, 4, 5, 6};
+                try (SeekableByteChannel channel = memory.openChannel(Set.of(
+                        StandardOpenOption.READ,
+                        StandardOpenOption.WRITE
+                ))) {
+                    assertEquals(content.length, channel.write(ByteBuffer.wrap(content)));
+                    assertEquals(content.length, memory.size());
+                    channel.position(0L);
+                    assertArrayEquals(content, readRemaining(channel));
+                }
                 assertFalse(Files.exists(directory));
             }
 

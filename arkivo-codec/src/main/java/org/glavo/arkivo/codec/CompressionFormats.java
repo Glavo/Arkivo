@@ -90,7 +90,7 @@ public final class CompressionFormats {
     /// closure leaves the borrowed original channel open. Interruption or concurrent close during an active replay read
     /// closes the source to unblock that read.
     ///
-    /// @param source the forward-only source to probe without closing
+    /// @param source the borrowed forward-only source to probe
     /// @return a probe result containing the detected format, retained prefix, and replay channel
     /// @throws IOException if source reading or probe setup fails or the source makes no progress
     public static CompressionProbeResult probe(ReadableByteChannel source) throws IOException {
@@ -164,9 +164,11 @@ public final class CompressionFormats {
 
     /// Detects an installed format from bytes at the channel's current position.
     ///
-    /// The channel position is restored before this method returns or throws.
+    /// The channel position is restored before a normal return. If probing fails, restoration is attempted before
+    /// propagating the failure. A restoration failure is thrown if there is no earlier failure; otherwise it is
+    /// suppressed on the earlier failure, unless both are the same exception.
     ///
-    /// @param channel the seekable channel to probe without closing
+    /// @param channel the borrowed seekable channel to probe
     /// @return the matching installed format, or `null` when no signature matches
     /// @throws IOException if reading fails, the channel makes no progress, or its position cannot be restored
     public static @Nullable CompressionFormat detect(SeekableByteChannel channel) throws IOException {

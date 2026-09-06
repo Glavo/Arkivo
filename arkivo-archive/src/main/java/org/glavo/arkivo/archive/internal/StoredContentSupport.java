@@ -5,7 +5,6 @@ package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -52,15 +51,6 @@ public final class StoredContentSupport {
         return configured != null
                 ? configured.open()
                 : ArkivoEditStorage.temporaryFiles(defaultStorageDirectory());
-    }
-
-    /// Opens configured edit storage or temporary-file storage in the default system temporary directory.
-    ///
-    /// @param factory the configured factory, or `null` to select default temporary-file storage
-    /// @return new operation-owned storage
-    /// @throws IOException if configured storage cannot be opened
-    public static ArkivoEditStorage openStorage(@Nullable ArkivoEditStorageFactory factory) throws IOException {
-        return factory != null ? factory.open() : ArkivoEditStorage.temporaryFiles(defaultStorageDirectory());
     }
 
     /// Closes content and storage allocated during a failed open and suppresses every cleanup failure.

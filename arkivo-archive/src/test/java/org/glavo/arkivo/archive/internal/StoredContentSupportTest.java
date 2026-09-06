@@ -37,19 +37,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared indexed-content transfer and lifecycle behavior.
 @NotNullByDefault
 final class StoredContentSupportTest {
-    /// Verifies configured factories and both default-storage entry points return usable owned storage.
+    /// Verifies default storage can allocate empty content.
     @Test
-    void selectsConfiguredAndDefaultStorage() throws IOException {
-        ArkivoEditStorage configured = ArkivoEditStorage.memory();
-        assertSame(configured, StoredContentSupport.openStorage(() -> configured));
-        configured.close();
-
+    void selectsDefaultStorage() throws IOException {
         try (ArkivoEditStorage selected = StoredContentSupport.selectStorage(ArchiveOptions.EMPTY);
              ArkivoStoredContent content = selected.createContent("selected", 0L)) {
-            assertEquals(0L, content.size());
-        }
-        try (ArkivoEditStorage opened = StoredContentSupport.openStorage(null);
-             ArkivoStoredContent content = opened.createContent("opened", 0L)) {
             assertEquals(0L, content.size());
         }
     }
