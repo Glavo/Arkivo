@@ -1795,8 +1795,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             if (shouldSkipRawEntryData(entry)) {
                 skipRawEntryData(entry);
             } else {
-                try (InputStream ignored = trackedEntryInputStream(entry)) {
-                    ignored.transferTo(OutputStream.nullOutputStream());
+                InputStream entryStream = trackedEntryInputStream(entry);
+                try (entryStream) {
+                    entryStream.transferTo(OutputStream.nullOutputStream());
+                } finally {
+                    // Cleanup must not reopen this body from an already advanced input position after a drain failure.
+                    currentEntry = null;
                 }
             }
             rememberUnexpectedDataDescriptorCandidate(entry);

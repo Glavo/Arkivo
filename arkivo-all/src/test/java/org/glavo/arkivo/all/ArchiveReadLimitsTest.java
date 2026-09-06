@@ -26,11 +26,14 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -200,6 +203,59 @@ final class ArchiveReadLimitsTest {
                         () -> readCurrentEntry(reader)
                 );
                 assertLimit(exception, ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, 5L, 7L, "second.bin");
+            }
+        } finally {
+            Files.deleteIfExists(fixture.path());
+        }
+    }
+
+    /// Verifies draining, cursor advancement, and inherited stream operations enforce unknown ZIP entry sizes.
+    @ParameterizedTest
+    @ValueSource(strings = {"next-unopened", "next-partial", "close-partial", "skip", "skipNBytes", "transferTo", "readNBytes"})
+    void streamingZipEnforcesLimitsWhenBodiesAreNotReadNormally(String operation) throws IOException {
+        Fixture fixture = createZipFixture();
+        try {
+            for (boolean totalLimit : new boolean[]{false, true}) {
+                ArchiveReadLimits limits = totalLimit
+                        ? ArchiveReadLimits.builder().maximumTotalEntrySize(2L).build()
+                        : ArchiveReadLimits.builder().maximumEntrySize(2L).build();
+                ArkivoReadLimitKind kind = totalLimit ? ArkivoReadLimitKind.TOTAL_ENTRY_SIZE
+                        : ArkivoReadLimitKind.ENTRY_SIZE;
+                try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
+                        "zip", fixture.path(), readOptions(limits)
+                )) {
+                    assertTrue(reader.next());
+                    ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> {
+                        if (operation.equals("next-unopened")) {
+                            reader.next();
+                        } else {
+                            try (InputStream body = reader.openInputStream()) {
+                                switch (operation) {
+                                    case "next-partial" -> {
+                                        assertEquals(FIRST_CONTENT[0], body.read());
+                                        reader.next();
+                                    }
+                                    case "close-partial" -> {
+                                        assertEquals(FIRST_CONTENT[0], body.read());
+                                        body.close();
+                                    }
+                                    case "skip" -> body.skip(Long.MAX_VALUE);
+                                    case "skipNBytes" -> body.skipNBytes(FIRST_CONTENT.length);
+                                    case "transferTo" -> body.transferTo(OutputStream.nullOutputStream());
+                                    case "readNBytes" -> body.readNBytes(FIRST_CONTENT.length);
+                                    default -> throw new AssertionError("Unknown operation: " + operation);
+                                }
+                            }
+                        }
+                    });
+                    assertLimit(failure, kind, 2L, FIRST_CONTENT.length, "first.bin");
+                    ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::next);
+                    assertLimit(repeated, kind, 2L, FIRST_CONTENT.length, "first.bin");
+                    assertThrows(IllegalStateException.class, reader::readAttributes);
+                    reader.close();
+                    reader.close();
+                    assertThrows(IOException.class, reader::next);
+                }
             }
         } finally {
             Files.deleteIfExists(fixture.path());

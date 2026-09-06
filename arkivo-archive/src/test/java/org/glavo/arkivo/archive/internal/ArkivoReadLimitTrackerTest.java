@@ -9,11 +9,14 @@ import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -220,6 +223,42 @@ public final class ArkivoReadLimitTrackerTest {
             assertEquals(5L, exception.maximum());
             assertEquals(6L, exception.actual());
             assertEquals("unknown.bin", exception.entryPath());
+        }
+    }
+
+    /// Verifies interleaved entry bodies keep separate per-entry counts and share the archive's total budget.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void interleavedBodiesRetainTheirOwnCountsAndShareFailure(boolean totalLimit) throws IOException {
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
+                -1L, totalLimit ? 4L : 3L, totalLimit ? 4L : -1L
+        );
+        tracker.acceptEntry("first.bin", -1L);
+        tracker.acceptEntry("second.bin", -1L);
+        ByteArrayInputStream firstSource = new ByteArrayInputStream(new byte[]{1, 2, 3, 4, 5});
+        ByteArrayInputStream secondSource = new ByteArrayInputStream(new byte[]{6, 7, 8});
+        try (InputStream first = tracker.trackUnknownEntrySize("first.bin", firstSource);
+             InputStream second = tracker.trackUnknownEntrySize("second.bin", secondSource)) {
+            assertArrayEquals(new byte[]{1, 2}, first.readNBytes(2));
+            assertEquals(6, second.read());
+            assertEquals(3, first.read());
+            tracker.requireWithinLimits();
+            ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, first::read);
+            ArkivoReadLimitKind kind = totalLimit ? ArkivoReadLimitKind.TOTAL_ENTRY_SIZE
+                    : ArkivoReadLimitKind.ENTRY_SIZE;
+            assertLimit(failure, kind, totalLimit ? 4L : 3L, totalLimit ? 5L : 4L, "first.bin");
+            int firstRemaining = firstSource.available();
+            int secondRemaining = secondSource.available();
+            assertLimit(assertThrows(ArkivoReadLimitException.class, second::read),
+                    failure.kind(), failure.maximum(), failure.actual(), failure.entryPath());
+            assertLimit(assertThrows(ArkivoReadLimitException.class, () -> first.skip(1L)),
+                    failure.kind(), failure.maximum(), failure.actual(), failure.entryPath());
+            assertLimit(assertThrows(ArkivoReadLimitException.class, () -> second.read(new byte[2])),
+                    failure.kind(), failure.maximum(), failure.actual(), failure.entryPath());
+            assertLimit(assertThrows(ArkivoReadLimitException.class, () -> tracker.acceptEntry("third.bin", 0L)),
+                    failure.kind(), failure.maximum(), failure.actual(), failure.entryPath());
+            assertEquals(firstRemaining, firstSource.available());
+            assertEquals(secondRemaining, secondSource.available());
         }
     }
 
