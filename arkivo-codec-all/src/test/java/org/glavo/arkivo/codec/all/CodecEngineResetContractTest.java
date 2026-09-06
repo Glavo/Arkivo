@@ -12,14 +12,20 @@ import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /// Verifies every installed buffer codec restores its original configuration when reset.
 @NotNullByDefault
@@ -73,6 +79,66 @@ final class CodecEngineResetContractTest {
                 assertArrayEquals(FIRST_CONTENT, decode(decoder, recoveredEncoded, context), context);
             }
         }
+    }
+
+    /// Verifies reset discards failed header and body decoding, including a separately reported end of input.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("installedFormats")
+    void resetsAfterTruncatedInput(String formatName) throws IOException {
+        CompressionCodec<?> codec = CompressionFormats.require(formatName).defaultCodec();
+        byte[] encoded;
+        try (CompressionEncoder encoder = codec.newEncoder()) {
+            encoded = encode(encoder, FIRST_CONTENT, formatName);
+        }
+        // Unix compress has no end marker; a shorter sequence of complete codes can be a valid stream.
+        int[] prefixSizes = formatName.equals("compress")
+                ? new int[]{1} : new int[]{1, encoded.length / 2};
+        CompressionCodec<?> configured = CodecContractConfigurations.decoderCodec(codec, CONTENT_SIZE)
+                .withMaximumOutputSize(CONTENT_SIZE);
+        try (CompressionDecoder decoder = configured.newDecoder()) {
+            for (int prefixSize : prefixSizes) {
+                for (boolean incremental : new boolean[]{false, true}) {
+                    String context = formatName + " prefix=" + prefixSize + " incremental=" + incremental;
+                    ByteBuffer source = ByteBuffer.allocateDirect(prefixSize + 4);
+                    source.position(2).put(encoded, 0, prefixSize).flip().position(2);
+                    ByteBuffer input = source.asReadOnlyBuffer();
+                    ByteArrayOutputStream partial = new ByteArrayOutputStream();
+                    assertThrows(IOException.class, () -> {
+                        for (int calls = 0; calls < CONTENT_SIZE; calls++) {
+                            ByteBuffer target = ByteBuffer.allocate(31);
+                            CodecOutcome outcome;
+                            try {
+                                outcome = incremental && input.hasRemaining()
+                                        ? decoder.decode(input, target) : decoder.finish(input, target);
+                            } finally {
+                                assertEquals(prefixSize + 2, input.limit(), context);
+                                assertEquals(31, target.limit(), context);
+                                drain(target, partial);
+                            }
+                            if (outcome == CodecOutcome.FINISHED) {
+                                fail("Truncated stream completed: " + context);
+                            }
+                            assertTrue(outcome == CodecOutcome.NEEDS_INPUT
+                                    || outcome == CodecOutcome.NEEDS_OUTPUT, context);
+                        }
+                        fail("Decoder did not report truncation: " + context);
+                    }, context);
+                    assertTrue(partial.size() <= CONTENT_SIZE, context);
+                    assertArrayEquals(Arrays.copyOf(FIRST_CONTENT, partial.size()), partial.toByteArray(), context);
+                    assertEquals(2, source.position(), context);
+
+                    decoder.reset();
+                    decoder.reset();
+                    assertArrayEquals(FIRST_CONTENT, decode(decoder, encoded, context), context);
+                    decoder.reset();
+                }
+            }
+        }
+    }
+
+    /// Returns each installed format as a separately reported reset test invocation.
+    private static Stream<String> installedFormats() {
+        return CompressionFormats.installed().stream().map(CompressionFormat::name);
     }
 
     /// Encodes one complete stream through a reusable engine with bounded direct targets.
