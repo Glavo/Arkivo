@@ -8,6 +8,8 @@ import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -15,6 +17,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -26,6 +29,55 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies decoded archive size enforcement, probe boundaries, and channel ownership.
 @NotNullByDefault
 final class ArchiveSizeLimitChannelTest {
+    /// Verifies the maximum long allowance does not overflow when reserving its probe byte.
+    @Test
+    void acceptsMaximumAllowanceWithDirectBufferWindow() throws IOException {
+        ReadableByteChannel delegate = Channels.newChannel(new ByteArrayInputStream(new byte[]{1, 2, 3}));
+        try (ReadableByteChannel limited = ArchiveSizeLimitChannel.wrap(delegate, Long.MAX_VALUE)) {
+            ByteBuffer parent = ByteBuffer.allocateDirect(12);
+            parent.position(3).limit(10);
+            ByteBuffer target = parent.slice().position(2).limit(5).mark();
+            assertEquals(3, limited.read(target));
+            assertEquals(5, target.position());
+            assertEquals(5, target.limit());
+            assertEquals(3, parent.position());
+            assertEquals(10, parent.limit());
+            assertEquals(ByteBuffer.wrap(new byte[]{1, 2, 3}), target.reset().slice());
+            target.position(5).limit(7);
+            assertEquals(-1, limited.read(target));
+            assertEquals(-1, limited.read(target));
+            assertEquals(5, target.position());
+        }
+    }
+
+    /// Verifies a rejected read-only destination neither consumes input nor spends the size allowance.
+    @Test
+    void rejectedTargetLeavesAllowanceAndInputUnchanged() throws IOException {
+        ReadableByteChannel delegate = Channels.newChannel(new ByteArrayInputStream(new byte[]{1, 2, 3}));
+        try (ReadableByteChannel limited = ArchiveSizeLimitChannel.wrap(delegate, 2L)) {
+            ByteBuffer rejected = ByteBuffer.allocateDirect(8).position(2).limit(7).asReadOnlyBuffer().mark();
+            assertThrows(IllegalArgumentException.class, () -> limited.read(rejected));
+            assertEquals(2, rejected.position());
+            assertEquals(7, rejected.limit());
+            assertEquals(2, rejected.reset().position());
+            ByteBuffer permitted = ByteBuffer.allocate(2);
+            assertEquals(2, limited.read(permitted));
+            assertEquals(ByteBuffer.wrap(new byte[]{1, 2}), permitted.flip());
+            ByteBuffer probe = ByteBuffer.allocateDirect(8).position(2).limit(7).mark();
+            ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> limited.read(probe));
+            assertEquals(3L, failure.actual());
+            assertEquals(3, probe.position());
+            assertEquals(7, probe.limit());
+            assertEquals(3, probe.get(2));
+            assertEquals(2, probe.reset().position());
+        }
+    }
+
+    /// Supplies unchecked failures that must remain primary after a size violation.
+    private static Stream<Throwable> uncheckedFailures() {
+        return Stream.of(new IllegalStateException("partial runtime failure"), new AssertionError("partial error"));
+    }
+
     /// Verifies a read stops at the first byte beyond the configured maximum.
     @Test
     void readsOnlyOneProbeByteBeyondLimit() throws IOException {
@@ -162,10 +214,10 @@ final class ArchiveSizeLimitChannelTest {
         }
     }
 
-    /// Verifies runtime delegate failures remain primary while the exceeded limit becomes sticky.
-    @Test
-    void preservesRuntimeFailureAfterPartialLimitViolation() throws IOException {
-        IllegalStateException readFailure = new IllegalStateException("partial runtime failure");
+    /// Verifies unchecked delegate failures remain primary while the exceeded limit becomes sticky.
+    @ParameterizedTest
+    @MethodSource("uncheckedFailures")
+    void preservesUncheckedFailureAfterPartialLimitViolation(Throwable readFailure) throws IOException {
         PartiallyFailingReadableByteChannel delegate = new PartiallyFailingReadableByteChannel(
                 new byte[]{1, 2},
                 2,
@@ -174,7 +226,7 @@ final class ArchiveSizeLimitChannelTest {
         try (ReadableByteChannel limited = ArchiveSizeLimitChannel.wrap(delegate, 1L)) {
             ByteBuffer target = ByteBuffer.allocate(8);
 
-            assertSame(readFailure, assertThrows(IllegalStateException.class, () -> limited.read(target)));
+            assertSame(readFailure, assertThrows(readFailure.getClass(), () -> limited.read(target)));
             assertEquals(2, target.position());
             assertEquals(1, readFailure.getSuppressed().length);
             ArkivoReadLimitException limitFailure = assertInstanceOf(
@@ -215,8 +267,8 @@ final class ArchiveSizeLimitChannelTest {
         /// Number of bytes delivered before the first failure.
         private final int partialReadSize;
 
-        /// Checked or runtime failure reported after the partial read.
-        private final Exception failure;
+        /// Checked or unchecked failure reported after the partial read.
+        private final Throwable failure;
 
         /// Whether the partial failure remains pending.
         private boolean failurePending = true;
@@ -228,7 +280,7 @@ final class ArchiveSizeLimitChannelTest {
         private PartiallyFailingReadableByteChannel(
                 byte @Unmodifiable [] source,
                 int partialReadSize,
-                Exception failure
+                Throwable failure
         ) {
             this.source = ByteBuffer.wrap(source.clone());
             this.partialReadSize = partialReadSize;
@@ -259,7 +311,10 @@ final class ArchiveSizeLimitChannelTest {
                 if (failure instanceof IOException ioException) {
                     throw ioException;
                 }
-                throw (RuntimeException) failure;
+                if (failure instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                throw (Error) failure;
             }
             return count;
         }

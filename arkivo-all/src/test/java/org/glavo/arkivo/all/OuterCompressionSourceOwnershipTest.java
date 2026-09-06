@@ -16,6 +16,9 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -29,11 +32,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -115,6 +120,56 @@ final class OuterCompressionSourceOwnershipTest {
         assertSame(closeFailure, failure);
         assertEquals(1, source.closeCount());
         assertTrue(source.allOpenedChannelsClosed());
+    }
+
+    /// Verifies GZIP checksum failures release every opened source channel and retain source-close failures.
+    @ParameterizedTest
+    @CsvSource({"false, false", "true, false", "false, true", "true, true"})
+    void closesSourcesAfterOuterChecksumFailure(boolean volumeSource, boolean failClose) throws IOException {
+        byte[] compressed = gzip(zipArchive());
+        compressed[compressed.length - 8] ^= 1;
+        @Nullable IOException closeFailure = failClose ? new IOException("source close failed") : null;
+        TrackingSource source = source(compressed, closeFailure);
+
+        IOException failure = assertThrows(IOException.class, () -> {
+            try (ArkivoFileSystem ignored = volumeSource
+                    ? ArkivoFormats.openFileSystem((ArkivoVolumeSource) source)
+                    : ArkivoFormats.openFileSystem(source)) {
+                throw new AssertionError("Corrupt outer checksum was accepted");
+            }
+        });
+
+        if (closeFailure != null) {
+            assertNotSame(closeFailure, failure);
+            assertTrue(Arrays.asList(failure.getSuppressed()).contains(closeFailure));
+        }
+        assertEquals(1, source.closeCount());
+        assertTrue(source.allOpenedChannelsClosed());
+    }
+
+    /// Verifies truncated GZIP trailers cannot produce a file system or leak either source overload's channels.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 4, 8})
+    void closesSourcesAfterTruncatedOuterTrailer(int missingBytes) throws IOException {
+        byte[] compressed = gzip(zipArchive());
+        byte[] truncated = Arrays.copyOf(compressed, compressed.length - missingBytes);
+        TrackingSource repeatable = source(truncated, null);
+        assertThrows(IOException.class, () -> {
+            try (ArkivoFileSystem ignored = ArkivoFormats.openFileSystem(repeatable)) {
+                throw new AssertionError("Truncated outer trailer was accepted");
+            }
+        });
+        assertEquals(1, repeatable.closeCount());
+        assertTrue(repeatable.allOpenedChannelsClosed());
+
+        TrackingSource volumes = source(truncated, null);
+        assertThrows(IOException.class, () -> {
+            try (ArkivoFileSystem ignored = ArkivoFormats.openFileSystem((ArkivoVolumeSource) volumes)) {
+                throw new AssertionError("Truncated outer trailer was accepted");
+            }
+        });
+        assertEquals(1, volumes.closeCount());
+        assertTrue(volumes.allOpenedChannelsClosed());
     }
 
     /// Verifies a transformed streaming reader remains usable after its volume source is released.
