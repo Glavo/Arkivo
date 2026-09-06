@@ -26,6 +26,8 @@ import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -983,6 +985,99 @@ final class CodecChannelContractTest {
                     codec.format().name()
             );
             assertTrue(invalidSource.isOpen(), codec.format().name());
+        }
+    }
+
+    /// Verifies a channel shares one output allowance across data frames and intervening empty frames.
+    @ParameterizedTest
+    @CsvSource({
+            "read, 0", "read, 3", "read, 4", "read, 6",
+            "decode, 0", "decode, 3", "decode, 4", "decode, 6",
+            "decodeFrame, 0", "decodeFrame, 3", "decodeFrame, 4", "decodeFrame, 6"
+    })
+    void sharesOutputLimitAcrossFrameTransitions(String operation, int maximum) throws IOException {
+        byte[] content = {11, 12, 13, 14, 15, 16};
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec<?> codec = format.defaultCodec();
+            if (!(codec instanceof CompressionCodec.Framed<?>)) {
+                continue;
+            }
+            String context = format.name() + " " + operation + " maximum=" + maximum;
+            ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+            encoded.writeBytes(compressFrame(codec, new byte[0]));
+            encoded.writeBytes(compressFrame(codec, Arrays.copyOfRange(content, 0, 3)));
+            encoded.writeBytes(compressFrame(codec, new byte[0]));
+            encoded.writeBytes(compressFrame(codec, Arrays.copyOfRange(content, 3, 6)));
+            encoded.writeBytes(compressFrame(codec, new byte[0]));
+            byte[] compressed = encoded.toByteArray();
+
+            for (boolean direct : new boolean[]{false, true}) {
+                try (ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(compressed))) {
+                    CompressionCodec.Framed<?> limited =
+                            (CompressionCodec.Framed<?>) codec.withMaximumOutputSize(maximum);
+                    try (DecompressingReadableByteChannel.Framed decoder =
+                                 limited.newReadableByteChannel(source, ResourceOwnership.BORROWED)) {
+                        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+                        boolean exceeded = false;
+                        boolean ended = false;
+                        for (int calls = 0; calls < 100 && !ended && !exceeded; calls++) {
+                            ByteBuffer target = direct ? ByteBuffer.allocateDirect(8) : ByteBuffer.allocate(8);
+                            fillBuffer(target, BUFFER_GUARD);
+                            target.position(2).limit(6).mark();
+                            long inputBefore = decoder.inputBytes();
+                            try {
+                                if (operation.equals("read")) {
+                                    int read = decoder.read(target);
+                                    assertEquals(Math.max(0, read), target.position() - 2, context);
+                                    ended = read < 0;
+                                } else {
+                                    CodecResult result = operation.equals("decode")
+                                            ? decoder.decode(target) : decoder.decodeFrame(target);
+                                    assertEquals(target.position() - 2, result.outputBytes(), context);
+                                    assertEquals(decoder.inputBytes() - inputBefore, result.inputBytes(), context);
+                                    ended = result.status() == CodecResult.Status.END_OF_INPUT;
+                                }
+                            } catch (DecompressionLimitException failure) {
+                                assertEquals(maximum, failure.maximum(), context);
+                                exceeded = true;
+                            }
+                            int end = target.position();
+                            assertEquals(6, target.limit(), context);
+                            target.reset();
+                            assertEquals(2, target.position(), context);
+                            target.limit(end);
+                            decoded.writeBytes(bufferBytes(target));
+                            target.clear();
+                            assertEquals(BUFFER_GUARD, target.get(0), context);
+                            assertEquals(BUFFER_GUARD, target.get(1), context);
+                            for (int index = end; index < target.capacity(); index++) {
+                                assertEquals(BUFFER_GUARD, target.get(index), context);
+                            }
+                            assertEquals(decoded.size(), decoder.outputBytes(), context);
+                            assertUnconsumedInput(decoder, compressed, context);
+                        }
+                        assertEquals(maximum < content.length, exceeded, context);
+                        assertEquals(maximum == content.length, ended, context);
+                        assertArrayEquals(Arrays.copyOf(content, maximum), decoded.toByteArray(), context);
+                        if (exceeded) {
+                            long inputBefore = decoder.inputBytes();
+                            long sourceBefore = decoder.sourceBytes();
+                            ByteBuffer untouched = ByteBuffer.allocate(3).position(1);
+                            assertThrows(DecompressionLimitException.class, () -> decoder.read(untouched), context);
+                            assertThrows(DecompressionLimitException.class, () -> decoder.decode(untouched), context);
+                            assertThrows(DecompressionLimitException.class, () -> decoder.decodeFrame(untouched), context);
+                            assertEquals(1, untouched.position(), context);
+                            assertEquals(inputBefore, decoder.inputBytes(), context);
+                            assertEquals(sourceBefore, decoder.sourceBytes(), context);
+                            assertEquals(maximum, decoder.outputBytes(), context);
+                        } else {
+                            assertEquals(compressed.length, decoder.inputBytes(), context);
+                            assertEquals(-1, decoder.read(ByteBuffer.allocate(1)), context);
+                        }
+                    }
+                    assertTrue(source.isOpen(), context);
+                }
+            }
         }
     }
 
