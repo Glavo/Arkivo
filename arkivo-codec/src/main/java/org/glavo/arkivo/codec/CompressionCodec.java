@@ -28,9 +28,9 @@ import java.util.Objects;
 /// releases codec state but leaves the endpoint open, while `OWNED` also closes it after codec finalization or release.
 /// Setup failure closes an owned endpoint without hiding the primary failure.
 ///
-/// Channel-to-channel convenience operations are blocking, reject zero-progress transports with `IOException`, and
-/// leave both caller channels open. One-shot buffer operations never retain buffers or change their limits. They advance
-/// positions to report partial as well as successful progress.
+/// Channel-to-channel operations are blocking and reject zero-progress transports with `IOException`. They borrow both
+/// channels; interruption may still close an interruptible endpoint. One-shot buffer operations never retain buffers
+/// or change their limits. They advance positions to report partial as well as successful progress.
 ///
 /// The default channel factories preserve [InterruptibleChannel]: their result implements it exactly when the supplied
 /// channel does. Interrupting an active operation or closing its context concurrently is terminal and can close a
@@ -155,7 +155,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates a compressing channel using default options and borrowing the target channel.
     ///
-    /// @param target the channel that receives compressed bytes and remains open after the returned channel closes
+    /// @param target the borrowed channel that receives compressed bytes
     /// @return a new compressing channel
     /// @throws IOException if the encoder cannot be initialized
     default CompressingWritableByteChannel newWritableByteChannel(WritableByteChannel target) throws IOException {
@@ -187,7 +187,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates a decompressing channel using default options and borrowing the source channel.
     ///
-    /// @param source the channel that supplies compressed bytes and remains open after the returned channel closes
+    /// @param source the borrowed channel that supplies compressed bytes
     /// @return a new decompressing channel
     /// @throws IOException if the decoder cannot be initialized
     default DecompressingReadableByteChannel newReadableByteChannel(ReadableByteChannel source) throws IOException {
@@ -222,7 +222,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates a compressing output stream using default options and borrowing the target stream.
     ///
-    /// @param target the stream that receives compressed bytes and remains open after the returned stream closes
+    /// @param target the borrowed stream that receives compressed bytes
     /// @return a new compressing output stream
     /// @throws IOException if the encoder cannot be initialized
     default OutputStream newOutputStream(OutputStream target) throws IOException {
@@ -248,7 +248,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
     /// Creates a decompressing input stream using default options and borrowing the source stream.
     ///
-    /// @param source the stream that supplies compressed bytes and remains open after the returned stream closes
+    /// @param source the borrowed stream that supplies compressed bytes
     /// @return a new decompressing input stream
     /// @throws IOException if the decoder cannot be initialized
     default InputStream newInputStream(InputStream source) throws IOException {
@@ -577,7 +577,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
         /// Creates a seekable compressing channel using default options and borrowing the target.
         ///
-        /// @param target the channel that receives the complete seekable encoding and remains open after closure
+        /// @param target the borrowed channel that receives the complete seekable encoding
         /// @return a new indexed compressing channel
         /// @throws IOException if encoder initialization fails
         default CompressingWritableByteChannel.Framed newSeekableWritableByteChannel(
@@ -592,13 +592,17 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
         /// Reads and validates the terminal random-access index at the source's current logical origin.
         ///
-        /// The source position is restored before this method returns or throws. The returned immutable index does not
-        /// retain `source`; it can be shared safely by channels created for independent copies or views of the same
-        /// encoded byte sequence.
+        /// The source is borrowed. Its position must be restored before a normal return. If parsing fails, implementations
+        /// must attempt to restore the position before propagating the failure. A restoration failure is thrown if there
+        /// is no earlier failure; otherwise it is suppressed on the earlier failure, unless both are the same exception.
+        ///
+        /// The returned immutable index does not retain `source`; it can be shared safely by channels created for
+        /// independent copies or views of the same encoded byte sequence.
         ///
         /// @param source the seekable encoded source from its current origin through its current size
         /// @return the immutable index, or `null` when no recognized terminal index is present
-        /// @throws IOException if source I/O fails or a recognized index is malformed or exceeds a configured limit
+        /// @throws IOException if source I/O or position restoration fails, or a recognized index is malformed or
+        /// exceeds a configured limit
         @Nullable Index readIndex(SeekableByteChannel source) throws IOException;
 
         /// Describes one validated immutable mapping between compressed frames and logical offsets.

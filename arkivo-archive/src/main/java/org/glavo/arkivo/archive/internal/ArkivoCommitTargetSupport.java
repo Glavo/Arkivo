@@ -21,9 +21,6 @@ import java.util.Set;
 /// Provides built-in archive editor commit targets.
 @NotNullByDefault
 public final class ArkivoCommitTargetSupport {
-    /// The commit target that writes directly to the original archive path.
-    private static final ArkivoCommitTarget REPLACE_ORIGINAL = DirectOriginalTarget.INSTANCE;
-
     /// The maximum number of attempts made for an atomic replacement rejected by a transient file lock.
     private static final int ATOMIC_MOVE_ATTEMPTS = 5;
 
@@ -38,7 +35,7 @@ public final class ArkivoCommitTargetSupport {
     ///
     /// @return the shared direct-replacement target
     public static ArkivoCommitTarget replaceOriginal() {
-        return REPLACE_ORIGINAL;
+        return DirectOriginalTarget.INSTANCE;
     }
 
     /// Returns a target that writes to a temporary file and atomically replaces the original archive path on commit.
@@ -149,7 +146,7 @@ public final class ArkivoCommitTargetSupport {
         private final Path path;
 
         /// The path replaced during commit, or `null` when no move is required.
-        private final Path replacementTarget;
+        private final @Nullable Path replacementTarget;
 
         /// Whether this output has been committed or rolled back.
         private boolean finished;
@@ -158,7 +155,7 @@ public final class ArkivoCommitTargetSupport {
         private boolean cleanupComplete;
 
         /// Creates path-backed commit output.
-        private PathCommitOutput(Path path, Path replacementTarget) {
+        private PathCommitOutput(Path path, @Nullable Path replacementTarget) {
             this.path = Objects.requireNonNull(path, "path");
             this.replacementTarget = replacementTarget;
         }
@@ -181,7 +178,7 @@ public final class ArkivoCommitTargetSupport {
         @Override
         public void commit() throws IOException {
             ensureOpen();
-            Path target = replacementTarget;
+            @Nullable Path target = replacementTarget;
             if (target != null) {
                 replaceAtomically(path, target);
             }

@@ -43,6 +43,7 @@ final class SevenZipSingleVolumeTargetTest {
         assertEquals("7z output channel volume is still open", stillOpen.getMessage());
 
         channel.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
+        assertArrayEquals(new byte[]{1, 2, 3}, channel.bytes.toByteArray());
         channel.close();
         output.commit(0L);
         output.close();
@@ -51,6 +52,23 @@ final class SevenZipSingleVolumeTargetTest {
         assertEquals(1, channel.closeAttempts);
         assertThrows(IOException.class, () -> output.openVolume(1L));
         assertThrows(IOException.class, () -> output.commit(0L));
+    }
+
+    /// Verifies direct volume writes remain visible after rollback.
+    @Test
+    void rollbackRetainsWrittenBytes() throws IOException {
+        TrackingWritableByteChannel channel = new TrackingWritableByteChannel();
+        try (ArkivoVolumeOutput output = new SevenZipSingleVolumeTarget(channel).openOutput()) {
+            try (WritableByteChannel volume = output.openVolume(0L)) {
+                volume.write(ByteBuffer.wrap(new byte[]{4, 5, 6}));
+                assertArrayEquals(new byte[]{4, 5, 6}, channel.bytes.toByteArray());
+            }
+            output.rollback();
+            output.rollback();
+            assertArrayEquals(new byte[]{4, 5, 6}, channel.bytes.toByteArray());
+            assertFalse(channel.isOpen());
+            assertThrows(IOException.class, () -> output.commit(0L));
+        }
     }
 
     /// Verifies rollback before volume creation closes the target-owned destination exactly once.

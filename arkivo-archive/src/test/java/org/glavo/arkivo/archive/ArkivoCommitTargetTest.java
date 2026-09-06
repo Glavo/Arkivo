@@ -40,6 +40,7 @@ final class ArkivoCommitTargetTest {
 
         assertEquals(source, output.path());
         write(output, new byte[]{3, 4, 5});
+        assertArrayEquals(new byte[]{3, 4, 5}, Files.readAllBytes(source));
         output.commit();
         assertArrayEquals(new byte[]{3, 4, 5}, Files.readAllBytes(source));
 
@@ -56,6 +57,7 @@ final class ArkivoCommitTargetTest {
         ArkivoCommitOutput output = ArkivoCommitTarget.writeTo(target).openOutput(null);
 
         write(output, new byte[]{6, 7});
+        assertArrayEquals(new byte[]{6, 7}, Files.readAllBytes(target));
         output.rollback();
         output.rollback();
         output.close();
@@ -76,6 +78,7 @@ final class ArkivoCommitTargetTest {
         assertTrue(Files.isDirectory(stagingDirectory));
         assertTrue(Files.exists(stagingPath));
         write(output, new byte[]{8, 9, 10});
+        assertArrayEquals(new byte[]{1}, Files.readAllBytes(source));
         output.commit();
 
         assertArrayEquals(new byte[]{8, 9, 10}, Files.readAllBytes(source));

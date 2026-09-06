@@ -7,12 +7,13 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 
-/// Creates transactional output for a multi-volume archive.
+/// Creates output for a multi-volume archive.
 ///
 /// Passing a target to an Arkivo factory does not transfer ownership of the target itself. The selected format owns the
-/// ArkivoVolumeOutput transaction returned by openOutput() and must commit or roll it back.
+/// [ArkivoVolumeOutput] returned by [#openOutput()] and must commit or roll it back. The target determines whether bytes
+/// are staged until commit or written directly to their destination.
 ///
-/// ArkivoPathVolumeTarget provides reusable staged publication for caller-defined ArkivoVolumePathLayout naming.
+/// [ArkivoPathVolumeTarget] provides staged publication using an [ArkivoVolumePathLayout] to name the output paths.
 @FunctionalInterface
 @NotNullByDefault
 public interface ArkivoVolumeTarget {

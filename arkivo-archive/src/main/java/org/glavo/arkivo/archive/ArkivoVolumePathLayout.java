@@ -19,7 +19,7 @@ import java.util.List;
 public interface ArkivoVolumePathLayout {
     /// Returns the directory in which temporary publication state should be created.
     ///
-    /// @return the staging directory, normally on the same file system as every published volume
+    /// @return the directory for temporary publication state, normally on the same file system as every published volume
     Path outputDirectory();
 
     /// Returns the final path for one zero-based volume index and the zero-based final volume index.
@@ -31,7 +31,7 @@ public interface ArkivoVolumePathLayout {
 
     /// Returns every currently published path owned by this layout, including stale volumes from older output.
     ///
-    /// The returned list must not change and should contain only paths that the transaction may replace or remove.
+    /// The returned list must not change and must contain only paths that the transaction may replace or remove.
     ///
     /// @return immutable paths currently owned by this archive layout
     /// @throws IOException if existing publication state cannot be enumerated

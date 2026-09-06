@@ -367,6 +367,74 @@ public final class ZstdSeekableCodecTest {
         }
     }
 
+    /// Verifies index parsing retains its primary failure when restoring the source position also fails.
+    @Test
+    public void preservesIndexFailureWhenPositionRestorationFails(@TempDir Path directory) throws IOException {
+        Path path = Files.write(directory.resolve("index-failure.zst"), new byte[32]);
+        // The nine-byte footer starts at offset 23; the caller's logical origin is offset 3.
+        for (Throwable failure : new Throwable[]{
+                new IOException("index read failed"),
+                new IllegalStateException("index read failed"),
+                new AssertionError("index read failed"),
+                new ArithmeticException("index arithmetic failed")
+        }) {
+            IOException restorationFailure = new IOException("position restoration failed");
+            try (FailingSeekableChannel source = new FailingSeekableChannel(
+                    Files.newByteChannel(path), 23L, 1, failure
+            )) {
+                source.position(3L);
+                source.positionFailureOffset = 3L;
+                source.positionFailure = restorationFailure;
+
+                Throwable caught = assertThrows(Throwable.class, () -> ZstdCodec.DEFAULT.readIndex(source));
+                if (failure instanceof ArithmeticException) {
+                    assertInstanceOf(IOException.class, caught);
+                    assertSame(failure, caught.getCause());
+                } else {
+                    assertSame(failure, caught);
+                }
+                assertArrayEquals(new Throwable[]{restorationFailure}, caught.getSuppressed());
+                assertTrue(source.isOpen());
+                assertEquals(24L, source.position());
+            }
+        }
+    }
+
+    /// Verifies restoration failure is propagated even when no seek table is recognized.
+    @Test
+    public void reportsIndexPositionRestorationFailure(@TempDir Path directory) throws IOException {
+        Path path = Files.write(directory.resolve("no-index.zst"), new byte[32]);
+        IOException failure = new IOException("position restoration failed");
+        try (FailingSeekableChannel source = new FailingSeekableChannel(
+                Files.newByteChannel(path), -1L, 0, null
+        )) {
+            source.position(3L);
+            source.positionFailureOffset = 3L;
+            source.positionFailure = failure;
+
+            assertSame(failure, assertThrows(IOException.class, () -> ZstdCodec.DEFAULT.readIndex(source)));
+            assertEquals(32L, source.position());
+            assertTrue(source.isOpen());
+        }
+    }
+
+    /// Verifies a shared read and restoration failure is not suppressed onto itself.
+    @Test
+    public void preservesSharedIndexFailure(@TempDir Path directory) throws IOException {
+        Path path = Files.write(directory.resolve("shared-index-failure.zst"), new byte[32]);
+        IOException failure = new IOException("shared index failure");
+        try (FailingSeekableChannel source = new FailingSeekableChannel(
+                Files.newByteChannel(path), 23L, 0, failure
+        )) {
+            source.position(3L);
+            source.positionFailureOffset = 3L;
+            source.positionFailure = failure;
+
+            assertSame(failure, assertThrows(IOException.class, () -> ZstdCodec.DEFAULT.readIndex(source)));
+            assertEquals(0, failure.getSuppressed().length);
+        }
+    }
+
     /// Verifies failed physical frame loads preserve prior output and retry without caching incomplete decoded data.
     @ParameterizedTest
     @ValueSource(ints = {0, 1, 7})
@@ -779,7 +847,7 @@ public final class ZstdSeekableCodecTest {
         return bytes;
     }
 
-    /// Wraps an encoded file and injects one failure after partial progress at a selected frame origin.
+    /// Wraps an encoded file with configurable read and position-restoration failures.
     @NotNullByDefault
     private static final class FailingSeekableChannel implements SeekableByteChannel {
         /// The owned encoded file channel.
@@ -794,11 +862,22 @@ public final class ZstdSeekableCodecTest {
         /// The pending one-shot failure.
         private @Nullable Throwable failure;
 
+        /// The position setter failure, or `null` for normal positioning.
+        private @Nullable IOException positionFailure;
+
+        /// Requested position at which the setter fails.
+        private long positionFailureOffset;
+
         /// Number of physical read calls, including the failed call.
         private int readCount;
 
         /// Creates a failure-injecting view over the supplied encoded source.
-        private FailingSeekableChannel(SeekableByteChannel delegate, long failurePosition, int partialSize, Throwable failure) {
+        private FailingSeekableChannel(
+                SeekableByteChannel delegate,
+                long failurePosition,
+                int partialSize,
+                @Nullable Throwable failure
+        ) {
             this.delegate = delegate;
             this.failurePosition = failurePosition;
             this.partialSize = partialSize;
@@ -842,9 +921,12 @@ public final class ZstdSeekableCodecTest {
             return delegate.position();
         }
 
-        /// Repositions the encoded source for a fresh frame load.
+        /// Repositions the encoded source unless the requested offset triggers an injected failure.
         @Override
         public SeekableByteChannel position(long position) throws IOException {
+            if (positionFailure != null && position == positionFailureOffset) {
+                throw positionFailure;
+            }
             delegate.position(position);
             return this;
         }

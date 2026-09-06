@@ -32,15 +32,15 @@ public interface ArkivoCommitOutput extends AutoCloseable {
     ///
     /// @param options the options used to open the assembly path
     /// @return a new caller-owned channel positioned according to {@code options}
-    /// @throws IOException if the assembly path cannot be opened
+    /// @throws IOException if this output is finished or the assembly path cannot be opened
     SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException;
 
     /// Publishes the assembled archive according to the owning target's commit policy.
     ///
-    /// After success, rollback and close have no effect. If this method throws, the caller may retry commit when the
-    /// target permits it or abandon the output through [#rollback()].
+    /// After success, no further channels can be opened, and rollback and close have no effect. If this method throws,
+    /// the caller may retry commit when the target permits it or abandon the output through [#rollback()].
     ///
-    /// @throws IOException if publication fails or the assembled output cannot be finalized
+    /// @throws IOException if this output is finished, publication fails, or the assembled output cannot be finalized
     void commit() throws IOException;
 
     /// Abandons the assembled archive and removes temporary output when possible.

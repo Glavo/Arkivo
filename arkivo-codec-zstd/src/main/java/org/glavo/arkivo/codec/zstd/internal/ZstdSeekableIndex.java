@@ -60,6 +60,7 @@ public final class ZstdSeekableIndex implements CompressionCodec.Seekable.Index 
         Objects.requireNonNull(source, "source");
 
         long origin = source.position();
+        @Nullable Throwable failure = null;
         try {
             long sourceSize = source.size();
             if (origin < 0L || origin > sourceSize) {
@@ -150,9 +151,23 @@ public final class ZstdSeekableIndex implements CompressionCodec.Seekable.Index 
                     retainedMemorySize
             );
         } catch (ArithmeticException exception) {
-            throw malformed("table size arithmetic overflow", exception);
+            IOException malformed = malformed("table size arithmetic overflow", exception);
+            failure = malformed;
+            throw malformed;
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
         } finally {
-            source.position(origin);
+            try {
+                source.position(origin);
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure == null) {
+                    throw exception;
+                }
+                if (failure != exception) {
+                    failure.addSuppressed(exception);
+                }
+            }
         }
     }
 

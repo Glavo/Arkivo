@@ -11,7 +11,9 @@ import java.io.IOException;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
-/// Adapts one owned writable channel to a single-volume transactional target.
+/// Writes one archive directly to an owned channel through the volume-output interface.
+///
+/// Bytes reach the channel before commit. Rollback closes the channel but cannot undo those writes.
 @NotNullByDefault
 final class SevenZipSingleVolumeTarget implements ArkivoVolumeTarget {
     /// The channel that receives the completed archive.
@@ -43,9 +45,6 @@ final class SevenZipSingleVolumeTarget implements ArkivoVolumeTarget {
 
         /// Whether volume zero has been opened.
         private boolean volumeOpened;
-
-        /// Whether the archive has been committed.
-        private boolean committed;
 
         /// Whether this transaction has finished.
         private boolean finished;
@@ -84,7 +83,6 @@ final class SevenZipSingleVolumeTarget implements ArkivoVolumeTarget {
             if (channel.isOpen()) {
                 throw new IOException("7z output channel volume is still open");
             }
-            committed = true;
             finished = true;
         }
 
@@ -111,9 +109,7 @@ final class SevenZipSingleVolumeTarget implements ArkivoVolumeTarget {
         /// Rolls back this output when it has not committed.
         @Override
         public void close() throws IOException {
-            if (!committed) {
-                rollback();
-            }
+            rollback();
         }
     }
 }

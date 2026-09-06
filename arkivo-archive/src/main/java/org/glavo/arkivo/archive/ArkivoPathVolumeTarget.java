@@ -27,7 +27,12 @@ import java.util.Set;
 /// Publishes path-backed archive volumes through a staged transaction.
 ///
 /// Existing output is moved into temporary backup paths before new volumes are published. Successful commit removes
-/// stale previous volumes; failed publication removes newly published paths and restores every available backup.
+/// stale previous volumes. Moves are performed one path at a time; publication is not atomic across volumes.
+///
+/// If publication fails, rollback attempts to remove new output and restore the backups. Cleanup failures are suppressed
+/// on the publication failure, and [ArkivoVolumeOutput#rollback()] or [ArkivoVolumeOutput#close()] retries unfinished
+/// cleanup. If publication succeeds but deleting staging files fails, commit reports the cleanup failure; the new
+/// volumes remain published, and subsequent cleanup does not restore the old archive.
 @NotNullByDefault
 public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
     /// The prefix used for temporary output directories.

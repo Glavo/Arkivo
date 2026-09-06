@@ -8,14 +8,15 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.nio.channels.WritableByteChannel;
 
-/// Receives one assembled multi-volume archive before publishing or abandoning it.
+/// Receives the volumes of one archive and completes or abandons its output.
 ///
 /// Volume channels are opened once in ascending zero-based index order. The caller owns each returned channel and closes
 /// it before opening the next volume or finishing the output. The output is stateful and not safe for concurrent use.
 ///
-/// A successful [#commit(long)] is the only operation that publishes the assembled archive. Until then, callers must use
-/// [#rollback()] or [#close()] to abandon staging state. Neither transaction completion method closes a volume channel
-/// still held by the caller.
+/// [#commit(long)] completes the output according to the target's publication policy. A target may stage volumes until
+/// commit or write directly to their destination. Directly written bytes may be visible before commit and may not be
+/// recoverable by [#rollback()]. This interface does not guarantee atomic publication of multiple volumes.
+/// Callers must close every opened volume channel before committing, rolling back, or closing the output.
 @NotNullByDefault
 public interface ArkivoVolumeOutput extends AutoCloseable {
     /// Opens the writable channel for the next zero-based volume index.
@@ -24,22 +25,26 @@ public interface ArkivoVolumeOutput extends AutoCloseable {
     /// returned channel before requesting another volume or completing the transaction.
     ///
     /// @param index the next zero-based volume index
-    /// @return a new caller-owned channel for the unpublished physical volume
+    /// @return a new caller-owned channel for the physical volume
     /// @throws IOException if the output is finished or staging storage cannot be opened
     /// @throws IllegalArgumentException if {@code index} is not the next sequential volume index
     WritableByteChannel openVolume(long index) throws IOException;
 
-    /// Publishes all opened volumes and identifies the last volume in the logical archive.
+    /// Completes the archive output and identifies its last volume.
     ///
     /// `finalVolumeIndex` must identify the last successfully opened volume. On success no further volumes can be opened
     /// and closing the output has no effect. If publication fails, call [#rollback()] or [#close()] to retry cleanup.
+    /// A failure does not imply that no output was published; the target defines whether earlier changes can be undone.
     ///
     /// @param finalVolumeIndex the zero-based index of the last opened volume
-    /// @throws IOException if staged volumes cannot be published or cleanup after failed publication is incomplete
+    /// @throws IOException if this output is finished, volumes cannot be published, or cleanup is incomplete
     /// @throws IllegalArgumentException if the index does not identify the last opened volume
     void commit(long finalVolumeIndex) throws IOException;
 
-    /// Abandons all opened volumes and removes unpublished output when possible.
+    /// Abandons the output and releases temporary storage when possible.
+    ///
+    /// This operation does not guarantee restoration of the destination. Direct-write targets cannot generally undo
+    /// bytes already written, and staged targets may fail while restoring previously published output.
     ///
     /// Repeated calls after cleanup completes or a successful commit have no effect. A caller may retry this method when
     /// an earlier call reports incomplete cleanup.

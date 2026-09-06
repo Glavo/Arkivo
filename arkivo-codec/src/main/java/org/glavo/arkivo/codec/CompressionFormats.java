@@ -212,7 +212,7 @@ public final class CompressionFormats {
     /// Creates a compressing channel for the named format using default options and borrowing the target.
     ///
     /// @param formatName the stable name or alias of an installed format
-    /// @param target     the channel that receives compressed bytes and remains open after the returned channel closes
+    /// @param target     the borrowed channel that receives compressed bytes
     /// @return a new compressing channel using the format's default codec
     /// @throws IOException if the encoder cannot be initialized
     /// @throws IllegalArgumentException if `formatName` does not name an installed format
@@ -262,7 +262,7 @@ public final class CompressionFormats {
     /// Creates a decompressing channel for the named format while borrowing the source.
     ///
     /// @param formatName the stable name or alias of an installed format
-    /// @param source     the channel supplying compressed bytes and remaining open after the returned channel closes
+    /// @param source     the borrowed channel supplying compressed bytes
     /// @return a new decompressing channel using the format's default codec
     /// @throws IOException if the decoder cannot be initialized
     /// @throws IllegalArgumentException if `formatName` does not name an installed format
@@ -302,9 +302,9 @@ public final class CompressionFormats {
         }
     }
 
-    /// Detects a signed stream and creates a decompressing channel while borrowing the source.
+    /// Detects the compression format and creates a decompressing channel that borrows the source.
     ///
-    /// @param source the channel supplying signed compressed bytes and remaining open after the returned channel closes
+    /// @param source the borrowed channel supplying compressed bytes with a recognizable signature
     /// @return a new decompressing channel using the detected format's default codec
     /// @throws IOException if probing fails, the format is unrecognized, or the decoder cannot be initialized
     public static DecompressingReadableByteChannel newReadableByteChannel(
@@ -313,13 +313,13 @@ public final class CompressionFormats {
         return newReadableByteChannel(source, ResourceOwnership.BORROWED);
     }
 
-    /// Detects a signed stream and creates a decompressing channel with explicit source ownership.
+    /// Detects the compression format and creates a decompressing channel with explicit source ownership.
     ///
     /// The decoder receives every byte consumed by detection. Formats without a reliable signature must be opened by
     /// name. Closing the decoder closes its replay channel; that channel applies the requested ownership to the original
     /// source.
     ///
-    /// @param source    the channel supplying signed compressed bytes
+    /// @param source    the channel supplying compressed bytes with a recognizable signature
     /// @param ownership whether closing the returned channel also closes `source`
     /// @return a new decompressing channel using the detected format's default codec
     /// @throws IOException if probing fails, the format is unrecognized, decoder setup fails, or ownership cleanup fails
@@ -401,9 +401,9 @@ public final class CompressionFormats {
         return requireDefaultCodec(formatName).decompress(source, target);
     }
 
-    /// Detects a signed stream and decompresses all bytes while retaining both channels.
+    /// Detects the compression format and decompresses all bytes while borrowing both channels.
     ///
-    /// @param source the channel supplying signed compressed bytes
+    /// @param source the channel supplying compressed bytes with a recognizable signature
     /// @param target the channel receiving decoded bytes
     /// @return the compressed input and decoded output byte counts
     /// @throws IOException if probing fails, the format is unrecognized, or channel I/O or decoding fails
@@ -422,7 +422,7 @@ public final class CompressionFormats {
     /// Creates a compressing output stream for the named format while retaining the target stream.
     ///
     /// @param formatName the stable name or alias of an installed format
-    /// @param target     the stream receiving compressed bytes and remaining open after the returned stream closes
+    /// @param target     the borrowed stream receiving compressed bytes
     /// @return a new compressing stream using the format's default codec
     /// @throws IOException if the encoder cannot be initialized
     /// @throws IllegalArgumentException if `formatName` does not name an installed format
@@ -472,7 +472,7 @@ public final class CompressionFormats {
     /// Creates a decompressing input stream for the named format while borrowing the source.
     ///
     /// @param formatName the stable name or alias of an installed format
-    /// @param source     the stream supplying compressed bytes and remaining open after the returned stream closes
+    /// @param source     the borrowed stream supplying compressed bytes
     /// @return a new decompressing stream using the format's default codec
     /// @throws IOException if the decoder cannot be initialized
     /// @throws IllegalArgumentException if `formatName` does not name an installed format
@@ -505,18 +505,18 @@ public final class CompressionFormats {
         );
     }
 
-    /// Detects a signed stream and creates a decompressing input stream while borrowing the source.
+    /// Detects the compression format and creates a decompressing input stream that borrows the source.
     ///
-    /// @param source the stream supplying signed compressed bytes and remaining open after the returned stream closes
+    /// @param source the borrowed stream supplying compressed bytes with a recognizable signature
     /// @return a new decompressing stream using the detected format's default codec
     /// @throws IOException if probing fails, the format is unrecognized, or the decoder cannot be initialized
     public static InputStream newInputStream(InputStream source) throws IOException {
         return newInputStream(source, ResourceOwnership.BORROWED);
     }
 
-    /// Detects a signed stream and creates a decompressing input stream with explicit source ownership.
+    /// Detects the compression format and creates a decompressing input stream with explicit source ownership.
     ///
-    /// @param source    the stream supplying signed compressed bytes
+    /// @param source    the stream supplying compressed bytes with a recognizable signature
     /// @param ownership whether closing the returned stream also closes `source`
     /// @return a new decompressing stream using the detected format's default codec
     /// @throws IOException if probing fails, the format is unrecognized, decoder setup fails, or ownership cleanup fails

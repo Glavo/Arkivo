@@ -70,7 +70,7 @@ final class CodecTransferSupport {
         }
     }
 
-    /// Transfers every decoded byte without closing the decoder or target channel.
+    /// Transfers every decoded byte without taking ownership of the decoder or target channel.
     ///
     /// @param decoder the open borrowed decoder channel
     /// @param target  the borrowed channel receiving every decoded byte
