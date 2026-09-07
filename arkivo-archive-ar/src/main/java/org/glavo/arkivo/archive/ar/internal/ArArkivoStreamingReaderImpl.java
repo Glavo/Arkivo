@@ -8,7 +8,7 @@ import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;

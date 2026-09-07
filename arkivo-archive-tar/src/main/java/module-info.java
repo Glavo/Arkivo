@@ -7,6 +7,7 @@
 /// sequentially. Installed Arkivo codecs can wrap the TAR byte stream in an outer compression format; indexed codecs
 /// permit lazy random access to contiguous entry bodies without expanding the complete archive.
 module org.glavo.arkivo.archive.tar {
+    requires org.glavo.arkivo.base;
     requires transitive org.glavo.arkivo.archive;
     requires org.glavo.arkivo.archive.codec;
     requires transitive org.glavo.arkivo.codec;

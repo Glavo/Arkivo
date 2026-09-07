@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;

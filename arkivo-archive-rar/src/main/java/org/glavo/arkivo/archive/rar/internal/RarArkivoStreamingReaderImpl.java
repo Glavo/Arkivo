@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.rar.internal;
 
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;

@@ -6,7 +6,7 @@ package org.glavo.arkivo.archive;
 import org.glavo.arkivo.archive.internal.ArkivoStreamingSource;
 import org.glavo.arkivo.archive.internal.ArchiveSizeLimitChannel;
 import org.glavo.arkivo.archive.internal.PrefixReplayReadableByteChannel;
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.internal.TemporaryArchiveSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;

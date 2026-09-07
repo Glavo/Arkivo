@@ -509,12 +509,16 @@ val verifyModuleDescriptors by tasks.registering {
             ),
             "org.glavo.arkivo.base" to mapOf(
                 "org.glavo.arkivo.internal" to setOf(
+                    archiveModule,
+                    "org.glavo.arkivo.archive.ar",
                     "org.glavo.arkivo.archive.cpio",
                     "org.glavo.arkivo.archive.dmg",
                     "org.glavo.arkivo.archive.rar",
                     "org.glavo.arkivo.archive.sevenzip",
+                    "org.glavo.arkivo.archive.tar",
                     "org.glavo.arkivo.archive.zip",
                     "org.glavo.arkivo.checksum.xxhash",
+                    codecModule,
                     "org.glavo.arkivo.codec.lz4",
                     "org.glavo.arkivo.codec.lzip",
                     "org.glavo.arkivo.codec.xz",

@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.archive.internal;
+package org.glavo.arkivo.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -13,8 +14,12 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -24,9 +29,13 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies progress-safe and close-retryable archive stream/channel adaptation.
+/// Verifies progress-safe and close-retryable stream/channel adaptation.
 @NotNullByDefault
 final class StreamChannelAdaptersTest {
+    /// Directory for the seekable-channel fixture.
+    @TempDir
+    Path temporaryDirectory;
+
     /// Verifies heap and direct targets receive input bytes with exact position advancement.
     @Test
     void adaptsInputStreamsToChannels() throws IOException {
@@ -161,7 +170,8 @@ final class StreamChannelAdaptersTest {
     /// Verifies skip uses channel positioning when available and bounded reads otherwise.
     @Test
     void skipsSeekableAndStreamingSources() throws IOException {
-        ReadOnlyByteArrayChannel seekableSource = new ReadOnlyByteArrayChannel(new byte[]{1, 2, 3, 4});
+        Path path = Files.write(temporaryDirectory.resolve("source.bin"), new byte[]{1, 2, 3, 4});
+        FileChannel seekableSource = FileChannel.open(path, StandardOpenOption.READ);
         try (InputStream input = StreamChannelAdapters.inputStream(seekableSource)) {
             assertEquals(0L, input.skip(0L));
             assertEquals(0L, input.skip(-1L));

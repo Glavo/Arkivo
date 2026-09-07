@@ -178,7 +178,17 @@ final class CodecStreamContractTest {
                     Executable bulkRead = () -> {
                         switch (operation) {
                             case "skip":
-                                assertEquals(CONTENT.length - prefixSize, decoder.skip(Long.MAX_VALUE), context);
+                                long skipped = 0L;
+                                for (int calls = 0; calls <= CONTENT.length; calls++) {
+                                    long count = decoder.skip(Long.MAX_VALUE);
+                                    if (count == 0L) {
+                                        break;
+                                    }
+                                    assertTrue(count > 0L, context);
+                                    skipped += count;
+                                    assertTrue(skipped <= CONTENT.length - prefixSize, context);
+                                }
+                                assertEquals(CONTENT.length - prefixSize, skipped, context);
                                 break;
                             case "skipNBytes":
                                 decoder.skipNBytes(Long.MAX_VALUE);

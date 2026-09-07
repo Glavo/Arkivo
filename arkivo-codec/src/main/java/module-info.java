@@ -9,6 +9,7 @@
 /// [org.glavo.arkivo.codec.CompressionFormat], or an immutable [org.glavo.arkivo.codec.CompressionCodec].
 @SuppressWarnings("module")
 module org.glavo.arkivo.codec {
+    requires org.glavo.arkivo.base;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.codec;

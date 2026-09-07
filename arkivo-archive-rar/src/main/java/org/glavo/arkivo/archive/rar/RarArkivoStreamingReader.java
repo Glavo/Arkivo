@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.internal.RarArkivoStreamingReaderImpl;

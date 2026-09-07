@@ -347,7 +347,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-checksum:compile:$publicationVersion"
     ),
-    "arkivo-archive" to emptySet(),
+    "arkivo-archive" to setOf("org.glavo:arkivo-base:runtime:$publicationVersion"),
     "arkivo-archive-codec" to setOf(
         "org.glavo:arkivo-archive:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:runtime:$publicationVersion"
@@ -364,6 +364,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive-zip:compile:$publicationVersion"
     ),
     "arkivo-archive-ar" to setOf(
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-archive:compile:$publicationVersion",
         "org.glavo:arkivo-archive-codec:runtime:$publicationVersion"
     ),
@@ -388,6 +389,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec-ppmd:runtime:$publicationVersion"
     ),
     "arkivo-archive-tar" to setOf(
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-archive:compile:$publicationVersion",
         "org.glavo:arkivo-archive-codec:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:compile:$publicationVersion"
@@ -409,7 +411,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec-ppmd:runtime:$publicationVersion",
         "org.glavo:arkivo-codec-xz:runtime:$publicationVersion"
     ),
-    "arkivo-codec" to emptySet(),
+    "arkivo-codec" to setOf("org.glavo:arkivo-base:runtime:$publicationVersion"),
     "arkivo-codec-all" to setOf(
         "org.glavo:arkivo-codec:compile:$publicationVersion",
         "org.glavo:arkivo-codec-bzip2:compile:$publicationVersion",

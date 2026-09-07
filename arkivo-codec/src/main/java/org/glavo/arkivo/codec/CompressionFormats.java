@@ -4,7 +4,8 @@
 package org.glavo.arkivo.codec;
 
 import org.glavo.arkivo.codec.internal.PrefixReplayReadableByteChannel;
-import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
+import org.glavo.arkivo.codec.internal.CompressionOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -457,7 +458,7 @@ public final class CompressionFormats {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
-        return StreamChannelAdapters.outputStream(
+        return new CompressionOutputStream(
                 newWritableByteChannel(
                         formatName,
                         StreamChannelAdapters.writableChannel(target),

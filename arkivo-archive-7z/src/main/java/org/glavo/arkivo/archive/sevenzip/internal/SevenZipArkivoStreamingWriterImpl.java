@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;

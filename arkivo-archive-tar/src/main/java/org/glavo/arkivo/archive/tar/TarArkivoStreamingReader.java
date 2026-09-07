@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoStreamingReaderImpl;
 import org.glavo.arkivo.archive.tar.internal.TarCompressionStreams;
 import org.glavo.arkivo.codec.ResourceOwnership;

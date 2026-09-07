@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.archive.internal;
+package org.glavo.arkivo.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -16,7 +16,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
-/// Creates progress-safe, close-retryable adapters for archive streaming boundaries.
+/// Creates progress-safe, close-retryable adapters between streams and channels.
 @NotNullByDefault
 public final class StreamChannelAdapters {
     /// The largest temporary transfer used for a direct buffer.

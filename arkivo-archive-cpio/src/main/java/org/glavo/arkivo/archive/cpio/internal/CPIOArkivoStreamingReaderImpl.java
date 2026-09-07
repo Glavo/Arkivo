@@ -11,7 +11,7 @@ import org.glavo.arkivo.archive.cpio.CPIOBinaryByteOrder;
 import org.glavo.arkivo.archive.cpio.CPIODialect;
 import org.glavo.arkivo.archive.cpio.CPIOMetadataCharsetDetector;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;

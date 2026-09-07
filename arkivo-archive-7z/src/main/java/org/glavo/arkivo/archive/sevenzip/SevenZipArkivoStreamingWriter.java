@@ -5,7 +5,7 @@ package org.glavo.arkivo.archive.sevenzip;
 
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoStreamingWriterImpl;
 import org.jetbrains.annotations.NotNullByDefault;

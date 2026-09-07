@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingWriterImpl;

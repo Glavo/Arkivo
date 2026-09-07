@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.ar;
 
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.internal.ArArkivoStreamingReaderImpl;
 import org.jetbrains.annotations.NotNullByDefault;

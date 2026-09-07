@@ -10,12 +10,16 @@ module org.glavo.arkivo.base {
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.internal to
+            org.glavo.arkivo.archive,
+            org.glavo.arkivo.archive.ar,
             org.glavo.arkivo.archive.cpio,
             org.glavo.arkivo.archive.dmg,
             org.glavo.arkivo.archive.rar,
             org.glavo.arkivo.archive.sevenzip,
+            org.glavo.arkivo.archive.tar,
             org.glavo.arkivo.archive.zip,
             org.glavo.arkivo.checksum.xxhash,
+            org.glavo.arkivo.codec,
             org.glavo.arkivo.codec.lz4,
             org.glavo.arkivo.codec.lzip,
             org.glavo.arkivo.codec.xz,

@@ -7,6 +7,7 @@
 /// sequentially. GNU and BSD long-name representations are accepted when reading; output uses fixed header names or
 /// BSD extended names as required.
 module org.glavo.arkivo.archive.ar {
+    requires org.glavo.arkivo.base;
     requires transitive org.glavo.arkivo.archive;
     requires org.glavo.arkivo.archive.codec;
     requires static org.jetbrains.annotations;

@@ -3,7 +3,8 @@
 
 package org.glavo.arkivo.codec;
 
-import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
+import org.glavo.arkivo.codec.internal.CompressionOutputStream;
 import org.glavo.arkivo.codec.internal.CodecChannelAdapters;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -213,7 +214,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
-        return StreamChannelAdapters.outputStream(
+        return new CompressionOutputStream(
                 newWritableByteChannel(StreamChannelAdapters.writableChannel(target), options, ownership),
                 target,
                 ownership

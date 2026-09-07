@@ -7,6 +7,7 @@
 /// runtime image. Applications may instead select an explicit format capability.
 @SuppressWarnings("module")
 module org.glavo.arkivo.archive {
+    requires org.glavo.arkivo.base;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.archive;
