@@ -17,6 +17,7 @@ import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
+import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
@@ -162,20 +163,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// The callback invoked after this file system closes, or `null` when no callback is needed.
     private final @Nullable Runnable closeAction;
 
-    /// The storage used for transient decoded seekable entry bodies.
-    private final ArkivoEditStorage decodedEntryStorage;
-
-    /// The lock protecting decoded entry content and storage lifecycle state.
-    private final Object decodedEntryLifecycleLock = new Object();
-
-    /// Decoded entry bodies still owned by open seekable channels.
-    private final Set<ArkivoStoredContent> activeDecodedEntryContents = StoredContentSupport.newIdentitySet();
-
-    /// Decoded entry bodies whose cleanup failed and must be retried.
-    private final Set<ArkivoStoredContent> retiredDecodedEntryContents = StoredContentSupport.newIdentitySet();
-
-    /// Whether the decoded entry storage has been closed.
-    private boolean decodedEntryStorageClosed;
+    /// Owns decoded snapshots and defers storage cleanup until their channels close.
+    private final StoredContentPool decodedEntryStorage;
 
     /// The root path for this ZIP file system.
     private final ZipArkivoPath rootPath;
@@ -252,12 +241,12 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         this.config = Objects.requireNonNull(config, "config");
         this.closeAction = closeAction;
         @Nullable ArkivoEditStorageFactory storageFactory = config.editStorageFactory();
-        this.decodedEntryStorage = storageFactory != null
+        this.decodedEntryStorage = new StoredContentPool(storageFactory != null
                 ? storageFactory.open()
                 : ArkivoEditStorage.hybrid(
                 DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD,
                 defaultDecodedEntryStorageDirectory(archivePath)
-        );
+        ));
         this.rootPath = ZipArkivoPath.root(this);
         this.indexLock = ZipLocks.create(config.threadSafety());
     }
@@ -322,7 +311,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     @Override
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
-            if (!open && volumesClosed && closeActionCompleted && decodedEntryStorageClosed) {
+            if (!open && volumesClosed && closeActionCompleted && decodedEntryStorage.isClosed()) {
                 return;
             }
             open = false;
@@ -354,7 +343,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     }
                 }
             }
-            failure = finishDecodedEntryStorage(failure);
+            try {
+                decodedEntryStorage.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
+            }
             if (failure instanceof IOException exception) {
                 throw exception;
             }
@@ -1430,14 +1423,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         return checkedZipOffsetAdd(dataOffset, extraLength, "local file data offset");
     }
 
-    /// Decodes a ZIP entry into staging storage and opens a seekable read-only channel over it.
+    /// Decodes a ZIP entry into staging storage and transfers its lifetime to a read-only channel.
     private SeekableByteChannel newDecodedEntryByteChannel(
             Path path,
             ZipEntryRecord entry,
             long dataOffset
     ) throws IOException {
         ArkivoStoredContent content = decodedEntryStorage.createContent(path.toString(), entry.uncompressedSize);
-        @Nullable SeekableByteChannel channel = null;
         try {
             try (InputStream input = entryInputStream(path, entry, dataOffset);
                  SeekableByteChannel output = content.openChannel(Set.of(
@@ -1446,24 +1438,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                  ))) {
                 StoredContentSupport.copyInput(input, output);
             }
-            channel = content.openChannel(Set.of(StandardOpenOption.READ));
-            synchronized (decodedEntryLifecycleLock) {
-                activeDecodedEntryContents.add(content);
-            }
-            SeekableByteChannel result = new DecodedEntryByteChannel(content, channel);
-            channel = null;
-            return result;
+            return decodedEntryStorage.openReadChannel(content);
         } catch (IOException | RuntimeException | Error exception) {
-            if (channel != null) {
-                try {
-                    channel.close();
-                } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    if (exception != cleanupFailure) {
-                        exception.addSuppressed(cleanupFailure);
-                    }
-                }
+            try {
+                content.close();
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                mergeFailure(exception, cleanupFailure);
             }
-            retireDecodedEntryContent(content, exception);
             throw exception;
         }
     }
@@ -1476,67 +1457,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             return parent != null ? parent : absolutePath;
         }
         return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
-    }
-
-    /// Releases a decoded body and finishes deferred storage cleanup after file system close.
-    private @Nullable Throwable releaseDecodedEntryContent(
-            ArkivoStoredContent content,
-            @Nullable Throwable failure
-    ) {
-        boolean retired = false;
-        try {
-            content.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            failure = mergeFailure(failure, exception);
-            retired = true;
-        }
-        synchronized (decodedEntryLifecycleLock) {
-            activeDecodedEntryContents.remove(content);
-            if (retired) {
-                retiredDecodedEntryContents.add(content);
-            }
-        }
-        return open ? failure : finishDecodedEntryStorage(failure);
-    }
-
-    /// Releases content allocated during a failed channel open and records cleanup failures.
-    private void retireDecodedEntryContent(ArkivoStoredContent content, Throwable failure) {
-        try {
-            content.close();
-        } catch (IOException | RuntimeException | Error cleanupFailure) {
-            synchronized (decodedEntryLifecycleLock) {
-                retiredDecodedEntryContents.add(content);
-            }
-            if (failure != cleanupFailure) {
-                failure.addSuppressed(cleanupFailure);
-            }
-        }
-    }
-
-    /// Retries retired content cleanup and closes storage once no decoded channels remain.
-    private @Nullable Throwable finishDecodedEntryStorage(@Nullable Throwable failure) {
-        synchronized (decodedEntryLifecycleLock) {
-            Iterator<ArkivoStoredContent> iterator = retiredDecodedEntryContents.iterator();
-            while (iterator.hasNext()) {
-                try {
-                    iterator.next().close();
-                    iterator.remove();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = mergeFailure(failure, exception);
-                }
-            }
-            if (!decodedEntryStorageClosed
-                    && activeDecodedEntryContents.isEmpty()
-                    && retiredDecodedEntryContents.isEmpty()) {
-                try {
-                    decodedEntryStorage.close();
-                    decodedEntryStorageClosed = true;
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = mergeFailure(failure, exception);
-                }
-            }
-        }
-        return failure;
     }
 
     /// Opens a ZIP entry data stream.
@@ -3670,101 +3590,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         private void ensureOpen() throws IOException {
             if (closed) {
                 throw new IOException("ZIP entry input stream is closed");
-            }
-        }
-    }
-
-
-    /// Exposes one transient decoded entry body as a seekable read-only channel.
-    @NotNullByDefault
-    private final class DecodedEntryByteChannel implements SeekableByteChannel {
-        /// The transient stored body released when this channel closes.
-        private final ArkivoStoredContent content;
-
-        /// The read channel opened over the transient stored body.
-        private final SeekableByteChannel channel;
-
-        /// Whether this wrapper remains open.
-        private boolean channelOpen = true;
-
-        /// Creates a read-only channel over transient decoded content.
-        private DecodedEntryByteChannel(ArkivoStoredContent content, SeekableByteChannel channel) {
-            this.content = Objects.requireNonNull(content, "content");
-            this.channel = Objects.requireNonNull(channel, "channel");
-        }
-
-        /// Reads decoded entry bytes.
-        @Override
-        public int read(ByteBuffer destination) throws IOException {
-            Objects.requireNonNull(destination, "destination");
-            ensureChannelOpen();
-            return channel.read(destination);
-        }
-
-        /// Rejects writes to a read-only decoded entry channel.
-        @Override
-        public int write(ByteBuffer source) throws IOException {
-            Objects.requireNonNull(source, "source");
-            ensureChannelOpen();
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns the current decoded entry position.
-        @Override
-        public long position() throws IOException {
-            ensureChannelOpen();
-            return channel.position();
-        }
-
-        /// Changes the current decoded entry position.
-        @Override
-        public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureChannelOpen();
-            channel.position(newPosition);
-            return this;
-        }
-
-        /// Returns the decoded entry size.
-        @Override
-        public long size() throws IOException {
-            ensureChannelOpen();
-            return channel.size();
-        }
-
-        /// Rejects truncation of a read-only decoded entry channel.
-        @Override
-        public SeekableByteChannel truncate(long size) throws IOException {
-            ensureChannelOpen();
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns whether this wrapper and its stored-content channel remain open.
-        @Override
-        public boolean isOpen() {
-            return channelOpen && channel.isOpen();
-        }
-
-        /// Closes the read channel and releases its transient decoded body.
-        @Override
-        public void close() throws IOException {
-            if (!channelOpen) {
-                return;
-            }
-            channelOpen = false;
-            @Nullable Throwable failure = null;
-            try {
-                channel.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
-            }
-            failure = releaseDecodedEntryContent(content, failure);
-            throwFailure(failure);
-        }
-
-        /// Requires this wrapper to remain open.
-        private void ensureChannelOpen() throws ClosedChannelException {
-            if (!channelOpen) {
-                throw new ClosedChannelException();
             }
         }
     }

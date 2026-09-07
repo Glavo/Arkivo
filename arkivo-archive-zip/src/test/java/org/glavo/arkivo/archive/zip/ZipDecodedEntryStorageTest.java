@@ -29,6 +29,45 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies storage and lifecycle behavior for decoded seekable ZIP entry channels.
 @NotNullByDefault
 final class ZipDecodedEntryStorageTest {
+    /// Verifies failed read-channel cleanup is retried before decoded content or its storage is released.
+    @Test
+    void retriesFailedDecodedChannelClose(@TempDir Path directory) throws IOException {
+        byte[] bytes = "retry channel cleanup".repeat(64).getBytes(StandardCharsets.UTF_8);
+        Path archive = directory.resolve("channel-close.zip");
+        createArchive(archive, bytes, new byte[]{1, 2, 3});
+        TrackingStorage storage = new TrackingStorage(directory.resolve("channel-staging"), false);
+        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, readOptions(storage));
+        SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/compressed.bin"));
+        storage.failNextChannelClose = true;
+        assertThrows(IOException.class, channel::close);
+        assertEquals(0, storage.contentCloseAttempts);
+        assertEquals(0, storage.storageCloseCount);
+        fileSystem.close();
+        assertEquals(3, storage.channelCloseAttempts);
+        assertEquals(1, storage.contentCloseCount);
+        assertEquals(1, storage.storageCloseCount);
+        channel.close();
+        fileSystem.close();
+        assertEquals(3, storage.channelCloseAttempts);
+    }
+
+    /// Verifies a failed staging-writer close does not orphan its channel during decoded-entry setup.
+    @Test
+    void cleansUpFailedStagingWriterClose(@TempDir Path directory) throws IOException {
+        byte[] bytes = "retry staging writer".repeat(64).getBytes(StandardCharsets.UTF_8);
+        Path archive = directory.resolve("writer-close.zip");
+        createArchive(archive, bytes, new byte[]{1, 2, 3});
+        TrackingStorage storage = new TrackingStorage(directory.resolve("writer-staging"), false);
+        storage.failNextChannelClose = true;
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, readOptions(storage))) {
+            assertThrows(IOException.class, () -> Files.newByteChannel(fileSystem.getPath("/compressed.bin")));
+            assertEquals(2, storage.channelCloseAttempts);
+            assertEquals(1, storage.contentCloseCount);
+            assertEquals(0, storage.storageCloseCount);
+        }
+        assertEquals(1, storage.storageCloseCount);
+    }
+
     /// Verifies compressed channels use configured storage while direct stored channels bypass it.
     @Test
     void stagesCompressedChannelsAndDefersStorageClose(@TempDir Path directory) throws IOException {
@@ -134,6 +173,12 @@ final class ZipDecodedEntryStorageTest {
         /// The number of successful content closes.
         private int contentCloseCount;
 
+        /// Whether the next backing channel close fails without releasing its resources.
+        private boolean failNextChannelClose;
+
+        /// The number of backing-channel close attempts.
+        private int channelCloseAttempts;
+
         /// The number of storage close calls.
         private int storageCloseCount;
 
@@ -177,7 +222,7 @@ final class ZipDecodedEntryStorageTest {
         /// Opens a delegated channel.
         @Override
         public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
-            return delegate.openChannel(options);
+            return new TrackingChannel(delegate.openChannel(options), storage);
         }
 
         /// Returns the delegated content size.
@@ -195,6 +240,77 @@ final class ZipDecodedEntryStorageTest {
             }
             delegate.close();
             storage.contentCloseCount++;
+        }
+    }
+
+    /// Keeps a backing channel open on an injected close failure.
+    @NotNullByDefault
+    private static final class TrackingChannel implements SeekableByteChannel {
+        /// The independently owned backing channel.
+        private final SeekableByteChannel delegate;
+
+        /// The storage receiving lifecycle counters and failure requests.
+        private final TrackingStorage storage;
+
+        /// Wraps one channel from the configured storage.
+        private TrackingChannel(SeekableByteChannel delegate, TrackingStorage storage) {
+            this.delegate = delegate;
+            this.storage = storage;
+        }
+
+        /// Reads from the delegate.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            return delegate.read(target);
+        }
+
+        /// Writes to the delegate.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            return delegate.write(source);
+        }
+
+        /// Returns the delegate position.
+        @Override
+        public long position() throws IOException {
+            return delegate.position();
+        }
+
+        /// Changes the delegate position.
+        @Override
+        public SeekableByteChannel position(long position) throws IOException {
+            delegate.position(position);
+            return this;
+        }
+
+        /// Returns the delegate size.
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        /// Truncates the delegate.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            delegate.truncate(size);
+            return this;
+        }
+
+        /// Returns whether the delegate remains open.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Fails once when armed, otherwise releases the backing channel.
+        @Override
+        public void close() throws IOException {
+            storage.channelCloseAttempts++;
+            if (storage.failNextChannelClose) {
+                storage.failNextChannelClose = false;
+                throw new IOException("Injected channel close failure");
+            }
+            delegate.close();
         }
     }
 }

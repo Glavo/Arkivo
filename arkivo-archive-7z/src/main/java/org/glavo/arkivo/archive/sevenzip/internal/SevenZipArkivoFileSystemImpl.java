@@ -23,6 +23,7 @@ import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
 import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
+import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
@@ -42,7 +43,6 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
-import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -80,7 +80,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -176,16 +175,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     private final Map<String, ArkivoStoredContent> stagedContents;
 
     /// The storage that owns decoded update bodies and transient random-read snapshots, or `null` in write-only mode.
-    private final @Nullable ArkivoEditStorage editStorage;
-
-    /// The lock protecting transient stored content and storage lifecycle state.
-    private final Object editStorageLifecycleLock = new Object();
-
-    /// Transient decoded bodies still owned by open seekable channels.
-    private final Set<ArkivoStoredContent> activeStoredContents = StoredContentSupport.newIdentitySet();
-
-    /// Stored bodies whose first cleanup attempt failed and must be retried while closing.
-    private final Set<ArkivoStoredContent> retiredStoredContents;
+    private final @Nullable StoredContentPool editStorage;
 
     /// Entry-specific output settings changed by update mode.
     private final Map<String, UpdateOutputSettings> updateOutputSettings;
@@ -240,9 +230,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Whether split output publication or rollback has completed.
     private boolean splitOutputClosed;
-
-    /// Whether decoded-entry and update staging storage has closed successfully.
-    private boolean editStorageClosed;
 
     /// Whether the close action has completed.
     private boolean closeActionCompleted;
@@ -448,10 +435,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.entries = new LinkedHashMap<>(parsedEntries);
             this.children = new LinkedHashMap<>(parsedChildren);
             this.stagedContents = new LinkedHashMap<>();
-            this.editStorage = openedEditStorage;
-            this.retiredStoredContents = StoredContentSupport.newIdentitySet();
+            this.editStorage = new StoredContentPool(openedEditStorage);
             this.updateOutputSettings = new LinkedHashMap<>();
-            this.editStorageClosed = false;
             this.dirty = newArchive;
         } else if (config.archiveWritable()) {
             validateWriteFeatures();
@@ -488,10 +473,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.children = Map.of("/", List.of());
             this.stagedContents = Map.of();
             this.editStorage = null;
-            this.retiredStoredContents = Set.of();
             this.updateOutputSettings = Map.of();
             this.updateSplitSize = SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
-            this.editStorageClosed = true;
         } else {
             this.writer = null;
             this.splitOutput = null;
@@ -525,11 +508,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.entries = parsedEntries;
             this.children = parsedChildren;
             this.stagedContents = Map.of();
-            this.editStorage = openedEditStorage;
-            this.retiredStoredContents = StoredContentSupport.newIdentitySet();
+            this.editStorage = new StoredContentPool(openedEditStorage);
             this.updateOutputSettings = Map.of();
             this.updateSplitSize = SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
-            this.editStorageClosed = false;
         }
     }
 
@@ -642,7 +623,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     && headerEncryptionClosed
                     && splitOutputClosed
                     && volumesClosed
-                    && editStorageClosed
+                    && (editStorage == null || editStorage.isClosed())
                     && closeActionCompleted) {
                 return;
             }
@@ -720,9 +701,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Closes update mode after publishing changed content transactionally.
     private void closeUpdate() throws IOException {
         if (!open
-                && editStorageClosed
-                && stagedContents.isEmpty()
-                && retiredStoredContents.isEmpty()
+                && (editStorage == null || editStorage.isClosed())
                 && volumesClosed
                 && closeActionCompleted) {
             return;
@@ -774,18 +753,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         throwFailure(failure);
     }
 
-    /// Closes staged update bodies and advances shared storage cleanup, retaining failures for a later retry.
+    /// Drops update indexes and requests cleanup of all pool-owned staged bodies.
     private @Nullable Throwable closeUpdateStorage(@Nullable Throwable failure) {
-        Iterator<ArkivoStoredContent> stagedIterator = stagedContents.values().iterator();
-        while (stagedIterator.hasNext()) {
-            ArkivoStoredContent content = stagedIterator.next();
-            try {
-                content.close();
-                stagedIterator.remove();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-        }
+        stagedContents.clear();
         return finishEditStorage(failure);
     }
 
@@ -2436,7 +2406,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Returns the entry staging storage owned by this file system.
-    private ArkivoEditStorage requireEditStorage() {
+    private StoredContentPool requireEditStorage() {
         return Objects.requireNonNull(editStorage, "editStorage");
     }
 
@@ -2451,33 +2421,20 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Decodes one source-backed entry into temporary seekable storage for random reads.
+    /// Decodes one source-backed entry into temporary storage owned by the returned read channel.
     private SeekableByteChannel newStoredReadChannel(Path path) throws IOException {
         String pathText = normalizedPathText(path);
         long expectedSize = requireEntry(path).size();
-        ArkivoStoredContent content = requireEditStorage().createContent(
-                pathText,
-                expectedSize
-        );
-        @Nullable SeekableByteChannel channel = null;
+        ArkivoStoredContent content = requireEditStorage().createContent(pathText, expectedSize);
         try {
             copyEntryToStoredContent(path, content);
-            channel = content.openChannel(Set.of(StandardOpenOption.READ));
-            SeekableByteChannel result = new StoredContentReadByteChannel(content, channel);
-            synchronized (editStorageLifecycleLock) {
-                activeStoredContents.add(content);
-            }
-            channel = null;
-            return result;
+            return requireEditStorage().openReadChannel(content);
         } catch (IOException | RuntimeException | Error exception) {
-            if (channel != null) {
-                try {
-                    channel.close();
-                } catch (IOException | RuntimeException | Error cleanupFailure) {
-                    appendFailure(exception, cleanupFailure);
-                }
+            try {
+                content.close();
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                appendFailure(exception, cleanupFailure);
             }
-            releaseStoredContent(content);
             throw exception;
         }
     }
@@ -2502,60 +2459,22 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Releases stored content now or retains it for a close-time cleanup retry.
+    /// Requests release of an obsolete body, leaving failed cleanup tracked by its storage pool.
     private void releaseStoredContent(ArkivoStoredContent content) {
         try {
             content.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            synchronized (editStorageLifecycleLock) {
-                retiredStoredContents.add(content);
-            }
+        } catch (IOException | RuntimeException | Error ignored) {
+            // The pool retains failed content and channel cleanup for the next close attempt.
         }
     }
 
-    /// Releases transient content and finishes deferred storage cleanup after file system close.
-    private @Nullable Throwable releaseActiveStoredContent(
-            ArkivoStoredContent content,
-            @Nullable Throwable failure
-    ) {
-        boolean retired = false;
-        try {
-            content.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            failure = appendFailure(failure, exception);
-            retired = true;
-        }
-        synchronized (editStorageLifecycleLock) {
-            activeStoredContents.remove(content);
-            if (retired) {
-                retiredStoredContents.add(content);
-            }
-        }
-        return open ? failure : finishEditStorage(failure);
-    }
-
-    /// Retries retired content cleanup and closes storage once no stored channels remain.
+    /// Requests storage cleanup while preserving an earlier file-system close failure.
     private @Nullable Throwable finishEditStorage(@Nullable Throwable failure) {
-        synchronized (editStorageLifecycleLock) {
-            Iterator<ArkivoStoredContent> iterator = retiredStoredContents.iterator();
-            while (iterator.hasNext()) {
-                try {
-                    iterator.next().close();
-                    iterator.remove();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
-                }
-            }
-            if (!editStorageClosed
-                    && activeStoredContents.isEmpty()
-                    && stagedContents.isEmpty()
-                    && retiredStoredContents.isEmpty()) {
-                try {
-                    Objects.requireNonNull(editStorage, "editStorage").close();
-                    editStorageClosed = true;
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
-                }
+        if (editStorage != null) {
+            try {
+                editStorage.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
             }
         }
         return failure;
@@ -3291,100 +3210,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         /// Returns whether the given attribute was requested.
         private boolean contains(String name) {
             return names.contains(name);
-        }
-    }
-
-    /// Exposes one transient decoded entry body as a seekable read-only channel.
-    @NotNullByDefault
-    private final class StoredContentReadByteChannel implements SeekableByteChannel {
-        /// The transient stored body released when this channel closes.
-        private final ArkivoStoredContent content;
-
-        /// The read channel opened over the transient stored body.
-        private final SeekableByteChannel channel;
-
-        /// Whether this wrapper remains open.
-        private boolean channelOpen = true;
-
-        /// Creates a read-only channel over transient stored content.
-        private StoredContentReadByteChannel(ArkivoStoredContent content, SeekableByteChannel channel) {
-            this.content = Objects.requireNonNull(content, "content");
-            this.channel = Objects.requireNonNull(channel, "channel");
-        }
-
-        /// Reads decoded entry bytes.
-        @Override
-        public int read(ByteBuffer destination) throws IOException {
-            Objects.requireNonNull(destination, "destination");
-            ensureChannelOpen();
-            return channel.read(destination);
-        }
-
-        /// Rejects writes to a read-only entry channel.
-        @Override
-        public int write(ByteBuffer source) throws IOException {
-            Objects.requireNonNull(source, "source");
-            ensureChannelOpen();
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns the current decoded entry position.
-        @Override
-        public long position() throws IOException {
-            ensureChannelOpen();
-            return channel.position();
-        }
-
-        /// Changes the current decoded entry position.
-        @Override
-        public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureChannelOpen();
-            channel.position(newPosition);
-            return this;
-        }
-
-        /// Returns the decoded entry size.
-        @Override
-        public long size() throws IOException {
-            ensureChannelOpen();
-            return channel.size();
-        }
-
-        /// Rejects truncation of a read-only entry channel.
-        @Override
-        public SeekableByteChannel truncate(long size) throws IOException {
-            ensureChannelOpen();
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns whether this wrapper and its stored-content channel remain open.
-        @Override
-        public boolean isOpen() {
-            return channelOpen && channel.isOpen();
-        }
-
-        /// Closes the read channel and releases its transient decoded body.
-        @Override
-        public void close() throws IOException {
-            if (!channelOpen) {
-                return;
-            }
-            channelOpen = false;
-            @Nullable Throwable failure = null;
-            try {
-                channel.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
-            }
-            failure = releaseActiveStoredContent(content, failure);
-            throwFailure(failure);
-        }
-
-        /// Requires this wrapper to remain open.
-        private void ensureChannelOpen() throws ClosedChannelException {
-            if (!channelOpen) {
-                throw new ClosedChannelException();
-            }
         }
     }
 
