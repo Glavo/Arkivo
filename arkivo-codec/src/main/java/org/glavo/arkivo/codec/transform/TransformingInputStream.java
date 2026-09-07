@@ -8,6 +8,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.util.Objects;
 
@@ -24,29 +25,14 @@ import java.util.Objects;
 /// [#close()] retries it.
 @NotNullByDefault
 public final class TransformingInputStream extends InputStream {
-    /// The bounded working-buffer size.
-    private static final int BUFFER_SIZE = 8192;
-
     /// The upstream decoded coder stream.
     private final InputStream input;
 
-    /// The stateful in-place filter transform.
-    private final ByteTransform transform;
-
-    /// The filter working buffer containing ready and pending bytes.
-    private final byte[] buffer = new byte[BUFFER_SIZE];
+    /// The committed-prefix and lookahead state shared by all transform adapters.
+    private final TransformBuffer buffer;
 
     /// The reusable single-byte read buffer.
     private final byte[] singleByte = new byte[1];
-
-    /// The first ready byte in `buffer`.
-    private int position;
-
-    /// The number of transformed bytes ready to return.
-    private int ready;
-
-    /// The number of trailing bytes awaiting more input.
-    private int pending;
 
     /// A deferred source or filter failure.
     private @Nullable Throwable failure;
@@ -66,7 +52,7 @@ public final class TransformingInputStream extends InputStream {
     /// @param transform the stateful transform to apply to bytes read from `input`
     public TransformingInputStream(InputStream input, ByteTransform transform) {
         this.input = Objects.requireNonNull(input, "input");
-        this.transform = Objects.requireNonNull(transform, "transform");
+        this.buffer = new TransformBuffer(transform);
     }
 
     /// Reads one filtered byte.
@@ -92,39 +78,34 @@ public final class TransformingInputStream extends InputStream {
         try {
             int total = 0;
             while (true) {
-                int copied = Math.min(ready, length);
-                System.arraycopy(buffer, position, bytes, offset, copied);
-                position += copied;
-                ready -= copied;
+                ByteBuffer ready = buffer.output();
+                int copied = Math.min(ready.remaining(), length);
+                ready.get(bytes, offset, copied);
                 offset += copied;
                 length -= copied;
                 total += copied;
 
-                if (position + ready + pending == buffer.length) {
-                    compact();
-                }
                 if (length == 0 || endReached) {
                     return total == 0 && endReached ? -1 : total;
                 }
 
-                int writePosition = position + ready + pending;
-                int count = input.read(buffer, writePosition, buffer.length - writePosition);
+                ByteBuffer writable = buffer.input();
+                int count = input.read(writable.array(), writable.position(), writable.remaining());
                 if (count < 0) {
                     endReached = true;
-                    ready = pending;
-                    pending = 0;
+                    buffer.finish();
                 } else if (count == 0) {
                     int value = input.read();
                     if (value < 0) {
                         endReached = true;
-                        ready = pending;
-                        pending = 0;
+                        buffer.finish();
                     } else {
-                        buffer[writePosition] = (byte) value;
-                        filterPending(1);
+                        writable.put((byte) value);
+                        buffer.transform();
                     }
                 } else {
-                    filterPending(count);
+                    writable.position(writable.position() + count);
+                    buffer.transform();
                 }
             }
         } catch (IOException | RuntimeException | Error exception) {
@@ -140,7 +121,7 @@ public final class TransformingInputStream extends InputStream {
     public int available() throws IOException {
         ensureOpen();
         rethrowFailure();
-        return ready;
+        return buffer.output().remaining();
     }
 
     /// Marks this stream closed and closes the upstream coder stream.
@@ -154,27 +135,6 @@ public final class TransformingInputStream extends InputStream {
         }
         input.close();
         inputClosed = true;
-    }
-
-    /// Adds newly read bytes and transforms the largest complete prefix.
-    private void filterPending(int added) throws IOException {
-        pending += added;
-        int transformed = transform.transform(buffer, position, pending);
-        if (transformed < 0 || transformed > pending) {
-            throw new IOException("Byte filter returned an invalid transformed byte count");
-        }
-        ready = transformed;
-        pending -= transformed;
-        // The next read-loop iteration reclaims the consumed prefix before requesting more lookahead.
-        if (ready == 0 && pending == buffer.length) {
-            throw new IOException("Byte filter made no progress with a full buffer");
-        }
-    }
-
-    /// Moves ready and pending bytes to the beginning of the working buffer.
-    private void compact() {
-        System.arraycopy(buffer, position, buffer, 0, ready + pending);
-        position = 0;
     }
 
     /// Rethrows a retained read failure without invoking the input or transform again.

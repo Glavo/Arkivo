@@ -8,6 +8,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.util.Objects;
 
@@ -26,26 +27,14 @@ import java.util.Objects;
 /// without invoking the transform or writing buffered bytes again. Argument validation failures do not enter this state.
 @NotNullByDefault
 public final class TransformingOutputStream extends OutputStream {
-    /// The bounded working-buffer size.
-    private static final int BUFFER_SIZE = 8192;
-
     /// The downstream compression stream.
     private final OutputStream output;
 
-    /// The stateful in-place filter transform.
-    private final ByteTransform transform;
-
-    /// The filter working buffer.
-    private final byte[] buffer = new byte[BUFFER_SIZE];
+    /// The committed-prefix and lookahead state shared by all transform adapters.
+    private final TransformBuffer buffer;
 
     /// The reusable single-byte write buffer.
     private final byte[] singleByte = new byte[1];
-
-    /// The first pending byte in `buffer`.
-    private int position;
-
-    /// The number of bytes awaiting enough lookahead for filtering.
-    private int pending;
 
     /// A deferred output or filter failure.
     private @Nullable Throwable failure;
@@ -65,7 +54,7 @@ public final class TransformingOutputStream extends OutputStream {
     /// @param transform the stateful transform to apply before writing to `output`
     public TransformingOutputStream(OutputStream output, ByteTransform transform) {
         this.output = Objects.requireNonNull(output, "output");
-        this.transform = Objects.requireNonNull(transform, "transform");
+        this.buffer = new TransformBuffer(transform);
     }
 
     /// Writes one unfiltered byte.
@@ -85,18 +74,13 @@ public final class TransformingOutputStream extends OutputStream {
         ensureWritable();
         try {
             while (length > 0) {
-                int copied = Math.min(length, buffer.length - position - pending);
-                System.arraycopy(bytes, offset, buffer, position + pending, copied);
+                ByteBuffer writable = buffer.input();
+                int copied = Math.min(length, writable.remaining());
+                writable.put(bytes, offset, copied);
                 offset += copied;
                 length -= copied;
-                pending += copied;
-                filterPending();
-                if (position + pending == buffer.length) {
-                    compact();
-                    if (pending == buffer.length) {
-                        throw new IOException("Byte filter made no progress with a full buffer");
-                    }
-                }
+                buffer.transform();
+                writeReady();
             }
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
@@ -126,9 +110,8 @@ public final class TransformingOutputStream extends OutputStream {
         }
         rethrow(failure);
         try {
-            output.write(buffer, position, pending);
-            position = 0;
-            pending = 0;
+            buffer.finish();
+            writeReady();
             finished = true;
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
@@ -166,21 +149,11 @@ public final class TransformingOutputStream extends OutputStream {
         rethrow(closeFailure);
     }
 
-    /// Transforms and forwards the largest complete prefix of pending bytes.
-    private void filterPending() throws IOException {
-        int transformed = transform.transform(buffer, position, pending);
-        if (transformed < 0 || transformed > pending) {
-            throw new IOException("Byte filter returned an invalid transformed byte count");
-        }
-        output.write(buffer, position, transformed);
-        position += transformed;
-        pending -= transformed;
-    }
-
-    /// Moves pending bytes to the beginning of the working buffer.
-    private void compact() {
-        System.arraycopy(buffer, position, buffer, 0, pending);
-        position = 0;
+    /// Forwards the committed prefix and consumes it only after a successful downstream write.
+    private void writeReady() throws IOException {
+        ByteBuffer ready = buffer.output();
+        output.write(ready.array(), ready.position(), ready.remaining());
+        ready.position(ready.limit());
     }
 
     /// Requires this stream to remain open and unfinished.

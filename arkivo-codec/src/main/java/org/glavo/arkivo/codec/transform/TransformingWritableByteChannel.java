@@ -29,26 +29,14 @@ import java.util.Objects;
 /// invoking the transform or writing buffered bytes again. Argument validation failures do not enter this state.
 @NotNullByDefault
 public final class TransformingWritableByteChannel implements WritableByteChannel {
-    /// The bounded filter working-buffer size.
-    private static final int BUFFER_SIZE = 8192;
-
     /// The downstream channel.
     private final WritableByteChannel target;
 
     /// Tracks closure of the owned downstream target.
     private final OwnedChannelCloser targetCloser;
 
-    /// The stateful in-place transform.
-    private final ByteTransform transform;
-
-    /// The filter working buffer.
-    private final byte[] buffer = new byte[BUFFER_SIZE];
-
-    /// The first pending byte in `buffer`.
-    private int position;
-
-    /// The number of bytes awaiting enough lookahead.
-    private int pending;
+    /// The committed-prefix and lookahead state shared by all transform adapters.
+    private final TransformBuffer buffer;
 
     /// A deferred target or transform failure.
     private @Nullable Throwable failure;
@@ -78,7 +66,7 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
             ResourceOwnership ownership
     ) {
         this.target = Objects.requireNonNull(target, "target");
-        this.transform = Objects.requireNonNull(transform, "transform");
+        this.buffer = new TransformBuffer(transform);
         this.targetCloser = new OwnedChannelCloser(target, ownership);
     }
 
@@ -93,16 +81,12 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         int start = source.position();
         try {
             while (source.hasRemaining()) {
-                int copied = Math.min(source.remaining(), buffer.length - position - pending);
-                source.get(buffer, position + pending, copied);
-                pending += copied;
-                filterPending();
-                if (position + pending == buffer.length) {
-                    compact();
-                    if (pending == buffer.length) {
-                        throw new IOException("Byte filter made no progress with a full buffer");
-                    }
-                }
+                ByteBuffer writable = buffer.input();
+                int copied = Math.min(source.remaining(), writable.remaining());
+                source.get(writable.array(), writable.position(), copied);
+                writable.position(writable.position() + copied);
+                buffer.transform();
+                writeFully(buffer.output());
             }
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
@@ -123,9 +107,8 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         }
         rethrowFailure();
         try {
-            writeFully(ByteBuffer.wrap(buffer, position, pending));
-            position = 0;
-            pending = 0;
+            buffer.finish();
+            writeFully(buffer.output());
             finished = true;
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
@@ -157,17 +140,6 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         targetCloser.closeAfter(closeFailure);
     }
 
-    /// Transforms and forwards the largest complete prefix.
-    private void filterPending() throws IOException {
-        int transformed = transform.transform(buffer, position, pending);
-        if (transformed < 0 || transformed > pending) {
-            throw new IOException("Byte filter returned an invalid transformed byte count");
-        }
-        writeFully(ByteBuffer.wrap(buffer, position, transformed));
-        position += transformed;
-        pending -= transformed;
-    }
-
     /// Writes every remaining byte in the supplied buffer.
     private void writeFully(ByteBuffer bytes) throws IOException {
         while (bytes.hasRemaining()) {
@@ -176,12 +148,6 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
                 throw new IOException("Byte filter target channel made no progress");
             }
         }
-    }
-
-    /// Moves pending bytes to the beginning of the working buffer.
-    private void compact() {
-        System.arraycopy(buffer, position, buffer, 0, pending);
-        position = 0;
     }
 
     /// Requires this channel to remain open and unfinished.

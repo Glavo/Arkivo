@@ -13,8 +13,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// that prefix so it will never be presented again.
 ///
 /// The stream and channel wrappers use bounded working storage. A transform driven by those wrappers must eventually
-/// commit a prefix before 8192 pending bytes accumulate. At logical end-of-input, the wrappers forward any uncommitted
-/// suffix unchanged and do not invoke the transform with a separate end marker.
+/// commit at least one byte when 8192 pending bytes are available. At logical end-of-input, the wrappers forward any
+/// uncommitted suffix unchanged and do not invoke the transform with a separate end marker.
 @FunctionalInterface
 @NotNullByDefault
 public interface ByteTransform {

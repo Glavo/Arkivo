@@ -5,8 +5,10 @@ package org.glavo.arkivo.codec.xz.internal.filter;
 
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
 import org.glavo.arkivo.codec.transform.TransformingOutputStream;
+import org.glavo.arkivo.codec.transform.TransformingReadableByteChannel;
+import org.glavo.arkivo.codec.transform.TransformingWritableByteChannel;
 import org.glavo.arkivo.codec.transform.ByteTransform;
-import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ARM64Options;
@@ -26,13 +28,17 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests BCJ transforms against independent XZ filter streams.
 @NotNullByDefault
@@ -85,19 +91,19 @@ public final class BCJTransformsTest {
     @Test
     public void incompleteInstructionTailPassesThrough() throws IOException {
         byte[] original = new byte[]{(byte) 0xe8, 1, 2, 3};
-        byte[] encoded = encodeNatively(original, BCJTransforms.x86(Direction.ENCODE, 0));
+        byte[] encoded = encodeNatively(original, BCJTransforms.x86(ByteTransform.Direction.ENCODE, 0));
         assertArrayEquals(original, encoded);
-        assertArrayEquals(original, decodeNatively(encoded, BCJTransforms.x86(Direction.DECODE, 0)));
+        assertArrayEquals(original, decodeNatively(encoded, BCJTransforms.x86(ByteTransform.Direction.DECODE, 0)));
     }
 
     /// Verifies all transform factories reject null directions and offsets outside the unsigned 32-bit domain.
     @Test
     public void transformFactoriesValidateArguments() {
         assertThrows(NullPointerException.class, () -> BCJTransforms.x86(null, 0L));
-        assertThrows(IllegalArgumentException.class, () -> BCJTransforms.arm64(Direction.ENCODE, -1L));
+        assertThrows(IllegalArgumentException.class, () -> BCJTransforms.arm64(ByteTransform.Direction.ENCODE, -1L));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> BCJTransforms.riscV(Direction.DECODE, 0x1_0000_0000L)
+                () -> BCJTransforms.riscV(ByteTransform.Direction.DECODE, 0x1_0000_0000L)
         );
     }
 
@@ -108,10 +114,19 @@ public final class BCJTransformsTest {
             TransformFactory factory
     ) throws IOException {
         byte[] expected = encodeWithXz(original, options);
-        byte[] encoded = encodeNatively(original, factory.create(Direction.ENCODE, START_OFFSET));
+        byte[] encoded = encodeNatively(original, factory.create(ByteTransform.Direction.ENCODE, START_OFFSET));
         assertFalse(Arrays.equals(original, expected));
         assertArrayEquals(expected, encoded);
-        assertArrayEquals(original, decodeNatively(encoded, factory.create(Direction.DECODE, START_OFFSET)));
+        assertArrayEquals(original, decodeNatively(encoded, factory.create(ByteTransform.Direction.DECODE, START_OFFSET)));
+
+        for (int chunk : new int[]{1, 7, 4093, 8191, 8192, 8193}) {
+            for (boolean direct : new boolean[]{false, true}) {
+                assertArrayEquals(expected, encodeThroughChannel(original,
+                        factory.create(ByteTransform.Direction.ENCODE, START_OFFSET), chunk, direct));
+                assertArrayEquals(original, decodeThroughChannel(expected,
+                        factory.create(ByteTransform.Direction.DECODE, START_OFFSET), chunk, direct));
+            }
+        }
 
         try (InputStream xzDecoder = options.getInputStream(
                 new ByteArrayInputStream(encoded),
@@ -119,6 +134,66 @@ public final class BCJTransformsTest {
         )) {
             assertArrayEquals(original, xzDecoder.readAllBytes());
         }
+    }
+
+    /// Encodes bounded, read-only source windows and checks that finish never repeats a buffered tail.
+    private static byte[] encodeThroughChannel(byte[] original, ByteTransform transform, int chunk, boolean direct)
+            throws IOException {
+        ByteArrayOutputStream target = new ByteArrayOutputStream();
+        ByteBuffer storage = direct ? ByteBuffer.allocateDirect(chunk + 4) : ByteBuffer.allocate(chunk + 4);
+        try (TransformingWritableByteChannel output = new TransformingWritableByteChannel(
+                Channels.newChannel(target), transform)) {
+            for (int offset = 0; offset < original.length; offset += chunk) {
+                int count = Math.min(chunk, original.length - offset);
+                storage.clear().position(2);
+                storage.put(original, offset, count);
+                ByteBuffer source = storage.asReadOnlyBuffer().position(2).mark().limit(2 + count);
+                assertEquals(count, output.write(source));
+                assertEquals(2 + count, source.position());
+                assertEquals(2 + count, source.limit());
+                source.reset();
+                assertEquals(2, source.position());
+            }
+            output.finish();
+            int finishedSize = target.size();
+            output.finish();
+            assertEquals(finishedSize, target.size());
+        }
+        return target.toByteArray();
+    }
+
+    /// Decodes fragmented input into guarded windows that repeatedly split ready output across working buffers.
+    private static byte[] decodeThroughChannel(byte[] encoded, ByteTransform transform, int chunk, boolean direct)
+            throws IOException {
+        ByteArrayOutputStream actual = new ByteArrayOutputStream();
+        ByteBuffer storage = direct ? ByteBuffer.allocateDirect(8197) : ByteBuffer.allocate(8197);
+        byte[] bytes = new byte[8193];
+        try (TransformingReadableByteChannel input = new TransformingReadableByteChannel(
+                Channels.newChannel(new ChunkedInputStream(encoded, chunk)), transform)) {
+            while (true) {
+                storage.clear();
+                storage.put(0, (byte) 99).put(1, (byte) 99).put(8195, (byte) 99).put(8196, (byte) 99);
+                storage.position(2).mark().limit(8195);
+                int count = input.read(storage);
+                assertEquals(8195, storage.limit());
+                assertEquals(count < 0 ? 2 : 2 + count, storage.position());
+                storage.reset();
+                assertEquals(2, storage.position());
+                if (count < 0) {
+                    break;
+                }
+                assertTrue(count > 0);
+                storage.get(bytes, 0, count);
+                actual.write(bytes, 0, count);
+                storage.clear();
+                assertEquals(99, storage.get(0));
+                assertEquals(99, storage.get(1));
+                assertEquals(99, storage.get(8195));
+                assertEquals(99, storage.get(8196));
+            }
+            assertEquals(-1, input.read(ByteBuffer.allocate(1)));
+        }
+        return actual.toByteArray();
     }
 
     /// Encodes bytes through a native filter using deliberately fragmented writes.
@@ -222,9 +297,9 @@ public final class BCJTransformsTest {
     /// Returns big-endian PowerPC branch instructions.
     private static byte[] powerPCSample() {
         byte[] sample = filledSample((byte) 0);
-        putIntBigEndian(sample, 0, 0x48000001);
-        putIntBigEndian(sample, 8188, 0x4bfffffd);
-        putIntBigEndian(sample, 8500, 0x48000101);
+        ByteArrayAccess.writeIntBigEndian(sample, 0, 0x48000001);
+        ByteArrayAccess.writeIntBigEndian(sample, 8188, 0x4bfffffd);
+        ByteArrayAccess.writeIntBigEndian(sample, 8500, 0x48000101);
         return sample;
     }
 
@@ -258,34 +333,34 @@ public final class BCJTransformsTest {
     /// Returns big-endian SPARC CALL instructions.
     private static byte[] sparcSample() {
         byte[] sample = filledSample((byte) 0);
-        putIntBigEndian(sample, 0, 0x40000010);
-        putIntBigEndian(sample, 8188, 0x7ffffff0);
-        putIntBigEndian(sample, 8500, 0x40000100);
+        ByteArrayAccess.writeIntBigEndian(sample, 0, 0x40000010);
+        ByteArrayAccess.writeIntBigEndian(sample, 8188, 0x7ffffff0);
+        ByteArrayAccess.writeIntBigEndian(sample, 8500, 0x40000100);
         return sample;
     }
 
     /// Returns little-endian ARM64 BL and ADRP instructions around the transform-buffer boundary.
     private static byte[] arm64Sample() {
         byte[] sample = filledSample((byte) 0);
-        putIntLittleEndian(sample, 0, 0x9400_0008);
+        ByteArrayAccess.writeIntLittleEndian(sample, 0, 0x9400_0008);
         putArm64Adrp(sample, 64, 0x0004_0000);
-        putIntLittleEndian(sample, 8188, 0x9000_0000);
-        putIntLittleEndian(sample, 8500, 0x97ff_fff0);
+        ByteArrayAccess.writeIntLittleEndian(sample, 8188, 0x9000_0000);
+        ByteArrayAccess.writeIntLittleEndian(sample, 8500, 0x97ff_fff0);
         return sample;
     }
 
     /// Returns RISC-V JAL, AUIPC pairs, and a reversible special-format candidate across chunk boundaries.
     private static byte[] riscVSample() {
         byte[] sample = filledSample((byte) 0);
-        putIntLittleEndian(sample, 0, 0x0000_00ef);
+        ByteArrayAccess.writeIntLittleEndian(sample, 0, 0x0000_00ef);
         putRiscVAuipcPair(sample, 16, 5, 0x1234_5000, 0x123);
         putRiscVSpecialPair(sample, 48, 5, 0x1234_5678);
-        putIntLittleEndian(sample, 64, 0x0000_01ef);
-        putIntLittleEndian(sample, 72, 0x0000_0297);
-        putIntLittleEndian(sample, 76, 0x0000_0000);
-        putIntLittleEndian(sample, 88, 0x0000_0017);
+        ByteArrayAccess.writeIntLittleEndian(sample, 64, 0x0000_01ef);
+        ByteArrayAccess.writeIntLittleEndian(sample, 72, 0x0000_0297);
+        ByteArrayAccess.writeIntLittleEndian(sample, 76, 0x0000_0000);
+        ByteArrayAccess.writeIntLittleEndian(sample, 88, 0x0000_0017);
         putRiscVAuipcPair(sample, 8188, 10, 0x7fff_f000, -16);
-        putIntLittleEndian(sample, 8500, 0x0010_02ef);
+        ByteArrayAccess.writeIntLittleEndian(sample, 8500, 0x0010_02ef);
         return sample;
     }
 
@@ -299,7 +374,7 @@ public final class BCJTransformsTest {
     /// Stores one x86 branch opcode and little-endian relative address.
     private static void putX86Branch(byte[] sample, int offset, int opcode, int address) {
         sample[offset] = (byte) opcode;
-        putIntLittleEndian(sample, offset + 1, address);
+        ByteArrayAccess.writeIntLittleEndian(sample, offset + 1, address);
     }
 
     /// Stores one little-endian ARM branch-with-link instruction.
@@ -339,8 +414,8 @@ public final class BCJTransformsTest {
             int upperImmediate,
             int lowerImmediate
     ) {
-        putIntLittleEndian(sample, offset, upperImmediate | register << 7 | 0x17);
-        putIntLittleEndian(
+        ByteArrayAccess.writeIntLittleEndian(sample, offset, upperImmediate | register << 7 | 0x17);
+        ByteArrayAccess.writeIntLittleEndian(
                 sample,
                 offset + Integer.BYTES,
                 lowerImmediate << 20 | register << 15 | register << 7 | 0x13
@@ -350,30 +425,14 @@ public final class BCJTransformsTest {
     /// Stores a RISC-V special-format candidate that exercises the transform's arbitrary-data bijection.
     private static void putRiscVSpecialPair(byte[] sample, int offset, int sourceRegister, int address) {
         int instruction = sourceRegister << 27 | 3 << 12 | 2 << 7 | 0x17;
-        putIntLittleEndian(sample, offset, instruction);
-        putIntLittleEndian(sample, offset + Integer.BYTES, address);
+        ByteArrayAccess.writeIntLittleEndian(sample, offset, instruction);
+        ByteArrayAccess.writeIntLittleEndian(sample, offset + Integer.BYTES, address);
     }
 
     /// Stores an ARM64 ADRP instruction with the requested page-relative immediate.
     private static void putArm64Adrp(byte[] sample, int offset, int address) {
         int instruction = 0x9000_0000 | (address & 3) << 29 | (address & 0x001f_fffc) << 3;
-        putIntLittleEndian(sample, offset, instruction);
-    }
-
-    /// Stores one little-endian integer.
-    private static void putIntLittleEndian(byte[] sample, int offset, int value) {
-        sample[offset] = (byte) value;
-        sample[offset + 1] = (byte) (value >>> 8);
-        sample[offset + 2] = (byte) (value >>> 16);
-        sample[offset + 3] = (byte) (value >>> 24);
-    }
-
-    /// Stores one big-endian integer.
-    private static void putIntBigEndian(byte[] sample, int offset, int value) {
-        sample[offset] = (byte) (value >>> 24);
-        sample[offset + 1] = (byte) (value >>> 16);
-        sample[offset + 2] = (byte) (value >>> 8);
-        sample[offset + 3] = (byte) value;
+        ByteArrayAccess.writeIntLittleEndian(sample, offset, instruction);
     }
 
     /// Creates stateful encoder and decoder transforms for one BCJ architecture.
@@ -381,7 +440,7 @@ public final class BCJTransformsTest {
     @NotNullByDefault
     private interface TransformFactory {
         /// Creates a transform in the requested direction with an absolute start offset.
-        ByteTransform create(Direction direction, long startOffset);
+        ByteTransform create(ByteTransform.Direction direction, long startOffset);
     }
 
     /// Limits each bulk source read to a fixed number of bytes.

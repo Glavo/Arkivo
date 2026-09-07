@@ -28,32 +28,14 @@ import java.util.Objects;
 /// retried by calling [#close()] again.
 @NotNullByDefault
 public final class TransformingReadableByteChannel implements ReadableByteChannel {
-    /// The bounded filter working-buffer size.
-    private static final int BUFFER_SIZE = 8192;
-
     /// The upstream channel.
     private final ReadableByteChannel source;
 
     /// Tracks closure of the owned upstream source.
     private final OwnedChannelCloser sourceCloser;
 
-    /// The stateful in-place transform.
-    private final ByteTransform transform;
-
-    /// The filter working buffer containing ready and pending bytes.
-    private final byte[] buffer = new byte[BUFFER_SIZE];
-
-    /// The channel view used to fill `buffer`.
-    private final ByteBuffer inputBuffer = ByteBuffer.wrap(buffer);
-
-    /// The first ready byte in `buffer`.
-    private int position;
-
-    /// The number of transformed bytes ready to return.
-    private int ready;
-
-    /// The number of trailing bytes awaiting more input.
-    private int pending;
+    /// The committed-prefix and lookahead state shared by all transform adapters.
+    private final TransformBuffer buffer;
 
     /// A deferred source or transform failure.
     private @Nullable Throwable failure;
@@ -86,7 +68,7 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
             ResourceOwnership ownership
     ) {
         this.source = Objects.requireNonNull(source, "source");
-        this.transform = Objects.requireNonNull(transform, "transform");
+        this.buffer = new TransformBuffer(transform);
         this.sourceCloser = new OwnedChannelCloser(source, ownership);
     }
 
@@ -112,31 +94,24 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
         try {
             int total = 0;
             while (true) {
-                int copied = Math.min(ready, target.remaining());
-                target.put(buffer, position, copied);
-                position += copied;
-                ready -= copied;
+                ByteBuffer ready = buffer.output();
+                int copied = Math.min(ready.remaining(), target.remaining());
+                target.put(ready.array(), ready.position(), copied);
+                ready.position(ready.position() + copied);
                 total += copied;
 
-                if (position + ready + pending == buffer.length) {
-                    compact();
-                }
                 if (!target.hasRemaining() || endReached) {
                     return total == 0 && endReached ? -1 : total;
                 }
 
-                int writePosition = position + ready + pending;
-                inputBuffer.position(writePosition);
-                inputBuffer.limit(buffer.length);
-                int count = source.read(inputBuffer);
+                int count = source.read(buffer.input());
                 if (count < 0) {
                     endReached = true;
-                    ready = pending;
-                    pending = 0;
+                    buffer.finish();
                 } else if (count == 0) {
                     throw new IOException("Byte filter source channel made no progress");
                 } else {
-                    filterPending(count);
+                    buffer.transform();
                 }
             }
         } catch (IOException | RuntimeException | Error exception) {
@@ -158,27 +133,6 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     public void close() throws IOException {
         open = false;
         sourceCloser.close();
-    }
-
-    /// Adds newly read bytes and transforms the largest complete prefix.
-    private void filterPending(int added) throws IOException {
-        pending += added;
-        int transformed = transform.transform(buffer, position, pending);
-        if (transformed < 0 || transformed > pending) {
-            throw new IOException("Byte filter returned an invalid transformed byte count");
-        }
-        ready = transformed;
-        pending -= transformed;
-        // The next read-loop iteration reclaims the consumed prefix before requesting more lookahead.
-        if (ready == 0 && pending == buffer.length) {
-            throw new IOException("Byte filter made no progress with a full buffer");
-        }
-    }
-
-    /// Moves ready and pending bytes to the beginning of the working buffer.
-    private void compact() {
-        System.arraycopy(buffer, position, buffer, 0, ready + pending);
-        position = 0;
     }
 
     /// Rethrows a retained read failure without invoking the source or transform again.
