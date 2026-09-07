@@ -8,19 +8,15 @@ import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.InterruptibleChannel;
-import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.OpenOption;
 import java.nio.file.StandardOpenOption;
@@ -145,9 +141,7 @@ final class SeekableCompressedTarSource {
             }
             SeekableByteChannel decoded = archive.newReadableByteChannel();
             try {
-                SliceChannel channel = decoded instanceof InterruptibleChannel
-                        ? new InterruptibleSliceChannel(decoded, offset, size)
-                        : new SliceChannel(decoded, offset, size);
+                SeekableByteChannel channel = ArchiveSliceChannel.open(decoded, offset, size);
                 decoded.position(offset);
                 return channel;
             } catch (IOException | RuntimeException | Error exception) {
@@ -165,138 +159,6 @@ final class SeekableCompressedTarSource {
         /// Releases no resources because channels own their decoded sessions and the file system owns the source.
         @Override
         public void close() {
-        }
-    }
-
-    /// Restricts one owning decoded archive channel to a logical body range.
-    @NotNullByDefault
-    private static class SliceChannel implements SeekableByteChannel {
-        /// The owning complete decoded archive channel.
-        private final SeekableByteChannel decoded;
-
-        /// The logical decoded body origin.
-        private final long origin;
-
-        /// The fixed logical body size.
-        private final long size;
-
-        /// The current body-relative position.
-        private long position;
-
-        /// Whether this slice remains open.
-        private boolean open = true;
-
-        /// Creates a body slice around an owning decoded channel.
-        private SliceChannel(SeekableByteChannel decoded, long origin, long size) {
-            this.decoded = decoded;
-            this.origin = origin;
-            this.size = size;
-        }
-
-        /// Reads no more than the remaining body range.
-        ///
-        /// Bytes decoded before a later frame failure remain consumed from both the target and this slice.
-        @Override
-        public int read(ByteBuffer target) throws IOException {
-            Objects.requireNonNull(target, "target");
-            ensureOpen();
-            if (!target.hasRemaining()) {
-                return 0;
-            }
-            if (position >= size) {
-                return -1;
-            }
-            int count = (int) Math.min(target.remaining(), size - position);
-            int targetPosition = target.position();
-            ByteBuffer boundedTarget = target.duplicate();
-            boundedTarget.limit(boundedTarget.position() + count);
-            decoded.position(origin + position);
-            int read;
-            try {
-                read = decoded.read(boundedTarget);
-            } finally {
-                int transferred = boundedTarget.position() - targetPosition;
-                if (transferred > 0) {
-                    target.position(targetPosition + transferred);
-                    position += transferred;
-                }
-            }
-            if (read < 0) {
-                throw new EOFException("Decoded TAR source ended inside an indexed entry body");
-            }
-            return read;
-        }
-
-        /// Rejects writes because source-backed archive bodies are read-only.
-        @Override
-        public int write(ByteBuffer source) throws IOException {
-            Objects.requireNonNull(source, "source");
-            ensureOpen();
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns the current body-relative position.
-        @Override
-        public long position() throws IOException {
-            ensureOpen();
-            return position;
-        }
-
-        /// Changes the body-relative position without decoding intervening bytes.
-        @Override
-        public SeekableByteChannel position(long newPosition) throws IOException {
-            if (newPosition < 0L) {
-                throw new IllegalArgumentException("newPosition must not be negative");
-            }
-            ensureOpen();
-            position = newPosition;
-            return this;
-        }
-
-        /// Returns the fixed logical body size.
-        @Override
-        public long size() throws IOException {
-            ensureOpen();
-            return size;
-        }
-
-        /// Rejects truncation because source-backed archive bodies have a fixed read-only extent.
-        @Override
-        public SeekableByteChannel truncate(long newSize) throws IOException {
-            ensureOpen();
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns whether this slice and its decoded channel remain open.
-        @Override
-        public boolean isOpen() {
-            return open && decoded.isOpen();
-        }
-
-        /// Closes the owning decoded archive channel.
-        @Override
-        public void close() throws IOException {
-            if (!open) {
-                return;
-            }
-            decoded.close();
-            open = false;
-        }
-
-        /// Requires this slice and its decoded channel to remain open.
-        private void ensureOpen() throws ClosedChannelException {
-            if (!isOpen()) {
-                throw new ClosedChannelException();
-            }
-        }
-    }
-
-    /// Marks a slice as interruptible when its decoded channel preserves that capability.
-    @NotNullByDefault
-    private static final class InterruptibleSliceChannel extends SliceChannel implements InterruptibleChannel {
-        /// Creates an interruptible body slice.
-        private InterruptibleSliceChannel(SeekableByteChannel decoded, long origin, long size) {
-            super(decoded, origin, size);
         }
     }
 }

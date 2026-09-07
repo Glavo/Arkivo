@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.dmg.DMGPartition;
+import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -162,7 +163,7 @@ public final class UDIFImage implements Closeable {
         if (index < 0 || index >= partitions.size() || !partitions.get(index).equals(partition)) {
             throw new IllegalArgumentException("partition does not belong to this DMG image");
         }
-        return SlicedSeekableByteChannel.open(openChannel(), partition.offset(), partition.size());
+        return ArchiveSliceChannel.open(openChannel(), partition.offset(), partition.size());
     }
 
     /// Returns whether the image remains open.

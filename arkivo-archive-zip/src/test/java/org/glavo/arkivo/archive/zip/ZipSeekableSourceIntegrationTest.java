@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
@@ -42,6 +43,32 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests repeatable seekable ZIP sources, update publication, and ownership cleanup.
 @NotNullByDefault
 public final class ZipSeekableSourceIntegrationTest {
+    /// Verifies a public preamble channel distinguishes source truncation from its declared range end.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 2, 4})
+    public void preambleRejectsPrematureSourceEnd(int count) throws IOException {
+        TestSeekableChannelSource source = new TestSeekableChannelSource(emptyZipWithPreamble(new byte[]{1, 2, 3, 4}));
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source);
+             SeekableByteChannel channel = fileSystem.openPreambleChannel()) {
+            ByteBuffer target = ByteBuffer.allocateDirect(8).position(1).limit(1 + count);
+            assertEquals(count, channel.read(target));
+            source.forceEndOfInput = true;
+            target.limit(7);
+            if (count < 4) {
+                assertThrows(EOFException.class, () -> channel.read(target));
+            } else {
+                assertEquals(-1, channel.read(target));
+            }
+            assertEquals(1 + count, target.position());
+            assertEquals(7, target.limit());
+            assertEquals(count, channel.position());
+            assertEquals(4, channel.size());
+            assertEquals(0, channel.read(ByteBuffer.allocate(0)));
+        }
+        assertEquals(true, source.allOpenedChannelsClosed());
+        assertEquals(1, source.closeCount());
+    }
+
     /// Verifies public preamble channels retain progress delivered by a failing archive source.
     @ParameterizedTest
     @ValueSource(ints = {0, 2, 4})
@@ -368,6 +395,9 @@ public final class ZipSeekableSourceIntegrationTest {
         /// Maximum bytes delivered by the pending failing physical read.
         private int bytesBeforeFailure;
 
+        /// Whether physical reads report EOF after archive metadata has been parsed.
+        private boolean forceEndOfInput;
+
         /// Whether the first close attempt should fail.
         private final boolean failFirstClose;
 
@@ -439,6 +469,9 @@ public final class ZipSeekableSourceIntegrationTest {
             /// Reads normally or delivers a bounded prefix before the armed failure.
             @Override
             public int read(ByteBuffer target) throws IOException {
+                if (forceEndOfInput) {
+                    return target.hasRemaining() ? -1 : 0;
+                }
                 @Nullable Throwable failure = readFailure;
                 if (failure == null) {
                     return delegate.read(target);

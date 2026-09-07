@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
+
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -52,7 +54,7 @@ public final class SevenZipCRC32ByteChannelTest {
                 );
                 physical.partialReadFailure = failure;
                 physical.bytesBeforeFailure = count;
-                SeekableByteChannel body = sliced ? new SevenZipFileSliceChannel(physical, 2, 4) : physical;
+                SeekableByteChannel body = sliced ? ArchiveSliceChannel.open(physical, 2, 4) : physical;
                 SevenZipCRC32ByteChannel channel = new SevenZipCRC32ByteChannel(
                         body, content.length, crc32(content) ^ (corrupt ? 1L : 0L)
                 );

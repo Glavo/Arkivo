@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.dmg.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -14,7 +15,6 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
@@ -42,20 +42,6 @@ final class DMGChannelViewTest {
                 new AssertionError("physical read failure")
         ).flatMap(failure -> Stream.of(0, 2).flatMap(count -> Stream.of(false, true)
                 .map(direct -> Arguments.of(failure, count, direct))));
-    }
-
-    /// Verifies a slice retains bytes delivered by a failed physical read and resumes at the next byte.
-    @ParameterizedTest
-    @MethodSource("readFailures")
-    void slicedChannelPreservesFailedReadProgress(Throwable failure, int count, boolean direct) throws IOException {
-        TestSeekableByteChannel source = new TestSeekableByteChannel(sequence(16), 8);
-        source.failedRead = 1;
-        source.readFailure = failure;
-        source.bytesBeforeFailure = count;
-        try (SeekableByteChannel channel = SlicedSeekableByteChannel.open(source, 3L, 7L)) {
-            assertReadFailureProgress(channel, failure, count, new byte[]{3, 4, 5, 6, 7, 8, 9}, direct);
-        }
-        assertFalse(source.isOpen());
     }
 
     /// Verifies a failure inside the second extent preserves progress from both physical reads.
@@ -102,7 +88,7 @@ final class DMGChannelViewTest {
         source.readFailure = failure;
         source.bytesBeforeFailure = count;
         SeekableByteChannel disk = UDIFBlockChannel.open(source, rawLayout(32L), ArchiveReadLimits.UNLIMITED);
-        SeekableByteChannel partition = SlicedSeekableByteChannel.open(disk, 4L, 16L);
+        SeekableByteChannel partition = ArchiveSliceChannel.open(disk, 4L, 16L);
         HFSPlusFork fork = new HFSPlusFork(7L, 2L, List.of(
                 new HFSPlusExtent(2L, 1L), new HFSPlusExtent(0L, 1L)
         ));
@@ -154,41 +140,6 @@ final class DMGChannelViewTest {
         assertEquals((byte) 99, target.get(1));
         assertEquals((byte) 99, target.get(expected.length + 2));
         assertEquals((byte) 99, target.get(expected.length + 3));
-    }
-
-    /// Verifies a slice ignores the source position, restricts reads to its range, and owns the source.
-    @Test
-    void slicedChannelBoundsReadsAndPreservesInterruptibility() throws IOException {
-        InterruptibleTestChannel source = new InterruptibleTestChannel(sequence(10), 10);
-        source.position(9L);
-        SeekableByteChannel channel = SlicedSeekableByteChannel.open(source, 2L, 5L);
-
-        assertInstanceOf(InterruptibleChannel.class, channel);
-        assertEquals(5L, channel.size());
-        ByteBuffer destination = ByteBuffer.allocate(8);
-        Arrays.fill(destination.array(), (byte) 99);
-        destination.position(1);
-        destination.limit(7);
-
-        assertEquals(5, channel.read(destination));
-        assertEquals(6, destination.position());
-        assertArrayEquals(new byte[]{99, 2, 3, 4, 5, 6, 99, 99}, destination.array());
-        assertEquals(5L, channel.position());
-        assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
-        assertEquals(0, channel.read(ByteBuffer.allocate(0)));
-        assertThrows(ReadOnlyBufferException.class, () -> channel.read(ByteBuffer.allocate(1).asReadOnlyBuffer()));
-
-        ByteBuffer writeSource = ByteBuffer.wrap(new byte[]{1});
-        assertThrows(NonWritableChannelException.class, () -> channel.write(writeSource));
-        assertEquals(0, writeSource.position());
-        assertThrows(IllegalArgumentException.class, () -> channel.position(-1L));
-        assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1L));
-        assertThrows(NonWritableChannelException.class, () -> channel.truncate(0L));
-
-        channel.close();
-        assertFalse(source.isOpen());
-        assertFalse(channel.isOpen());
-        assertThrows(ClosedChannelException.class, channel::position);
     }
 
     /// Verifies an HFS Plus fork reads a logical byte sequence across noncontiguous allocation extents.

@@ -14,6 +14,7 @@ import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.PasswordPurpose;
+import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
@@ -920,7 +921,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
         if (metadata.method().isCopyOnly()) {
             SeekableByteChannel channel =
-                    new SevenZipFileSliceChannel(openArchiveChannel(), metadata.dataOffset(), metadata.size());
+                    ArchiveSliceChannel.open(openArchiveChannel(), metadata.dataOffset(), metadata.size());
             if (metadata.crc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
                 return new SevenZipCRC32ByteChannel(channel, metadata.size(), metadata.crc32());
             }
@@ -1377,7 +1378,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         Throwable failure = null;
         try {
             for (SevenZipPackedStream packedStream : metadata.packedStreams()) {
-                SeekableByteChannel channel = new SevenZipFileSliceChannel(
+                SeekableByteChannel channel = ArchiveSliceChannel.open(
                         openArchiveChannel(),
                         packedStream.offset(),
                         packedStream.size()

@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
@@ -13,6 +12,7 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 
+import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
@@ -295,7 +295,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         try {
             PreambleRange range = preambleRange(channel);
             completed = true;
-            return new BoundedSeekableByteChannel(channel, range.offset(), range.size());
+            return ArchiveSliceChannel.open(channel, range.offset(), range.size());
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
@@ -467,7 +467,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         try {
             validateEntryDataDescriptor(archive, dataOffset, entry);
             SeekableByteChannel result = new ValidatingStoredEntryByteChannel(
-                    new BoundedSeekableByteChannel(archive, dataOffset, entry.compressedSize),
+                    ArchiveSliceChannel.open(archive, dataOffset, entry.compressedSize),
                     entry.crc32,
                     entry.uncompressedSize
             );
@@ -1546,7 +1546,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         Throwable failure = null;
         try {
             validateEntryDataDescriptor(archive, dataOffset, entry);
-            SeekableByteChannel compressed = new BoundedSeekableByteChannel(archive, dataOffset, entry.compressedSize);
+            SeekableByteChannel compressed = ArchiveSliceChannel.open(archive, dataOffset, entry.compressedSize);
             InputStream input = Channels.newInputStream(compressed);
             ZipAesExtraField aes = entry.aesExtraField();
             if (entry.encrypted()) {
@@ -3674,143 +3674,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
     }
 
-    /// Exposes the leading bytes of a seekable channel as a read-only seekable channel.
-    @NotNullByDefault
-    private static final class BoundedSeekableByteChannel implements SeekableByteChannel {
-        /// The wrapped storage channel.
-        private final SeekableByteChannel channel;
-
-        /// The absolute storage offset where this bounded channel starts.
-        private final long offset;
-
-        /// The visible channel size.
-        private final long size;
-
-        /// The current position inside the bounded channel.
-        private long position;
-
-        /// Whether this bounded channel is open.
-        private boolean open = true;
-
-        /// Whether the wrapped storage channel has been closed.
-        private boolean channelClosed;
-
-        /// Creates a bounded channel over the first `size` bytes of the given channel.
-        private BoundedSeekableByteChannel(SeekableByteChannel channel, long size) {
-            this(channel, 0, size);
-        }
-
-        /// Creates a bounded channel over `size` bytes starting at the given storage offset.
-        private BoundedSeekableByteChannel(SeekableByteChannel channel, long offset, long size) {
-            this.channel = Objects.requireNonNull(channel, "channel");
-            if (offset < 0) {
-                throw new IllegalArgumentException("offset must not be negative");
-            }
-            if (size < 0) {
-                throw new IllegalArgumentException("size must not be negative");
-            }
-            this.offset = offset;
-            this.size = size;
-        }
-
-        /// Reads bytes from the current bounded channel position.
-        ///
-        /// Bytes delivered before a physical read fails advance the bounded position. The destination limit is
-        /// restored on every exit, and a later read resumes after the delivered bytes if the source remains usable.
-        @Override
-        public int read(ByteBuffer destination) throws IOException {
-            ensureOpen();
-            Objects.requireNonNull(destination, "destination");
-            if (!destination.hasRemaining()) {
-                return 0;
-            }
-            if (position >= size) {
-                return -1;
-            }
-
-            int originalLimit = destination.limit();
-            int originalPosition = destination.position();
-            long remaining = size - position;
-            if (destination.remaining() > remaining) {
-                destination.limit(destination.position() + (int) remaining);
-            }
-
-            try {
-                channel.position(checkedZipOffsetAdd(offset, position, "bounded channel offset"));
-                return channel.read(destination);
-            } finally {
-                destination.limit(originalLimit);
-                position += destination.position() - originalPosition;
-            }
-        }
-
-        /// Always rejects writes because preamble channels are read-only.
-        @Override
-        public int write(ByteBuffer source) throws IOException {
-            ensureOpen();
-            Objects.requireNonNull(source, "source");
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns the current bounded channel position.
-        @Override
-        public long position() throws IOException {
-            ensureOpen();
-            return position;
-        }
-
-        /// Sets the current bounded channel position.
-        @Override
-        public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureOpen();
-            if (newPosition < 0) {
-                throw new IllegalArgumentException("newPosition must not be negative");
-            }
-            position = newPosition;
-            return this;
-        }
-
-        /// Returns the visible channel size.
-        @Override
-        public long size() throws IOException {
-            ensureOpen();
-            return size;
-        }
-
-        /// Always rejects truncation because preamble channels are read-only.
-        @Override
-        public SeekableByteChannel truncate(long newSize) throws IOException {
-            ensureOpen();
-            if (newSize < 0) {
-                throw new IllegalArgumentException("newSize must not be negative");
-            }
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns whether this bounded channel is open.
-        @Override
-        public boolean isOpen() {
-            return open && channel.isOpen();
-        }
-
-        /// Closes this bounded channel and the wrapped storage channel.
-        @Override
-        public void close() throws IOException {
-            if (!open && channelClosed) {
-                return;
-            }
-            open = false;
-            channel.close();
-            channelClosed = true;
-        }
-
-        /// Requires this bounded channel to be open.
-        private void ensureOpen() throws IOException {
-            if (!isOpen()) {
-                throw new ClosedChannelException();
-            }
-        }
-    }
 
     /// Exposes one transient decoded entry body as a seekable read-only channel.
     @NotNullByDefault
