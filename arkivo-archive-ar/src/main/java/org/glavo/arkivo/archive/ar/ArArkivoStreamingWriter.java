@@ -23,6 +23,11 @@ import java.util.Objects;
 /// `ArkivoEditStorage` let callers select another policy. The writer owns and closes its body storage. A member with a
 /// size configured through `ArArkivoEntryAttributeView` is written directly without staging.
 ///
+/// A write failure in staged storage disables further body writes. Closing that body discards the member and reports
+/// an `IOException` with the write failure as its cause; subsequent body close calls do not emit the member. Argument
+/// and member-size validation failures leave the body usable. This discard behavior does not apply to directly written
+/// members, whose bytes may already have reached the archive output.
+///
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits its fixed or empty body; opening a
 /// caller-writable body transfers completion to that body, and another entry cannot begin until the body closes
 /// successfully. Metadata views are configurable only while their entry remains pending. Closing the writer commits

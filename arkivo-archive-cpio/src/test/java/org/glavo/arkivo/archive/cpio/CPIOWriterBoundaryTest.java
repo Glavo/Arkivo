@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -189,9 +188,10 @@ public final class CPIOWriterBoundaryTest {
         attributeView(entry).setSize(3L);
         WritableByteChannel body = entry.openChannel();
         assertEquals(2, body.write(ByteBuffer.wrap(new byte[]{44, 55})));
-        IOException firstFailure = assertThrows(IOException.class, body::close);
-        assertSame(firstFailure, assertThrows(IOException.class, body::close));
-        assertSame(firstFailure, assertThrows(IOException.class, writer::close));
+        IOException failure = assertThrows(IOException.class, body::close);
+        assertEquals("CPIO entry body size does not match configured size for short.bin", failure.getMessage());
+        assertDoesNotThrow(body::close);
+        assertDoesNotThrow(writer::close);
         assertDoesNotThrow(writer::close);
         assertArchiveIsEmpty(shortTarget.toByteArray());
     }

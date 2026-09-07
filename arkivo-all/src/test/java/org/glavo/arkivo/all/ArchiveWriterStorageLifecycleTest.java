@@ -6,14 +6,21 @@ package org.glavo.arkivo.all;
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
+import org.glavo.arkivo.archive.ar.ArArchiveOptions;
+import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoStreamingReader;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoStreamingWriter;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
+import org.glavo.arkivo.archive.tar.TarArchiveOptions;
+import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
@@ -233,6 +240,164 @@ final class ArchiveWriterStorageLifecycleTest {
         }
     }
 
+    /// Verifies a partial staging write cannot emit a streaming entry, even when its storage closes successfully.
+    @ParameterizedTest
+    @MethodSource("streamingWriteFailures")
+    void discardsStreamingBodyAfterWriteFailure(Format format, FailureKind kind, boolean singleByte) throws IOException {
+        TrackingStorage storage = new TrackingStorage();
+        TrackingOutput target = new TrackingOutput(storage);
+        try (ArkivoStreamingWriter writer = format.writer(target, storage)) {
+            OutputStream body = writer.beginFile("discarded").openOutputStream();
+            body.write(7);
+            Throwable failure = kind.failure("partial body write");
+            storage.fail(Stage.WRITE, failure);
+            assertSame(failure, assertThrows(failure.getClass(), () -> {
+                if (singleByte) {
+                    body.write(8);
+                } else {
+                    body.write(BODY);
+                }
+            }));
+            int attempts = storage.count(Stage.WRITE);
+            assertSame(failure, assertThrows(IOException.class, () -> body.write(9)).getCause());
+            assertEquals(attempts, storage.count(Stage.WRITE));
+            assertSame(failure, assertThrows(IOException.class, body::close).getCause());
+            body.close();
+            try (OutputStream replacement = writer.beginFile("entry").openOutputStream()) {
+                replacement.write(BODY);
+            }
+        }
+        storage.assertReleased();
+        format.verifyArchive(target.bytes.toByteArray(), true);
+    }
+
+    /// Verifies a failed update cannot replace or create an entry, while later independent updates remain usable.
+    @ParameterizedTest
+    @MethodSource("updateMutationFailures")
+    void discardsFailedEntryMutation(
+            UpdateFormat format, FailureKind kind, EntryChange change, Stage stage, @TempDir Path directory
+    ) throws IOException {
+        Path archive = directory.resolve("archive");
+        try (ArkivoFileSystem initial = format.create(archive)) {
+            Files.write(initial.getPath("/original"), BODY);
+        }
+        TrackingStorage storage = new TrackingStorage();
+        try (ArkivoFileSystem fileSystem = format.update(archive, storage)) {
+            Path path = fileSystem.getPath(change == EntryChange.CREATE ? "/discarded" : "/original");
+            SeekableByteChannel body = Files.newByteChannel(path, change.options());
+            if (stage == Stage.TRUNCATE) {
+                body.write(ByteBuffer.wrap(BODY));
+            }
+            Throwable failure = kind.failure("partial entry mutation");
+            storage.fail(stage, failure);
+            assertSame(failure, assertThrows(failure.getClass(), () -> {
+                if (stage == Stage.WRITE) {
+                    body.write(ByteBuffer.wrap(new byte[]{9, 8, 7}));
+                } else {
+                    body.truncate(1L);
+                }
+            }));
+            int attempts = storage.count(Stage.WRITE);
+            assertSame(failure, assertThrows(IOException.class,
+                    () -> body.write(ByteBuffer.wrap(BODY))).getCause());
+            assertSame(failure, assertThrows(IOException.class, () -> body.truncate(0L)).getCause());
+            assertEquals(attempts, storage.count(Stage.WRITE));
+            assertSame(failure, assertThrows(IOException.class, body::close).getCause());
+            body.close();
+            assertArrayEquals(BODY, Files.readAllBytes(fileSystem.getPath("/original")));
+            assertFalse(Files.exists(fileSystem.getPath("/discarded")));
+            Files.write(fileSystem.getPath("/added"), BODY);
+        }
+        storage.assertReleased();
+        try (ArkivoFileSystem result = format.open(archive)) {
+            assertArrayEquals(BODY, Files.readAllBytes(result.getPath("/original")));
+            assertArrayEquals(BODY, Files.readAllBytes(result.getPath("/added")));
+            assertFalse(Files.exists(result.getPath("/discarded")));
+        }
+    }
+
+    /// Supplies both single-byte and bulk writes for every staging stream and failure category.
+    private static Stream<Arguments> streamingWriteFailures() {
+        return Stream.of(Format.values()).flatMap(format -> Stream.of(FailureKind.values())
+                .flatMap(kind -> Stream.of(false, true).map(singleByte -> Arguments.of(format, kind, singleByte))));
+    }
+
+    /// Supplies existing, truncated, appended, and new entries for both failing mutation operations.
+    private static Stream<Arguments> updateMutationFailures() {
+        return Stream.of(UpdateFormat.values()).flatMap(format -> Stream.of(FailureKind.values())
+                .flatMap(kind -> Stream.of(EntryChange.values())
+                        .flatMap(change -> Stream.of(Stage.WRITE, Stage.TRUNCATE)
+                                .map(stage -> Arguments.of(format, kind, change, stage)))));
+    }
+
+    /// Archive file systems that commit random-access bodies from staging storage.
+    @NotNullByDefault
+    private enum UpdateFormat {
+        /// Unix archive members.
+        AR,
+        /// Tape archive entries.
+        TAR,
+        /// ZIP local records and central directory.
+        ZIP,
+        /// 7z streams and index.
+        SEVEN_ZIP;
+
+        /// Creates a small source archive using the format's default options.
+        private ArkivoFileSystem create(Path path) throws IOException {
+            return switch (this) {
+                case AR -> ArArkivoFileSystem.create(path);
+                case TAR -> TarArkivoFileSystem.create(path);
+                case ZIP -> ZipArkivoFileSystem.create(path);
+                case SEVEN_ZIP -> SevenZipArkivoFileSystem.create(path);
+            };
+        }
+
+        /// Opens an update session with fault-injecting body storage.
+        private ArkivoFileSystem update(Path path, TrackingStorage storage) throws IOException {
+            ArchiveUpdateOptions common = ArchiveUpdateOptions.DEFAULT.withEditStorageFactory(() -> storage);
+            return switch (this) {
+                case AR -> ArArkivoFileSystem.update(path, ArArchiveOptions.UPDATE_DEFAULTS.withCommon(common));
+                case TAR -> TarArkivoFileSystem.update(path, TarArchiveOptions.UPDATE_DEFAULTS.withCommon(common));
+                case ZIP -> ZipArkivoFileSystem.update(path, ZipArchiveOptions.UPDATE_DEFAULTS.withCommon(common));
+                case SEVEN_ZIP -> SevenZipArkivoFileSystem.update(path,
+                        SevenZipArchiveOptions.UPDATE_DEFAULTS.withCommon(common));
+            };
+        }
+
+        /// Reopens the published archive independently of its update storage.
+        private ArkivoFileSystem open(Path path) throws IOException {
+            return switch (this) {
+                case AR -> ArArkivoFileSystem.open(path);
+                case TAR -> TarArkivoFileSystem.open(path);
+                case ZIP -> ZipArkivoFileSystem.open(path);
+                case SEVEN_ZIP -> SevenZipArkivoFileSystem.open(path);
+            };
+        }
+    }
+
+    /// Ways to stage a new or existing entry.
+    @NotNullByDefault
+    private enum EntryChange {
+        /// Changes an existing body without forcing a commit at channel creation.
+        EDIT,
+        /// Clears an existing body before the first write.
+        REPLACE,
+        /// Forces each write to the end of the staged body.
+        APPEND,
+        /// Creates a previously absent entry.
+        CREATE;
+
+        /// Returns the open options that select this entry transition.
+        private @Unmodifiable Set<StandardOpenOption> options() {
+            return switch (this) {
+                case EDIT -> Set.of(StandardOpenOption.WRITE);
+                case REPLACE -> Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+                case APPEND -> Set.of(StandardOpenOption.APPEND);
+                case CREATE -> Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
+            };
+        }
+    }
+
     /// Creates an independently encoded ZIP source for update tests.
     private static Path createZip(Path directory) throws IOException {
         Path archive = directory.resolve("archive.zip");
@@ -316,6 +481,10 @@ final class ArchiveWriterStorageLifecycleTest {
     /// Independently observable staging and output operations.
     @NotNullByDefault
     private enum Stage {
+        /// Fails after storing a prefix of the offered bytes.
+        WRITE,
+        /// Fails after changing the stored size.
+        TRUNCATE,
         /// Closes a staging writer.
         WRITE_CLOSE,
         /// Closes a body reader.
@@ -476,7 +645,19 @@ final class ArchiveWriterStorageLifecycleTest {
             /// Writes bytes to the delegate.
             @Override
             public int write(ByteBuffer source) throws IOException {
-                return delegate.write(source);
+                @Nullable ArrayDeque<Throwable> queue = failures.get(Stage.WRITE);
+                int limit = source.limit();
+                if (queue != null && !queue.isEmpty() && source.hasRemaining()) {
+                    source.limit(source.position() + 1);
+                }
+                int count;
+                try {
+                    count = delegate.write(source);
+                } finally {
+                    source.limit(limit);
+                }
+                attempt(Stage.WRITE);
+                return count;
             }
 
             /// Returns the delegate position.
@@ -502,6 +683,7 @@ final class ArchiveWriterStorageLifecycleTest {
             @Override
             public SeekableByteChannel truncate(long size) throws IOException {
                 delegate.truncate(size);
+                attempt(Stage.TRUNCATE);
                 return this;
             }
 

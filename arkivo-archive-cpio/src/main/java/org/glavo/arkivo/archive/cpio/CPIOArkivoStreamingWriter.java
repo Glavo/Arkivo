@@ -21,11 +21,15 @@ import java.util.Objects;
 /// storage configured by `CPIOArchiveOptions.Create` selects the staging policy; default factories use temporary files
 /// under the system temporary directory. The writer owns and closes the selected storage.
 ///
+/// A write failure in staged storage disables further body writes. Closing that body discards the entry and reports
+/// an `IOException` with the write failure as its cause; subsequent body close calls do not emit the entry. Argument
+/// and body-size validation failures leave the body usable.
+///
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits the fixed body or an empty regular
 /// file; a regular-file body owns completion until it closes successfully. Metadata views are configurable only before
 /// body opening or entry close. Writer close commits a pending entry, emits the `TRAILER!!!` record, pads to the
 /// configured block size, and closes the owned output. Once close begins, entry operations remain closed after a
-/// failure; another `close()` call retries incomplete finalization and cleanup.
+/// failure; another `close()` call retries incomplete cleanup without writing more archive bytes.
 @NotNullByDefault
 public abstract sealed class CPIOArkivoStreamingWriter extends ArkivoStreamingWriter
         permits CPIOArkivoStreamingWriterImpl {

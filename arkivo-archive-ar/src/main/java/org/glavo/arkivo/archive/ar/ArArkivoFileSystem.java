@@ -36,6 +36,9 @@ import java.util.Objects;
 /// temporary directory by default. The file system owns and closes the selected edit storage.
 /// A member being replaced through an open writable channel is hidden from new reads until that channel closes;
 /// channels and attribute snapshots opened before the replacement retain the preceding member state.
+/// If a storage write or truncation fails on an update channel, further mutations through that channel fail. Closing
+/// it discards the staged body and reports an `IOException` with the mutation failure as its cause. An existing member
+/// remains unchanged, and a new member is not added. Argument and member-size validation failures do not discard a body.
 /// Channel-source update sessions require an explicit commit target because they have no source path to replace.
 ///
 /// A successfully returned channel-backed file system owns its `SeekableByteChannel` or

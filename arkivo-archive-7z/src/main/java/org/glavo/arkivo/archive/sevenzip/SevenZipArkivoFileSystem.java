@@ -40,6 +40,9 @@ import java.util.Objects;
 ///
 /// An entry being replaced through an open writable channel is hidden from new reads until that channel closes;
 /// channels and attribute snapshots opened before the replacement retain the preceding entry state.
+/// If a storage write or truncation fails on an update channel, further mutations through that channel fail. Closing
+/// it discards the staged body and reports an `IOException` with the mutation failure as its cause. An existing entry
+/// remains unchanged, and a new entry is not added. Invalid arguments rejected before storage access do not discard a body.
 ///
 /// Updates preserve decoded entry content and stored timestamps and attributes, then re-encode every surviving entry
 /// with the configured output compression, filter chain, solid file-count policy, password, and header-encryption

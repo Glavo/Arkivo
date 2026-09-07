@@ -40,6 +40,10 @@ import java.util.Objects;
 /// is owned by the file system. Path creation uses create-or-truncate semantics and the path is not a complete ZIP
 /// archive until close writes the central directory. Updates expose committed logical mutations inside the file system
 /// and publish the complete replacement on close.
+///
+/// If a storage write or truncation fails on an update channel, further mutations through that channel fail. Closing
+/// it discards the staged body and reports an `IOException` with the mutation failure as its cause. An existing entry
+/// remains unchanged, and a new entry is not added. Invalid arguments rejected before storage access do not discard a body.
 @NotNullByDefault
 public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         permits ZipArkivoReadOnlyFileSystemImpl, ZipArkivoWritableFileSystemImpl {

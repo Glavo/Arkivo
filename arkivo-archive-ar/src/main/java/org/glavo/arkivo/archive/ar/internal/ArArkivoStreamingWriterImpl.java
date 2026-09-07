@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.ar.internal;
 
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
@@ -887,21 +888,19 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         /// The number of staged body bytes.
         private long written;
 
-        /// Whether this stream has been closed.
-        private boolean closed;
-
-        /// Whether this stream has finished its commit attempt.
-        private boolean finishedBody;
+        /// The staged channel that owns mutation and completion state.
+        private final StagedSeekableByteChannel storageChannel;
 
         /// Creates a stored member body output stream.
         private StoredMemberBodyOutputStream(PendingMember member) throws IOException {
             this.member = member;
             this.content = bodyStorage.createContent(member.path, ArkivoEditStorage.UNKNOWN_SIZE);
             try {
-                this.storageOutput = Channels.newOutputStream(content.openChannel(Set.of(
+                this.storageChannel = new StagedSeekableByteChannel(content.openChannel(Set.of(
                         StandardOpenOption.TRUNCATE_EXISTING,
                         StandardOpenOption.WRITE
-                )));
+                )), false, true, false, true, (channel, commit) -> completeBody(commit));
+                this.storageOutput = Channels.newOutputStream(storageChannel);
             } catch (IOException | RuntimeException | Error exception) {
                 releaseBody(content);
                 throw exception;
@@ -938,31 +937,26 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             storageOutput.flush();
         }
 
-        /// Closes this body stream and commits its member.
+        /// Closes staged output and completes or discards the body exactly once.
         @Override
         public void close() throws IOException {
-            if (finishedBody) {
-                return;
-            }
-            closed = true;
-            @Nullable IOException failure = null;
+            storageOutput.close();
+        }
+
+        /// Emits a successfully staged body and releases its content after either completion or discard.
+        private void completeBody(boolean commit) throws IOException {
             try {
-                storageOutput.close();
-                long size = content.size();
-                try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
-                    writeStoredMember(member, input, size);
+                if (commit) {
+                    long size = content.size();
+                    try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
+                        writeStoredMember(member, input, size);
+                    }
                 }
-            } catch (IOException exception) {
-                failure = exception;
             } finally {
-                finishedBody = true;
                 releaseBody(content);
                 if (currentBody == this) {
                     currentBody = null;
                 }
-            }
-            if (failure != null) {
-                throw failure;
             }
         }
 
@@ -976,7 +970,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             if (!open) {
                 throw new IOException("AR streaming writer is closed");
             }
-            if (closed) {
+            if (!storageChannel.isOpen()) {
                 throw new IOException("AR member body stream is closed");
             }
         }

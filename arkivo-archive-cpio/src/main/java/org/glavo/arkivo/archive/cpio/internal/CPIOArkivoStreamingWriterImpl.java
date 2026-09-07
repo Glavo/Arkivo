@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.cpio.internal;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributeView;
@@ -1131,24 +1132,19 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         /// The unsigned sum of staged body bytes.
         private long checksum;
 
-        /// Whether this stream rejects further writes.
-        private boolean closed;
-
-        /// Whether the commit attempt and cleanup have finished.
-        private boolean finished;
-
-        /// The commit failure rethrown by repeated close attempts, or `null` after success.
-        private @Nullable IOException closeFailure;
+        /// The staged channel that owns mutation and completion state.
+        private final StagedSeekableByteChannel storageChannel;
 
         /// Creates a staged body stream.
         private StoredEntryBodyOutputStream(PendingEntry entry) throws IOException {
             this.entry = Objects.requireNonNull(entry, "entry");
             this.content = bodyStorage.createContent(entry.path, entry.attributes.expectedSize);
             try {
-                this.storageOutput = Channels.newOutputStream(content.openChannel(Set.of(
+                this.storageChannel = new StagedSeekableByteChannel(content.openChannel(Set.of(
                         StandardOpenOption.TRUNCATE_EXISTING,
                         StandardOpenOption.WRITE
-                )));
+                )), false, true, false, true, (channel, commit) -> completeBody(commit));
+                this.storageOutput = Channels.newOutputStream(storageChannel);
             } catch (IOException | RuntimeException | Error exception) {
                 releaseBody(content);
                 throw exception;
@@ -1187,36 +1183,27 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
             storageOutput.flush();
         }
 
-        /// Closes staged content, writes the entry, and releases temporary resources.
+        /// Closes staged output and completes or discards the body exactly once.
         @Override
         public void close() throws IOException {
-            if (finished) {
-                if (closeFailure != null) {
-                    throw closeFailure;
-                }
-                return;
-            }
-            closed = true;
-            @Nullable IOException failure = null;
+            storageOutput.close();
+        }
+
+        /// Emits a successfully staged body and releases its content after either completion or discard.
+        private void completeBody(boolean commit) throws IOException {
             try {
-                storageOutput.close();
-                long size = content.size();
-                ensureBodySize(entry, size);
-                try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
-                    writeStoredEntry(entry, input, size, checksum);
+                if (commit) {
+                    long size = content.size();
+                    ensureBodySize(entry, size);
+                    try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
+                        writeStoredEntry(entry, input, size, checksum);
+                    }
                 }
-            } catch (IOException exception) {
-                failure = exception;
             } finally {
-                closeFailure = failure;
-                finished = true;
                 releaseBody(content);
                 if (currentBody == this) {
                     currentBody = null;
                 }
-            }
-            if (failure != null) {
-                throw failure;
             }
         }
 
@@ -1225,7 +1212,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
             if (!open) {
                 throw new IOException("CPIO streaming writer is closed");
             }
-            if (closed) {
+            if (!storageChannel.isOpen()) {
                 throw new IOException("CPIO entry body stream is closed");
             }
             long maximum = maximumBodySize();

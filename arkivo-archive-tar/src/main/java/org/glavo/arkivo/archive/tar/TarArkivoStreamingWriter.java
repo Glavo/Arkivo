@@ -27,6 +27,10 @@ import java.util.Objects;
 /// temporary-file storage under the system temporary directory; overloads accepting `ArkivoEditStorage` let callers
 /// select another policy. The writer owns and closes its output and body storage.
 ///
+/// A write failure in staged storage disables further body writes. Closing that body discards the entry and reports
+/// an `IOException` with the write failure as its cause; subsequent body close calls do not emit the entry. Invalid
+/// array ranges are rejected before staging and leave the body usable.
+///
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits it without opening a caller-writable
 /// body; opening a regular-file body transfers completion to that body, and another entry cannot begin until it closes
 /// successfully. Metadata views are configurable only while the entry is pending. Closing the writer commits any

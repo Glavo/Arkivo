@@ -15,6 +15,11 @@ import java.nio.channels.SeekableByteChannel;
 import java.util.Objects;
 
 /// Manages access modes, change tracking, and completion for a staged random-access body.
+///
+/// A failure from a storage write or truncation disables further mutations. Reads and position queries remain
+/// available until close. Closing discards the body and reports an `IOException` whose cause is the mutation failure;
+/// cleanup failures are suppressed on that exception. Arguments rejected by this wrapper and pre-write validation
+/// failures do not discard the body. This channel is not safe for concurrent use.
 @NotNullByDefault
 public final class StagedSeekableByteChannel implements SeekableByteChannel {
     /// Validates a proposed write before bytes are passed to the staged storage channel.
@@ -29,11 +34,11 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
         void validate(long position, int byteCount) throws IOException;
     }
 
-    /// Completes or discards staged state after the storage channel has been closed.
+    /// Completes or discards staged state after the storage channel's close operation has been attempted.
     @FunctionalInterface
     @NotNullByDefault
     public interface CompletionHandler {
-        /// Handles channel completion; `commit` is true only for a successfully closed changed writable body.
+        /// Handles completion; `commit` is true only for a changed writable body with no mutation or close failure.
         ///
         /// @param channel the closed staged wrapper being completed
         /// @param commit whether changed writable content should be committed rather than discarded
@@ -62,6 +67,9 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
     /// Whether staged bytes have changed or must otherwise be committed.
     private boolean changed;
 
+    /// The first storage mutation failure, or `null` while the body can still be committed.
+    private @Nullable Throwable mutationFailure;
+
     /// Whether this wrapper remains open.
     private boolean open = true;
 
@@ -72,7 +80,7 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
     /// @param writable whether writes and truncation are permitted
     /// @param append whether each write is forced to the current end
     /// @param forceCommit whether unchanged content must still be committed on successful close
-    /// @param completionHandler the callback that commits or discards staged state after channel close
+    /// @param completionHandler the callback that commits or discards staged state after the channel close attempt
     /// @throws IOException if append mode cannot query or set the initial end position
     public StagedSeekableByteChannel(
             SeekableByteChannel channel,
@@ -93,7 +101,7 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
     /// @param append whether each write is forced to the current end
     /// @param forceCommit whether unchanged content must still be committed on successful close
     /// @param writeValidator the pre-write validator, or {@code null} for no additional validation
-    /// @param completionHandler the callback that commits or discards staged state after channel close
+    /// @param completionHandler the callback that commits or discards staged state after the channel close attempt
     /// @throws IOException if append mode cannot query or set the initial end position
     public StagedSeekableByteChannel(
             SeekableByteChannel channel,
@@ -135,16 +143,22 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
         if (!writable) {
             throw new NonWritableChannelException();
         }
+        ensureMutationAllowed();
         if (append) {
             channel.position(channel.size());
         }
-        WriteValidator validator = writeValidator;
+        @Nullable WriteValidator validator = writeValidator;
         if (validator != null) {
             validator.validate(channel.position(), source.remaining());
         }
-        int count = channel.write(source);
-        changed |= count != 0;
-        return count;
+        try {
+            int count = channel.write(source);
+            changed |= count != 0;
+            return count;
+        } catch (IOException | RuntimeException | Error exception) {
+            mutationFailure = exception;
+            throw exception;
+        }
     }
 
     /// Returns the current staged position.
@@ -176,8 +190,17 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
         if (!writable) {
             throw new NonWritableChannelException();
         }
+        if (newSize < 0L) {
+            throw new IllegalArgumentException("Negative size");
+        }
+        ensureMutationAllowed();
         long previousSize = channel.size();
-        channel.truncate(newSize);
+        try {
+            channel.truncate(newSize);
+        } catch (IOException | RuntimeException | Error exception) {
+            mutationFailure = exception;
+            throw exception;
+        }
         if (newSize < previousSize) {
             changed = true;
         }
@@ -190,18 +213,20 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
         return open;
     }
 
-    /// Closes staged storage and invokes the completion handler exactly once.
+    /// Closes staged storage and invokes the completion handler exactly once, even after a mutation failure.
+    ///
+    /// Subsequent calls do nothing. The content owner is responsible for retrying failed storage cleanup.
     @Override
     public void close() throws IOException {
         if (!open) {
             return;
         }
         open = false;
-        @Nullable Throwable failure = null;
+        @Nullable Throwable failure = mutationFailure == null ? null : discardedBodyException();
         try {
             channel.close();
         } catch (IOException | RuntimeException | Error exception) {
-            failure = exception;
+            failure = appendFailure(failure, exception);
         }
         try {
             completionHandler.complete(this, failure == null && writable && changed);
@@ -216,6 +241,18 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
         if (!open) {
             throw new ClosedChannelException();
         }
+    }
+
+    /// Rejects further mutations after storage may have been partially changed by a failed operation.
+    private void ensureMutationAllowed() throws IOException {
+        if (mutationFailure != null) {
+            throw discardedBodyException();
+        }
+    }
+
+    /// Creates a distinct exception so try-with-resources cannot suppress a failure onto itself.
+    private IOException discardedBodyException() {
+        return new IOException("Staged body cannot be committed after a failed mutation", mutationFailure);
     }
 
     /// Adds a secondary failure as suppressed when a primary failure already exists.

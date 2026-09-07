@@ -7,6 +7,7 @@ import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
@@ -1329,6 +1330,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     }
 
     /// Stages one file body before committing its TAR header and body.
+    @NotNullByDefault
     private final class EntryBodyOutputStream extends OutputStream {
         /// The entry metadata to commit.
         private final PendingEntry entry;
@@ -1339,21 +1341,19 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// The output stream opened over the stored body.
         private final OutputStream storageOutput;
 
-        /// Whether this stream has been closed.
-        private boolean closed;
-
-        /// Whether this stream has finished its commit attempt.
-        private boolean finishedBody;
+        /// The staged channel that owns mutation and completion state.
+        private final StagedSeekableByteChannel storageChannel;
 
         /// Creates an entry body output stream.
         private EntryBodyOutputStream(PendingEntry entry) throws IOException {
             this.entry = entry;
             this.content = bodyStorage.createContent(entry.path, ArkivoEditStorage.UNKNOWN_SIZE);
             try {
-                this.storageOutput = Channels.newOutputStream(content.openChannel(Set.of(
+                this.storageChannel = new StagedSeekableByteChannel(content.openChannel(Set.of(
                         StandardOpenOption.TRUNCATE_EXISTING,
                         StandardOpenOption.WRITE
-                )));
+                )), false, true, false, true, (channel, commit) -> completeBody(commit));
+                this.storageOutput = Channels.newOutputStream(storageChannel);
             } catch (IOException | RuntimeException | Error exception) {
                 releaseBody(content);
                 throw exception;
@@ -1370,6 +1370,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// Writes body bytes.
         @Override
         public void write(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
             ensureWritable();
             storageOutput.write(bytes, offset, length);
         }
@@ -1381,31 +1382,26 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             storageOutput.flush();
         }
 
-        /// Closes this body stream and commits its entry.
+        /// Closes staged output and completes or discards the body exactly once.
         @Override
         public void close() throws IOException {
-            if (finishedBody) {
-                return;
-            }
-            closed = true;
-            @Nullable IOException failure = null;
+            storageOutput.close();
+        }
+
+        /// Emits a successfully staged body and releases its content after either completion or discard.
+        private void completeBody(boolean commit) throws IOException {
             try {
-                storageOutput.close();
-                long size = content.size();
-                try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
-                    writeEntry(entry, input, size);
+                if (commit) {
+                    long size = content.size();
+                    try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
+                        writeEntry(entry, input, size);
+                    }
                 }
-            } catch (IOException exception) {
-                failure = exception;
             } finally {
-                finishedBody = true;
                 releaseBody(content);
                 if (currentBody == this) {
                     currentBody = null;
                 }
-            }
-            if (failure != null) {
-                throw failure;
             }
         }
 
@@ -1414,7 +1410,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             if (!open) {
                 throw new IOException("TAR streaming writer is closed");
             }
-            if (closed) {
+            if (!storageChannel.isOpen()) {
                 throw new IOException("TAR entry body stream is closed");
             }
         }
