@@ -17,8 +17,6 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Set;
 
@@ -30,13 +28,6 @@ public final class StoredContentSupport {
 
     /// Creates stored-content support operations.
     private StoredContentSupport() {
-    }
-
-    /// Returns an identity-based mutable set for tracking owned content handles.
-    ///
-    /// @return a new empty mutable identity set
-    public static Set<ArkivoStoredContent> newIdentitySet() {
-        return Collections.newSetFromMap(new IdentityHashMap<>());
     }
 
     /// Returns configured edit storage or temporary-file storage in the default system temporary directory.
@@ -53,26 +44,13 @@ public final class StoredContentSupport {
                 : ArkivoEditStorage.temporaryFiles(defaultStorageDirectory());
     }
 
-    /// Closes content and storage allocated during a failed open and suppresses every cleanup failure.
+    /// Closes a pool allocated during a failed open and suppresses its cleanup failure.
     ///
-    /// @param editStorage the storage strategy to close after its owned contents
-    /// @param ownedContents the identity set of content handles to close
-    /// @param failure the primary failure that receives cleanup failures as suppressed exceptions
-    public static void closeAfterOpenFailure(
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
-            Throwable failure
-    ) {
+    /// @param editStorage the pool whose owned resources are released in dependency order
+    /// @param failure the primary failure that receives any cleanup failure
+    public static void closeAfterOpenFailure(StoredContentPool editStorage, Throwable failure) {
         Objects.requireNonNull(editStorage, "editStorage");
-        Objects.requireNonNull(ownedContents, "ownedContents");
         Objects.requireNonNull(failure, "failure");
-        for (ArkivoStoredContent content : ownedContents) {
-            try {
-                content.close();
-            } catch (IOException | RuntimeException | Error cleanupFailure) {
-                addSuppressed(failure, cleanupFailure);
-            }
-        }
         try {
             editStorage.close();
         } catch (IOException | RuntimeException | Error cleanupFailure) {
@@ -80,24 +58,23 @@ public final class StoredContentSupport {
         }
     }
 
-    /// Stores one input body and transfers ownership of the resulting content to the given identity set.
+    /// Stores one input body in pool-owned content.
     ///
-    /// @param editStorage the storage strategy used to allocate the staged body
-    /// @param ownedContents the identity set that assumes ownership after a successful transfer
+    /// Failed transfers request content release; the pool retains any incomplete cleanup for a later retry.
+    ///
+    /// @param editStorage the pool that owns the allocated body and its channels
     /// @param path the archive-local entry path
     /// @param expectedSize the expected non-negative byte count, or {@link ArkivoEditStorage#UNKNOWN_SIZE}
     /// @param input the borrowed input stream copied from its current position through end of input
-    /// @return the populated content handle now owned by {@code ownedContents}
+    /// @return the populated content handle owned by the pool
     /// @throws IOException if content allocation, transfer, or channel cleanup fails
     public static ArkivoStoredContent storeInput(
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
+            StoredContentPool editStorage,
             String path,
             long expectedSize,
             InputStream input
     ) throws IOException {
         Objects.requireNonNull(editStorage, "editStorage");
-        Objects.requireNonNull(ownedContents, "ownedContents");
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(input, "input");
         ArkivoStoredContent content = editStorage.createContent(path, expectedSize);
@@ -108,13 +85,11 @@ public final class StoredContentSupport {
             ))) {
                 copyInput(input, output);
             }
-            ownedContents.add(content);
             return content;
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 content.close();
             } catch (IOException | RuntimeException | Error cleanupFailure) {
-                ownedContents.add(content);
                 addSuppressed(exception, cleanupFailure);
             }
             throw exception;

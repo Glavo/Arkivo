@@ -10,7 +10,6 @@ import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArchiveSizeLimitChannel;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -26,6 +25,7 @@ import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
 import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
+import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
@@ -81,7 +81,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -140,10 +139,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private final Map<String, Node> nodes;
 
     /// The storage that owns indexed entry bodies, or `null` in forward-only write mode.
-    private final @Nullable ArkivoEditStorage editStorage;
-
-    /// Indexed entry bodies owned by this file system, tracked by identity for shared hard-link content.
-    private final Set<ArkivoStoredContent> ownedContents;
+    private final @Nullable StoredContentPool editStorage;
 
     /// The streaming writer used by forward-only write mode, or `null` in read mode.
     private final @Nullable TarArkivoStreamingWriter writer;
@@ -178,9 +174,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Whether this file system is open.
     private volatile boolean open = true;
 
-    /// Whether the indexed content storage has been closed.
-    private boolean editStorageClosed;
-
     /// Whether the provider close action has completed.
     private boolean closeActionCompleted;
 
@@ -196,8 +189,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             long sourceArchiveSize,
             ArkivoFileSystemThreadSafety threadSafety,
             Map<String, Node> nodes,
-            @Nullable ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
+            @Nullable StoredContentPool editStorage,
             @Nullable TarArkivoStreamingWriter writer,
             boolean readOnly,
             boolean updateMode,
@@ -223,7 +215,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
         this.nodes = updateMode ? new LinkedHashMap<>(nodes) : Map.copyOf(nodes);
         this.editStorage = editStorage;
-        this.ownedContents = ownedContents;
         this.writer = writer;
         this.readOnly = readOnly;
         this.updateMode = updateMode;
@@ -231,7 +222,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         this.compressionCodec = compressionCodec;
         this.rootPath = TarArkivoPath.root(this);
         this.writtenDirectories.add("");
-        this.editStorageClosed = editStorage == null;
         this.channelSourceClosed = channelSource == null;
     }
 
@@ -265,8 +255,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             TarCompression.Read sourceCompression = readCompression(options.get(SOURCE_COMPRESSION));
             TarCompression.Update targetCompression = updateCompression(options.get(COMPRESSION));
             validateArchiveUpdateOptions(openOptions);
-            ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
-            Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+            StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
             try {
                 Map<String, Node> nodes;
                 boolean newArchive = !Files.exists(archivePath);
@@ -280,7 +269,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                             sourceCodec,
                             readLimits,
                             editStorage,
-                            ownedContents,
                             options
                     );
                 } else if (openOptions.contains(StandardOpenOption.CREATE)) {
@@ -305,7 +293,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                         threadSafety,
                         nodes,
                         editStorage,
-                        ownedContents,
                         null,
                         false,
                         true,
@@ -316,7 +303,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 fileSystem.dirty = newArchive;
                 return fileSystem;
             } catch (IOException | RuntimeException | Error exception) {
-                StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
+                StoredContentSupport.closeAfterOpenFailure(editStorage, exception);
                 throw exception;
             }
         }
@@ -339,7 +326,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     threadSafety,
                     rootNodes(),
                     null,
-                    StoredContentSupport.newIdentitySet(),
                     TarArkivoStreamingWriter.open(output),
                     false,
                     false,
@@ -351,8 +337,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
         validateArchiveReadOptions(openOptions);
         TarCompression.Read compression = readCompression(options.get(COMPRESSION));
-        ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+        StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
         try {
             @Nullable CompressionCodec<?> compressionCodec = configuredCodec(compression);
             if (compression == TarCompression.DETECT) {
@@ -363,7 +348,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     compressionCodec,
                     readLimits,
                     editStorage,
-                    ownedContents,
                     options
             );
             return new TarArkivoFileSystemImpl(
@@ -375,7 +359,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     threadSafety,
                     nodes,
                     editStorage,
-                    ownedContents,
                     null,
                     true,
                     false,
@@ -384,7 +367,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     closeAction
             );
         } catch (IOException | RuntimeException | Error exception) {
-            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, exception);
             throw exception;
         }
     }
@@ -414,7 +397,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
 
         ArkivoFileSystemThreadSafety threadSafety;
-        ArkivoEditStorage editStorage;
+        StoredContentPool editStorage;
         TarCompression.Read sourceCompression;
         @Nullable TarCompression.Update targetCompression;
         boolean updateMode;
@@ -441,13 +424,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 sourceCompression = readCompression(options.get(COMPRESSION));
                 targetCompression = null;
             }
-            editStorage = StoredContentSupport.selectStorage(options);
-        } catch (RuntimeException | Error exception) {
+            editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+        } catch (IOException | RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
         }
-
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
             @Nullable CompressionCodec<?> sourceCodec = configuredCodec(sourceCompression);
             if (sourceCompression == TarCompression.DETECT) {
@@ -460,7 +441,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     sourceCodec,
                     readLimits,
                     editStorage,
-                    ownedContents,
                     options
             );
             @Nullable CompressionCodec<?> retainedCodec;
@@ -480,7 +460,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     threadSafety,
                     sourceNodes.nodes(),
                     editStorage,
-                    ownedContents,
                     null,
                     !updateMode,
                     updateMode,
@@ -490,7 +469,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     }
             );
         } catch (IOException | RuntimeException | Error exception) {
-            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, exception);
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
         }
@@ -567,8 +546,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
             if (open
-                    || !ownedContents.isEmpty()
-                    || !editStorageClosed
+                    || (editStorage != null && !editStorage.isClosed())
                     || !channelSourceClosed
                     || !closeActionCompleted) {
                 @Nullable Throwable failure = null;
@@ -622,20 +600,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Closes indexed entry bodies and their owning storage, retaining failed resources for a later close retry.
     private @Nullable Throwable closeIndexedStorage(@Nullable Throwable failure) {
-        Iterator<ArkivoStoredContent> iterator = ownedContents.iterator();
-        while (iterator.hasNext()) {
-            ArkivoStoredContent content = iterator.next();
+        if (editStorage != null) {
             try {
-                content.close();
-                iterator.remove();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-        }
-        if (!editStorageClosed) {
-            try {
-                Objects.requireNonNull(editStorage, "editStorage").close();
-                editStorageClosed = true;
+                editStorage.close();
             } catch (IOException | RuntimeException | Error exception) {
                 failure = appendFailure(failure, exception);
             }
@@ -1889,7 +1856,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         } else {
             nodes.put(path, replacement);
         }
-        ownedContents.add(content);
         refreshHardLinkContents(path, content, size);
         dirty = true;
     }
@@ -1925,12 +1891,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
-    /// Releases uncommitted stored content or retains it for close-time cleanup retry.
+    /// Requests release of uncommitted content, leaving failed cleanup tracked by the storage pool.
     private void releaseStoredContent(ArkivoStoredContent content) {
         try {
             content.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            ownedContents.add(content);
+        } catch (IOException | RuntimeException | Error ignored) {
+            // The pool retries incomplete content and channel cleanup when it closes.
         }
     }
 
@@ -2434,7 +2400,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     }
 
     /// Returns the indexed-content storage required outside forward-only write mode.
-    private ArkivoEditStorage requireEditStorage() {
+    private StoredContentPool requireEditStorage() {
         return Objects.requireNonNull(editStorage, "editStorage");
     }
 
@@ -2580,8 +2546,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             Path archivePath,
             @Nullable CompressionCodec<?> compressionCodec,
             ArchiveReadLimits readLimits,
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
+            StoredContentPool editStorage,
             ArchiveOptions options
     ) throws IOException {
         ArkivoSeekableChannelSource source =
@@ -2591,7 +2556,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 compressionCodec,
                 readLimits,
                 editStorage,
-                ownedContents,
                 options
         ).nodes();
     }
@@ -2601,8 +2565,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             ArkivoSeekableChannelSource source,
             @Nullable CompressionCodec<?> compressionCodec,
             ArchiveReadLimits readLimits,
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
+            StoredContentPool editStorage,
             ArchiveOptions options
     ) throws IOException {
         try (SeekableByteChannel channel = source.openChannel()) {
@@ -2616,7 +2579,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if (seekableSource != null) {
                 try (InputStream input = seekableSource.newInputStream()) {
                     return new SourceNodes(
-                            readNodes(input, editStorage, ownedContents, options, seekableSource),
+                            readNodes(input, editStorage, options, seekableSource),
                             archiveSize
                     );
                 }
@@ -2629,7 +2592,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             );
             try (InputStream input = limitDecodedArchive(decoded, compressionCodec, readLimits)) {
                 return new SourceNodes(
-                        readNodes(input, editStorage, ownedContents, options, null),
+                        readNodes(input, editStorage, options, null),
                         archiveSize
                 );
             }
@@ -2671,8 +2634,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Reads all entry nodes from a TAR stream.
     private static Map<String, Node> readNodes(
             InputStream input,
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
+            StoredContentPool editStorage,
             ArchiveOptions options,
             @Nullable SeekableCompressedTarSource seekableSource
     ) throws IOException {
@@ -2705,7 +2667,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                         try (InputStream entryInput = reader.openInputStream()) {
                             content = StoredContentSupport.storeInput(
                                     editStorage,
-                                    ownedContents,
                                     path,
                                     internalAttributes.bodySize(),
                                     entryInput

@@ -6,7 +6,6 @@ package org.glavo.arkivo.archive.rar.internal;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -15,6 +14,7 @@ import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
+import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
@@ -27,10 +27,7 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
-import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
@@ -63,8 +60,6 @@ import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -110,25 +105,16 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     private final @Unmodifiable Map<String, Node> nodes;
 
     /// The storage that owns cached stored-entry bodies.
-    private final ArkivoEditStorage editStorage;
-
-    /// Cached stored-entry bodies owned by this file system, tracked by identity for redirections.
-    private final Set<ArkivoStoredContent> ownedContents;
+    private final StoredContentPool editStorage;
 
     /// The lock protecting lazy content materialization and storage lifecycle state.
     private final Object contentLifecycleLock = new Object();
-
-    /// Active channel counts for cached bodies, tracked by content identity.
-    private final IdentityHashMap<ArkivoStoredContent, Integer> activeContentUseCounts = new IdentityHashMap<>();
 
     /// Whether this file system is open.
     private volatile boolean open = true;
 
     /// Whether the owned volume source has been closed.
     private boolean volumesClosed;
-
-    /// Whether cached content and its owning storage have been closed.
-    private boolean editStorageClosed;
 
     /// Whether the close action has completed.
     private boolean closeActionCompleted;
@@ -141,8 +127,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             ArkivoVolumeSource volumes,
             ArkivoFileSystemThreadSafety threadSafety,
             Map<String, Node> nodes,
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
+            StoredContentPool editStorage,
             ArchiveOptions options,
             Runnable closeAction
     ) {
@@ -158,7 +143,6 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
         this.nodes = Map.copyOf(nodes);
         this.editStorage = Objects.requireNonNull(editStorage, "editStorage");
-        this.ownedContents = ownedContents;
         this.rootPath = RarArkivoPath.root(this);
     }
 
@@ -193,8 +177,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         ArkivoVolumeSource volumes = ArkivoVolumeSource.of(
                 splitVolumePaths != null ? splitVolumePaths : List.of(archivePath)
         );
-        ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+        StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
         try {
             Map<String, Node> nodes;
             try (InputStream input = new RarVolumeInputStream(volumes)) {
@@ -208,12 +191,11 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                     threadSafety,
                     nodes,
                     editStorage,
-                    ownedContents,
                     options,
                     closeAction
             );
         } catch (IOException | RuntimeException | Error exception) {
-            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, exception);
             closeSourceAfterOpenFailure(volumes, exception);
             throw exception;
         }
@@ -249,14 +231,13 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             }
         }
 
-        ArkivoEditStorage editStorage;
+        StoredContentPool editStorage;
         try {
-            editStorage = StoredContentSupport.selectStorage(options);
-        } catch (RuntimeException | Error exception) {
+            editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+        } catch (IOException | RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(volumes, exception);
             throw exception;
         }
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
             Map<String, Node> nodes;
             try (InputStream input = new RarVolumeInputStream(volumes)) {
@@ -270,13 +251,12 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                     threadSafety,
                     nodes,
                     editStorage,
-                    ownedContents,
                     options,
                     () -> {
                     }
             );
         } catch (IOException | RuntimeException | Error exception) {
-            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, exception);
             closeSourceAfterOpenFailure(volumes, exception);
             throw exception;
         }
@@ -293,7 +273,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
             if (!open
-                    && isEditStorageClosed()
+                    && editStorage.isClosed()
                     && volumesClosed
                     && closeActionCompleted) {
                 return;
@@ -320,38 +300,13 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         }
     }
 
-    /// Returns whether cached content and its owning storage have completed cleanup.
-    private boolean isEditStorageClosed() {
-        synchronized (contentLifecycleLock) {
-            return editStorageClosed;
-        }
-    }
-
-    /// Closes inactive cached bodies and their storage, retaining active or failed resources for a later retry.
+    /// Requests cached-content cleanup without closing channels still in use.
     private @Nullable Throwable closeIndexedStorage(@Nullable Throwable failure) {
         synchronized (contentLifecycleLock) {
-            Iterator<ArkivoStoredContent> iterator = ownedContents.iterator();
-            while (iterator.hasNext()) {
-                ArkivoStoredContent content = iterator.next();
-                if (activeContentUseCounts.containsKey(content)) {
-                    continue;
-                }
-                try {
-                    content.close();
-                    iterator.remove();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
-                }
-            }
-            if (!editStorageClosed
-                    && ownedContents.isEmpty()
-                    && activeContentUseCounts.isEmpty()) {
-                try {
-                    editStorage.close();
-                    editStorageClosed = true;
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
-                }
+            try {
+                editStorage.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
             }
         }
         return failure;
@@ -854,9 +809,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         synchronized (contentLifecycleLock) {
             ensureOpen();
             ArkivoStoredContent content = materializeContent(node, new LinkedHashSet<>());
-            SeekableByteChannel channel = content.openChannel(Set.of(StandardOpenOption.READ));
-            activeContentUseCounts.merge(content, 1, Integer::sum);
-            return new CachedContentReadByteChannel(content, channel);
+            return content.openChannel(Set.of(StandardOpenOption.READ));
         }
     }
 
@@ -907,7 +860,6 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                 try (InputStream entryInput = reader.openInputStream()) {
                     content = StoredContentSupport.storeInput(
                             editStorage,
-                            ownedContents,
                             node.path(),
                             node.attributes().unpackedSize(),
                             entryInput
@@ -933,25 +885,6 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                 || indexed.continuesFromPreviousVolume() != current.continuesFromPreviousVolume()
                 || indexed.continuesInNextVolume() != current.continuesInNextVolume()) {
             throw new IOException("RAR entry changed after the file system index was created: " + indexed.path());
-        }
-    }
-
-    /// Releases one cached-body channel and advances deferred storage cleanup after file system close.
-    private @Nullable Throwable releaseContentUse(
-            ArkivoStoredContent content,
-            @Nullable Throwable failure
-    ) {
-        synchronized (contentLifecycleLock) {
-            Integer count = activeContentUseCounts.get(content);
-            if (count == null) {
-                return appendFailure(failure, new IOException("RAR cached content use was not registered"));
-            }
-            if (count == 1) {
-                activeContentUseCounts.remove(content);
-            } else {
-                activeContentUseCounts.put(content, count - 1);
-            }
-            return open ? failure : closeIndexedStorage(failure);
         }
     }
 
@@ -1354,99 +1287,6 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         /// Returns mutable child path map while the file system index is being built.
         private LinkedHashMap<String, String> children() {
             return children;
-        }
-    }
-    /// Exposes one cached body through an independently positioned read-only channel.
-    @NotNullByDefault
-    private final class CachedContentReadByteChannel implements SeekableByteChannel {
-        /// The cached body whose active-use count is released on close.
-        private final ArkivoStoredContent content;
-
-        /// The independently positioned stored-content channel.
-        private final SeekableByteChannel channel;
-
-        /// Whether this wrapper remains open.
-        private boolean channelOpen = true;
-
-        /// Creates one registered channel over cached content.
-        private CachedContentReadByteChannel(ArkivoStoredContent content, SeekableByteChannel channel) {
-            this.content = Objects.requireNonNull(content, "content");
-            this.channel = Objects.requireNonNull(channel, "channel");
-        }
-
-        /// Reads cached entry bytes.
-        @Override
-        public int read(ByteBuffer destination) throws IOException {
-            Objects.requireNonNull(destination, "destination");
-            ensureChannelOpen();
-            return channel.read(destination);
-        }
-
-        /// Rejects writes to cached read-only content.
-        @Override
-        public int write(ByteBuffer source) throws IOException {
-            Objects.requireNonNull(source, "source");
-            ensureChannelOpen();
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns the current cached-content position.
-        @Override
-        public long position() throws IOException {
-            ensureChannelOpen();
-            return channel.position();
-        }
-
-        /// Changes the current cached-content position.
-        @Override
-        public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureChannelOpen();
-            channel.position(newPosition);
-            return this;
-        }
-
-        /// Returns the cached body size.
-        @Override
-        public long size() throws IOException {
-            ensureChannelOpen();
-            return channel.size();
-        }
-
-        /// Rejects truncation of cached read-only content.
-        @Override
-        public SeekableByteChannel truncate(long size) throws IOException {
-            ensureChannelOpen();
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns whether this wrapper and its stored-content channel remain open.
-        @Override
-        public boolean isOpen() {
-            return channelOpen && channel.isOpen();
-        }
-
-        /// Closes this channel and releases its active cached-content use.
-        @Override
-        public void close() throws IOException {
-            if (!channelOpen) {
-                return;
-            }
-            channelOpen = false;
-            @Nullable Throwable failure = null;
-            try {
-                channel.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
-            }
-            failure = releaseContentUse(content, failure);
-            throwFailure(failure);
-        }
-
-        /// Requires this channel to remain open.
-        private void ensureChannelOpen() throws ClosedChannelException {
-            if (!channelOpen) {
-                throw new ClosedChannelException();
-            }
         }
     }
     /// Implements a read-only basic attribute view.

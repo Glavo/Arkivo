@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.internal;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -54,21 +55,18 @@ final class StoredContentSupportTest {
                 ArchiveOptions.EMPTY.with(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY, () -> storage)
         ));
 
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+        StoredContentPool pool = new StoredContentPool(storage);
         ArkivoStoredContent source = StoredContentSupport.storeInput(
-                storage,
-                ownedContents,
+                pool,
                 "source",
                 4L,
                 new ByteArrayInputStream(new byte[]{1, 2, 3, 4})
         );
-        assertTrue(ownedContents.contains(source));
         try (InputStream input = StoredContentSupport.openInputStream(source)) {
             assertArrayEquals(new byte[]{1, 2, 3, 4}, input.readAllBytes());
         }
 
-        ArkivoStoredContent destination = storage.createContent("destination", 0L);
-        ownedContents.add(destination);
+        ArkivoStoredContent destination = pool.createContent("destination", 0L);
         StoredContentSupport.copyContent(source, destination);
         try (SeekableByteChannel input = StoredContentSupport.openReadChannel(destination)) {
             ByteBuffer bytes = ByteBuffer.allocate(4);
@@ -84,7 +82,7 @@ final class StoredContentSupportTest {
             assertEquals(-1, empty.read(ByteBuffer.allocate(1)));
         }
 
-        StoredContentSupport.closeAfterOpenFailure(storage, ownedContents, new IOException("open failed"));
+        StoredContentSupport.closeAfterOpenFailure(pool, new IOException("open failed"));
         assertThrows(IOException.class, source::size);
         assertThrows(IOException.class, destination::size);
     }
@@ -212,11 +210,10 @@ final class StoredContentSupportTest {
     @Test
     void retainsFailedCleanupForRetry() throws IOException {
         RetryCloseStorage storage = new RetryCloseStorage(true);
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+        StoredContentPool pool = new StoredContentPool(storage);
 
         IOException storeFailure = assertThrows(IOException.class, () -> StoredContentSupport.storeInput(
-                storage,
-                ownedContents,
+                pool,
                 "failed",
                 ArkivoEditStorage.UNKNOWN_SIZE,
                 new FailingInputStream()
@@ -224,10 +221,10 @@ final class StoredContentSupportTest {
         assertEquals("input failed", storeFailure.getMessage());
         assertEquals(1, storeFailure.getSuppressed().length);
         assertEquals("content close failed", storeFailure.getSuppressed()[0].getMessage());
-        assertTrue(ownedContents.contains(storage.content));
+        assertFalse(pool.isClosed());
 
         IOException openFailure = new IOException("open failed");
-        StoredContentSupport.closeAfterOpenFailure(storage, ownedContents, openFailure);
+        StoredContentSupport.closeAfterOpenFailure(pool, openFailure);
         assertEquals(1, openFailure.getSuppressed().length);
         assertEquals("storage close failed", openFailure.getSuppressed()[0].getMessage());
         assertEquals(2, storage.content.closeAttempts);
@@ -279,35 +276,41 @@ final class StoredContentSupportTest {
         }
     }
 
-    /// Verifies content and storage cleanup failures are both retained behind the primary failure.
+    /// Verifies failed content cleanup prevents premature storage closure during failed-open cleanup.
     @Test
-    void suppressesAllOpenCleanupFailures() throws IOException {
-        RetryCloseStorage storage = new RetryCloseStorage(true);
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
-        ownedContents.add(storage.content);
+    void defersStorageCloseAfterContentFailure() throws IOException {
+        RetryCloseStorage storage = new RetryCloseStorage(false);
+        StoredContentPool pool = new StoredContentPool(storage);
+        pool.createContent("entry", 0L);
         IOException failure = new IOException("open failed");
 
-        StoredContentSupport.closeAfterOpenFailure(storage, ownedContents, failure);
+        StoredContentSupport.closeAfterOpenFailure(pool, failure);
 
-        assertEquals(2, failure.getSuppressed().length);
+        assertEquals(1, failure.getSuppressed().length);
         assertEquals("content close failed", failure.getSuppressed()[0].getMessage());
-        assertEquals("storage close failed", failure.getSuppressed()[1].getMessage());
         assertEquals(1, storage.content.closeAttempts);
         assertTrue(storage.content.delegateOpen());
+        assertFalse(storage.closed);
+        pool.close();
+        assertTrue(pool.isClosed());
+        assertFalse(storage.content.delegateOpen());
         assertTrue(storage.closed);
-        storage.content.close();
     }
 
-    /// Verifies a cleanup failure identical to the primary failure is not self-suppressed.
+    /// Verifies failed-open cleanup does not attempt to suppress the primary exception on itself.
     @Test
     void avoidsSelfSuppressionDuringCleanup() throws IOException {
-        IOException failure = new IOException("shared failure");
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
-        ownedContents.add(new SameFailureContent(failure));
+        RetryCloseStorage storage = new RetryCloseStorage(true);
+        StoredContentPool pool = new StoredContentPool(storage);
+        ArkivoStoredContent content = pool.createContent("entry", 0L);
+        assertThrows(IOException.class, content::close);
+        IOException failure = java.util.Objects.requireNonNull(storage.closeFailure);
 
-        StoredContentSupport.closeAfterOpenFailure(ArkivoEditStorage.memory(), ownedContents, failure);
+        StoredContentSupport.closeAfterOpenFailure(pool, failure);
 
         assertEquals(0, failure.getSuppressed().length);
+        assertEquals(2, storage.content.closeAttempts);
+        assertFalse(storage.content.delegateOpen());
     }
 
     /// Verifies shared storage helpers reject null mandatory arguments before allocating or transferring content.
@@ -315,40 +318,32 @@ final class StoredContentSupportTest {
     @SuppressWarnings("DataFlowIssue")
     void validatesArguments() throws IOException {
         ArkivoEditStorage storage = ArkivoEditStorage.memory();
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+        StoredContentPool pool = new StoredContentPool(storage);
         IOException failure = new IOException("failure");
         InputStream input = InputStream.nullInputStream();
         WritableByteChannel output = Channels.newChannel(new ByteArrayOutputStream());
 
-        try (storage; input; output) {
+        try (pool; input; output) {
             assertThrows(NullPointerException.class, () -> StoredContentSupport.selectStorage(null));
             assertThrows(
                     NullPointerException.class,
-                    () -> StoredContentSupport.closeAfterOpenFailure(null, ownedContents, failure)
+                    () -> StoredContentSupport.closeAfterOpenFailure(null, failure)
             );
             assertThrows(
                     NullPointerException.class,
-                    () -> StoredContentSupport.closeAfterOpenFailure(storage, null, failure)
+                    () -> StoredContentSupport.closeAfterOpenFailure(pool, null)
             );
             assertThrows(
                     NullPointerException.class,
-                    () -> StoredContentSupport.closeAfterOpenFailure(storage, ownedContents, null)
+                    () -> StoredContentSupport.storeInput(null, "entry", 0L, input)
             );
             assertThrows(
                     NullPointerException.class,
-                    () -> StoredContentSupport.storeInput(null, ownedContents, "entry", 0L, input)
+                    () -> StoredContentSupport.storeInput(pool, null, 0L, input)
             );
             assertThrows(
                     NullPointerException.class,
-                    () -> StoredContentSupport.storeInput(storage, null, "entry", 0L, input)
-            );
-            assertThrows(
-                    NullPointerException.class,
-                    () -> StoredContentSupport.storeInput(storage, ownedContents, null, 0L, input)
-            );
-            assertThrows(
-                    NullPointerException.class,
-                    () -> StoredContentSupport.storeInput(storage, ownedContents, "entry", 0L, null)
+                    () -> StoredContentSupport.storeInput(pool, "entry", 0L, null)
             );
             assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(null, output));
             assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(input, null));
@@ -393,36 +388,6 @@ final class StoredContentSupportTest {
             System.arraycopy(content, position, bytes, offset, count);
             position += count;
             return count;
-        }
-    }
-
-    /// Throws one caller-supplied exception whenever cleanup is attempted.
-    @NotNullByDefault
-    private static final class SameFailureContent implements ArkivoStoredContent {
-        /// Exception shared with the primary operation failure.
-        private final IOException failure;
-
-        /// Creates a content handle that reports the supplied close failure.
-        private SameFailureContent(IOException failure) {
-            this.failure = failure;
-        }
-
-        /// Rejects channel creation because this handle exists only for cleanup testing.
-        @Override
-        public SeekableByteChannel openChannel(Set<? extends OpenOption> options) {
-            throw new UnsupportedOperationException();
-        }
-
-        /// Reports an empty logical body.
-        @Override
-        public long size() {
-            return 0L;
-        }
-
-        /// Throws the exact shared failure instance.
-        @Override
-        public void close() throws IOException {
-            throw failure;
         }
     }
 
@@ -475,15 +440,15 @@ final class StoredContentSupportTest {
         /// The content returned by this storage.
         private final RetryCloseContent content;
 
-        /// Whether storage close should fail.
-        private final boolean failClose;
+        /// The failure reported by storage close, or null when close succeeds.
+        private final @Nullable IOException closeFailure;
 
         /// Whether this storage has been closed.
         private boolean closed;
 
         /// Creates retry-close storage.
         private RetryCloseStorage(boolean failClose) throws IOException {
-            this.failClose = failClose;
+            this.closeFailure = failClose ? new IOException("storage close failed") : null;
             this.content = new RetryCloseContent();
         }
 
@@ -497,8 +462,8 @@ final class StoredContentSupportTest {
         @Override
         public void close() throws IOException {
             closed = true;
-            if (failClose) {
-                throw new IOException("storage close failed");
+            if (closeFailure != null) {
+                throw closeFailure;
             }
         }
     }

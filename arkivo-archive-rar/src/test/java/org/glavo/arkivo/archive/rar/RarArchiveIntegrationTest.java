@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
@@ -20,11 +21,15 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -68,6 +73,7 @@ import java.util.Set;
 import java.util.SplittableRandom;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -75,6 +81,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -450,37 +457,156 @@ public final class RarArchiveIntegrationTest {
         assertEquals(1, storage.closeCount());
     }
 
-    /// Verifies cached storage remains alive until a channel opened before file-system close is released.
+    /// Verifies a checked storage-construction failure releases an already transferred archive source.
     @Test
-    public void fileSystemDefersCachedStorageCloseForOpenChannels() throws IOException {
-        byte[] content = "deferred cached body".getBytes(StandardCharsets.UTF_8);
-        Path archivePath = createTemporaryArchivePath("rar-deferred-storage-");
+    void closesOwnedSourceAfterStorageConstructionFailure() throws IOException {
+        Path archivePath = createTemporaryArchivePath("rar-storage-setup-");
+        Files.write(archivePath, archive());
+        IOException failure = new IOException("storage construction failed");
+        try (SeekableByteChannel channel = Files.newByteChannel(archivePath)) {
+            ArkivoSeekableChannelSource source = ArkivoSeekableChannelSource.of(channel);
+            assertSame(failure, assertThrows(IOException.class, () -> RarArkivoFileSystem.open(source,
+                    RarArchiveOptions.DEFAULT.withCommon(ArchiveReadOptions.DEFAULT
+                            .withEditStorageFactory(() -> {
+                                throw failure;
+                            })))));
+            assertFalse(channel.isOpen());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Supplies checked and unchecked failures for the same backing-channel close boundary.
+    private static Stream<Throwable> channelCloseFailures() {
+        return Stream.of(new IOException("channel close failed"),
+                new IllegalStateException("channel close failed"), new AssertionError("channel close failed"));
+    }
+
+    /// Verifies independent readers delay cleanup while coordinated closure rejects further I/O.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void closesSharedReadersInEitherOrder(boolean closeFileSystemFirst) throws IOException {
+        Path archivePath = createTemporaryArchivePath("rar-channel-cleanup-");
         Files.write(archivePath, archive(
-                storedFile("value.bin", 1_700_000_000L, 0100644, content, null)
+                storedFile("file.txt", 1_700_000_000L, 0100644, new byte[]{1, 2, 3}, null)
         ));
         TrackingEditStorage storage = new TrackingEditStorage(false);
-        RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
-                archivePath,
-                RarArchiveOptions.DEFAULT.withCommon(
+        RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, RarArchiveOptions.DEFAULT.withCommon(
                         ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
-                )
-        );
-        SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/value.bin"));
-        try {
-            fileSystem.close();
+                ));
+        try (fileSystem;
+             SeekableByteChannel first = Files.newByteChannel(fileSystem.getPath("/file.txt"));
+             SeekableByteChannel second = Files.newByteChannel(fileSystem.getPath("/file.txt"))) {
+            assertEquals(1, storage.createdContentCount());
+            assertEquals(1, first.read(ByteBuffer.allocate(1)));
+            assertEquals(0L, second.position());
+            if (closeFileSystemFirst) {
+                fileSystem.close();
+                assertThrows(ClosedChannelException.class, () -> first.read(ByteBuffer.allocate(1)));
+                assertThrows(ClosedChannelException.class, second::position);
+            }
             assertEquals(0, storage.contentCloseCount());
             assertEquals(0, storage.closeCount());
-
-            channel.close();
+            first.close();
+            if (!closeFileSystemFirst) {
+                assertEquals(1, second.read(ByteBuffer.allocate(1)));
+            }
+            assertEquals(0, storage.contentCloseCount());
+            second.close();
+            assertEquals(closeFileSystemFirst ? 1 : 0, storage.contentCloseCount());
+            fileSystem.close();
             assertEquals(1, storage.contentCloseCount());
             assertEquals(1, storage.closeCount());
         } finally {
-            try {
-                channel.close();
-            } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies a failed reader close remains tracked and blocks content deletion until a retry succeeds.
+    @ParameterizedTest
+    @MethodSource("channelCloseFailures")
+    void retriesBackingChannelCloseBeforeReleasingContent(Throwable failure) throws IOException {
+        Path archivePath = createTemporaryArchivePath("rar-channel-cleanup-");
+        Files.write(archivePath, archive(
+                storedFile("file.txt", 1_700_000_000L, 0100644, new byte[]{1, 2, 3}, null)
+        ));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, RarArchiveOptions.DEFAULT.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                ));
+        try (fileSystem;
+             SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/file.txt"))) {
+            storage.channelCloseFailure = failure;
+            assertSame(failure, assertThrows(failure.getClass(), channel::close));
+            assertEquals(0, storage.contentCloseCount());
+            assertEquals(0, storage.closeCount());
+            fileSystem.close();
+            assertEquals(3, storage.channelCloseCount);
+            assertEquals(1, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+            channel.close();
+            fileSystem.close();
+            assertEquals(3, storage.channelCloseCount);
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies strict close releases active readers and still retries a failed backing close before deletion.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void strictCloseReleasesReadersBeforeStorage(boolean failClose) throws IOException {
+        Path archivePath = createTemporaryArchivePath("rar-strict-storage-");
+        Files.write(archivePath, archive(
+                storedFile("file.txt", 1_700_000_000L, 0100644, new byte[]{1, 2, 3}, null)
+        ));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath,
+                RarArchiveOptions.DEFAULT.withCommon(ArchiveReadOptions.DEFAULT
+                        .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT)
+                        .withEditStorageFactory(() -> storage)));
+        try (fileSystem;
+             SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/file.txt"))) {
+            IOException failure = new IOException("strict channel close failed");
+            if (failClose) {
+                storage.channelCloseFailure = failure;
+                assertSame(failure, assertThrows(IOException.class, fileSystem::close));
+            } else {
                 fileSystem.close();
-                Files.deleteIfExists(archivePath);
             }
+            fileSystem.close();
+            assertFalse(channel.isOpen());
+            assertEquals(failClose ? 3 : 2, storage.channelCloseCount);
+            assertEquals(1, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies a failed staging-writer close is retried before its content and storage are released.
+    @Test
+    void recoversFailedMaterializationWriterClose() throws IOException {
+        Path archivePath = createTemporaryArchivePath("rar-channel-cleanup-");
+        Files.write(archivePath, archive(
+                storedFile("file.txt", 1_700_000_000L, 0100644, new byte[]{1, 2, 3}, null)
+        ));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        IOException failure = new IOException("staging writer close failed");
+        storage.channelCloseFailure = failure;
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, RarArchiveOptions.DEFAULT.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                ))) {
+                assertSame(failure, assertThrows(IOException.class,
+                        () -> Files.newByteChannel(fileSystem.getPath("/file.txt"))));
+                assertEquals(2, storage.channelCloseCount);
+                assertEquals(1, storage.contentCloseCount());
+                assertEquals(0, storage.closeCount());
+            }
+            assertEquals(1, storage.closeCount());
+        } finally {
+            Files.deleteIfExists(archivePath);
         }
     }
 
@@ -4475,6 +4601,12 @@ public final class RarArchiveIntegrationTest {
         /// The total number of stored-content close calls.
         private int contentCloseCount;
 
+        /// The failure injected by the next channel close, or null when no failure is armed.
+        private @Nullable Throwable channelCloseFailure;
+
+        /// The number of backing-channel close attempts.
+        private int channelCloseCount;
+
         /// The number of storage close calls.
         private int closeCount;
 
@@ -4512,6 +4644,80 @@ public final class RarArchiveIntegrationTest {
             return closeCount;
         }
 
+        /// Records backing-channel cleanup without changing byte access.
+        @NotNullByDefault
+        private final class TrackingChannel implements SeekableByteChannel {
+            /// The independently owned backing channel.
+            private final SeekableByteChannel delegate;
+
+            /// Wraps a channel created by the configured storage.
+            private TrackingChannel(SeekableByteChannel delegate) {
+                this.delegate = delegate;
+            }
+
+            /// Reads from the backing channel.
+            @Override
+            public int read(ByteBuffer target) throws IOException {
+                return delegate.read(target);
+            }
+
+            /// Writes to the backing channel.
+            @Override
+            public int write(ByteBuffer source) throws IOException {
+                return delegate.write(source);
+            }
+
+            /// Returns the backing position.
+            @Override
+            public long position() throws IOException {
+                return delegate.position();
+            }
+
+            /// Changes the backing position.
+            @Override
+            public SeekableByteChannel position(long position) throws IOException {
+                delegate.position(position);
+                return this;
+            }
+
+            /// Returns the current body size.
+            @Override
+            public long size() throws IOException {
+                return delegate.size();
+            }
+
+            /// Truncates the backing content.
+            @Override
+            public SeekableByteChannel truncate(long size) throws IOException {
+                delegate.truncate(size);
+                return this;
+            }
+
+            /// Returns whether the backing channel remains open.
+            @Override
+            public boolean isOpen() {
+                return delegate.isOpen();
+            }
+
+            /// Reports an armed failure without closing the delegate, or closes it successfully.
+            @Override
+            public void close() throws IOException {
+                channelCloseCount++;
+                @Nullable Throwable failure = channelCloseFailure;
+                channelCloseFailure = null;
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                if (failure instanceof Error error) {
+                    throw error;
+                }
+                delegate.close();
+            }
+        }
+
         /// Tracks one delegated stored-content object.
         @NotNullByDefault
         private final class TrackingStoredContent implements ArkivoStoredContent {
@@ -4529,7 +4735,7 @@ public final class RarArchiveIntegrationTest {
             /// Opens a channel over the delegated content.
             @Override
             public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
-                return content.openChannel(options);
+                return new TrackingChannel(content.openChannel(options));
             }
 
             /// Returns the delegated content size.

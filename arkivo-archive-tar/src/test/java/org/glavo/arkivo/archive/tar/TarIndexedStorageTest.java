@@ -5,25 +5,39 @@ package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests indexed TAR content storage ownership and cleanup behavior.
 @NotNullByDefault
@@ -114,7 +128,7 @@ public final class TarIndexedStorageTest {
             IOException failure = assertThrows(IOException.class, fileSystem::close);
             assertEquals("content close failed", failure.getMessage());
             assertEquals(1, storage.contentCloseCount());
-            assertEquals(1, storage.closeCount());
+            assertEquals(0, storage.closeCount());
 
             fileSystem.close();
             fileSystem.close();
@@ -126,6 +140,180 @@ public final class TarIndexedStorageTest {
             } finally {
                 Files.deleteIfExists(archivePath);
             }
+        }
+    }
+
+    /// Verifies a checked storage-construction failure releases an already transferred archive source.
+    @Test
+    void closesOwnedSourceAfterStorageConstructionFailure() throws IOException {
+        Path archivePath = createArchive(false);
+        IOException failure = new IOException("storage construction failed");
+        try (SeekableByteChannel channel = Files.newByteChannel(archivePath)) {
+            ArkivoSeekableChannelSource source = ArkivoSeekableChannelSource.of(channel);
+            assertSame(failure, assertThrows(IOException.class, () -> TarArkivoFileSystem.open(source,
+                    TarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT
+                            .withEditStorageFactory(() -> {
+                                throw failure;
+                            })))));
+            assertFalse(channel.isOpen());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Supplies checked and unchecked failures for the same backing-channel close boundary.
+    private static Stream<Throwable> channelCloseFailures() {
+        return Stream.of(new IOException("channel close failed"),
+                new IllegalStateException("channel close failed"), new AssertionError("channel close failed"));
+    }
+
+    /// Verifies independent readers delay cleanup while coordinated closure rejects further I/O.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void closesSharedReadersInEitherOrder(boolean closeFileSystemFirst) throws IOException {
+        Path archivePath = createArchive(true);
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, TarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                ));
+        try (fileSystem;
+             SeekableByteChannel first = Files.newByteChannel(fileSystem.getPath("/file.txt"));
+             SeekableByteChannel second = Files.newByteChannel(fileSystem.getPath("/hard.txt"))) {
+            assertEquals(1, storage.createdContentCount());
+            assertEquals(1, first.read(ByteBuffer.allocate(1)));
+            assertEquals(0L, second.position());
+            if (closeFileSystemFirst) {
+                fileSystem.close();
+                assertThrows(ClosedChannelException.class, () -> first.read(ByteBuffer.allocate(1)));
+                assertThrows(ClosedChannelException.class, second::position);
+            }
+            assertEquals(0, storage.contentCloseCount());
+            assertEquals(0, storage.closeCount());
+            first.close();
+            if (!closeFileSystemFirst) {
+                assertEquals(1, second.read(ByteBuffer.allocate(1)));
+            }
+            assertEquals(0, storage.contentCloseCount());
+            second.close();
+            assertEquals(closeFileSystemFirst ? 1 : 0, storage.contentCloseCount());
+            fileSystem.close();
+            assertEquals(1, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies a failed reader close remains tracked and blocks content deletion until a retry succeeds.
+    @ParameterizedTest
+    @MethodSource("channelCloseFailures")
+    void retriesBackingChannelCloseBeforeReleasingContent(Throwable failure) throws IOException {
+        Path archivePath = createArchive(true);
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, TarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                ));
+        try (fileSystem;
+             SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/file.txt"))) {
+            storage.channelCloseFailure = failure;
+            assertSame(failure, assertThrows(failure.getClass(), channel::close));
+            assertEquals(0, storage.contentCloseCount());
+            assertEquals(0, storage.closeCount());
+            fileSystem.close();
+            assertEquals(3, storage.channelCloseCount);
+            assertEquals(1, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+            channel.close();
+            fileSystem.close();
+            assertEquals(3, storage.channelCloseCount);
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies strict close releases active readers and still retries a failed backing close before deletion.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void strictCloseReleasesReadersBeforeStorage(boolean failClose) throws IOException {
+        Path archivePath = createArchive(true);
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath,
+                TarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT
+                        .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT)
+                        .withEditStorageFactory(() -> storage)));
+        try (fileSystem;
+             SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/file.txt"))) {
+            IOException failure = new IOException("strict channel close failed");
+            if (failClose) {
+                storage.channelCloseFailure = failure;
+                assertSame(failure, assertThrows(IOException.class, fileSystem::close));
+            } else {
+                fileSystem.close();
+            }
+            fileSystem.close();
+            assertFalse(channel.isOpen());
+            assertEquals(failClose ? 3 : 2, storage.channelCloseCount);
+            assertEquals(1, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies a failed staging-writer close is retried before its content and storage are released.
+    @Test
+    void recoversFailedMaterializationWriterClose() throws IOException {
+        Path archivePath = createArchive(true);
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        IOException failure = new IOException("staging writer close failed");
+        storage.channelCloseFailure = failure;
+        try {
+            assertSame(failure, assertThrows(IOException.class,
+                    () -> TarArkivoFileSystem.open(archivePath, TarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)
+                ))));
+            assertEquals(2, storage.channelCloseCount);
+            assertEquals(1, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies failed update-channel closure discards the body while successful closure publishes it.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void updateStoragePublishesOnlySuccessfullyClosedBodies(boolean failClose) throws IOException {
+        Path archivePath = createArchive(true);
+        byte[] original = Files.readAllBytes(archivePath);
+        byte[] replacement = "replacement".getBytes(StandardCharsets.UTF_8);
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        try {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(archivePath,
+                    TarArchiveOptions.UPDATE_DEFAULTS.withCommon(ArchiveUpdateOptions.DEFAULT
+                            .withEditStorageFactory(() -> storage)))) {
+                try (SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/file.txt"),
+                        StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                    channel.write(ByteBuffer.wrap(replacement));
+                    if (failClose) {
+                        IOException failure = new IOException("update channel close failed");
+                        storage.channelCloseFailure = failure;
+                        assertSame(failure, assertThrows(IOException.class, channel::close));
+                    }
+                }
+            }
+            assertEquals(storage.createdContentCount(), storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+            if (failClose) {
+                assertArrayEquals(original, Files.readAllBytes(archivePath));
+            } else {
+                try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
+                    assertArrayEquals(replacement, Files.readAllBytes(fileSystem.getPath("/file.txt")));
+                    assertArrayEquals(replacement, Files.readAllBytes(fileSystem.getPath("/hard.txt")));
+                }
+            }
+        } finally {
+            Files.deleteIfExists(archivePath);
         }
     }
 
@@ -161,6 +349,12 @@ public final class TarIndexedStorageTest {
 
         /// The total number of stored-content close calls.
         private int contentCloseCount;
+
+        /// The failure injected by the next channel close, or null when no failure is armed.
+        private @Nullable Throwable channelCloseFailure;
+
+        /// The number of backing-channel close attempts.
+        private int channelCloseCount;
 
         /// The number of storage close calls.
         private int closeCount;
@@ -199,6 +393,80 @@ public final class TarIndexedStorageTest {
             return closeCount;
         }
 
+        /// Records backing-channel cleanup without changing byte access.
+        @NotNullByDefault
+        private final class TrackingChannel implements SeekableByteChannel {
+            /// The independently owned backing channel.
+            private final SeekableByteChannel delegate;
+
+            /// Wraps a channel created by the configured storage.
+            private TrackingChannel(SeekableByteChannel delegate) {
+                this.delegate = delegate;
+            }
+
+            /// Reads from the backing channel.
+            @Override
+            public int read(ByteBuffer target) throws IOException {
+                return delegate.read(target);
+            }
+
+            /// Writes to the backing channel.
+            @Override
+            public int write(ByteBuffer source) throws IOException {
+                return delegate.write(source);
+            }
+
+            /// Returns the backing position.
+            @Override
+            public long position() throws IOException {
+                return delegate.position();
+            }
+
+            /// Changes the backing position.
+            @Override
+            public SeekableByteChannel position(long position) throws IOException {
+                delegate.position(position);
+                return this;
+            }
+
+            /// Returns the current body size.
+            @Override
+            public long size() throws IOException {
+                return delegate.size();
+            }
+
+            /// Truncates the backing content.
+            @Override
+            public SeekableByteChannel truncate(long size) throws IOException {
+                delegate.truncate(size);
+                return this;
+            }
+
+            /// Returns whether the backing channel remains open.
+            @Override
+            public boolean isOpen() {
+                return delegate.isOpen();
+            }
+
+            /// Reports an armed failure without closing the delegate, or closes it successfully.
+            @Override
+            public void close() throws IOException {
+                channelCloseCount++;
+                @Nullable Throwable failure = channelCloseFailure;
+                channelCloseFailure = null;
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                if (failure instanceof Error error) {
+                    throw error;
+                }
+                delegate.close();
+            }
+        }
+
         /// Tracks one delegated stored-content object.
         @NotNullByDefault
         private final class TrackingStoredContent implements ArkivoStoredContent {
@@ -216,7 +484,7 @@ public final class TarIndexedStorageTest {
             /// Opens a channel over the delegated content.
             @Override
             public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
-                return content.openChannel(options);
+                return new TrackingChannel(content.openChannel(options));
             }
 
             /// Returns the delegated content size.

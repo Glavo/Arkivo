@@ -7,7 +7,6 @@ import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -25,6 +24,7 @@ import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
 import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
+import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -75,7 +75,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -127,10 +126,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     private final Map<String, Node> nodes;
 
     /// The storage that owns indexed member bodies, or `null` in forward-only write mode.
-    private final @Nullable ArkivoEditStorage editStorage;
-
-    /// Indexed member bodies owned by this file system.
-    private final Set<ArkivoStoredContent> ownedContents;
+    private final @Nullable StoredContentPool editStorage;
 
     /// The streaming writer used by forward-only write mode, or `null` in read and update modes.
     private final @Nullable ArArkivoStreamingWriter writer;
@@ -162,9 +158,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Whether this file system is open.
     private volatile boolean open = true;
 
-    /// Whether the indexed content storage has been closed.
-    private boolean editStorageClosed;
-
     /// Whether the provider close action has completed.
     private boolean closeActionCompleted;
 
@@ -180,8 +173,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             long sourceArchiveSize,
             ArkivoFileSystemThreadSafety threadSafety,
             Map<String, Node> nodes,
-            @Nullable ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
+            @Nullable StoredContentPool editStorage,
             @Nullable ArArkivoStreamingWriter writer,
             boolean readOnly,
             boolean updateMode,
@@ -206,14 +198,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
         this.nodes = updateMode ? new LinkedHashMap<>(nodes) : Map.copyOf(nodes);
         this.editStorage = editStorage;
-        this.ownedContents = ownedContents;
         this.writer = writer;
         this.commitTarget = commitTarget;
         this.readOnly = readOnly;
         this.updateMode = updateMode;
         this.rootPath = ArArkivoPath.root(this);
         this.writtenDirectories.add("");
-        this.editStorageClosed = editStorage == null;
         this.channelSourceClosed = channelSource == null;
     }
 
@@ -240,14 +230,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         );
         if (isArchiveUpdateOpen(openOptions)) {
             validateArchiveUpdateOptions(openOptions);
-            ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
-            Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+            StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
             try {
                 boolean newArchive = !Files.exists(archivePath);
                 Map<String, Node> nodes;
                 if (!newArchive) {
                     try (InputStream input = Files.newInputStream(archivePath, StandardOpenOption.READ)) {
-                        nodes = readNodes(input, editStorage, ownedContents, options);
+                        nodes = readNodes(input, editStorage, options);
                     }
                 } else if (openOptions.contains(StandardOpenOption.CREATE)) {
                     nodes = rootNodes();
@@ -267,7 +256,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                         threadSafety,
                         nodes,
                         editStorage,
-                        ownedContents,
                         null,
                         false,
                         true,
@@ -277,7 +265,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 fileSystem.dirty = newArchive;
                 return fileSystem;
             } catch (IOException | RuntimeException | Error exception) {
-                StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
+                StoredContentSupport.closeAfterOpenFailure(editStorage, exception);
                 throw exception;
             }
         }
@@ -296,7 +284,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     threadSafety,
                     rootNodes(),
                     null,
-                    StoredContentSupport.newIdentitySet(),
                     ArArkivoStreamingWriter.open(output),
                     false,
                     false,
@@ -306,12 +293,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
 
         validateArchiveReadOptions(openOptions);
-        ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
+        StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
         try {
             Map<String, Node> nodes;
             try (InputStream input = Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
-                nodes = readNodes(input, editStorage, ownedContents, options);
+                nodes = readNodes(input, editStorage, options);
             }
             return new ArArkivoFileSystemImpl(
                     provider,
@@ -322,7 +308,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     threadSafety,
                     nodes,
                     editStorage,
-                    ownedContents,
                     null,
                     true,
                     false,
@@ -330,7 +315,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     closeAction
             );
         } catch (IOException | RuntimeException | Error exception) {
-            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, exception);
             throw exception;
         }
     }
@@ -352,7 +337,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         Objects.requireNonNull(options, "options");
 
         ArkivoFileSystemThreadSafety threadSafety;
-        ArkivoEditStorage editStorage;
+        StoredContentPool editStorage;
         boolean updateMode;
         @Nullable ArkivoCommitTarget commitTarget;
         try {
@@ -373,20 +358,18 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 validateArchiveReadOptions(openOptions);
                 commitTarget = null;
             }
-            editStorage = StoredContentSupport.selectStorage(options);
-        } catch (RuntimeException | Error exception) {
+            editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+        } catch (IOException | RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
         }
-
-        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
             long archiveSize;
             Map<String, Node> nodes;
             try (SeekableByteChannel channel = source.openChannel()) {
                 archiveSize = channel.size();
                 channel.position(0L);
-                nodes = readNodes(Channels.newInputStream(channel), editStorage, ownedContents, options);
+                nodes = readNodes(Channels.newInputStream(channel), editStorage, options);
             }
             return new ArArkivoFileSystemImpl(
                     provider,
@@ -397,7 +380,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     threadSafety,
                     nodes,
                     editStorage,
-                    ownedContents,
                     null,
                     !updateMode,
                     updateMode,
@@ -406,7 +388,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     }
             );
         } catch (IOException | RuntimeException | Error exception) {
-            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, exception);
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
         }
@@ -423,8 +405,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
             if (open
-                    || !ownedContents.isEmpty()
-                    || !editStorageClosed
+                    || (editStorage != null && !editStorage.isClosed())
                     || !channelSourceClosed
                     || !closeActionCompleted) {
                 @Nullable Throwable failure = null;
@@ -478,20 +459,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Closes indexed member bodies and their owning storage, retaining failed resources for a later close retry.
     private @Nullable Throwable closeIndexedStorage(@Nullable Throwable failure) {
-        Iterator<ArkivoStoredContent> iterator = ownedContents.iterator();
-        while (iterator.hasNext()) {
-            ArkivoStoredContent content = iterator.next();
+        if (editStorage != null) {
             try {
-                content.close();
-                iterator.remove();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-        }
-        if (!editStorageClosed) {
-            try {
-                Objects.requireNonNull(editStorage, "editStorage").close();
-                editStorageClosed = true;
+                editStorage.close();
             } catch (IOException | RuntimeException | Error exception) {
                 failure = appendFailure(failure, exception);
             }
@@ -1621,15 +1591,14 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         } else {
             nodes.put(path, replacement);
         }
-        ownedContents.add(content);
         dirty = true;
     }
-    /// Releases uncommitted stored content or retains it for close-time cleanup retry.
+    /// Requests release of uncommitted content, leaving failed cleanup tracked by the storage pool.
     private void releaseStoredContent(ArkivoStoredContent content) {
         try {
             content.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            ownedContents.add(content);
+        } catch (IOException | RuntimeException | Error ignored) {
+            // The pool retries incomplete content and channel cleanup when it closes.
         }
     }
 
@@ -1943,7 +1912,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     node.attributes().lastModifiedTime()
             );
             nodes.put(node.path(), replaceNodeAttributes(node, attributes, content));
-            ownedContents.add(content);
             dirty = true;
         } catch (IOException | RuntimeException | Error exception) {
             releaseStoredContent(content);
@@ -2091,7 +2059,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         return Map.of("", new Node("", syntheticDirectoryAttributes("/"), true, null, true));
     }
     /// Returns the indexed-content storage required outside forward-only write mode.
-    private ArkivoEditStorage requireEditStorage() {
+    private StoredContentPool requireEditStorage() {
         return Objects.requireNonNull(editStorage, "editStorage");
     }
 
@@ -2108,7 +2076,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     output.write(source);
                 }
             }
-            ownedContents.add(content);
             return content;
         } catch (IOException | RuntimeException | Error exception) {
             releaseStoredContent(content);
@@ -2223,8 +2190,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Reads all entry nodes from an AR stream.
     private static Map<String, Node> readNodes(
             InputStream input,
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
+            StoredContentPool editStorage,
             ArchiveOptions options
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
@@ -2241,7 +2207,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     try (InputStream entryInput = reader.openInputStream()) {
                         content = StoredContentSupport.storeInput(
                                 editStorage,
-                                ownedContents,
                                 path,
                                 attributes.size(),
                                 entryInput
