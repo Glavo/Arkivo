@@ -13,8 +13,11 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.jetbrains.annotations.UnmodifiableView;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -22,6 +25,7 @@ import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +34,7 @@ import java.util.Objects;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies cursor advancement and body ownership across every installed forward-only archive format.
@@ -53,6 +58,84 @@ final class StreamingReaderCursorMatrixTest {
         for (String formatName : STREAMING_FORMATS) {
             assertCursorAdvance(formatName, false);
             assertCursorAdvance(formatName, true);
+        }
+    }
+
+    /// Verifies bulk body operations stop before padding, empty entries, and the following entry header.
+    @ParameterizedTest
+    @ValueSource(strings = {"skip", "skipNBytes", "readNBytes", "transferTo"})
+    void bulkReadsStayWithinEntryBoundaries(String operation) throws IOException {
+        for (String formatName : STREAMING_FORMATS) {
+            for (int length : new int[]{0, 1, 511, 512, 513, 8193}) {
+                String context = formatName + " " + operation + " length=" + length;
+                byte[] firstContent = Arrays.copyOf(FIRST_CONTENT, length);
+                Map<String, byte[]> entries = new LinkedHashMap<>();
+                entries.put("first.bin", firstContent);
+                entries.put("empty.bin", new byte[0]);
+                entries.put("second.bin", SECOND_CONTENT);
+                FragmentingReadableByteChannel source =
+                        new FragmentingReadableByteChannel(createArchive(formatName, entries));
+                try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
+                        formatName, source, ArchiveReadOptions.DEFAULT)) {
+                    assertTrue(reader.next(), context);
+                    ArchiveEntryAttributes firstAttributes = reader.readAttributes();
+                    assertEquals("first.bin", firstAttributes.path(), context);
+                    InputStream first = reader.openInputStream();
+                    switch (operation) {
+                        case "skip":
+                            long skipped = 0L;
+                            for (int calls = 0; calls <= length; calls++) {
+                                long count = first.skip(Long.MAX_VALUE);
+                                assertTrue(count >= 0L, context);
+                                if (count == 0L) {
+                                    break;
+                                }
+                                skipped += count;
+                                assertTrue(skipped <= length, context);
+                            }
+                            assertEquals(length, skipped, context);
+                            break;
+                        case "skipNBytes":
+                            assertThrows(EOFException.class, () -> first.skipNBytes((long) length + 1L), context);
+                            break;
+                        case "readNBytes":
+                            assertArrayEquals(firstContent, first.readNBytes(length + 1), context);
+                            break;
+                        case "transferTo":
+                            ByteArrayOutputStream transferred = new ByteArrayOutputStream();
+                            assertEquals(length, first.transferTo(transferred), context);
+                            assertArrayEquals(firstContent, transferred.toByteArray(), context);
+                            break;
+                        default:
+                            throw new AssertionError(operation);
+                    }
+                    assertEquals(-1, first.read(), context);
+                    assertEquals(0L, first.skip(Long.MAX_VALUE), context);
+                    assertThrows(IllegalStateException.class, reader::openChannel, context);
+
+                    assertTrue(reader.next(), context);
+                    assertEquals("empty.bin", reader.readAttributes().path(), context);
+                    InputStream empty = reader.openInputStream();
+                    first.close();
+                    first.close();
+                    assertThrows(IOException.class, first::read, context);
+                    assertEquals(-1, empty.read(), context);
+                    assertEquals(0L, empty.skip(Long.MAX_VALUE), context);
+
+                    assertTrue(reader.next(), context);
+                    assertEquals("second.bin", reader.readAttributes().path(), context);
+                    try (InputStream second = reader.openInputStream()) {
+                        empty.close();
+                        empty.close();
+                        assertThrows(IOException.class, empty::read, context);
+                        assertArrayEquals(SECOND_CONTENT, second.readAllBytes(), context);
+                    }
+                    assertFalse(reader.next(), context);
+                    assertEquals("first.bin", firstAttributes.path(), context);
+                }
+                assertFalse(source.isOpen(), context);
+                assertEquals(1, source.closeCount(), context);
+            }
         }
     }
 
@@ -99,10 +182,16 @@ final class StreamingReaderCursorMatrixTest {
 
     /// Creates a two-entry archive for the named streaming format.
     private static byte @Unmodifiable [] createArchive(String formatName) throws IOException {
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("first.bin", FIRST_CONTENT);
+        entries.put("second.bin", SECOND_CONTENT);
+        return createArchive(formatName, entries);
+    }
+
+    /// Creates an archive whose regular files follow the supplied map's iteration order.
+    private static byte @Unmodifiable [] createArchive(String formatName, Map<String, byte[]> entries)
+            throws IOException {
         if ("rar".equals(formatName)) {
-            Map<String, byte[]> entries = new LinkedHashMap<>();
-            entries.put("first.bin", FIRST_CONTENT);
-            entries.put("second.bin", SECOND_CONTENT);
             return ArchiveTestFixtures.createRar4Archive(entries);
         }
 
@@ -111,8 +200,9 @@ final class StreamingReaderCursorMatrixTest {
                 formatName,
                 Channels.newChannel(archive)
         )) {
-            writeEntry(writer, "first.bin", FIRST_CONTENT);
-            writeEntry(writer, "second.bin", SECOND_CONTENT);
+            for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
+                writeEntry(writer, entry.getKey(), entry.getValue());
+            }
         }
         return archive.toByteArray();
     }
