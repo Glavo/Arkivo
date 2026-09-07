@@ -24,6 +24,7 @@ import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
+import org.glavo.arkivo.archive.internal.StoredContentPool;
 
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
@@ -87,7 +88,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -206,7 +206,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     private final @Nullable ArkivoCommitOutput commitOutput;
 
     /// The edit storage used by an existing-archive rewrite, or `null` for direct archive creation.
-    private final @Nullable ArkivoEditStorage editStorage;
+    private final @Nullable StoredContentPool editStorage;
 
     /// The staged local records written during an existing-archive rewrite, or `null` otherwise.
     private final @Nullable ArkivoStoredContent stagedRecords;
@@ -344,9 +344,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         if (appendSnapshot != null) {
             requireCommitTargetSourceOptions(archivePath, config.openOptions());
             @Nullable ArkivoEditStorageFactory storageFactory = config.editStorageFactory();
-            ArkivoEditStorage openedEditStorage = storageFactory != null
+            StoredContentPool openedEditStorage = new StoredContentPool(storageFactory != null
                     ? storageFactory.open()
-                    : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory(archivePath));
+                    : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory(archivePath)));
             @Nullable ArkivoStoredContent openedStagedRecords = null;
             @Nullable SeekableByteChannel outputChannel = null;
             @Nullable OutputStream outputStream = null;
@@ -661,9 +661,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         ZipArkivoReadOnlyFileSystemImpl.CentralDirectorySnapshot snapshot =
                 ZipArkivoReadOnlyFileSystemImpl.readCentralDirectorySnapshot(source, config);
         @Nullable ArkivoEditStorageFactory storageFactory = config.editStorageFactory();
-        ArkivoEditStorage openedEditStorage = storageFactory != null
+        StoredContentPool openedEditStorage = new StoredContentPool(storageFactory != null
                 ? storageFactory.open()
-                : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory());
+                : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory()));
         @Nullable ArkivoStoredContent openedStagedRecords = null;
         @Nullable SeekableByteChannel outputChannel = null;
         @Nullable OutputStream outputStream = null;
@@ -887,6 +887,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                             failure = exception;
                         }
                     }
+                    failure = closeRewriteStorage(failure);
                     failure = closeExistingArchiveReader(failure);
                     failure = closeArchiveSource(failure);
                     throwFailure(failure);
@@ -961,7 +962,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             return;
         }
 
-        ArkivoEditStorage storage = Objects.requireNonNull(editStorage, "editStorage");
+        StoredContentPool storage = Objects.requireNonNull(editStorage, "editStorage");
         try (ArkivoStoredContent assembledArchive = storage.createContent(
                 ASSEMBLED_ARCHIVE_PATH,
                 ArkivoEditStorage.UNKNOWN_SIZE
@@ -1252,29 +1253,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Closes rewrite staging resources and returns the accumulated failure.
     private @Nullable Throwable closeRewriteStorage(@Nullable Throwable failure) {
-        Iterator<ArkivoStoredContent> entryContents = stagedEntryContents.values().iterator();
-        while (entryContents.hasNext()) {
-            ArkivoStoredContent content = entryContents.next();
+        stagedEntryContents.clear();
+        if (editStorage != null) {
             try {
-                content.close();
-                entryContents.remove();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-        }
-
-        ArkivoStoredContent records = stagedRecords;
-        if (records != null) {
-            try {
-                records.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-        }
-        ArkivoEditStorage storage = editStorage;
-        if (storage != null) {
-            try {
-                storage.close();
+                editStorage.close();
             } catch (IOException | RuntimeException | Error exception) {
                 failure = appendFailure(failure, exception);
             }
@@ -1873,7 +1855,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Opens storage that captures an uncompressed entry body during complete-rewrite mode.
     private @Nullable OutputStream openStagedEntryOutput(String entryName) throws IOException {
-        ArkivoEditStorage storage = editStorage;
+        StoredContentPool storage = editStorage;
         if (storage == null) {
             return null;
         }

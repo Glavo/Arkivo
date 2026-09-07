@@ -7,6 +7,7 @@ import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
@@ -34,7 +35,6 @@ import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -92,10 +92,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     private final OutputStream output;
 
     /// The storage used to stage file bodies until their TAR headers can be written.
-    private final ArkivoEditStorage bodyStorage;
-
-    /// Stored bodies whose first cleanup attempt failed and must be retried while closing.
-    private final ArrayList<ArkivoStoredContent> retiredBodies = new ArrayList<>();
+    private final StoredContentPool bodyStorage;
 
     /// The pending entry that has not yet been committed.
     private @Nullable PendingEntry pendingEntry;
@@ -112,9 +109,6 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// Whether the backing archive output stream has been closed.
     private boolean outputClosed;
 
-    /// Whether the body storage has been closed.
-    private boolean bodyStorageClosed;
-
     /// Creates a streaming TAR writer.
     ///
     /// @param output the owned archive stream at whose current position TAR blocks are written
@@ -128,7 +122,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// @param bodyStorage the owned storage used to stage regular-file bodies until their sizes are known
     public TarArkivoStreamingWriterImpl(OutputStream output, ArkivoEditStorage bodyStorage) {
         this.output = Objects.requireNonNull(output, "output");
-        this.bodyStorage = Objects.requireNonNull(bodyStorage, "bodyStorage");
+        this.bodyStorage = new StoredContentPool(bodyStorage);
     }
 
     /// Returns the directory used by default staged body storage.
@@ -347,33 +341,33 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// Closes this streaming writer and finishes the TAR stream.
     @Override
     protected void closeWriter() throws IOException {
-        if (!open && outputClosed && retiredBodies.isEmpty() && bodyStorageClosed) {
+        if (!open && outputClosed && bodyStorage.isClosed()) {
             return;
         }
 
-        IOException failure = null;
-        if (failure == null && !finished) {
+        @Nullable Throwable failure = null;
+        if (open && !finished) {
             try {
                 output.write(new byte[END_MARKER_SIZE]);
                 finished = true;
-            } catch (IOException exception) {
+            } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
             }
         }
 
         open = false;
-        try {
-            output.close();
-            outputClosed = true;
-        } catch (IOException exception) {
-            failure = combine(failure, exception);
+        if (!outputClosed) {
+            try {
+                output.close();
+                outputClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = combine(failure, exception);
+            }
         }
 
         failure = closeBodyStorage(failure);
 
-        if (failure != null) {
-            throw failure;
-        }
+        throwFailure(failure);
     }
 
     /// Returns the current pending entry.
@@ -511,31 +505,31 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         }
     }
 
-    /// Closes retired staged bodies and their owning storage, preserving cleanup failures.
-    private @Nullable IOException closeBodyStorage(@Nullable IOException failure) {
-        var iterator = retiredBodies.iterator();
-        while (iterator.hasNext()) {
-            ArkivoStoredContent content = iterator.next();
-            try {
-                content.close();
-                iterator.remove();
-            } catch (IOException exception) {
-                failure = combine(failure, exception);
-            }
-        }
-        if (!bodyStorageClosed) {
-            try {
-                bodyStorage.close();
-                bodyStorageClosed = true;
-            } catch (IOException exception) {
-                failure = combine(failure, exception);
-            }
+    /// Releases staged bodies before closing their storage, preserving earlier failures.
+    private @Nullable Throwable closeBodyStorage(@Nullable Throwable failure) {
+        try {
+            bodyStorage.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = combine(failure, exception);
         }
         return failure;
     }
 
+    /// Rethrows a cleanup failure without changing its identity or category.
+    private static void throwFailure(@Nullable Throwable failure) throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+    }
+
     /// Combines one cleanup failure with an earlier failure without suppressing an exception onto itself.
-    private static IOException combine(@Nullable IOException failure, IOException next) {
+    private static Throwable combine(@Nullable Throwable failure, Throwable next) {
         if (failure == null) {
             return next;
         }
@@ -545,12 +539,12 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         return failure;
     }
 
-    /// Releases staged content now or retains it for a close-time cleanup retry.
+    /// Requests staged-content release, leaving incomplete cleanup tracked by the storage pool.
     private void releaseBody(ArkivoStoredContent content) {
         try {
             content.close();
-        } catch (IOException exception) {
-            retiredBodies.add(content);
+        } catch (IOException | RuntimeException | Error ignored) {
+            // The pool retains incomplete cleanup for the next writer close.
         }
     }
 

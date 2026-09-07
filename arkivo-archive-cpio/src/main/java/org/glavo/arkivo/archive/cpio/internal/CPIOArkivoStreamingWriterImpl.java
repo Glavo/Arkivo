@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.cpio.internal;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributes;
@@ -34,7 +35,6 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileTime;
-import java.util.ArrayList;
 import java.util.Objects;
 import java.util.Set;
 
@@ -93,10 +93,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
     private final int blockSize;
 
     /// The storage used to stage entry data.
-    private final ArkivoEditStorage bodyStorage;
-
-    /// Stored bodies whose first cleanup attempt failed.
-    private final ArrayList<ArkivoStoredContent> retiredBodies = new ArrayList<>();
+    private final StoredContentPool bodyStorage;
 
     /// Whether this writer accepts new entry operations.
     private boolean open = true;
@@ -106,9 +103,6 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
     /// Whether the backing output stream was closed.
     private boolean targetClosed;
-
-    /// Whether the body storage was closed.
-    private boolean bodyStorageClosed;
 
     /// The terminal output failure that prevents any further archive bytes from being emitted.
     private @Nullable IOException outputFailure;
@@ -138,9 +132,9 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         this.metadataCharset = checkedOptions.metadataCharset();
         this.blockSize = checkedOptions.blockSize();
         @Nullable ArkivoEditStorageFactory storageFactory = checkedOptions.common().editStorageFactory();
-        this.bodyStorage = storageFactory != null
+        this.bodyStorage = new StoredContentPool(storageFactory != null
                 ? storageFactory.open()
-                : ArkivoEditStorage.temporaryFiles(defaultBodyStorageDirectory());
+                : ArkivoEditStorage.temporaryFiles(defaultBodyStorageDirectory()));
     }
 
     /// Returns the directory used by default temporary-file body storage.
@@ -245,16 +239,16 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
     /// Finishes the archive and closes its output and staging storage.
     @Override
     protected void closeWriter() throws IOException {
-        if (!open && targetClosed && bodyStorageClosed && retiredBodies.isEmpty()) {
+        if (!open && targetClosed && bodyStorage.isClosed()) {
             return;
         }
 
-        @Nullable IOException failure = outputFailure;
-        if (!archiveFinished && outputFailure == null) {
+        @Nullable Throwable failure = outputFailure;
+        if (open && !archiveFinished && outputFailure == null) {
             try {
                 writeTrailerAndPadding();
                 archiveFinished = true;
-            } catch (IOException exception) {
+            } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
             }
         }
@@ -263,14 +257,12 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
             try {
                 target.close();
                 targetClosed = true;
-            } catch (IOException exception) {
+            } catch (IOException | RuntimeException | Error exception) {
                 failure = combine(failure, exception);
             }
         }
         failure = closeBodyStorage(failure);
-        if (failure != null) {
-            throw failure;
-        }
+        throwFailure(failure);
     }
 
     /// Writes the format trailer and zero padding to the configured archive block boundary.
@@ -785,40 +777,40 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         return dialect == CPIODialect.OLD_ASCII ? MAX_ELEVEN_DIGIT_OCTAL : MAX_UNSIGNED_INT;
     }
 
-    /// Releases staged content immediately or retains it for close-time cleanup retry.
+    /// Requests staged-content release, leaving incomplete cleanup tracked by the storage pool.
     private void releaseBody(ArkivoStoredContent content) {
         try {
             content.close();
-        } catch (IOException exception) {
-            retiredBodies.add(content);
+        } catch (IOException | RuntimeException | Error ignored) {
+            // The pool retains incomplete cleanup for the next writer close.
         }
     }
 
-    /// Closes retained staged bodies and their owning storage.
-    private @Nullable IOException closeBodyStorage(@Nullable IOException failure) {
-        var iterator = retiredBodies.iterator();
-        while (iterator.hasNext()) {
-            ArkivoStoredContent content = iterator.next();
-            try {
-                content.close();
-                iterator.remove();
-            } catch (IOException exception) {
-                failure = combine(failure, exception);
-            }
-        }
-        if (!bodyStorageClosed) {
-            try {
-                bodyStorage.close();
-                bodyStorageClosed = true;
-            } catch (IOException exception) {
-                failure = combine(failure, exception);
-            }
+    /// Releases staged bodies before closing their storage, preserving earlier failures.
+    private @Nullable Throwable closeBodyStorage(@Nullable Throwable failure) {
+        try {
+            bodyStorage.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = combine(failure, exception);
         }
         return failure;
     }
 
+    /// Rethrows a cleanup failure without changing its identity or category.
+    private static void throwFailure(@Nullable Throwable failure) throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+    }
+
     /// Combines one cleanup failure with an earlier failure.
-    private static IOException combine(@Nullable IOException failure, IOException next) {
+    private static Throwable combine(@Nullable Throwable failure, Throwable next) {
         if (failure == null) {
             return next;
         }
