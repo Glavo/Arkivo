@@ -6,15 +6,20 @@ package org.glavo.arkivo.codec.all;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
+import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -22,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -145,6 +151,88 @@ final class CodecStreamContractTest {
             assertThrows(IOException.class, decoder::read, format.name());
             encodedSource.close();
             assertTrue(encodedSource.closed(), format.name());
+        }
+    }
+
+    /// Verifies skipped and returned bytes share one limit across inherited bulk stream operations.
+    @ParameterizedTest
+    @ValueSource(strings = {"skip", "skipNBytes", "readNBytes", "rangedReadNBytes", "transferTo"})
+    void enforcesOutputLimitsAcrossBulkOperations(String operation) throws IOException {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec<?> codec = format.defaultCodec();
+            byte[] encoded = encode(codec);
+            for (int maximum : new int[]{0, 8191, 8192, 8193, CONTENT.length}) {
+                String context = format.name() + " " + operation + " maximum=" + maximum;
+                CompressionCodec<?> configured = CodecContractConfigurations.decoderCodec(codec, CONTENT.length)
+                        .withMaximumOutputSize(maximum);
+                TrackingInputStream source = new TrackingInputStream(encoded);
+                try (InputStream decoder = configured.newInputStream(source, ResourceOwnership.BORROWED)) {
+                    int prefixSize = Math.min(maximum, 48);
+                    int readPrefix = Math.min(prefixSize, 17);
+                    assertArrayEquals(Arrays.copyOf(CONTENT, readPrefix), decoder.readNBytes(readPrefix), context);
+                    decoder.skipNBytes(prefixSize - readPrefix);
+
+                    byte[] ranged = new byte[CONTENT.length + 3];
+                    Arrays.fill(ranged, (byte) 0x5a);
+                    ByteArrayOutputStream transferred = new ByteArrayOutputStream();
+                    Executable bulkRead = () -> {
+                        switch (operation) {
+                            case "skip":
+                                assertEquals(CONTENT.length - prefixSize, decoder.skip(Long.MAX_VALUE), context);
+                                break;
+                            case "skipNBytes":
+                                decoder.skipNBytes(Long.MAX_VALUE);
+                                break;
+                            case "readNBytes":
+                                assertArrayEquals(Arrays.copyOfRange(CONTENT, prefixSize, CONTENT.length),
+                                        decoder.readNBytes(CONTENT.length + 1), context);
+                                break;
+                            case "rangedReadNBytes":
+                                assertEquals(CONTENT.length - prefixSize,
+                                        decoder.readNBytes(ranged, 1, CONTENT.length + 1), context);
+                                break;
+                            case "transferTo":
+                                assertEquals(CONTENT.length - prefixSize, decoder.transferTo(transferred), context);
+                                break;
+                            default:
+                                throw new AssertionError(operation);
+                        }
+                    };
+                    if (maximum < CONTENT.length) {
+                        DecompressionOutputLimitException failure = assertThrows(
+                                DecompressionOutputLimitException.class, bulkRead, context);
+                        assertEquals(maximum, failure.maximum(), context);
+                        int remainingSource = source.available();
+                        assertEquals(maximum, assertThrows(DecompressionOutputLimitException.class,
+                                decoder::read, context).maximum(), context);
+                        assertEquals(remainingSource, source.available(), context);
+                    } else {
+                        if (operation.equals("skipNBytes")) {
+                            assertThrows(EOFException.class, bulkRead, context);
+                        } else {
+                            assertDoesNotThrow(bulkRead, context);
+                        }
+                        assertEquals(-1, decoder.read(), context);
+                        assertEquals(0L, decoder.skip(Long.MAX_VALUE), context);
+                    }
+                    if (operation.equals("rangedReadNBytes")) {
+                        int delivered = maximum - prefixSize;
+                        assertArrayEquals(Arrays.copyOfRange(CONTENT, prefixSize, maximum),
+                                Arrays.copyOfRange(ranged, 1, delivered + 1), context);
+                        assertEquals((byte) 0x5a, ranged[0], context);
+                        for (int index = delivered + 1; index < ranged.length; index++) {
+                            assertEquals((byte) 0x5a, ranged[index], context);
+                        }
+                    } else if (operation.equals("transferTo")) {
+                        assertArrayEquals(Arrays.copyOfRange(CONTENT, prefixSize, maximum),
+                                transferred.toByteArray(), context);
+                    }
+                    assertEquals(0, decoder.read(ranged, 1, 0), context);
+                }
+                assertFalse(source.closed(), context);
+                source.close();
+                assertTrue(source.closed(), context);
+            }
         }
     }
 
