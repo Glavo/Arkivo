@@ -29,6 +29,7 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.Set;
 
@@ -37,6 +38,9 @@ import java.util.Set;
 public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// The global AR archive signature.
     private static final byte @Unmodifiable [] GLOBAL_HEADER = "!<arch>\n".getBytes(StandardCharsets.US_ASCII);
+
+    /// The fixed member-header length, including its two-byte trailer.
+    private static final int MEMBER_HEADER_SIZE = 60;
 
     /// The AR member header trailer.
     private static final byte @Unmodifiable [] MEMBER_TRAILER = new byte[]{'`', '\n'};
@@ -184,7 +188,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             pendingMember = null;
         }
         MemberLayout layout = memberLayout(member, bodySize);
-        writeMemberPrefix(member, layout);
+        writeMemberPrefix(member, layout, createMemberHeader(member, layout));
         if (bodySize > 0L) {
             output.writeBody(Objects.requireNonNull(body, "body"), bodySize);
         }
@@ -206,7 +210,10 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     @Override
     protected void finishCurrentEntry() throws IOException {
         ensureOpen();
-        PendingMember member = requirePendingMember();
+        @Nullable PendingMember member = pendingMember;
+        if (member == null) {
+            return;
+        }
         member.ensurePending();
         byte @Unmodifiable [] body = member.fixedBodyOrEmpty();
         ensureMemberBodySize(member, body.length);
@@ -231,8 +238,9 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         long expectedSize = member.attributes.expectedSize();
         if (expectedSize != UNKNOWN_SIZE) {
             MemberLayout layout = memberLayout(member, expectedSize);
+            byte @Unmodifiable [] header = createMemberHeader(member, layout);
             pendingMember = null;
-            writeMemberPrefix(member, layout);
+            writeMemberPrefix(member, layout, header);
             DirectMemberBodyOutputStream body = new DirectMemberBodyOutputStream(member, layout);
             currentBody = body;
             return body;
@@ -295,7 +303,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// Writes one AR member, including any inline BSD long name prefix.
     private void writeMember(PendingMember member, byte[] body) throws IOException {
         MemberLayout layout = memberLayout(member, body.length);
-        writeMemberPrefix(member, layout);
+        writeMemberPrefix(member, layout, createMemberHeader(member, layout));
         output.write(body);
         writeMemberPadding(layout.storedSize());
     }
@@ -303,7 +311,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// Writes one staged AR member body from a readable channel.
     private void writeStoredMember(PendingMember member, ReadableByteChannel body, long bodySize) throws IOException {
         MemberLayout layout = memberLayout(member, bodySize);
-        writeMemberPrefix(member, layout);
+        writeMemberPrefix(member, layout, createMemberHeader(member, layout));
         output.writeBody(body, bodySize);
         writeMemberPadding(layout.storedSize());
     }
@@ -373,19 +381,26 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         return new MemberLayout(identifier, namePrefix, bodySize, storedSize);
     }
 
-    /// Writes the AR member header and any BSD inline long-name prefix.
-    private void writeMemberPrefix(PendingMember member, MemberLayout layout) throws IOException {
+    /// Validates all numeric fields and prepares the complete AR member header.
+    private static byte @Unmodifiable [] createMemberHeader(PendingMember member, MemberLayout layout) throws IOException {
+        PendingArEntryAttributeView attributes = member.attributes;
+        byte[] header = new byte[MEMBER_HEADER_SIZE];
+        Arrays.fill(header, (byte) ' ');
+        putField(header, 0, 16, layout.identifier(), "identifier");
+        putField(header, 16, 12, Long.toString(timestampSeconds(attributes.lastModifiedTime())), "timestamp");
+        putField(header, 28, 6, Long.toString(attributes.userId()), "user id");
+        putField(header, 34, 6, Long.toString(attributes.groupId()), "group id");
+        putField(header, 40, 8, Integer.toOctalString(attributes.mode()), "mode");
+        putField(header, 48, 10, Long.toString(layout.storedSize()), "size");
+        System.arraycopy(MEMBER_TRAILER, 0, header, 58, MEMBER_TRAILER.length);
+        return header;
+    }
+
+    /// Writes a fully prepared member header and any BSD inline long-name prefix.
+    private void writeMemberPrefix(PendingMember member, MemberLayout layout, byte[] header) throws IOException {
         member.committed = true;
         ensureGlobalHeader();
-        PendingArEntryAttributeView attributes = member.attributes;
-        writeMemberHeader(
-                layout.identifier(),
-                timestampSeconds(attributes.lastModifiedTime()),
-                attributes.userId(),
-                attributes.groupId(),
-                attributes.mode(),
-                layout.storedSize()
-        );
+        output.write(header);
         output.write(layout.namePrefix());
     }
 
@@ -404,34 +419,13 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         }
     }
 
-    /// Writes one fixed-width AR member header.
-    private void writeMemberHeader(
-            String identifier,
-            long timestamp,
-            long userId,
-            long groupId,
-            int mode,
-            long size
-    ) throws IOException {
-        writeField(identifier, 16, "identifier");
-        writeField(Long.toString(timestamp), 12, "timestamp");
-        writeField(Long.toString(userId), 6, "user id");
-        writeField(Long.toString(groupId), 6, "group id");
-        writeField(Integer.toOctalString(mode), 8, "mode");
-        writeField(Long.toString(size), 10, "size");
-        output.write(MEMBER_TRAILER);
-    }
-
-    /// Writes one space-padded AR header field.
-    private void writeField(String value, int width, String fieldName) throws IOException {
+    /// Copies an ASCII field into an already space-padded header after checking its width.
+    private static void putField(byte[] header, int offset, int width, String value, String fieldName) throws IOException {
         byte[] bytes = value.getBytes(StandardCharsets.US_ASCII);
         if (bytes.length > width) {
             throw new IOException("AR " + fieldName + " field is too wide");
         }
-        output.write(bytes);
-        for (int index = bytes.length; index < width; index++) {
-            output.write(' ');
-        }
+        System.arraycopy(bytes, 0, header, offset, bytes.length);
     }
 
     /// Ensures that a stored AR member size fits the fixed-width size field.

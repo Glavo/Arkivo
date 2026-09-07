@@ -15,6 +15,7 @@ import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -181,77 +182,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         if (size > 0L && body == null) {
             throw new IllegalArgumentException("TAR snapshot body channel is required for non-empty content");
         }
-        String path = entryPathText(attributes.path(), attributes.isDirectory());
-        @Nullable String configuredLinkName = attributes.linkName();
-        String linkName = configuredLinkName != null ? configuredLinkName : "";
-
-        LinkedHashMap<String, String> paxRecords = new LinkedHashMap<>();
-        @Nullable HeaderPathFields pathFields = headerPathFields(path);
-        if (pathFields == null) {
-            paxRecords.put("path", path);
-            pathFields = new HeaderPathFields("arkivo-pax-entry", "");
-        }
-
-        String headerLinkName = linkName;
-        if (!linkName.isEmpty() && utf8Length(linkName) > 100) {
-            paxRecords.put("linkpath", linkName);
-            headerLinkName = "";
-        }
-
-        paxRecords.put("mtime", paxTimestamp(attributes.lastModifiedTime()));
-        @Nullable FileTime recordedLastAccessTime = attributes.recordedLastAccessTime();
-        if (recordedLastAccessTime != null) {
-            paxRecords.put("atime", paxTimestamp(recordedLastAccessTime));
-        }
-        @Nullable FileTime recordedStatusChangeTime = attributes.recordedStatusChangeTime();
-        if (recordedStatusChangeTime != null) {
-            paxRecords.put("ctime", paxTimestamp(recordedStatusChangeTime));
-        }
-        @Nullable FileTime recordedCreationTime = attributes.recordedCreationTime();
-        if (recordedCreationTime != null) {
-            paxRecords.put("LIBARCHIVE.creationtime", paxTimestamp(recordedCreationTime));
-        }
-
-        long headerUserId = attributes.userId();
-        if (headerUserId > maxOctalValue(8)) {
-            paxRecords.put("uid", Long.toString(headerUserId));
-            headerUserId = 0L;
-        }
-        long headerGroupId = attributes.groupId();
-        if (headerGroupId > maxOctalValue(8)) {
-            paxRecords.put("gid", Long.toString(headerGroupId));
-            headerGroupId = 0L;
-        }
-
-        @Nullable String configuredUserName = attributes.userName();
-        String userName = configuredUserName != null ? configuredUserName : "";
-        String headerUserName = userName;
-        if (utf8Length(userName) > 32) {
-            paxRecords.put("uname", userName);
-            headerUserName = "";
-        }
-        @Nullable String configuredGroupName = attributes.groupName();
-        String groupName = configuredGroupName != null ? configuredGroupName : "";
-        String headerGroupName = groupName;
-        if (utf8Length(groupName) > 32) {
-            paxRecords.put("gname", groupName);
-            headerGroupName = "";
-        }
-
-        writePaxHeader(paxRecords);
-        writeHeader(
-                pathFields.name,
-                pathFields.prefix,
-                attributes.mode(),
-                headerUserId,
-                headerGroupId,
-                size,
-                headerEpochSecond(attributes.lastModifiedTime()),
-                typeFlag,
-                headerLinkName,
-                headerUserName,
-                headerGroupName
-        );
+        byte @Unmodifiable [] prefix = createEntryPrefix(attributes, typeFlag, size, true);
+        output.write(prefix);
         if (size > 0L) {
             output.writeBody(Objects.requireNonNull(body, "body"), size);
             writePadding(size);
@@ -291,10 +223,12 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     @Override
     protected void finishCurrentEntry() throws IOException {
         ensureOpen();
-        PendingEntry entry = requirePendingEntry();
-        entry.ensurePending();
-        pendingEntry = null;
-        writeEntry(entry, null, 0L);
+        @Nullable PendingEntry entry = pendingEntry;
+        if (entry != null) {
+            entry.ensurePending();
+            pendingEntry = null;
+            writeEntry(entry, null, 0L);
+        }
     }
 
     /// Opens a writable channel for the current pending file entry and commits it when the channel is closed.
@@ -370,50 +304,30 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         if (bodySize > 0L && body == null) {
             throw new IllegalArgumentException("TAR entry body channel is required for non-empty content");
         }
+        TarArkivoEntryAttributes attributes = new PendingTarEntryAttributes(entry, entry.attributes);
+        long size = entry.type == EntryType.FILE ? bodySize : 0L;
+        byte @Unmodifiable [] prefix = createEntryPrefix(
+                attributes, attributes.typeFlag(), size, entry.attributes.lastModifiedTimeConfigured());
         entry.committed = true;
-        byte typeFlag = 0;
-        int defaultMode = 0;
-        long size = 0L;
-        String linkName = "";
-        switch (entry.type) {
-            case FILE -> {
-                typeFlag = TarEntryAttributes.REGULAR_TYPE;
-                defaultMode = DEFAULT_FILE_MODE;
-                size = bodySize;
-                linkName = "";
-            }
-            case DIRECTORY -> {
-                typeFlag = TarEntryAttributes.DIRECTORY_TYPE;
-                defaultMode = DEFAULT_DIRECTORY_MODE;
-                size = 0L;
-                linkName = "";
-            }
-            case SYMBOLIC_LINK -> {
-                typeFlag = TarEntryAttributes.SYMBOLIC_LINK_TYPE;
-                defaultMode = DEFAULT_SYMBOLIC_LINK_MODE;
-                size = 0L;
-                linkName = Objects.requireNonNull(entry.linkTarget, "linkTarget");
-            }
-            case HARD_LINK -> {
-                typeFlag = TarEntryAttributes.HARD_LINK_TYPE;
-                defaultMode = DEFAULT_HARD_LINK_MODE;
-                size = 0L;
-                linkName = Objects.requireNonNull(entry.linkTarget, "linkTarget");
-            }
+        output.write(prefix);
+        if (size > 0L) {
+            output.writeBody(Objects.requireNonNull(body, "body"), size);
+            writePadding(size);
         }
+    }
 
-        PendingTarEntryAttributeView attributes = entry.attributes;
-        int mode = attributes.mode(defaultMode);
-        long userId = attributes.userId();
-        long groupId = attributes.groupId();
-        long modificationTime = headerEpochSecond(attributes.lastModifiedTime());
-        @Nullable String userName = attributes.userName();
-        @Nullable String groupName = attributes.groupName();
+    /// Prepares all PAX metadata and the following file header before any entry bytes reach the archive.
+    private static byte @Unmodifiable [] createEntryPrefix(
+            TarArkivoEntryAttributes attributes, byte typeFlag, long size, boolean preserveModificationTime
+    ) throws IOException {
+        String path = entryPathText(attributes.path(), attributes.isDirectory());
+        @Nullable String configuredLinkName = attributes.linkName();
+        String linkName = configuredLinkName != null ? configuredLinkName : "";
 
         LinkedHashMap<String, String> paxRecords = new LinkedHashMap<>();
-        @Nullable HeaderPathFields pathFields = headerPathFields(entry.path);
+        @Nullable HeaderPathFields pathFields = headerPathFields(path);
         if (pathFields == null) {
-            paxRecords.put("path", entry.path);
+            paxRecords.put("path", path);
             pathFields = new HeaderPathFields("arkivo-pax-entry", "");
         }
 
@@ -423,7 +337,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             headerLinkName = "";
         }
 
-        if (attributes.lastModifiedTimeConfigured()) {
+        if (preserveModificationTime) {
             paxRecords.put("mtime", paxTimestamp(attributes.lastModifiedTime()));
         }
         @Nullable FileTime recordedLastAccessTime = attributes.recordedLastAccessTime();
@@ -439,49 +353,63 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             paxRecords.put("LIBARCHIVE.creationtime", paxTimestamp(recordedCreationTime));
         }
 
-        long headerUserId = userId;
-        if (attributes.userIdConfigured() && userId > maxOctalValue(8)) {
-            paxRecords.put("uid", Long.toString(userId));
+        long headerUserId = attributes.userId();
+        if (headerUserId > maxOctalValue(8)) {
+            paxRecords.put("uid", Long.toString(headerUserId));
             headerUserId = 0L;
         }
-        long headerGroupId = groupId;
-        if (attributes.groupIdConfigured() && groupId > maxOctalValue(8)) {
-            paxRecords.put("gid", Long.toString(groupId));
+        long headerGroupId = attributes.groupId();
+        if (headerGroupId > maxOctalValue(8)) {
+            paxRecords.put("gid", Long.toString(headerGroupId));
             headerGroupId = 0L;
         }
 
-        String headerUserName = userName != null ? userName : "";
-        if (userName != null && utf8Length(userName) > 32) {
+        @Nullable String configuredUserName = attributes.userName();
+        String userName = configuredUserName != null ? configuredUserName : "";
+        String headerUserName = userName;
+        if (utf8Length(userName) > 32) {
             paxRecords.put("uname", userName);
             headerUserName = "";
         }
-        String headerGroupName = groupName != null ? groupName : "";
-        if (groupName != null && utf8Length(groupName) > 32) {
+        @Nullable String configuredGroupName = attributes.groupName();
+        String groupName = configuredGroupName != null ? configuredGroupName : "";
+        String headerGroupName = groupName;
+        if (utf8Length(groupName) > 32) {
             paxRecords.put("gname", groupName);
             headerGroupName = "";
         }
 
-        if (!paxRecords.isEmpty()) {
-            writePaxHeader(paxRecords);
-        }
-
-        writeHeader(
+        byte @Unmodifiable [] header = createHeader(
                 pathFields.name,
                 pathFields.prefix,
-                mode,
+                attributes.mode(),
                 headerUserId,
                 headerGroupId,
                 size,
-                modificationTime,
+                headerEpochSecond(attributes.lastModifiedTime()),
                 typeFlag,
                 headerLinkName,
                 headerUserName,
                 headerGroupName
         );
-        if (size > 0L) {
-            output.writeBody(Objects.requireNonNull(body, "body"), size);
-            writePadding(size);
+        if (paxRecords.isEmpty()) {
+            return header;
         }
+
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        for (Map.Entry<String, String> record : paxRecords.entrySet()) {
+            body.writeBytes(paxRecord(record.getKey(), record.getValue()));
+        }
+        byte @Unmodifiable [] bodyBytes = body.toByteArray();
+        byte @Unmodifiable [] paxHeader = createHeader(
+                "PaxHeaders/arkivo", "", DEFAULT_FILE_MODE, 0L, 0L, bodyBytes.length, 0L,
+                TarEntryAttributes.PAX_EXTENDED_HEADER_TYPE, "", "", "");
+        ByteArrayOutputStream prefix = new ByteArrayOutputStream();
+        prefix.writeBytes(paxHeader);
+        prefix.writeBytes(bodyBytes);
+        prefix.writeBytes(new byte[(int) paddingSize(bodyBytes.length)]);
+        prefix.writeBytes(header);
+        return prefix.toByteArray();
     }
 
     /// Releases staged bodies before closing their storage, preserving earlier failures.
@@ -527,32 +455,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         }
     }
 
-    /// Writes one PAX extended header entry.
-    private void writePaxHeader(Map<String, String> records) throws IOException {
-        ByteArrayOutputStream body = new ByteArrayOutputStream();
-        for (Map.Entry<String, String> record : records.entrySet()) {
-            body.write(paxRecord(record.getKey(), record.getValue()));
-        }
-        byte[] bodyBytes = body.toByteArray();
-        writeHeader(
-                "PaxHeaders/arkivo",
-                "",
-                DEFAULT_FILE_MODE,
-                0L,
-                0L,
-                bodyBytes.length,
-                0L,
-                TarEntryAttributes.PAX_EXTENDED_HEADER_TYPE,
-                "",
-                "",
-                ""
-        );
-        output.write(bodyBytes);
-        writePadding(bodyBytes.length);
-    }
-
-    /// Writes one TAR header block.
-    private void writeHeader(
+    /// Encodes and validates one complete TAR header block without accessing the archive output.
+    private static byte @Unmodifiable [] createHeader(
             String name,
             String prefix,
             int mode,
@@ -588,7 +492,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             checksum += Byte.toUnsignedInt(value);
         }
         writeChecksum(header, checksum);
-        output.write(header);
+        return header;
     }
 
     /// Writes padding bytes until the next TAR record boundary.
@@ -875,12 +779,6 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// The requested numeric group identifier.
         private long groupId;
 
-        /// Whether the numeric user identifier was explicitly configured.
-        private boolean userIdConfigured;
-
-        /// Whether the numeric group identifier was explicitly configured.
-        private boolean groupIdConfigured;
-
         /// The requested user name, or `null` when absent.
         private @Nullable String userName;
 
@@ -937,7 +835,6 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             }
             entry.ensurePending();
             this.userId = userId;
-            userIdConfigured = true;
         }
 
         /// Sets the numeric group identifier stored by the TAR header.
@@ -948,7 +845,6 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             }
             entry.ensurePending();
             this.groupId = groupId;
-            groupIdConfigured = true;
         }
 
         /// Sets the POSIX mode bits stored by the TAR header.
@@ -1049,16 +945,6 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// Returns the requested numeric group identifier.
         private long groupId() {
             return groupId;
-        }
-
-        /// Returns whether the numeric user identifier was explicitly configured.
-        private boolean userIdConfigured() {
-            return userIdConfigured;
-        }
-
-        /// Returns whether the numeric group identifier was explicitly configured.
-        private boolean groupIdConfigured() {
-            return groupIdConfigured;
         }
 
         /// Returns the pending owner principal.

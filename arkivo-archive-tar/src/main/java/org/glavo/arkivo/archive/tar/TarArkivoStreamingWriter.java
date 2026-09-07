@@ -31,6 +31,10 @@ import java.util.Objects;
 /// an `IOException` with the write failure as its cause; subsequent body close calls do not emit the entry. Invalid
 /// array ranges are rejected before staging and leave the body usable.
 ///
+/// Entry headers, including PAX extended metadata, are fully encoded before any entry bytes are written. If header
+/// encoding fails when a body or an entry is closed, the entry is discarded without changing the archive output.
+/// Closing the same handle again completes its cleanup so another entry can begin.
+///
 /// A target write failure, or a body read failure after its header has been emitted, leaves the archive incomplete.
 /// No further entries or TAR end markers are written. Closing the writer reports the earlier failure as the cause of
 /// an `IOException` and releases owned resources. The output or compression wrapper may flush buffered bytes when

@@ -28,6 +28,11 @@ import java.util.Objects;
 /// and member-size validation failures leave the body usable. This discard behavior does not apply to directly written
 /// members, whose bytes may already have reached the archive output.
 ///
+/// Member headers are fully encoded before any member bytes are written. If header encoding fails when a staged
+/// body or an entry is closed, the member is discarded without changing the archive output. Closing the same handle
+/// again completes its cleanup so another member can begin. A header encoding failure when opening a directly written
+/// body leaves the member pending; its metadata can be corrected before opening the body again.
+///
 /// A target write failure, or a body read failure after its header has been emitted, leaves the archive incomplete.
 /// No further members are accepted. Closing the writer reports the earlier failure as the cause of an `IOException`
 /// and releases owned resources without attempting more archive records. Closing an undersized directly written body
