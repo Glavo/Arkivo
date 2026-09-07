@@ -377,7 +377,8 @@ public final class ArArchiveIntegrationTest {
         assertEquals(true, bodyException.getMessage().contains("does not match configured size"));
 
         IOException writerException = assertThrows(IOException.class, writer::close);
-        assertEquals(true, writerException.getMessage().contains("does not match configured size"));
+        assertEquals(bodyException, writerException.getCause());
+        writer.close();
     }
 
     /// Verifies that known-size members reject bodies larger than the configured size.

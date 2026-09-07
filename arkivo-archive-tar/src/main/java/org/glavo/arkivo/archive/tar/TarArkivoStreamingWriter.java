@@ -31,6 +31,11 @@ import java.util.Objects;
 /// an `IOException` with the write failure as its cause; subsequent body close calls do not emit the entry. Invalid
 /// array ranges are rejected before staging and leave the body usable.
 ///
+/// A target write failure, or a body read failure after its header has been emitted, leaves the archive incomplete.
+/// No further entries or TAR end markers are written. Closing the writer reports the earlier failure as the cause of
+/// an `IOException` and releases owned resources. The output or compression wrapper may flush buffered bytes when
+/// closed; bytes already sent to the output are not rolled back.
+///
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits it without opening a caller-writable
 /// body; opening a regular-file body transfers completion to that body, and another entry cannot begin until it closes
 /// successfully. Metadata views are configurable only while the entry is pending. Closing the writer commits any

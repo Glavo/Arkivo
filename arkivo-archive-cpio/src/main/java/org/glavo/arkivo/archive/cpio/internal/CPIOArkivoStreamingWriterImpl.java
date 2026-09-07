@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.cpio.internal;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.internal.ArchiveOutputStream;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
@@ -79,7 +80,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
     private static final byte @Unmodifiable [] EMPTY_BODY = new byte[0];
 
     /// The backing archive output stream.
-    private final OutputStream target;
+    private final ArchiveOutputStream target;
 
     /// The configured output header dialect.
     private final CPIODialect dialect;
@@ -102,15 +103,6 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
     /// Whether the trailer and final block padding were written.
     private boolean archiveFinished;
 
-    /// Whether the backing output stream was closed.
-    private boolean targetClosed;
-
-    /// The terminal output failure that prevents any further archive bytes from being emitted.
-    private @Nullable IOException outputFailure;
-
-    /// The number of bytes successfully written to the archive stream.
-    private long archiveSize;
-
     /// The inode assigned to the next entry that keeps its default inode.
     private long nextInode = 1L;
 
@@ -126,7 +118,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
     /// @param options the creation and body-storage configuration
     /// @throws IOException if configured body storage cannot be opened
     public CPIOArkivoStreamingWriterImpl(OutputStream target, CPIOArchiveOptions.Create options) throws IOException {
-        this.target = Objects.requireNonNull(target, "target");
+        this.target = new ArchiveOutputStream(target);
         CPIOArchiveOptions.Create checkedOptions = Objects.requireNonNull(options, "options");
         this.dialect = checkedOptions.dialect();
         this.binaryByteOrder = checkedOptions.binaryByteOrder();
@@ -240,13 +232,14 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
     /// Finishes the archive and closes its output and staging storage.
     @Override
     protected void closeWriter() throws IOException {
-        if (!open && targetClosed && bodyStorage.isClosed()) {
+        if (!open && target.isClosed() && bodyStorage.isClosed()) {
             return;
         }
 
-        @Nullable Throwable failure = outputFailure;
-        if (open && !archiveFinished && outputFailure == null) {
+        @Nullable Throwable failure = null;
+        if (open && !archiveFinished) {
             try {
+                target.ensureWritable();
                 writeTrailerAndPadding();
                 archiveFinished = true;
             } catch (IOException | RuntimeException | Error exception) {
@@ -254,10 +247,9 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
             }
         }
         open = false;
-        if (!targetClosed) {
+        if (!target.isClosed()) {
             try {
                 target.close();
-                targetClosed = true;
             } catch (IOException | RuntimeException | Error exception) {
                 failure = combine(failure, exception);
             }
@@ -288,7 +280,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         );
         writeName(nameBytes);
         writePadding(namePadding(nameBytes.length + 1L));
-        long finalPadding = (blockSize - archiveSize % blockSize) % blockSize;
+        long finalPadding = (blockSize - target.bytesWritten() % blockSize) % blockSize;
         writePadding(finalPadding);
     }
 
@@ -315,7 +307,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         );
         writeName(nameBytes);
         writePadding(namePadding(nameBytes.length + 1L));
-        writeBytes(body);
+        target.write(body);
         writePadding(dataPadding(body.length));
         entry.committed = true;
     }
@@ -348,7 +340,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         );
         writeName(nameBytes);
         writePadding(namePadding(nameBytes.length + 1L));
-        copyBody(body, bodySize);
+        target.writeBody(body, bodySize);
         writePadding(dataPadding(bodySize));
         entry.committed = true;
     }
@@ -386,7 +378,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
                     modificationTime, nameSize, size
             );
         };
-        writeBytes(header);
+        target.write(header);
     }
 
     /// Creates one new portable ASCII header.
@@ -589,33 +581,14 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
     /// Writes an encoded name followed by its one-byte terminator.
     private void writeName(byte[] nameBytes) throws IOException {
-        writeBytes(nameBytes);
-        writeByte(0);
-    }
-
-    /// Copies exactly one staged entry body to the archive output.
-    private void copyBody(ReadableByteChannel input, long size) throws IOException {
-        ByteBuffer buffer = ByteBuffer.allocate(64 * 1024);
-        long remaining = size;
-        while (remaining > 0L) {
-            buffer.clear();
-            buffer.limit((int) Math.min(remaining, buffer.capacity()));
-            int read = input.read(buffer);
-            if (read < 0) {
-                throw new IOException("Staged CPIO entry body ended before its declared size");
-            }
-            if (read == 0) {
-                continue;
-            }
-            writeBytes(buffer.array(), 0, read);
-            remaining -= read;
-        }
+        target.write(nameBytes);
+        target.write(0);
     }
 
     /// Writes zero padding bytes.
     private void writePadding(long count) throws IOException {
         for (long index = 0L; index < count; index++) {
-            writeByte(0);
+            target.write(0);
         }
     }
 
@@ -675,43 +648,6 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
             checksum = checksum + Byte.toUnsignedInt(value) & MAX_UNSIGNED_INT;
         }
         return checksum;
-    }
-
-    /// Writes one byte and accounts for the physical archive size.
-    private void writeByte(int value) throws IOException {
-        requireWritableOutput();
-        try {
-            target.write(value);
-        } catch (IOException exception) {
-            outputFailure = exception;
-            throw exception;
-        }
-        archiveSize++;
-    }
-
-    /// Writes a complete byte array and accounts for the physical archive size.
-    private void writeBytes(byte[] bytes) throws IOException {
-        writeBytes(bytes, 0, bytes.length);
-    }
-
-    /// Writes byte-array content and accounts for the physical archive size.
-    private void writeBytes(byte[] bytes, int offset, int length) throws IOException {
-        requireWritableOutput();
-        try {
-            target.write(bytes, offset, length);
-        } catch (IOException exception) {
-            outputFailure = exception;
-            throw exception;
-        }
-        archiveSize = Math.addExact(archiveSize, length);
-    }
-
-    /// Requires the forward-only target not to have failed during an earlier write.
-    private void requireWritableOutput() throws IOException {
-        @Nullable IOException failure = outputFailure;
-        if (failure != null) {
-            throw failure;
-        }
     }
 
     /// Returns the current pending entry.
@@ -826,7 +762,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         if (!open) {
             throw new IOException("CPIO streaming writer is closed");
         }
-        requireWritableOutput();
+        target.ensureWritable();
     }
 
     /// Describes the logical kind of a pending entry.

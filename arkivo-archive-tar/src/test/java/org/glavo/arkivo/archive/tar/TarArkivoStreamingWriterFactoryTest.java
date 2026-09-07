@@ -180,7 +180,8 @@ final class TarArkivoStreamingWriterFactoryTest {
         IOException thrown = assertThrows(IOException.class, writer::close);
 
         assertSame(sharedFailure, thrown);
-        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(sharedFailure, thrown.getSuppressed()[0].getCause());
         assertEquals(1, output.closeCalls());
         assertFalse(storage.isOpen());
     }

@@ -191,11 +191,12 @@ final class CPIOStorageLifecycleTest {
 
         var entry = writer.beginFile("value.txt");
         assertSame(sharedFailure, assertThrows(IOException.class, entry::close));
-        assertSame(sharedFailure, assertThrows(IOException.class, writer::close));
+        IOException closeFailure = assertThrows(IOException.class, writer::close);
+        assertSame(sharedFailure, closeFailure.getCause());
         assertEquals(0, sharedFailure.getSuppressed().length);
         assertTrue(target.isOpen());
 
-        assertSame(sharedFailure, assertThrows(IOException.class, writer::close));
+        assertDoesNotThrow(writer::close);
         assertFalse(target.isOpen());
         assertDoesNotThrow(writer::close);
     }

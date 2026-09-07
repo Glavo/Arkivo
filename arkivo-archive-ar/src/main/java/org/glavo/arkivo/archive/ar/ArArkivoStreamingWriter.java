@@ -28,6 +28,11 @@ import java.util.Objects;
 /// and member-size validation failures leave the body usable. This discard behavior does not apply to directly written
 /// members, whose bytes may already have reached the archive output.
 ///
+/// A target write failure, or a body read failure after its header has been emitted, leaves the archive incomplete.
+/// No further members are accepted. Closing the writer reports the earlier failure as the cause of an `IOException`
+/// and releases owned resources without attempting more archive records. Closing an undersized directly written body
+/// has the same effect. Bytes already sent to the output are not rolled back.
+///
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits its fixed or empty body; opening a
 /// caller-writable body transfers completion to that body, and another entry cannot begin until the body closes
 /// successfully. Metadata views are configurable only while their entry remains pending. Closing the writer commits

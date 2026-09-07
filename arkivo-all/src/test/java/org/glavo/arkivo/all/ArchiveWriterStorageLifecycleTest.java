@@ -12,6 +12,7 @@ import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ar.ArArchiveOptions;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
+import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
@@ -28,6 +29,7 @@ import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -37,6 +39,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.EOFException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -47,6 +50,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
 import java.util.EnumMap;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -398,6 +402,160 @@ final class ArchiveWriterStorageLifecycleTest {
         }
     }
 
+    /// Verifies failures at every physical write boundary prevent any subsequent archive output.
+    @ParameterizedTest
+    @MethodSource("streamingWriteFailures")
+    void stopsAfterEveryTargetWriteFailure(Format format, FailureKind kind, boolean partial) throws IOException {
+        TrackingStorage baselineStorage = new TrackingStorage();
+        TrackingOutput baseline = new TrackingOutput(baselineStorage);
+        try (ArkivoStreamingWriter writer = format.writer(baseline, baselineStorage)) {
+            try (OutputStream body = writer.beginFile("entry").openOutputStream()) {
+                body.write(BODY);
+            }
+        }
+        int writes = baselineStorage.count(Stage.TARGET_WRITE);
+        for (int index = 1; index <= writes; index++) {
+            TrackingStorage storage = new TrackingStorage();
+            TrackingOutput target = new TrackingOutput(storage);
+            Throwable failure = kind.failure("target write " + index);
+            target.failureWrite = index;
+            target.writeFailure = failure;
+            target.partialFailure = partial;
+            ArkivoStreamingWriter writer = format.writer(target, storage);
+            OutputStream body = writer.beginFile("entry").openOutputStream();
+            body.write(BODY);
+            assertSame(failure, assertThrows(failure.getClass(), () -> {
+                body.close();
+                writer.close();
+            }));
+            byte[] incomplete = target.bytes.toByteArray();
+            int attempts = storage.count(Stage.TARGET_WRITE);
+            body.close();
+            try {
+                writer.close();
+            } catch (IOException exception) {
+                assertSame(failure, exception.getCause());
+            }
+            writer.close();
+            assertEquals(index, attempts);
+            assertEquals(attempts, storage.count(Stage.TARGET_WRITE));
+            assertArrayEquals(incomplete, target.bytes.toByteArray());
+            assertEquals(1, storage.count(Stage.TARGET_CLOSE));
+            storage.assertReleased();
+        }
+    }
+
+    /// Verifies a staged-body read failure after its header prevents new entries and end markers.
+    @ParameterizedTest
+    @MethodSource("streamingFailures")
+    void stopsAfterStagedBodyReadFailure(Format format, FailureKind kind) throws IOException {
+        TrackingStorage storage = new TrackingStorage();
+        TrackingOutput target = new TrackingOutput(storage);
+        ArkivoStreamingWriter writer = format.writer(target, storage);
+        OutputStream body = writer.beginFile("entry").openOutputStream();
+        body.write(BODY);
+        Throwable failure = kind.failure("body read");
+        storage.fail(Stage.READ, failure);
+        assertSame(failure, assertThrows(failure.getClass(), body::close));
+        body.close();
+        assertSame(failure, assertThrows(IOException.class, () -> writer.beginFile("later")).getCause());
+        byte[] incomplete = target.bytes.toByteArray();
+        assertTrue(incomplete.length > 0);
+        assertSame(failure, assertThrows(IOException.class, writer::close).getCause());
+        writer.close();
+        assertArrayEquals(incomplete, target.bytes.toByteArray());
+        storage.assertReleased();
+    }
+
+    /// Verifies premature staging EOF is terminal after the entry's declared size has been emitted.
+    @ParameterizedTest
+    @EnumSource(Format.class)
+    void stopsAfterPrematureStagingEof(Format format) throws IOException {
+        TrackingStorage storage = new TrackingStorage();
+        TrackingOutput target = new TrackingOutput(storage);
+        ArkivoStreamingWriter writer = format.writer(target, storage);
+        OutputStream body = writer.beginFile("entry").openOutputStream();
+        body.write(BODY);
+        storage.prematureEof = true;
+        EOFException failure = assertThrows(EOFException.class, body::close);
+        body.close();
+        byte[] incomplete = target.bytes.toByteArray();
+        assertTrue(incomplete.length > 0);
+        assertSame(failure, assertThrows(IOException.class, writer::close).getCause());
+        writer.close();
+        assertArrayEquals(incomplete, target.bytes.toByteArray());
+        storage.assertReleased();
+    }
+
+    /// Verifies direct AR writes retain the target failure instead of replacing it with a body-size error.
+    @ParameterizedTest
+    @EnumSource(FailureKind.class)
+    void stopsAfterDirectArBodyWriteFailure(FailureKind kind) throws IOException {
+        TrackingStorage storage = new TrackingStorage();
+        TrackingOutput target = new TrackingOutput(storage);
+        ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(target, storage);
+        ArkivoStreamingWriter.Entry entry = writer.beginFile("entry");
+        ArArkivoEntryAttributeView view = Objects.requireNonNull(entry.attributeView(ArArkivoEntryAttributeView.class));
+        view.setSize(BODY.length);
+        OutputStream body = entry.openOutputStream();
+        Throwable failure = kind.failure("direct AR write");
+        target.failureWrite = storage.count(Stage.TARGET_WRITE) + 1;
+        target.writeFailure = failure;
+        target.partialFailure = true;
+        assertSame(failure, assertThrows(failure.getClass(), () -> body.write(BODY)));
+        assertSame(failure, assertThrows(IOException.class, body::close).getCause());
+        body.close();
+        byte[] incomplete = target.bytes.toByteArray();
+        assertSame(failure, assertThrows(IOException.class, () -> writer.beginFile("later")).getCause());
+        assertSame(failure, assertThrows(IOException.class, writer::close).getCause());
+        writer.close();
+        assertArrayEquals(incomplete, target.bytes.toByteArray());
+        storage.assertReleased();
+    }
+
+    /// Verifies a failed direct-member padding write is not repeated by body or writer close.
+    @ParameterizedTest
+    @EnumSource(FailureKind.class)
+    void doesNotRetryDirectArPadding(FailureKind kind) throws IOException {
+        TrackingStorage storage = new TrackingStorage();
+        TrackingOutput target = new TrackingOutput(storage);
+        ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(target, storage);
+        ArkivoStreamingWriter.Entry entry = writer.beginFile("entry");
+        Objects.requireNonNull(entry.attributeView(ArArkivoEntryAttributeView.class)).setSize(1L);
+        OutputStream body = entry.openOutputStream();
+        body.write(7);
+        Throwable failure = kind.failure("direct AR padding");
+        storage.fail(Stage.TARGET_WRITE, failure);
+        assertSame(failure, assertThrows(failure.getClass(), body::close));
+        int attempts = storage.count(Stage.TARGET_WRITE);
+        body.close();
+        assertSame(failure, assertThrows(IOException.class, writer::close).getCause());
+        writer.close();
+        assertEquals(attempts, storage.count(Stage.TARGET_WRITE));
+        storage.assertReleased();
+    }
+
+    /// Verifies an undersized direct AR body cannot be followed by another member.
+    @Test
+    void stopsAfterDirectArBodyUnderrun() throws IOException {
+        TrackingStorage storage = new TrackingStorage();
+        TrackingOutput target = new TrackingOutput(storage);
+        ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(target, storage);
+        ArkivoStreamingWriter.Entry entry = writer.beginFile("entry");
+        ArArkivoEntryAttributeView view = Objects.requireNonNull(entry.attributeView(ArArkivoEntryAttributeView.class));
+        view.setSize(3L);
+        OutputStream body = entry.openOutputStream();
+        body.write(1);
+        IOException failure = assertThrows(IOException.class, body::close);
+        body.close();
+        byte[] incomplete = target.bytes.toByteArray();
+        assertSame(failure, assertThrows(IOException.class, () -> writer.beginFile("later")).getCause());
+        assertSame(failure, assertThrows(IOException.class, writer::close).getCause());
+        writer.close();
+        assertArrayEquals(incomplete, target.bytes.toByteArray());
+        storage.assertReleased();
+    }
+
     /// Creates an independently encoded ZIP source for update tests.
     private static Path createZip(Path directory) throws IOException {
         Path archive = directory.resolve("archive.zip");
@@ -481,6 +639,8 @@ final class ArchiveWriterStorageLifecycleTest {
     /// Independently observable staging and output operations.
     @NotNullByDefault
     private enum Stage {
+        /// Reads staged bytes after their entry header has been emitted.
+        READ,
         /// Fails after storing a prefix of the offered bytes.
         WRITE,
         /// Fails after changing the stored size.
@@ -510,6 +670,9 @@ final class ArchiveWriterStorageLifecycleTest {
 
         /// Attempt counts, including failed operations.
         private final EnumMap<Stage, Integer> counts = new EnumMap<>(Stage.class);
+
+        /// Whether staged reads should report end-of-input despite retained content.
+        private boolean prematureEof;
 
         /// Number of content objects whose deletion has not succeeded.
         private int liveContents;
@@ -639,6 +802,10 @@ final class ArchiveWriterStorageLifecycleTest {
             /// Reads bytes from the delegate.
             @Override
             public int read(ByteBuffer target) throws IOException {
+                if (prematureEof) {
+                    return -1;
+                }
+                attempt(Stage.READ);
                 return delegate.read(target);
             }
 
@@ -709,6 +876,9 @@ final class ArchiveWriterStorageLifecycleTest {
     /// Captures final archive bytes while exposing independent write and close failure boundaries.
     @NotNullByDefault
     private static final class TrackingOutput extends OutputStream {
+        /// Indicates that no numbered target write is configured to fail.
+        private static final int NO_WRITE_FAILURE = -1;
+
         /// Final bytes emitted by the writer.
         private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
@@ -717,6 +887,25 @@ final class ArchiveWriterStorageLifecycleTest {
 
         /// Whether target closure has completed.
         private boolean closed;
+
+        /// The one-based target write that should fail, or [#NO_WRITE_FAILURE] when not armed.
+        private int failureWrite = NO_WRITE_FAILURE;
+
+        /// The failure injected at the selected write.
+        private @Nullable Throwable writeFailure;
+
+        /// Whether one byte reaches the target before the selected write fails.
+        private boolean partialFailure;
+
+        /// Arms a target failure after any configured partial output.
+        private void prepareWrite(int firstByte, boolean nonempty) {
+            if (failureWrite == storage.count(Stage.TARGET_WRITE) + 1) {
+                if (partialFailure && nonempty) {
+                    bytes.write(firstByte);
+                }
+                storage.fail(Stage.TARGET_WRITE, Objects.requireNonNull(writeFailure));
+            }
+        }
 
         /// Creates a target controlled by the storage test's fault queues.
         private TrackingOutput(TrackingStorage storage) {
@@ -727,6 +916,7 @@ final class ArchiveWriterStorageLifecycleTest {
         @Override
         public void write(int value) throws IOException {
             assertFalse(closed, "Archive output resumed after close");
+            prepareWrite(value, true);
             storage.attempt(Stage.TARGET_WRITE);
             bytes.write(value);
         }
@@ -735,6 +925,7 @@ final class ArchiveWriterStorageLifecycleTest {
         @Override
         public void write(byte[] source, int offset, int length) throws IOException {
             assertFalse(closed, "Archive output resumed after close");
+            prepareWrite(length == 0 ? 0 : source[offset], length != 0);
             storage.attempt(Stage.TARGET_WRITE);
             bytes.write(source, offset, length);
         }

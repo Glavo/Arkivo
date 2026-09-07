@@ -7,6 +7,7 @@ import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.internal.ArchiveOutputStream;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
@@ -19,7 +20,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.math.BigDecimal;
-import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
@@ -90,7 +90,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     }
 
     /// The backing archive output stream.
-    private final OutputStream output;
+    private final ArchiveOutputStream output;
 
     /// The storage used to stage file bodies until their TAR headers can be written.
     private final StoredContentPool bodyStorage;
@@ -107,9 +107,6 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// Whether the TAR end marker has already been written.
     private boolean finished;
 
-    /// Whether the backing archive output stream has been closed.
-    private boolean outputClosed;
-
     /// Creates a streaming TAR writer.
     ///
     /// @param output the owned archive stream at whose current position TAR blocks are written
@@ -122,7 +119,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// @param output the owned archive stream at whose current position TAR blocks are written
     /// @param bodyStorage the owned storage used to stage regular-file bodies until their sizes are known
     public TarArkivoStreamingWriterImpl(OutputStream output, ArkivoEditStorage bodyStorage) {
-        this.output = Objects.requireNonNull(output, "output");
+        this.output = new ArchiveOutputStream(output);
         this.bodyStorage = new StoredContentPool(bodyStorage);
     }
 
@@ -256,27 +253,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 headerGroupName
         );
         if (size > 0L) {
-            writeBody(Objects.requireNonNull(body, "body"), size);
+            output.writeBody(Objects.requireNonNull(body, "body"), size);
             writePadding(size);
-        }
-    }
-
-    /// Copies exactly one indexed entry body to the archive output using bounded memory.
-    private void writeBody(ReadableByteChannel body, long size) throws IOException {
-        ByteBuffer buffer = ByteBuffer.allocate(64 * 1024);
-        long remaining = size;
-        while (remaining > 0L) {
-            buffer.clear();
-            buffer.limit((int) Math.min(remaining, buffer.capacity()));
-            int count = body.read(buffer);
-            if (count < 0) {
-                throw new IOException("TAR snapshot body ended before its declared size");
-            }
-            if (count == 0) {
-                continue;
-            }
-            output.write(buffer.array(), 0, count);
-            remaining -= count;
         }
     }
 
@@ -342,13 +320,14 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// Closes this streaming writer and finishes the TAR stream.
     @Override
     protected void closeWriter() throws IOException {
-        if (!open && outputClosed && bodyStorage.isClosed()) {
+        if (!open && output.isClosed() && bodyStorage.isClosed()) {
             return;
         }
 
         @Nullable Throwable failure = null;
         if (open && !finished) {
             try {
+                output.ensureWritable();
                 output.write(new byte[END_MARKER_SIZE]);
                 finished = true;
             } catch (IOException | RuntimeException | Error exception) {
@@ -357,10 +336,9 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         }
 
         open = false;
-        if (!outputClosed) {
+        if (!output.isClosed()) {
             try {
                 output.close();
-                outputClosed = true;
             } catch (IOException | RuntimeException | Error exception) {
                 failure = combine(failure, exception);
             }
@@ -501,7 +479,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 headerGroupName
         );
         if (size > 0L) {
-            writeBody(Objects.requireNonNull(body, "body"), size);
+            output.writeBody(Objects.requireNonNull(body, "body"), size);
             writePadding(size);
         }
     }
@@ -812,6 +790,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         if (!open) {
             throw new IOException("TAR streaming writer is closed");
         }
+        output.ensureWritable();
     }
 
     /// Stores USTAR path field values.

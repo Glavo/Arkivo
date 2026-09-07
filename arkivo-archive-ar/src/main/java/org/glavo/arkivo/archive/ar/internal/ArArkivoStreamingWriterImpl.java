@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.ar.internal;
 
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.internal.ArchiveOutputStream;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
@@ -18,7 +19,6 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
@@ -60,7 +60,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     private static final long MAX_MEMBER_SIZE = 9_999_999_999L;
 
     /// The backing archive output stream.
-    private final OutputStream output;
+    private final ArchiveOutputStream output;
 
     /// The storage used when a member body size is not known before writing.
     private final StoredContentPool bodyStorage;
@@ -70,9 +70,6 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
 
     /// Whether this writer still accepts new members.
     private boolean open = true;
-
-    /// Whether the backing archive output stream has been closed.
-    private boolean outputClosed;
 
     /// The pending member that has not yet been committed.
     private @Nullable PendingMember pendingMember;
@@ -92,7 +89,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// @param output the owned archive output stream
     /// @param bodyStorage the owned storage used to stage bodies of initially unknown size
     public ArArkivoStreamingWriterImpl(OutputStream output, ArkivoEditStorage bodyStorage) {
-        this.output = Objects.requireNonNull(output, "output");
+        this.output = new ArchiveOutputStream(output);
         this.bodyStorage = new StoredContentPool(bodyStorage);
     }
 
@@ -189,28 +186,9 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         MemberLayout layout = memberLayout(member, bodySize);
         writeMemberPrefix(member, layout);
         if (bodySize > 0L) {
-            writeBody(Objects.requireNonNull(body, "body"), bodySize);
+            output.writeBody(Objects.requireNonNull(body, "body"), bodySize);
         }
         writeMemberPadding(layout.storedSize());
-    }
-
-    /// Copies exactly one indexed member body to the archive output using bounded memory.
-    private void writeBody(ReadableByteChannel body, long size) throws IOException {
-        ByteBuffer buffer = ByteBuffer.allocate(64 * 1024);
-        long remaining = size;
-        while (remaining > 0L) {
-            buffer.clear();
-            buffer.limit((int) Math.min(remaining, buffer.capacity()));
-            int count = body.read(buffer);
-            if (count < 0) {
-                throw new IOException("AR snapshot body ended before its declared size");
-            }
-            if (count == 0) {
-                continue;
-            }
-            output.write(buffer.array(), 0, count);
-            remaining -= count;
-        }
     }
 
     /// Returns an attribute view used to configure the current pending entry before it is committed.
@@ -269,13 +247,14 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// Closes this streaming writer and finishes the AR archive stream.
     @Override
     protected void closeWriter() throws IOException {
-        if (!open && outputClosed && bodyStorage.isClosed()) {
+        if (!open && output.isClosed() && bodyStorage.isClosed()) {
             return;
         }
 
         @Nullable Throwable failure = null;
         if (open) {
             try {
+                output.ensureWritable();
                 ensureGlobalHeader();
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
@@ -283,10 +262,9 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         }
 
         open = false;
-        if (!outputClosed) {
+        if (!output.isClosed()) {
             try {
                 output.close();
-                outputClosed = true;
             } catch (IOException | RuntimeException | Error exception) {
                 failure = combine(failure, exception);
             }
@@ -326,7 +304,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     private void writeStoredMember(PendingMember member, ReadableByteChannel body, long bodySize) throws IOException {
         MemberLayout layout = memberLayout(member, bodySize);
         writeMemberPrefix(member, layout);
-        writeBody(body, bodySize);
+        output.writeBody(body, bodySize);
         writeMemberPadding(layout.storedSize());
     }
 
@@ -534,6 +512,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         if (!open) {
             throw new IOException("AR streaming writer is closed");
         }
+        output.ensureWritable();
     }
 
     /// Stores the encoded header layout for one AR member.
@@ -994,9 +973,6 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         /// Whether this stream has been closed.
         private boolean closed;
 
-        /// Whether this stream has finished its member successfully.
-        private boolean committed;
-
         /// Creates a direct member body output stream.
         private DirectMemberBodyOutputStream(PendingMember member, MemberLayout layout) {
             this.member = Objects.requireNonNull(member, "member");
@@ -1030,17 +1006,23 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         /// Closes this body stream and writes member padding after an exact-size body.
         @Override
         public void close() throws IOException {
-            if (committed) {
+            if (closed) {
                 return;
             }
             closed = true;
-            if (written != expectedSize) {
-                throw new IOException("AR member body size does not match configured size for " + member.path);
-            }
-            writeMemberPadding(storedSize);
-            committed = true;
-            if (currentBody == this) {
-                currentBody = null;
+            try {
+                output.ensureWritable();
+                if (written != expectedSize) {
+                    IOException failure = new IOException(
+                            "AR member body size does not match configured size for " + member.path);
+                    output.fail(failure);
+                    throw failure;
+                }
+                writeMemberPadding(storedSize);
+            } finally {
+                if (currentBody == this) {
+                    currentBody = null;
+                }
             }
         }
 

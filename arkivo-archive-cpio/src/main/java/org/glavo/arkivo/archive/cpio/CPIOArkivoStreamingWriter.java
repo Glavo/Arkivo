@@ -25,6 +25,10 @@ import java.util.Objects;
 /// an `IOException` with the write failure as its cause; subsequent body close calls do not emit the entry. Argument
 /// and body-size validation failures leave the body usable.
 ///
+/// A target write failure, or a body read failure after its header has been emitted, leaves the archive incomplete.
+/// No further entries or trailer records are written. Closing the writer reports the earlier failure as the cause of
+/// an `IOException` and releases owned resources. Bytes already sent to the output are not rolled back.
+///
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits the fixed body or an empty regular
 /// file; a regular-file body owns completion until it closes successfully. Metadata views are configurable only before
 /// body opening or entry close. Writer close commits a pending entry, emits the `TRAILER!!!` record, pads to the
