@@ -3,8 +3,8 @@
 
 package org.glavo.arkivo.archive.internal;
 
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -12,31 +12,28 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Adapts an output stream to a sequential writable channel with a stable byte position.
+///
+/// The position counts bytes from stream writes that completed normally. If a later write fails, completed chunks
+/// remain consumed from the source buffer and included in the position. A failed stream write may have emitted bytes
+/// without reporting their number; such bytes are not included in either position. Whether writing can resume after
+/// failure depends on the wrapped stream. This channel is not safe for concurrent use.
 @NotNullByDefault
 public final class ForwardOnlyOutputChannel implements SeekableByteChannel {
-    /// The direct-buffer transfer size.
-    private static final int TRANSFER_BUFFER_SIZE = 8192;
-
-    /// The wrapped output stream.
-    private final OutputStream output;
-
-    /// Reusable transfer storage for non-array buffers.
-    private byte @Nullable [] transferBuffer;
+    /// The stream adapter that owns the output and advances only successfully written buffer ranges.
+    private final WritableByteChannel output;
 
     /// The current sequential write position.
     private long position;
-
-    /// Whether this channel remains open.
-    private boolean open = true;
 
     /// Creates a forward-only channel over the given output stream.
     ///
     /// @param output the output stream owned and closed by this channel
     public ForwardOnlyOutputChannel(OutputStream output) {
-        this.output = Objects.requireNonNull(output, "output");
+        this.output = StreamChannelAdapters.writableChannel(output);
     }
 
     /// Rejects reads because the wrapped endpoint is output-only.
@@ -47,31 +44,18 @@ public final class ForwardOnlyOutputChannel implements SeekableByteChannel {
         throw new NonReadableChannelException();
     }
 
-    /// Writes all remaining source bytes at the current sequential position.
+    /// Writes all remaining bytes, retaining completed-chunk progress if a later chunk fails.
     @Override
     public int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
         ensureOpen();
-        int length = source.remaining();
-        long newPosition = Math.addExact(position, length);
-        if (source.hasArray()) {
-            int offset = source.arrayOffset() + source.position();
-            output.write(source.array(), offset, length);
-            source.position(source.limit());
-        } else if (length != 0) {
-            byte[] buffer = transferBuffer;
-            if (buffer == null) {
-                buffer = new byte[TRANSFER_BUFFER_SIZE];
-                transferBuffer = buffer;
-            }
-            while (source.hasRemaining()) {
-                int count = Math.min(source.remaining(), buffer.length);
-                source.get(buffer, 0, count);
-                output.write(buffer, 0, count);
-            }
+        Math.addExact(position, source.remaining());
+        int start = source.position();
+        try {
+            return output.write(source);
+        } finally {
+            position += source.position() - start;
         }
-        position = newPosition;
-        return length;
     }
 
     /// Returns the current sequential write position.
@@ -117,7 +101,7 @@ public final class ForwardOnlyOutputChannel implements SeekableByteChannel {
     /// Returns whether this channel remains open.
     @Override
     public boolean isOpen() {
-        return open;
+        return output.isOpen();
     }
 
     /// Closes the wrapped output stream.
@@ -125,16 +109,12 @@ public final class ForwardOnlyOutputChannel implements SeekableByteChannel {
     /// A failed close leaves this channel logically open so a later call can retry cleanup.
     @Override
     public void close() throws IOException {
-        if (!open) {
-            return;
-        }
         output.close();
-        open = false;
     }
 
     /// Requires this channel to remain open.
     private void ensureOpen() throws ClosedChannelException {
-        if (!open) {
+        if (!isOpen()) {
             throw new ClosedChannelException();
         }
     }

@@ -36,6 +36,11 @@ public final class StreamChannelAdapters {
 
     /// Returns a channel that owns and writes directly to the output stream.
     ///
+    /// A write advances the source position only for stream writes that complete normally; the limit is unchanged.
+    /// If a later chunk fails, earlier completed chunks remain consumed. A failing stream write may have emitted an
+    /// unknown number of bytes, which cannot be reflected in the source position. Empty writes do not access the stream.
+    /// The channel does not retain source buffers or flush the stream after writing.
+    ///
     /// @param target the output stream whose ownership is transferred to the channel
     /// @return a writable channel that preserves close-retry behavior
     public static WritableByteChannel writableChannel(OutputStream target) {
@@ -136,8 +141,8 @@ public final class StreamChannelAdapters {
         /// The backing output stream.
         private final OutputStream target;
 
-        /// The reusable transfer buffer for direct sources.
-        private final byte[] transferBuffer = new byte[TRANSFER_SIZE];
+        /// Transfer storage allocated on the first nonempty write without an accessible backing array.
+        private byte @Nullable [] transferBuffer;
 
         /// Whether this adapter remains open.
         private boolean open = true;
@@ -167,12 +172,15 @@ public final class StreamChannelAdapters {
                 return count;
             }
 
+            byte[] buffer = transferBuffer;
+            if (buffer == null) {
+                buffer = new byte[TRANSFER_SIZE];
+                transferBuffer = buffer;
+            }
             while (source.hasRemaining()) {
-                int count = Math.min(source.remaining(), transferBuffer.length);
-                ByteBuffer chunk = source.duplicate();
-                chunk.limit(chunk.position() + count);
-                chunk.get(transferBuffer, 0, count);
-                target.write(transferBuffer, 0, count);
+                int count = Math.min(source.remaining(), buffer.length);
+                source.get(source.position(), buffer, 0, count);
+                target.write(buffer, 0, count);
                 source.position(source.position() + count);
             }
             return source.position() - start;
