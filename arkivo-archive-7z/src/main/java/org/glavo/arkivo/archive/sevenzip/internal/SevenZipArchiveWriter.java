@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.internal.ArchiveOutputStream;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.transform.TransformingOutputStream;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
@@ -188,11 +190,11 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     /// The number of Windows FILETIME ticks in one second.
     private static final long WINDOWS_TICKS_PER_SECOND = 10_000_000L;
 
-    /// The largest number of consecutive zero-byte channel writes tolerated.
-    private static final int MAX_ZERO_PROGRESS_ATTEMPTS = 1024;
-
     /// The destination archive channel owned by this writer.
     private final SeekableByteChannel channel;
+
+    /// Shared failure protection for signature, header, and every packed-stream write.
+    private final ArchiveOutputStream output;
 
     /// The default compression used when an entry has no override.
     private final SevenZipCompression defaultCompression;
@@ -224,11 +226,8 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     /// The coder pipeline currently accepting solid substreams.
     private @Nullable FolderEncoder currentFolderEncoder;
 
-    /// Whether the next header and signature header have been written.
-    private boolean finished;
-
-    /// Whether the owned destination channel has closed successfully.
-    private boolean channelClosed;
+    /// Whether finalization has been attempted and entry operations are permanently disabled.
+    private boolean closing;
 
     /// Whether the encryption key has been cleared.
     private boolean keyCleared;
@@ -251,10 +250,11 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         this.encryptionKey = password != null
                 ? SevenZipAesCrypto.deriveKey(AES_CYCLE_POWER, new byte[0], password)
                 : null;
+        this.output = new ArchiveOutputStream(StreamChannelAdapters.outputStream(channel));
         try {
             channel.position(0L);
             channel.truncate(0L);
-            writeFully(ByteBuffer.allocate(SevenZipSignatureHeader.SIZE));
+            output.write(new byte[SevenZipSignatureHeader.SIZE]);
         } catch (IOException | RuntimeException | Error exception) {
             clearKey();
             throw exception;
@@ -292,18 +292,25 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             return;
         }
 
-        FolderEncoder encoder = currentFolderEncoder;
-        if (encoder == null || !encoder.accepts(entry, solidFileCount)) {
-            finishCurrentFolder();
-            encoder = openFolderEncoder(entry);
-            currentFolderEncoder = encoder;
-        }
-        encoder.write(buffer, offset, length);
-        currentEntryCrc32.update(buffer, offset, length);
+        long nextSize;
         try {
-            currentEntrySize = Math.addExact(currentEntrySize, length);
+            nextSize = Math.addExact(currentEntrySize, length);
         } catch (ArithmeticException exception) {
             throw new IOException("7z entry size is too large", exception);
+        }
+        try {
+            FolderEncoder encoder = currentFolderEncoder;
+            if (encoder == null || !encoder.accepts(entry, solidFileCount)) {
+                finishCurrentFolder();
+                encoder = openFolderEncoder(entry);
+                currentFolderEncoder = encoder;
+            }
+            encoder.write(buffer, offset, length);
+            currentEntryCrc32.update(buffer, offset, length);
+            currentEntrySize = nextSize;
+        } catch (IOException | RuntimeException | Error exception) {
+            output.fail(exception);
+            throw exception;
         }
     }
 
@@ -312,56 +319,56 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     void closeArchiveEntry() throws IOException {
         ensureWritable();
         PendingEntry entry = requireCurrentEntry();
-        if (currentEntrySize == 0L) {
-            entries.add(Entry.empty(entry));
-        } else {
-            FolderEncoder encoder = Objects.requireNonNull(
-                    currentFolderEncoder,
-                    "currentFolderEncoder"
-            );
-            encoder.completeSubstream(currentEntrySize, currentEntryCrc32.getValue());
-            entries.add(Entry.stream(entry, currentEntrySize, currentEntryCrc32.getValue()));
+        try {
+            if (currentEntrySize == 0L) {
+                entries.add(Entry.empty(entry));
+            } else {
+                FolderEncoder encoder = Objects.requireNonNull(currentFolderEncoder, "currentFolderEncoder");
+                encoder.completeSubstream(currentEntrySize, currentEntryCrc32.getValue());
+                entries.add(Entry.stream(entry, currentEntrySize, currentEntryCrc32.getValue()));
+            }
+            currentEntry = null;
+            currentEntryCrc32.reset();
+            currentEntrySize = 0L;
+        } catch (RuntimeException | Error exception) {
+            output.fail(exception);
+            throw exception;
         }
-        currentEntry = null;
-        currentEntryCrc32.reset();
-        currentEntrySize = 0L;
     }
 
 
-    /// Finalizes the archive and closes the owned channel.
+    /// Attempts finalization once, then releases the encoder, key, and destination even after an earlier failure.
+    ///
+    /// Failed cleanup can be retried. No packed bytes or headers are emitted after a failure has been recorded.
     @Override
     public void close() throws IOException {
         @Nullable Throwable failure = null;
-        if (!finished) {
+        if (!closing) {
+            closing = true;
             try {
+                output.ensureWritable();
                 if (currentEntry != null) {
                     throw new IOException("Cannot close a 7z writer while an entry remains open");
                 }
                 finishArchive();
-                finished = true;
             } catch (IOException | RuntimeException | Error exception) {
+                output.fail(exception);
                 failure = exception;
-            } finally {
-                if (failure != null && currentFolderEncoder != null) {
-                    try {
-                        currentFolderEncoder.abort();
-                    } catch (IOException | RuntimeException | Error exception) {
-                        failure = appendFailure(failure, exception);
-                    }
-                    currentFolderEncoder = null;
-                }
-                clearKey();
             }
-        } else {
-            clearKey();
         }
-        if (!channelClosed) {
+        if (currentFolderEncoder != null) {
             try {
-                channel.close();
-                channelClosed = true;
+                currentFolderEncoder.abort();
+                currentFolderEncoder = null;
             } catch (IOException | RuntimeException | Error exception) {
                 failure = appendFailure(failure, exception);
             }
+        }
+        clearKey();
+        try {
+            output.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = appendFailure(failure, exception);
         }
         throwFailure(failure);
     }
@@ -384,7 +391,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         List<SevenZipFilter> filters = entry.filters().filters();
         if (filters.size() == 1 && filters.get(0).method() == SevenZipFilterMethod.BCJ2) {
             return Bcj2FolderEncoder.open(
-                    channel,
+                    output,
                     encryptionKey,
                     entry.compression(),
                     entry.filters()
@@ -395,7 +402,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
 
     /// Opens one direct single-packed-stream coder pipeline.
     private LinearFolderEncoder openLinearFolderEncoder(PendingEntry entry) throws IOException {
-        PackedOutputStream packedOutput = new PackedOutputStream(channel);
+        PackedOutputStream packedOutput = new PackedOutputStream(output);
         @Nullable AesOutputStream aesOutput = null;
         @Nullable CountingOutputStream encryptedInput = null;
         OutputStream packedTarget = packedOutput;
@@ -589,11 +596,11 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         finishCurrentFolder();
         byte[] nextHeader = nextHeader();
         long nextHeaderOffset = channel.position() - SevenZipSignatureHeader.SIZE;
-        writeFully(ByteBuffer.wrap(nextHeader));
+        output.write(nextHeader);
         channel.truncate(channel.position());
         byte[] signatureHeader = signatureHeader(nextHeaderOffset, nextHeader);
         channel.position(0L);
-        writeFully(ByteBuffer.wrap(signatureHeader));
+        output.write(signatureHeader);
     }
 
 
@@ -941,23 +948,6 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     }
 
 
-    /// Writes an entire buffer to the archive channel.
-    private void writeFully(ByteBuffer source) throws IOException {
-        int zeroProgressCount = 0;
-        while (source.hasRemaining()) {
-            if (channel.write(source) == 0) {
-                zeroProgressCount++;
-                if (zeroProgressCount >= MAX_ZERO_PROGRESS_ATTEMPTS) {
-                    throw new IOException("7z archive write made no progress");
-                }
-                Thread.onSpinWait();
-            } else {
-                zeroProgressCount = 0;
-            }
-        }
-    }
-
-
     /// Returns the current entry or fails when no entry is open.
     private PendingEntry requireCurrentEntry() throws IOException {
         PendingEntry entry = currentEntry;
@@ -969,10 +959,11 @@ final class SevenZipArchiveWriter implements AutoCloseable {
 
 
     /// Requires this writer to remain available for entry output.
-    private void ensureWritable() throws ClosedChannelException {
-        if (finished || channelClosed) {
+    private void ensureWritable() throws IOException {
+        if (closing) {
             throw new ClosedChannelException();
         }
+        output.ensureWritable();
     }
 
 
@@ -1552,8 +1543,8 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     /// Stages a decoded folder, splits it into BCJ2 branches, and writes four contiguous packed streams.
     @NotNullByDefault
     private static final class Bcj2FolderEncoder extends AbstractFolderEncoder {
-        /// The destination archive channel.
-        private final SeekableByteChannel channel;
+        /// The shared failure-protected archive output.
+        private final ArchiveOutputStream archiveOutput;
 
         /// The shared derived AES key, or `null` when branch encryption is disabled.
         private final byte @Nullable [] encryptionKey;
@@ -1566,7 +1557,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
 
         /// Creates one active staged BCJ2 folder.
         private Bcj2FolderEncoder(
-                SeekableByteChannel channel,
+                ArchiveOutputStream archiveOutput,
                 byte @Nullable [] encryptionKey,
                 SevenZipCompression compressionSetting,
                 SevenZipFilterChain filterSetting,
@@ -1574,7 +1565,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 OutputStream stagingOutput
         ) {
             super(compressionSetting, filterSetting);
-            this.channel = Objects.requireNonNull(channel, "channel");
+            this.archiveOutput = Objects.requireNonNull(archiveOutput, "archiveOutput");
             this.encryptionKey = encryptionKey;
             this.stagingPath = Objects.requireNonNull(stagingPath, "stagingPath");
             this.stagingOutput = Objects.requireNonNull(stagingOutput, "stagingOutput");
@@ -1582,7 +1573,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
 
         /// Opens temporary storage for one BCJ2 folder.
         private static Bcj2FolderEncoder open(
-                SeekableByteChannel channel,
+                ArchiveOutputStream archiveOutput,
                 byte @Nullable [] encryptionKey,
                 SevenZipCompression compressionSetting,
                 SevenZipFilterChain filterSetting
@@ -1595,7 +1586,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                         StandardOpenOption.TRUNCATE_EXISTING
                 ));
                 return new Bcj2FolderEncoder(
-                        channel,
+                        archiveOutput,
                         encryptionKey,
                         compressionSetting,
                         filterSetting,
@@ -1688,7 +1679,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 @Nullable SevenZipCompression compressionSetting
         ) throws IOException {
             long decodedSize = Files.size(path);
-            PackedOutputStream packedOutput = new PackedOutputStream(channel);
+            PackedOutputStream packedOutput = new PackedOutputStream(archiveOutput);
             @Nullable AesOutputStream aesOutput = null;
             @Nullable CountingOutputStream encryptedInput = null;
             OutputStream packedTarget = packedOutput;
@@ -1705,7 +1696,12 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             @Nullable Throwable failure = null;
             try (InputStream input = new BufferedInputStream(Files.newInputStream(path));
                  OutputStream ownedOutput = output) {
-                transfer(input, ownedOutput);
+                try {
+                    transfer(input, ownedOutput);
+                } catch (IOException | RuntimeException | Error exception) {
+                    archiveOutput.fail(exception);
+                    throw exception;
+                }
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
                 throw exception;
@@ -1922,8 +1918,8 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     /// Writes packed bytes to the archive channel while counting bytes and CRC-32.
     @NotNullByDefault
     private static final class PackedOutputStream extends OutputStream {
-        /// The shared archive channel.
-        private final SeekableByteChannel channel;
+        /// The shared failure-protected archive output.
+        private final ArchiveOutputStream output;
 
         /// The packed stream CRC-32.
         private final CRC32 crc32 = new CRC32();
@@ -1935,8 +1931,8 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         private boolean closed;
 
         /// Creates a packed output over the current channel position.
-        private PackedOutputStream(SeekableByteChannel channel) {
-            this.channel = Objects.requireNonNull(channel, "channel");
+        private PackedOutputStream(ArchiveOutputStream output) {
+            this.output = Objects.requireNonNull(output, "output");
         }
 
 
@@ -1955,27 +1951,15 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             if (closed) {
                 throw new ClosedChannelException();
             }
-            ByteBuffer source = ByteBuffer.wrap(buffer, offset, length);
-            int zeroProgressCount = 0;
-            while (source.hasRemaining()) {
-                int before = source.position();
-                int written = channel.write(source);
-                if (written == 0) {
-                    zeroProgressCount++;
-                    if (zeroProgressCount >= MAX_ZERO_PROGRESS_ATTEMPTS) {
-                        throw new IOException("7z packed stream write made no progress");
-                    }
-                    Thread.onSpinWait();
-                } else {
-                    zeroProgressCount = 0;
-                    crc32.update(buffer, before, written);
-                    try {
-                        count = Math.addExact(count, written);
-                    } catch (ArithmeticException exception) {
-                        throw new IOException("7z packed stream is too large", exception);
-                    }
-                }
+            long nextCount;
+            try {
+                nextCount = Math.addExact(count, length);
+            } catch (ArithmeticException exception) {
+                throw new IOException("7z packed stream is too large", exception);
             }
+            output.write(buffer, offset, length);
+            crc32.update(buffer, offset, length);
+            count = nextCount;
         }
 
 

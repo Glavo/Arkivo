@@ -57,6 +57,10 @@ import java.util.Objects;
 /// output transaction obtained from it. Path creation uses create-or-truncate semantics and the path may contain an
 /// incomplete archive until close finalizes its header. Closing a changed update publishes the replacement; an
 /// unchanged update closes without rewriting the source.
+///
+/// Failed archive serialization or publication prevents further archive writes. Close retries release resources without
+/// repeating finalization, header encryption, or publication of an unsuccessful archive. Unpublished transactional
+/// output is rolled back; bytes already written directly to a path or channel are not restored.
 @NotNullByDefault
 public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem permits SevenZipArkivoFileSystemImpl {
     /// Creates a 7z archive file system base instance.

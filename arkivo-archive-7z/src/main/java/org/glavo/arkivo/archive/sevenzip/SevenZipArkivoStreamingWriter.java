@@ -28,7 +28,11 @@ import java.util.Objects;
 /// A successfully returned writer owns a supplied stream or channel. An `ArkivoVolumeTarget` remains caller-owned; the
 /// writer owns and completes the transaction obtained from it. Writer close commits a pending entry, finalizes and
 /// publishes the archive, and closes owned resources. Once close begins, entry operations stay closed after a failure;
-/// another `close()` call retries incomplete finalization.
+/// another `close()` call retries incomplete cleanup, not archive finalization.
+///
+/// A compression or archive-output failure prevents further entry data, packed streams, and headers from being
+/// written. Closing releases owned resources and rolls back unpublished transactional output. Bytes already written
+/// to a path or supplied endpoint cannot be rolled back by the writer.
 @NotNullByDefault
 public abstract sealed class SevenZipArkivoStreamingWriter extends ArkivoStreamingWriter
         permits SevenZipArkivoStreamingWriterImpl {

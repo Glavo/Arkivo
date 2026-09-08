@@ -225,6 +225,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Whether the writer has been closed.
     private boolean writerClosed;
 
+    /// Whether failed finalization or publication permanently requires rollback rather than publication.
+    private boolean publicationFailed;
+
     /// Whether encoded-header encryption has completed or its key has been cleared.
     private boolean headerEncryptionClosed;
 
@@ -636,6 +639,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     }
                     writerClosed = true;
                 } catch (IOException | RuntimeException | Error exception) {
+                    publicationFailed = true;
                     failure = exception;
                 }
             }
@@ -645,7 +649,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                         "headerEncryption"
                 );
                 try {
-                    if (failure == null) {
+                    if (!publicationFailed) {
                         if (splitOutput != null) {
                             splitOutput.encryptHeader(encryption);
                         } else {
@@ -653,6 +657,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                         }
                     }
                 } catch (IOException | RuntimeException | Error exception) {
+                    publicationFailed = true;
                     failure = appendFailure(failure, exception);
                 } finally {
                     encryption.close();
@@ -662,7 +667,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             if (!splitOutputClosed) {
                 try {
                     if (splitOutput != null) {
-                        if (failure == null) {
+                        if (!publicationFailed) {
                             splitOutput.commit();
                         } else {
                             splitOutput.rollback();
@@ -670,6 +675,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     }
                     splitOutputClosed = true;
                 } catch (IOException | RuntimeException | Error exception) {
+                    publicationFailed = true;
                     failure = appendFailure(failure, exception);
                 }
             }

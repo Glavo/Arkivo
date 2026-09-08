@@ -6,6 +6,8 @@ package org.glavo.arkivo.archive.sevenzip;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -79,5 +81,28 @@ public final class SevenZipSplitStreamingWriterIntegrationTest {
                 IllegalArgumentException.class,
                 () -> SevenZipArkivoStreamingWriter.open(new RecordingVolumeTarget(-1L, false), 0L)
         );
+    }
+
+    /// Verifies failed finalization never turns into header encryption or publication on a cleanup retry.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void neverPublishesAfterUnfinishedEntryFailure(boolean encrypted) throws IOException {
+        RecordingVolumeTarget target = new RecordingVolumeTarget(-1L, false);
+        SevenZipArchiveOptions.Create options = SevenZipArchiveOptions.CREATE_DEFAULTS;
+        if (encrypted) {
+            options = options.withPasswordProvider(ArkivoPasswordProvider.fixed(
+                    "rollback-password".getBytes(StandardCharsets.UTF_16LE))).withEncryptHeaders(true);
+        }
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(target, 64L, options);
+        OutputStream body = Files.newOutputStream(fileSystem.getPath("/entry"));
+        body.write(new byte[]{1, 2, 3});
+        assertThrows(IOException.class, fileSystem::close);
+        assertEquals(0, target.openOutputCount());
+        fileSystem.close();
+        fileSystem.close();
+        assertThrows(IOException.class, body::close);
+        body.close();
+        assertEquals(0, target.openOutputCount());
+        assertEquals(0, target.committedVolumes().length);
     }
 }
