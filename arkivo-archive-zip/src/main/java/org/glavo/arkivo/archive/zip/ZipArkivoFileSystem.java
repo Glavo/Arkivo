@@ -44,6 +44,10 @@ import java.util.Objects;
 /// If a storage write or truncation fails on an update channel, further mutations through that channel fail. Closing
 /// it discards the staged body and reports an `IOException` with the mutation failure as its cause. An existing entry
 /// remains unchanged, and a new entry is not added. Invalid arguments rejected before storage access do not discard a body.
+///
+/// Failure while serializing an entry or the archive prevents further archive output and publication. Close retries
+/// release resources without rewriting entry trailers or the central directory, or repeating a failed publication.
+/// Unpublished transactional output is rolled back; bytes already written directly to a destination are not restored.
 @NotNullByDefault
 public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         permits ZipArkivoReadOnlyFileSystemImpl, ZipArkivoWritableFileSystemImpl {

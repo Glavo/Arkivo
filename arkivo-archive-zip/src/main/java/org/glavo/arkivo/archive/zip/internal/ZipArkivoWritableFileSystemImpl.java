@@ -18,6 +18,7 @@ import org.glavo.arkivo.archive.ArkivoVolumePathLayout;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.archive.internal.ArchiveOutputStream;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
@@ -901,12 +902,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     if (entryOutput != null) {
                         entryOutput.close();
                     }
+                    output.ensureWritable();
                     if (!rewriteExistingArchive) {
                         writeCentralDirectory();
                     }
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
-                    abortSplitOutput(output);
+                    output.fail(exception);
                 } finally {
                     try {
                         output.close();
@@ -951,14 +953,16 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             try (SplitCountingOutputStream splitOutput =
                          SplitCountingOutputStream.open(volumeTarget, rewriteSplitSize)) {
                 output = splitOutput;
+                outputClosed = false;
                 try {
                     copySurvivingLocalRecords();
                     writeCentralDirectory();
                 } catch (IOException | RuntimeException | Error exception) {
-                    splitOutput.abort();
+                    splitOutput.fail(exception);
                     throw exception;
                 }
             }
+            outputClosed = true;
             return;
         }
 
@@ -976,17 +980,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     0L
             )) {
                 output = assembledOutput;
+                outputClosed = false;
                 copySurvivingLocalRecords();
                 writeCentralDirectory();
             }
+            outputClosed = true;
             publishAssembledArchive(assembledArchive);
-        }
-    }
-
-    /// Marks a transactional split output for rollback when finalization fails outside a write operation.
-    private static void abortSplitOutput(CountingOutputStream output) {
-        if (output instanceof SplitCountingOutputStream splitOutput) {
-            splitOutput.abort();
         }
     }
 
@@ -2287,36 +2286,41 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
                 byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader);
                 output.startRecord(localHeaderSize(rawName, localExtraData));
-                registerWritableFileEntry(entryName, replacingExistingEntry);
+                try {
+                    registerWritableFileEntry(entryName, replacingExistingEntry);
 
-                long localHeaderAbsoluteOffset = output.position();
-                int localHeaderDiskNumber = output.diskNumber();
-                long localHeaderOffset = output.diskPosition();
-                writeLocalHeader(
-                        rawName,
-                        localExtraData,
-                        metadata.versionNeeded(zip64LocalHeader),
-                        flags,
-                        metadata.headerMethod(),
-                        metadata.dosTime,
-                        metadata.dosDate,
-                        metadata.localHeaderCrc32(),
-                        metadata.localHeaderCompressedSize(zip64LocalHeader),
-                        metadata.localHeaderUncompressedSize(zip64LocalHeader)
-                );
-                EntryOutputStream entryOutput = new EntryOutputStream(
-                        entryName,
-                        rawName,
-                        localHeaderDiskNumber,
-                        localHeaderOffset,
-                        localHeaderAbsoluteOffset,
-                        output.position(),
-                        flags,
-                        metadata,
-                        password
-                );
-                currentEntryOutput = entryOutput;
-                return entryOutput;
+                    long localHeaderAbsoluteOffset = output.position();
+                    int localHeaderDiskNumber = output.diskNumber();
+                    long localHeaderOffset = output.diskPosition();
+                    writeLocalHeader(
+                            rawName,
+                            localExtraData,
+                            metadata.versionNeeded(zip64LocalHeader),
+                            flags,
+                            metadata.headerMethod(),
+                            metadata.dosTime,
+                            metadata.dosDate,
+                            metadata.localHeaderCrc32(),
+                            metadata.localHeaderCompressedSize(zip64LocalHeader),
+                            metadata.localHeaderUncompressedSize(zip64LocalHeader)
+                    );
+                    EntryOutputStream entryOutput = new EntryOutputStream(
+                            entryName,
+                            rawName,
+                            localHeaderDiskNumber,
+                            localHeaderOffset,
+                            localHeaderAbsoluteOffset,
+                            output.position(),
+                            flags,
+                            metadata,
+                            password
+                    );
+                    currentEntryOutput = entryOutput;
+                    return entryOutput;
+                } catch (IOException | RuntimeException | Error exception) {
+                    output.fail(exception);
+                    throw exception;
+                }
             } finally {
                 if (password != null) {
                     Arrays.fill(password, (byte) 0);
@@ -2386,37 +2390,42 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
             byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader);
             output.startRecord(localHeaderSize(rawName, localExtraData));
-            long localHeaderAbsoluteOffset = output.position();
-            int localHeaderDiskNumber = output.diskNumber();
-            long localHeaderOffset = output.diskPosition();
-            writeLocalHeader(
-                    rawName,
-                    localExtraData,
-                    metadata.versionNeeded(zip64LocalHeader),
-                    flags,
-                    STORED_METHOD,
-                    metadata.dosTime,
-                    metadata.dosDate,
-                    0,
-                    0,
-                    0
-            );
-            centralEntries.add(new CentralEntry(
-                    entryName,
-                    rawName,
-                    flags,
-                    STORED_METHOD,
-                    metadata.dosTime,
-                    metadata.dosDate,
-                    0,
-                    0,
-                    0,
-                    localHeaderDiskNumber,
-                    localHeaderOffset,
-                    output.position() - localHeaderAbsoluteOffset,
-                    output.position() - localHeaderAbsoluteOffset,
-                    metadata
-            ));
+            try {
+                long localHeaderAbsoluteOffset = output.position();
+                int localHeaderDiskNumber = output.diskNumber();
+                long localHeaderOffset = output.diskPosition();
+                writeLocalHeader(
+                        rawName,
+                        localExtraData,
+                        metadata.versionNeeded(zip64LocalHeader),
+                        flags,
+                        STORED_METHOD,
+                        metadata.dosTime,
+                        metadata.dosDate,
+                        0,
+                        0,
+                        0
+                );
+                centralEntries.add(new CentralEntry(
+                        entryName,
+                        rawName,
+                        flags,
+                        STORED_METHOD,
+                        metadata.dosTime,
+                        metadata.dosDate,
+                        0,
+                        0,
+                        0,
+                        localHeaderDiskNumber,
+                        localHeaderOffset,
+                        output.position() - localHeaderAbsoluteOffset,
+                        output.position() - localHeaderAbsoluteOffset,
+                        metadata
+                ));
+            } catch (IOException | RuntimeException | Error exception) {
+                output.fail(exception);
+                throw exception;
+            }
         } finally {
             unlock();
         }
@@ -2470,61 +2479,66 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded(compressedSize, size);
                 byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader, compressedSize, size);
                 output.startRecord(localHeaderSize(rawName, localExtraData));
-                long localHeaderAbsoluteOffset = output.position();
-                int localHeaderDiskNumber = output.diskNumber();
-                long localHeaderOffset = output.diskPosition();
-                writeLocalHeader(
-                        rawName,
-                        localExtraData,
-                        metadata.versionNeeded(zip64LocalHeader),
-                        flags,
-                        metadata.headerMethod(),
-                        metadata.dosTime,
-                        metadata.dosDate,
-                        crcValue,
-                        zip32Field(compressedSize, zip64LocalHeader),
-                        zip32Field(size, zip64LocalHeader)
-                );
-                long localHeaderSize = output.position() - localHeaderAbsoluteOffset;
-                if (metadata.traditionalEncrypted()) {
-                    byte[] encryptionPassword = Objects.requireNonNull(password, "password");
-                    OutputStream encrypted = ZipTraditionalCrypto.openEncryptingStream(
-                            output,
-                            encryptionPassword,
-                            metadata.encryptionVerificationByte(crcValue)
+                try {
+                    long localHeaderAbsoluteOffset = output.position();
+                    int localHeaderDiskNumber = output.diskNumber();
+                    long localHeaderOffset = output.diskPosition();
+                    writeLocalHeader(
+                            rawName,
+                            localExtraData,
+                            metadata.versionNeeded(zip64LocalHeader),
+                            flags,
+                            metadata.headerMethod(),
+                            metadata.dosTime,
+                            metadata.dosDate,
+                            crcValue,
+                            zip32Field(compressedSize, zip64LocalHeader),
+                            zip32Field(size, zip64LocalHeader)
                     );
-                    encrypted.write(content);
-                    encrypted.flush();
-                } else if (metadata.aesEncrypted()) {
-                    byte[] encryptionPassword = Objects.requireNonNull(password, "password");
-                    ZipAesCrypto.EncryptingOutputStream encrypted = ZipAesCrypto.openEncryptingStream(
-                            output,
-                            metadata.aesExtraField(),
-                            encryptionPassword
-                    );
-                    encrypted.write(content);
-                    encrypted.finish();
-                } else {
-                    output.write(content);
-                }
-                centralEntries.add(new CentralEntry(
-                        entryName,
-                        rawName,
-                        flags,
-                        metadata.headerMethod(),
-                        metadata.dosTime,
-                        metadata.dosDate,
-                        crcValue,
-                        compressedSize,
-                        size,
-                        localHeaderDiskNumber,
-                        localHeaderOffset,
-                        localHeaderSize,
-                        output.position() - localHeaderAbsoluteOffset,
-                        metadata
-                ));
-                if (symbolicLinkTarget != null) {
-                    writtenSymbolicLinkTargets.put(entryName, symbolicLinkTarget);
+                    long localHeaderSize = output.position() - localHeaderAbsoluteOffset;
+                    if (metadata.traditionalEncrypted()) {
+                        byte[] encryptionPassword = Objects.requireNonNull(password, "password");
+                        OutputStream encrypted = ZipTraditionalCrypto.openEncryptingStream(
+                                output,
+                                encryptionPassword,
+                                metadata.encryptionVerificationByte(crcValue)
+                        );
+                        encrypted.write(content);
+                        encrypted.flush();
+                    } else if (metadata.aesEncrypted()) {
+                        byte[] encryptionPassword = Objects.requireNonNull(password, "password");
+                        ZipAesCrypto.EncryptingOutputStream encrypted = ZipAesCrypto.openEncryptingStream(
+                                output,
+                                metadata.aesExtraField(),
+                                encryptionPassword
+                        );
+                        encrypted.write(content);
+                        encrypted.finish();
+                    } else {
+                        output.write(content);
+                    }
+                    centralEntries.add(new CentralEntry(
+                            entryName,
+                            rawName,
+                            flags,
+                            metadata.headerMethod(),
+                            metadata.dosTime,
+                            metadata.dosDate,
+                            crcValue,
+                            compressedSize,
+                            size,
+                            localHeaderDiskNumber,
+                            localHeaderOffset,
+                            localHeaderSize,
+                            output.position() - localHeaderAbsoluteOffset,
+                            metadata
+                    ));
+                    if (symbolicLinkTarget != null) {
+                        writtenSymbolicLinkTargets.put(entryName, symbolicLinkTarget);
+                    }
+                } catch (IOException | RuntimeException | Error exception) {
+                    output.fail(exception);
+                    throw exception;
                 }
             } finally {
                 if (password != null) {
@@ -3860,6 +3874,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Writes bytes to the current ZIP entry.
+    @NotNullByDefault
     private final class EntryOutputStream extends OutputStream {
         /// The entry name.
         private final String entryName;
@@ -3928,7 +3943,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             this.flags = flags;
             this.metadata = Objects.requireNonNull(metadata, "metadata");
             OutputStream dataOutput = output;
-            ZipAesCrypto.EncryptingOutputStream entryAesOutput = null;
+            @Nullable ZipAesCrypto.EncryptingOutputStream entryAesOutput = null;
             long localHeaderSize = output.position() - localHeaderAbsoluteOffset;
             if (metadata.traditionalEncrypted()) {
                 byte[] encryptionPassword = Objects.requireNonNull(password, "password");
@@ -3947,7 +3962,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 dataOutput = entryAesOutput;
             }
             this.aesOutput = entryAesOutput;
-            CompressingWritableByteChannel entryCompressingWritableByteChannel = null;
+            @Nullable CompressingWritableByteChannel entryCompressingWritableByteChannel = null;
             if (metadata.method == DEFLATED_METHOD) {
                 entryCompressingWritableByteChannel = ZipCompressionFormats.newWritableByteChannel(
                         "deflate",
@@ -3984,7 +3999,21 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 this.entryOutput = dataOutput;
             }
             this.compressionEncoder = entryCompressingWritableByteChannel;
-            this.stagedEntryOutput = openStagedEntryOutput(entryName);
+            try {
+                this.stagedEntryOutput = openStagedEntryOutput(entryName);
+            } catch (IOException | RuntimeException | Error exception) {
+                output.fail(exception);
+                try {
+                    if (compressionEncoder != null) {
+                        compressionEncoder.close();
+                    } else if (entryOutput instanceof ZipLZMAOutputStream lzmaOutput) {
+                        lzmaOutput.finish();
+                    }
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    appendFailure(exception, cleanupFailure);
+                }
+                throw exception;
+            }
         }
 
         /// Writes one byte to the current ZIP entry.
@@ -3993,13 +4022,19 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             lock();
             try {
                 ensureEntryOpen();
-                crc32.update(value);
-                uncompressedSize++;
-                OutputStream stagedOutput = stagedEntryOutput;
-                if (stagedOutput != null) {
-                    stagedOutput.write(value);
+                long nextSize = Math.addExact(uncompressedSize, 1L);
+                try {
+                    @Nullable OutputStream stagedOutput = stagedEntryOutput;
+                    if (stagedOutput != null) {
+                        stagedOutput.write(value);
+                    }
+                    entryOutput.write(value);
+                    crc32.update(value);
+                    uncompressedSize = nextSize;
+                } catch (IOException | RuntimeException | Error exception) {
+                    output.fail(exception);
+                    throw exception;
                 }
-                entryOutput.write(value);
             } finally {
                 unlock();
             }
@@ -4012,13 +4047,22 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             lock();
             try {
                 ensureEntryOpen();
-                crc32.update(bytes, offset, length);
-                uncompressedSize += length;
-                OutputStream stagedOutput = stagedEntryOutput;
-                if (stagedOutput != null) {
-                    stagedOutput.write(bytes, offset, length);
+                long nextSize = Math.addExact(uncompressedSize, length);
+                if (length == 0) {
+                    return;
                 }
-                entryOutput.write(bytes, offset, length);
+                try {
+                    @Nullable OutputStream stagedOutput = stagedEntryOutput;
+                    if (stagedOutput != null) {
+                        stagedOutput.write(bytes, offset, length);
+                    }
+                    entryOutput.write(bytes, offset, length);
+                    crc32.update(bytes, offset, length);
+                    uncompressedSize = nextSize;
+                } catch (IOException | RuntimeException | Error exception) {
+                    output.fail(exception);
+                    throw exception;
+                }
             } finally {
                 unlock();
             }
@@ -4034,17 +4078,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 }
                 entryOpen = false;
                 try {
-                    OutputStream stagedOutput = stagedEntryOutput;
+                    output.ensureWritable();
+                    @Nullable OutputStream stagedOutput = stagedEntryOutput;
                     if (stagedOutput != null) {
                         stagedOutput.close();
                     }
-                    CompressingWritableByteChannel entryCompressingWritableByteChannel = compressionEncoder;
+                    @Nullable CompressingWritableByteChannel entryCompressingWritableByteChannel = compressionEncoder;
                     if (entryCompressingWritableByteChannel != null) {
                         entryCompressingWritableByteChannel.finish();
                     } else if (entryOutput instanceof ZipLZMAOutputStream lzmaOutput) {
                         lzmaOutput.finish();
                     }
-                    ZipAesCrypto.EncryptingOutputStream entryAesOutput = aesOutput;
+                    @Nullable ZipAesCrypto.EncryptingOutputStream entryAesOutput = aesOutput;
                     if (entryAesOutput != null) {
                         entryAesOutput.finish();
                     }
@@ -4083,7 +4128,24 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                             metadata
                     ));
                 } catch (IOException | RuntimeException | Error exception) {
-                    abortSplitOutput(output);
+                    output.fail(exception);
+                    // Cleanup may try to drain an encoder, but the archive guard rejects further target writes.
+                    try {
+                        if (compressionEncoder != null) {
+                            compressionEncoder.close();
+                        } else if (entryOutput instanceof ZipLZMAOutputStream lzmaOutput) {
+                            lzmaOutput.finish();
+                        }
+                    } catch (IOException | RuntimeException | Error cleanupFailure) {
+                        appendFailure(exception, cleanupFailure);
+                    }
+                    try {
+                        if (stagedEntryOutput != null) {
+                            stagedEntryOutput.close();
+                        }
+                    } catch (IOException | RuntimeException | Error cleanupFailure) {
+                        appendFailure(exception, cleanupFailure);
+                    }
                     throw exception;
                 } finally {
                     currentEntryOutput = null;
@@ -4099,6 +4161,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 throw new IOException("ZIP entry output stream is closed");
             }
             checkOpen();
+            output.ensureWritable();
         }
     }
 
@@ -4106,7 +4169,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     @NotNullByDefault
     private static class CountingOutputStream extends OutputStream {
         /// The wrapped output stream.
-        protected OutputStream output;
+        protected ArchiveOutputStream output;
 
         /// The number of bytes written.
         protected long position;
@@ -4116,8 +4179,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             if (initialPosition < 0) {
                 throw new IllegalArgumentException("initialPosition must not be negative");
             }
-            this.output = Objects.requireNonNull(output, "output");
+            this.output = new ArchiveOutputStream(output);
             this.position = initialPosition;
+        }
+
+        /// Rejects writes after incomplete output or target closure.
+        void ensureWritable() throws IOException {
+            output.ensureWritable();
+        }
+
+        /// Prevents further output after an entry or archive operation fails.
+        void fail(Throwable exception) {
+            output.fail(exception);
         }
 
         /// Returns the number of bytes written.
@@ -4148,20 +4221,24 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             if (recordSize < 0L) {
                 throw new IllegalArgumentException("recordSize must not be negative");
             }
+            ensureWritable();
         }
 
         /// Writes one byte.
         @Override
         public void write(int value) throws IOException {
+            long nextPosition = Math.addExact(position, 1L);
             output.write(value);
-            position++;
+            position = nextPosition;
         }
 
         /// Writes bytes.
         @Override
         public void write(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            long nextPosition = Math.addExact(position, length);
             output.write(bytes, offset, length);
-            position += length;
+            position = nextPosition;
         }
 
         /// Flushes the wrapped output stream.
@@ -4298,8 +4375,14 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Whether a higher-level archive operation requires rollback.
         private boolean rollbackOnly;
 
-        /// Whether this stream has been closed.
-        private boolean closed;
+        /// Whether transaction finalization has started and further writes are forbidden.
+        private boolean closing;
+
+        /// Whether commit or rollback has completed.
+        private boolean transactionFinished;
+
+        /// Whether the volume transaction has been closed successfully.
+        private boolean volumeOutputClosed;
 
         /// Opens a split ZIP output stream over a transactional volume target.
         private static SplitCountingOutputStream open(ArkivoVolumeTarget target, long splitSize) throws IOException {
@@ -4308,7 +4391,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             @Nullable OutputStream stream = null;
             try {
                 channel = Objects.requireNonNull(volumeOutput.openVolume(0L), "volume channel");
-                stream = Channels.newOutputStream(channel);
+                stream = StreamChannelAdapters.outputStream(channel);
                 SplitCountingOutputStream result = new SplitCountingOutputStream(volumeOutput, splitSize, stream);
                 writeInt(result, DATA_DESCRIPTOR_SIGNATURE);
                 stream = null;
@@ -4405,12 +4488,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             if (recordSize > splitSize) {
                 throw new IOException("ZIP record exceeds the configured split size");
             }
+            ensureWritable();
             try {
                 if (currentDiskPosition > 0L && recordSize > splitSize - currentDiskPosition) {
                     openNextDisk();
                 }
             } catch (IOException | RuntimeException | Error exception) {
-                recordWriteFailure(exception);
+                fail(exception);
                 throw exception;
             }
         }
@@ -4418,13 +4502,15 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Writes one byte.
         @Override
         public void write(int value) throws IOException {
+            ensureWritable();
+            long nextPosition = Math.addExact(position, 1L);
             try {
                 ensureWritableDisk();
                 output.write(value);
-                position++;
+                position = nextPosition;
                 currentDiskPosition++;
             } catch (IOException | RuntimeException | Error exception) {
-                recordWriteFailure(exception);
+                fail(exception);
                 throw exception;
             }
         }
@@ -4432,8 +4518,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Writes bytes.
         @Override
         public void write(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureWritable();
+            Math.addExact(position, length);
             try {
-                Objects.checkFromIndexSize(offset, length, bytes.length);
                 while (length > 0) {
                     ensureWritableDisk();
                     int count = (int) Math.min(length, splitSize - currentDiskPosition);
@@ -4444,7 +4532,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     length -= count;
                 }
             } catch (IOException | RuntimeException | Error exception) {
-                recordWriteFailure(exception);
+                fail(exception);
                 throw exception;
             }
         }
@@ -4452,10 +4540,11 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Flushes the current volume.
         @Override
         public void flush() throws IOException {
+            ensureWritable();
             try {
                 output.flush();
             } catch (IOException | RuntimeException | Error exception) {
-                recordWriteFailure(exception);
+                fail(exception);
                 throw exception;
             }
         }
@@ -4463,44 +4552,64 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Closes and either commits or rolls back the transactional volume output.
         @Override
         public void close() throws IOException {
-            if (closed) {
+            if (output.isClosed() && transactionFinished && volumeOutputClosed) {
                 return;
             }
-            closed = true;
+            boolean firstClose = !closing;
+            closing = true;
             @Nullable Throwable failure = null;
             try {
                 output.close();
             } catch (IOException | RuntimeException | Error exception) {
+                rollbackOnly = true;
                 failure = appendFailure(failure, exception);
             }
-            try {
-                if (writeFailure == null && failure == null && !rollbackOnly) {
-                    volumeOutput.commit(currentDiskNumber);
-                } else {
-                    volumeOutput.rollback();
+            if (output.isClosed() && !transactionFinished) {
+                try {
+                    if (!rollbackOnly) {
+                        volumeOutput.commit(currentDiskNumber);
+                    } else {
+                        volumeOutput.rollback();
+                    }
+                    transactionFinished = true;
+                } catch (IOException | RuntimeException | Error exception) {
+                    rollbackOnly = true;
+                    failure = appendFailure(failure, exception);
                 }
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
             }
-            try {
-                volumeOutput.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
+            if (output.isClosed() && !volumeOutputClosed) {
+                try {
+                    volumeOutput.close();
+                    volumeOutputClosed = true;
+                    // Closing an unpublished transaction rolls it back.
+                    transactionFinished = true;
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = appendFailure(failure, exception);
+                }
             }
-            if (failure == null && writeFailure != null) {
-                failure = new IOException("ZIP split output was rolled back after an earlier write failure");
+            if (firstClose && failure == null && writeFailure != null) {
+                failure = new IOException("ZIP split output was rolled back after an earlier write failure", writeFailure);
             }
             throwFailure(failure);
         }
 
-        /// Marks this output transaction for rollback without replacing the higher-level failure.
-        private void abort() {
-            rollbackOnly = true;
+        /// Rejects writes after a failed operation or after transaction finalization begins.
+        @Override
+        void ensureWritable() throws IOException {
+            super.ensureWritable();
+            if (closing) {
+                throw new IOException("ZIP split output is closed");
+            }
         }
 
-        /// Records a failed volume output operation.
-        private void recordWriteFailure(Throwable exception) {
-            writeFailure = appendFailure(writeFailure, exception);
+        /// Disables all volumes and requires rollback after a failed archive operation.
+        @Override
+        void fail(Throwable exception) {
+            super.fail(exception);
+            rollbackOnly = true;
+            if (writeFailure == null) {
+                writeFailure = exception;
+            }
         }
 
         /// Opens the next volume when the current one is full.
@@ -4521,7 +4630,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             );
             currentDiskNumber = nextDiskNumber;
             currentDiskPosition = 0;
-            output = Channels.newOutputStream(nextChannel);
+            output = new ArchiveOutputStream(StreamChannelAdapters.outputStream(nextChannel));
         }
     }
 
@@ -4561,6 +4670,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Writes a ZIP LZMA segment backed by a raw LZMA encoder.
+    @NotNullByDefault
     private static final class ZipLZMAOutputStream extends OutputStream {
         /// The raw LZMA output stream.
         private final OutputStream output;

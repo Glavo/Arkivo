@@ -62,10 +62,21 @@ final class ArchiveVolumeTransactionFailureTest {
 
     /// Writes one entry and closes the archive so every transaction stage is reachable.
     private static void writeArchive(String formatName, ArkivoVolumeTarget target) throws IOException {
-        try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(formatName, target, SPLIT_SIZE)) {
+        ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(formatName, target, SPLIT_SIZE);
+        try (writer) {
             try (OutputStream body = writer.beginFile("failure.txt").openOutputStream()) {
                 body.write(CONTENT);
             }
+        } catch (IOException exception) {
+            // A failed channel close must complete before the archive can roll back its volume transaction.
+            try {
+                writer.close();
+            } catch (IOException cleanupFailure) {
+                if (exception != cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            }
+            throw exception;
         }
     }
 

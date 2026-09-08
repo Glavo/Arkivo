@@ -26,7 +26,13 @@ import java.util.Objects;
 /// A successfully returned writer owns and closes a supplied stream or channel. A volume target remains caller-owned;
 /// the writer owns the transaction opened from it and commits or rolls it back during close. Closing the writer commits
 /// any pending entry and writes the central directory. Once close begins, entry operations stay closed after a failure;
-/// another `close()` call retries incomplete finalization.
+/// another `close()` call retries resource cleanup without repeating archive finalization or publication.
+///
+/// Failure while encoding or writing an entry, or validating its completed size or CRC-32, prevents further archive
+/// output. The first failed operation reports its original exception; later attempts to emit archive bytes fail without
+/// accessing the target. Closing still releases encoders and owned targets. Unpublished volume output is rolled back;
+/// bytes already written directly to a path, stream, or channel are not restored. Invalid write arguments rejected
+/// before encoding do not disable output.
 @NotNullByDefault
 public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWriter
         permits ZipArkivoStreamingWriterImpl {

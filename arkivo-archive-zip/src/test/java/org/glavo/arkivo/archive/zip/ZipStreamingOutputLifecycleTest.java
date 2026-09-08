@@ -52,6 +52,8 @@ final class ZipStreamingOutputLifecycleTest {
             assertTrue(exception.getMessage().contains("configured size"));
             assertFalse(channel.isOpen());
             assertThrows(ClosedChannelException.class, () -> channel.write(ByteBuffer.allocate(1)));
+            IOException finalizationFailure = assertThrows(IOException.class, writer::close);
+            assertSame(exception, finalizationFailure.getCause());
             channel.close();
             assertFalse(channel.isOpen());
             assertThrows(ClosedChannelException.class, () -> channel.write(ByteBuffer.allocate(1)));
@@ -76,7 +78,10 @@ final class ZipStreamingOutputLifecycleTest {
         assertTrue(exception.getMessage().contains("configured size"));
         assertTrue(archiveOutput.closed());
         assertEquals(1, exception.getSuppressed().length);
-        assertTrue(exception.getSuppressed()[0].getMessage().contains("close failed"));
+        Throwable archiveFailure = exception.getSuppressed()[0];
+        assertSame(exception, archiveFailure.getCause());
+        assertEquals(1, archiveFailure.getSuppressed().length);
+        assertTrue(archiveFailure.getSuppressed()[0].getMessage().contains("close failed"));
     }
 
     /// Verifies that a close-action failure does not mask an output close failure.
