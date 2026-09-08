@@ -29,6 +29,8 @@ import java.util.Objects;
 /// Returned adapters implement [InterruptibleChannel] exactly when their backing endpoint does. An interrupt or
 /// concurrent close during an active operation is abortive and closes that endpoint even when it is borrowed; ordinary
 /// idle closure retains the endpoint according to [ResourceOwnership].
+/// Encoding failures close the adapter, release the engine without generating further output, and apply target ownership.
+/// Target-close failures remain retryable. Decoding source failures do not, by themselves, discard buffered input.
 @NotNullByDefault
 public final class CodecChannelAdapters {
     /// Default compressed-data staging-buffer size.
@@ -294,7 +296,13 @@ public final class CodecChannelAdapters {
         private boolean frameActive = true;
 
         /// Whether the writable channel remains open for input.
-        private boolean open = true;
+        private volatile boolean open = true;
+
+        /// The first failed encoding operation, retained for subsequent closed-channel diagnostics.
+        private @Nullable Throwable operationFailure;
+
+        /// An engine-release failure that must also be visible to a concurrent aborting closer.
+        private @Nullable Throwable abortFailure;
 
         /// Creates an encoding channel around a fresh engine.
         protected EncodingChannel(
@@ -337,6 +345,9 @@ public final class CodecChannelAdapters {
                     throw new IOException("Unexpected compression encode outcome: " + outcome);
                 }
                 return source.position() - sourceStart;
+            } catch (IOException | RuntimeException | Error exception) {
+                fail(exception);
+                throw exception;
             } finally {
                 inputBytes += source.position() - sourceStart;
             }
@@ -346,7 +357,7 @@ public final class CodecChannelAdapters {
         @Override
         public void finish() throws IOException {
             if (finished) {
-                targetCloser.close();
+                closeTarget();
                 return;
             }
             finished = true;
@@ -358,6 +369,7 @@ public final class CodecChannelAdapters {
                     finishEngine();
                 }
             } catch (IOException | RuntimeException | Error exception) {
+                operationFailure = exception;
                 failure = exception;
             }
             try {
@@ -365,13 +377,48 @@ public final class CodecChannelAdapters {
             } catch (RuntimeException | Error exception) {
                 failure = mergeFailure(failure, exception);
             }
-            targetCloser.closeAfter(failure);
+            try {
+                targetCloser.closeAfter(failure);
+            } catch (IOException | RuntimeException | Error exception) {
+                if (operationFailure == null) {
+                    operationFailure = exception;
+                }
+                throw exception;
+            }
+        }
+
+        /// Stops encoding, releases the engine, and applies ownership while preserving the failed operation.
+        protected final void fail(Throwable exception) {
+            if (operationFailure == null) {
+                operationFailure = exception;
+            }
+            try {
+                abort();
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                mergeFailure(exception, cleanupFailure);
+            }
+        }
+
+        /// Retries target cleanup without reporting a previously thrown exception object a second time.
+        private void closeTarget() throws IOException {
+            try {
+                targetCloser.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                if (exception == operationFailure) {
+                    throw new IOException("Compression target close failed after encoding failure", exception);
+                }
+                throw exception;
+            }
         }
 
         /// Aborts encoding without emitting any remaining frame or stream trailer.
         private void abort() throws IOException {
             if (finished) {
-                targetCloser.close();
+                if (abortFailure != null) {
+                    targetCloser.closeAfter(abortFailure);
+                } else {
+                    closeTarget();
+                }
                 return;
             }
             finished = true;
@@ -381,6 +428,7 @@ public final class CodecChannelAdapters {
             try {
                 encoder.close();
             } catch (RuntimeException | Error exception) {
+                abortFailure = exception;
                 failure = exception;
             }
             targetCloser.closeAfter(failure);
@@ -427,19 +475,24 @@ public final class CodecChannelAdapters {
 
         /// Drains nonterminal flush output from a flushable encoder engine.
         protected final void flushEngine(CompressionEncoder.Flushable flushableEncoder) throws IOException {
-            while (true) {
-                output.clear();
-                CodecOutcome outcome = flushableEncoder.flush(output);
-                writeOutput();
-                if (outcome == CodecOutcome.FLUSHED) {
-                    return;
+            try {
+                while (true) {
+                    output.clear();
+                    CodecOutcome outcome = flushableEncoder.flush(output);
+                    writeOutput();
+                    if (outcome == CodecOutcome.FLUSHED) {
+                        return;
+                    }
+                    if (outcome != CodecOutcome.NEEDS_OUTPUT) {
+                        throw new IOException("Unexpected compression flush outcome: " + outcome);
+                    }
+                    if (output.position() == 0) {
+                        throw new IOException("Compression encoder requested output without producing bytes");
+                    }
                 }
-                if (outcome != CodecOutcome.NEEDS_OUTPUT) {
-                    throw new IOException("Unexpected compression flush outcome: " + outcome);
-                }
-                if (output.position() == 0) {
-                    throw new IOException("Compression encoder requested output without producing bytes");
-                }
+            } catch (IOException | RuntimeException | Error exception) {
+                fail(exception);
+                throw exception;
             }
         }
 
@@ -463,19 +516,24 @@ public final class CodecChannelAdapters {
 
         /// Drains one nonterminal frame boundary from a framed encoder engine.
         protected final void finishEngineFrame(CompressionEncoder.Framed framedEncoder) throws IOException {
-            while (true) {
-                output.clear();
-                CodecOutcome outcome = framedEncoder.finishFrame(output);
-                writeOutput();
-                if (outcome == CodecOutcome.BOUNDARY_REACHED) {
-                    return;
+            try {
+                while (true) {
+                    output.clear();
+                    CodecOutcome outcome = framedEncoder.finishFrame(output);
+                    writeOutput();
+                    if (outcome == CodecOutcome.BOUNDARY_REACHED) {
+                        return;
+                    }
+                    if (outcome != CodecOutcome.NEEDS_OUTPUT) {
+                        throw new IOException("Unexpected compression frame outcome: " + outcome);
+                    }
+                    if (output.position() == 0) {
+                        throw new IOException("Compression encoder requested output without producing bytes");
+                    }
                 }
-                if (outcome != CodecOutcome.NEEDS_OUTPUT) {
-                    throw new IOException("Unexpected compression frame outcome: " + outcome);
-                }
-                if (output.position() == 0) {
-                    throw new IOException("Compression encoder requested output without producing bytes");
-                }
+            } catch (IOException | RuntimeException | Error exception) {
+                fail(exception);
+                throw exception;
             }
         }
 
@@ -506,7 +564,11 @@ public final class CodecChannelAdapters {
         /// Requires this channel to remain open for source bytes.
         protected final void ensureOpen() throws ClosedChannelException {
             if (!open) {
-                throw new ClosedChannelException();
+                ClosedChannelException exception = new ClosedChannelException();
+                if (operationFailure != null) {
+                    exception.initCause(operationFailure);
+                }
+                throw exception;
             }
         }
     }
@@ -563,8 +625,13 @@ public final class CodecChannelAdapters {
             if (frameActive()) {
                 throw new IllegalStateException("A compression frame is already active");
             }
-            framedEncoder.startFrame(options);
-            markFrameStarted();
+            try {
+                framedEncoder.startFrame(options);
+                markFrameStarted();
+            } catch (IOException | RuntimeException | Error exception) {
+                fail(exception);
+                throw exception;
+            }
         }
 
         /// Finishes the current frame and retains the channel for following source bytes.
@@ -651,7 +718,7 @@ public final class CodecChannelAdapters {
         /// Returns whether this interruptible adapter accepts another operation.
         @Override
         public boolean isOpen() {
-            return state.isOpen();
+            return state.isOpen() && delegate.isOpen();
         }
 
         /// Gracefully finishes an idle encoder or aborts an active operation.

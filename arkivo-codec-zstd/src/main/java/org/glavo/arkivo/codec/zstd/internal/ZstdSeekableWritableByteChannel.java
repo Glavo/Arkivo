@@ -243,6 +243,9 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
 
         @Nullable Throwable failure = null;
         try {
+            if (!encoder.isOpen()) {
+                throw new IOException("Cannot write a seek table after framed encoding failed");
+            }
             finishActiveFrame(true);
             if (expectedSourceSize >= 0L && inputBytes != expectedSourceSize) {
                 throw new IOException(
@@ -539,7 +542,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         /// Returns whether another interruptible operation may begin.
         @Override
         public boolean isOpen() {
-            return state.isOpen();
+            return state.isOpen() && delegate.isOpen();
         }
 
         /// Gracefully finishes an idle writer or aborts an active operation.

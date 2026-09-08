@@ -423,12 +423,17 @@ public final class InterruptibleChannelSupport {
         throw (Error) failure;
     }
 
-    /// Combines lifecycle failures while preserving the first failure as primary.
+    /// Combines lifecycle failures without suppressing the same failure object more than once.
     private static Throwable mergeFailure(@Nullable Throwable primary, Throwable secondary) {
         if (primary == null) {
             return secondary;
         }
         if (primary != secondary) {
+            for (Throwable suppressed : primary.getSuppressed()) {
+                if (suppressed == secondary) {
+                    return primary;
+                }
+            }
             primary.addSuppressed(secondary);
         }
         return primary;

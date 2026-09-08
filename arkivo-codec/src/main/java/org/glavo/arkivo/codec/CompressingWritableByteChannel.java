@@ -24,6 +24,12 @@ import java.util.Objects;
 /// after final output is written. Finalization failure still makes this channel closed for writes, while an owned-target
 /// close failure can be retried by calling [#finish()] or [#close()] again.
 ///
+/// Channels created by the default [CompressionCodec] factories become closed when an encoder operation or target
+/// write fails, including invalid encoder outcomes or a target write that makes no progress. They release the encoder
+/// without attempting further finalization and close an owned target. The failed operation retains its original exception, with cleanup
+/// failures suppressed. Later `finish()` and `close()` calls retry only incomplete target closure. Caller errors rejected
+/// before entering the encoder, such as a null source or starting a frame while one is active, do not close the channel.
+///
 /// Contexts created by [CompressionCodec]'s default channel factories and
 /// [org.glavo.arkivo.codec.internal.CodecChannelAdapters] implement [InterruptibleChannel] exactly when their backing target
 /// does. For such a context, interrupting a thread during an encoding operation closes the context and target and reports
@@ -36,7 +42,8 @@ public interface CompressingWritableByteChannel extends WritableByteChannel {
     /// Processes all remaining source bytes while keeping the active encoding open.
     ///
     /// On success the source position equals its original limit. If this method throws, its position and the byte
-    /// counters report any progress completed before the failure.
+    /// counters report any progress completed before the failure. Accepted input may include bytes whose encoded
+    /// representation could not be written. Output progress includes bytes consumed by a target write that throws.
     ///
     /// @param source the uncompressed bytes consumed from its current position to its limit
     /// @return this call's input and output progress with {@link CodecResult.Status#ACTIVE}
@@ -45,6 +52,9 @@ public interface CompressingWritableByteChannel extends WritableByteChannel {
         Objects.requireNonNull(source, "source");
         long inputBefore = inputBytes();
         long outputBefore = outputBytes();
+        if (!source.hasRemaining()) {
+            write(source);
+        }
         while (source.hasRemaining()) {
             if (write(source) == 0) {
                 throw new IOException("Compression encoder made no progress");
