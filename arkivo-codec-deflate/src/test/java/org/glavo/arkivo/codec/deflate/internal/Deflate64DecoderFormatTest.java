@@ -10,17 +10,63 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies Deflate64-specific fields and malformed-stream handling in the buffer decoder.
 @NotNullByDefault
 final class Deflate64DecoderFormatTest {
+    /// The largest extended match resumes across output calls after fast literal decoding without consuming a trailer.
+    @Test
+    void extendedMatchesCrossOutputCallsAndPreserveLookahead() throws IOException {
+        BitWriter writer = new BitWriter();
+        writer.writeFixedBlockHeader();
+        writer.writeFixedLiteralLength('a');
+        writer.writeFixedLiteralLength('b');
+        writer.writeFixedLiteralLength('c');
+        writer.writeFixedLiteralLength(285);
+        writer.writeBits(0xffff, 16);
+        writer.writeFixedDistance(2);
+        writer.writeFixedLiteralLength(256);
+        byte[] compressed = writer.toByteArray();
+        byte[] framed = Arrays.copyOf(compressed, compressed.length + 8);
+        Arrays.fill(framed, compressed.length, framed.length, (byte) 0x7f);
+        byte[] expected = new byte[65_541];
+        for (int i = 0; i < expected.length; i++) expected[i] = (byte) ('a' + i % 3);
+        for (boolean direct : new boolean[]{false, true}) {
+            try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE64, null)) {
+                ByteBuffer input = direct ? ByteBuffer.allocateDirect(framed.length) : ByteBuffer.allocate(framed.length);
+                input.put(framed).flip();
+                input = input.asReadOnlyBuffer().order(ByteOrder.LITTLE_ENDIAN);
+                ByteBuffer output = direct ? ByteBuffer.allocateDirect(8192) : ByteBuffer.allocate(8192);
+                output.order(ByteOrder.LITTLE_ENDIAN);
+                byte[] scratch = new byte[output.capacity()];
+                var decoded = new ByteArrayOutputStream();
+                CodecOutcome outcome;
+                do {
+                    output.clear();
+                    outcome = decoder.finish(input, output);
+                    int produced = output.position();
+                    output.get(0, scratch, 0, produced);
+                    decoded.write(scratch, 0, produced);
+                    assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
+                } while (outcome != CodecOutcome.FINISHED);
+                assertArrayEquals(expected, decoded.toByteArray());
+                assertEquals(compressed.length, input.position());
+                assertEquals(8, input.remaining());
+                assertEquals(ByteOrder.LITTLE_ENDIAN, input.order());
+                assertEquals(ByteOrder.LITTLE_ENDIAN, output.order());
+            }
+        }
+    }
+
     /// Verifies the sixteen-bit length extension assigned to fixed-tree symbol 285.
     @Test
     void decodesExtendedLengthSymbol() throws IOException {

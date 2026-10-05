@@ -7,6 +7,7 @@
 /// members.
 module org.glavo.arkivo.codec.deflate {
     requires transitive org.glavo.arkivo.codec;
+    requires org.glavo.arkivo.base;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.codec.deflate;

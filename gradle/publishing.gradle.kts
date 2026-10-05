@@ -147,6 +147,14 @@ subprojects {
             into("META-INF")
             rename { "LICENSE" }
         }
+        if (project.name == "arkivo-codec-deflate") {
+            from(rootProject.file("NOTICE")) {
+                into("META-INF")
+            }
+            from(rootProject.file("LICENSES/Zlib.txt")) {
+                into("META-INF/LICENSES")
+            }
+        }
     }
 
     val metadata = publicationMetadata.getValue(name)
@@ -429,7 +437,10 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec:compile:$publicationVersion"
     ),
     "arkivo-codec-compress" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
-    "arkivo-codec-deflate" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
+    "arkivo-codec-deflate" to setOf(
+        "org.glavo:arkivo-codec:compile:$publicationVersion",
+        "org.glavo:arkivo-base:runtime:$publicationVersion"
+    ),
     "arkivo-codec-lzma" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-lzip" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
@@ -554,6 +565,12 @@ val verifyMavenPublications by tasks.registering {
                 JarFile(file).use { archive ->
                     check(archive.getEntry("META-INF/LICENSE") != null) {
                         "${file.name} does not contain META-INF/LICENSE"
+                    }
+                    if (artifactId == "arkivo-codec-deflate") {
+                        check(archive.getEntry("META-INF/NOTICE") != null
+                                && archive.getEntry("META-INF/LICENSES/Zlib.txt") != null) {
+                            "${file.name} does not contain the zlib-ng attribution and license"
+                        }
                     }
                     check(archive.entries().asSequence().any {
                         !it.isDirectory && it.name != "META-INF/LICENSE"

@@ -522,6 +522,7 @@ val verifyModuleDescriptors by tasks.registering {
                     "org.glavo.arkivo.archive.zip",
                     "org.glavo.arkivo.checksum.xxhash",
                     codecModule,
+                    "org.glavo.arkivo.codec.deflate",
                     "org.glavo.arkivo.codec.lz4",
                     "org.glavo.arkivo.codec.lzip",
                     "org.glavo.arkivo.codec.xz",

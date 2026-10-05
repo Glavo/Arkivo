@@ -1,11 +1,14 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
+// Portions adapted from zlib-ng; see NOTICE and LICENSES/Zlib.txt.
+// This Java implementation differs from the original C sources.
 
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.DeflateStrategy;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -27,6 +30,9 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
     /// The hash-table size used by the bounded match finder.
     private static final int HASH_SIZE = 1 << 16;
+
+    /// The polynomial multiplier retained by scalar and batched three-byte hashes.
+    private static final int HASH_MULTIPLIER = 251;
 
     /// The minimum match length represented by either format.
     private static final int MINIMUM_MATCH_LENGTH = 3;
@@ -73,6 +79,9 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             5, 5, 5, 5,
             0
     };
+
+    /// Literal/length symbols for every ordinary Deflate match length.
+    private static final int @Unmodifiable [] LENGTH_SYMBOLS = lengthSymbols();
 
     /// The ordered code-length alphabet used by dynamic block headers.
     private static final int @Unmodifiable [] CODE_LENGTH_ORDER = {
@@ -421,18 +430,16 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             int position = 0;
             while (position < blockSize) {
                 int logicalPosition = historySize + position;
-                Match match = findAndInsertMatch(logicalPosition);
-                if (strategy == DeflateStrategy.FILTERED && match.length() <= 5) {
-                    match = Match.NONE;
+                long match = findAndInsertMatch(logicalPosition);
+                int length = (int) match;
+                if (strategy == DeflateStrategy.FILTERED && length <= 5) {
+                    length = 0;
                 }
-                if (match.length() >= MINIMUM_MATCH_LENGTH) {
-                    addMatch(match.length(), match.distance());
-                    int end = position + match.length();
-                    position++;
-                    while (position < end) {
-                        insertPosition(historySize + position);
-                        position++;
-                    }
+                if (length >= MINIMUM_MATCH_LENGTH) {
+                    addMatch(length, (int) (match >>> Integer.SIZE));
+                    int end = position + length;
+                    insertPositions(logicalPosition + 1, historySize + end);
+                    position = end;
                 } else {
                     addLiteral(Byte.toUnsignedInt(block[position]));
                     position++;
@@ -467,16 +474,14 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         System.arraycopy(history, 0, matchBytes, 0, historySize);
         System.arraycopy(block, 0, matchBytes, historySize, blockSize);
         Arrays.fill(hashHeads, -1);
-        for (int position = 0; position + 2 < historySize; position++) {
-            insertPosition(position);
-        }
+        insertPositions(0, historySize - 2);
     }
 
-    /// Finds the longest bounded match and inserts the current combined-domain position.
-    private Match findAndInsertMatch(int position) {
+    /// Finds and inserts one position, returning length in the low word and distance in the high word, or zero.
+    private long findAndInsertMatch(int position) {
         int remaining = Math.min(historySize + blockSize - position, format.maximumMatchLength());
         if (searchLimit == 0 || remaining < MINIMUM_MATCH_LENGTH) {
-            return Match.NONE;
+            return 0L;
         }
         int hash = hash(position);
         int candidate = hashHeads[hash];
@@ -515,25 +520,25 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             candidate = previous[candidate];
         }
         return bestLength >= MINIMUM_MATCH_LENGTH
-                ? new Match(bestLength, bestDistance)
-                : Match.NONE;
+                ? (long) bestDistance << Integer.SIZE | Integer.toUnsignedLong(bestLength)
+                : 0L;
     }
 
-    /// Inserts one position into its three-byte hash chain.
-    private void insertPosition(int position) {
-        if (position + 2 >= historySize + blockSize) {
-            return;
+    /// Inserts consecutive positions in the original order using the same three-byte polynomial hash.
+    private void insertPositions(int position, int end) {
+        end = Math.min(end, historySize + blockSize - 2);
+        for (; position < end; position++) {
+            int hash = hash(position);
+            previous[position] = hashHeads[hash];
+            hashHeads[hash] = position;
         }
-        int hash = hash(position);
-        previous[position] = hashHeads[hash];
-        hashHeads[hash] = position;
     }
 
     /// Returns the hash of three bytes at one combined-domain position.
     private int hash(int position) {
         int value = Byte.toUnsignedInt(matchBytes[position]);
-        value = value * 251 + Byte.toUnsignedInt(matchBytes[position + 1]);
-        value = value * 251 + Byte.toUnsignedInt(matchBytes[position + 2]);
+        value = value * HASH_MULTIPLIER + Byte.toUnsignedInt(matchBytes[position + 1]);
+        value = value * HASH_MULTIPLIER + Byte.toUnsignedInt(matchBytes[position + 2]);
         return value & (HASH_SIZE - 1);
     }
 
@@ -665,18 +670,27 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
     /// Resolves the literal/length symbol for one match length.
     private int lengthSymbol(int length) {
-        for (int index = 0; index < LENGTH_BASES.length - 1; index++) {
-            int maximum = index == LENGTH_BASES.length - 2
-                    ? 257
-                    : LENGTH_BASES[index] + (1 << LENGTH_EXTRA_BITS[index]) - 1;
-            if (length <= maximum) {
-                return FIRST_LENGTH_SYMBOL + index;
+        if (length <= 258) return LENGTH_SYMBOLS[length];
+        if (length <= format.maximumMatchLength()) return LAST_LENGTH_SYMBOL;
+        throw new AssertionError(length);
+    }
+
+    /// Creates the bounded lookup shared by ordinary and extended Deflate match lengths.
+    private static int[] lengthSymbols() {
+        int[] result = new int[259];
+        for (int length = MINIMUM_MATCH_LENGTH; length <= 258; length++) {
+            result[length] = LAST_LENGTH_SYMBOL;
+            for (int index = 0; index < LENGTH_BASES.length - 1; index++) {
+                int maximum = index == LENGTH_BASES.length - 2
+                        ? 257
+                        : LENGTH_BASES[index] + (1 << LENGTH_EXTRA_BITS[index]) - 1;
+                if (length <= maximum) {
+                    result[length] = FIRST_LENGTH_SYMBOL + index;
+                    break;
+                }
             }
         }
-        if (length <= format.maximumMatchLength()) {
-            return LAST_LENGTH_SYMBOL;
-        }
-        throw new AssertionError(length);
+        return result;
     }
 
     /// Returns the extra-bit count for one length symbol in the selected format.
@@ -697,13 +711,9 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
     /// Resolves the distance symbol for one backward distance.
     private int distanceSymbol(int distance) {
-        for (int symbol = 0; symbol <= format.maximumDistanceSymbol(); symbol++) {
-            int maximum = distanceBase(symbol) + (1 << distanceExtraBits(symbol)) - 1;
-            if (distance <= maximum) {
-                return symbol;
-            }
-        }
-        throw new AssertionError(distance);
+        if (distance <= 4) return distance - 1;
+        int logarithm = Integer.SIZE - 1 - Integer.numberOfLeadingZeros(distance - 1);
+        return (logarithm << 1) + ((distance - 1) >>> (logarithm - 1) & 1);
     }
 
     /// Returns the number of extra bits for one distance symbol.
@@ -861,16 +871,6 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         private int maximumMatchLength() {
             return maximumMatchLength;
         }
-    }
-
-    /// Describes one selected LZ77 match.
-    ///
-    /// @param length   match length
-    /// @param distance backward match distance
-    @NotNullByDefault
-    private record Match(int length, int distance) {
-        /// The absence of a usable match.
-        private static final Match NONE = new Match(0, 0);
     }
 
     /// Provides symbol lengths and emits corresponding canonical codes.
@@ -1313,18 +1313,23 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             if (count < 0 || count > 16) {
                 throw new IllegalArgumentException("Deflate bit count must be between 0 and 16");
             }
-            long mask = count == 0 ? 0L : (1L << count) - 1L;
-            buffer |= ((long) value & mask) << bitCount;
-            bitCount += count;
-            while (bitCount >= 8) {
-                writeByte((int) buffer);
-                buffer >>>= 8;
-                bitCount -= 8;
+            if (count == 0) return;
+            long encoded = (long) value & ((1L << count) - 1L);
+            buffer |= encoded << bitCount;
+            int total = bitCount + count;
+            if (total >= Long.SIZE) {
+                ensureCapacity(Long.BYTES);
+                ByteArrayAccess.writeLongLittleEndian(output, outputSize, buffer);
+                outputSize += Long.BYTES;
+                buffer = encoded >>> (Long.SIZE - bitCount);
+                total -= Long.SIZE;
             }
+            bitCount = total;
         }
 
         /// Writes aligned bytes directly to the completed output.
         private void writeBytes(byte[] values, int offset, int length) {
+            drainCompleteBytes();
             if (bitCount != 0) {
                 throw new IllegalStateException("Deflate byte output is not aligned");
             }
@@ -1341,6 +1346,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
         /// Pads the final partial byte into the complete-byte output.
         private void finish() {
+            drainCompleteBytes();
             if (bitCount > 0) {
                 writeByte((int) buffer);
                 buffer = 0L;
@@ -1350,6 +1356,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
         /// Transfers all complete bytes through a view that remains stable until the next write.
         private ByteBuffer takeOutput() {
+            drainCompleteBytes();
             if (outputSize == 0) {
                 return EMPTY_OUTPUT;
             }
@@ -1360,7 +1367,16 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
         /// Returns the number of bits pending below the next byte boundary.
         private int bitCount() {
-            return bitCount;
+            return bitCount & 7;
+        }
+
+        /// Publishes complete bytes while retaining only the unfinished low-order byte.
+        private void drainCompleteBytes() {
+            while (bitCount >= Byte.SIZE) {
+                writeByte((int) buffer);
+                buffer >>>= Byte.SIZE;
+                bitCount -= Byte.SIZE;
+            }
         }
 
         /// Restores an empty bitstream session.

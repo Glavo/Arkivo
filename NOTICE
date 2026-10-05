@@ -10,3 +10,14 @@ Copyright 2002-2025 The Apache Software Foundation
 
 This product includes software developed at
 The Apache Software Foundation (https://www.apache.org/).
+
+The Deflate token decoder, output-history updates, and wide bit writer
+include adaptations of zlib-ng's C implementations.
+Reference revision: 72aceeac37bdd0704df14aac1823b4f80f4a5cf3.
+These implementations have been modified for Java's bounded buffers and
+Arkivo's incremental engine contracts. See LICENSES/Zlib.txt.
+
+zlib-ng
+Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
+Portions copyright (C) 2014-2021 Konstantin Nosov
+https://github.com/zlib-ng/zlib-ng

@@ -1,5 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
+// Portions adapted from zlib-ng; see NOTICE and LICENSES/Zlib.txt.
+// This Java implementation differs from the original C sources.
 
 package org.glavo.arkivo.codec.deflate.internal;
 
@@ -12,6 +14,7 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -38,6 +41,9 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
 
     /// The final defined literal/length symbol.
     private static final int LAST_LENGTH_SYMBOL = 285;
+
+    /// A parsed match waiting for output copying rather than a literal byte.
+    private static final int MATCH_READY = -2;
 
     /// The ordered code-length alphabet used by dynamic block headers.
     private static final int @Unmodifiable [] CODE_LENGTH_ORDER = {
@@ -90,10 +96,10 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
     /// Current decoder lifecycle state.
     private State state = State.ACTIVE;
 
-    /// The next history-window position to write.
+    /// The next persisted history-window position to write when a call returns.
     private int windowPosition;
 
-    /// The number of history bytes currently available to matches.
+    /// The number of history bytes preserved from preceding calls and the configured dictionary.
     private int availableHistory;
 
     /// The current block state.
@@ -265,9 +271,21 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
             return CodecOutcome.FINISHED;
         }
 
+        int outputStart = target.position();
+        try {
+            return decodeOutput(source, target, outputStart, endOfInput);
+        } finally {
+            updateHistory(target, outputStart);
+        }
+    }
+
+    /// Writes directly to the caller target while previous calls remain represented by the history window.
+    private CodecOutcome decodeOutput(ByteBuffer source, ByteBuffer target, int outputStart, boolean endOfInput)
+            throws IOException {
+
         while (true) {
             if (matchRemaining > 0) {
-                copyMatch(target);
+                copyMatch(target, outputStart);
                 if (!target.hasRemaining()) {
                     return CodecOutcome.NEEDS_OUTPUT;
                 }
@@ -290,6 +308,10 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 return CodecOutcome.NEEDS_OUTPUT;
             }
             if (parseState == ParseState.HUFFMAN_SYMBOL) {
+                if (bits.symbolNode == 0 && source.remaining() >= Long.BYTES && target.remaining() >= 258) {
+                    decodeFast(source, target, outputStart);
+                    continue;
+                }
                 // Consecutive literals do not need to re-enter the block-header and match grammar.
                 HuffmanTree tree = Objects.requireNonNull(literalLengthTree);
                 try {
@@ -303,7 +325,6 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                             acceptHuffmanBoundary(symbol);
                             break;
                         }
-                        recordDecodedByte(symbol);
                         target.put((byte) symbol);
                     }
                 } catch (NeedsInputException exception) {
@@ -313,15 +334,105 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
             }
             int value;
             try {
-                value = readDecodedByte(source, endOfInput);
+                value = readDecodedByte(source, target, outputStart, endOfInput);
             } catch (NeedsInputException exception) {
                 return CodecOutcome.NEEDS_INPUT;
             }
-            if (value < 0) {
+            if (value == MATCH_READY) continue;
+            if (value == -1) {
                 state = State.FINISHED;
                 return CodecOutcome.FINISHED;
             }
             target.put((byte) value);
+        }
+    }
+
+    /// Decodes complete tokens with local bit and output positions, returning speculative whole bytes to the source.
+    private void decodeFast(ByteBuffer source, ByteBuffer target, int outputStart) throws IOException {
+        HuffmanTree literals = Objects.requireNonNull(literalLengthTree);
+        HuffmanTree distances = Objects.requireNonNull(distanceTree);
+        int inputPosition = source.position();
+        int outputPosition = target.position();
+        int bitCount = bits.bitCount;
+        long hold = bits.buffer;
+        boolean reverseWords = source.order() == ByteOrder.BIG_ENDIAN;
+        try {
+            while (inputPosition <= source.limit() - Long.BYTES && outputPosition <= target.limit() - 258) {
+                if (bitCount < 56) {
+                    long word = source.getLong(inputPosition);
+                    if (reverseWords) word = Long.reverseBytes(word);
+                    hold |= word << bitCount;
+                    // Keep fewer than 64 valid bits so refill shifts never wrap at the word boundary.
+                    int loaded = (63 - bitCount) >>> 3;
+                    inputPosition += loaded;
+                    bitCount += loaded << 3;
+                }
+                int entry = literals.decodeEntry(hold);
+                int codeLength = entry & 15;
+                int symbol = entry >>> 4;
+                hold >>>= codeLength;
+                bitCount -= codeLength;
+                if (symbol < END_OF_BLOCK_SYMBOL) {
+                    target.put(outputPosition++, (byte) symbol);
+                    // The refill leaves enough bits for two additional root-table literals.
+                    entry = literals.fastLookup[(int) hold & HuffmanTree.FAST_LOOKUP_MASK];
+                    if (entry >= 0 && (entry >>> 4) < END_OF_BLOCK_SYMBOL) {
+                        codeLength = entry & 15;
+                        hold >>>= codeLength;
+                        bitCount -= codeLength;
+                        target.put(outputPosition++, (byte) (entry >>> 4));
+                        entry = literals.fastLookup[(int) hold & HuffmanTree.FAST_LOOKUP_MASK];
+                        if (entry >= 0 && (entry >>> 4) < END_OF_BLOCK_SYMBOL) {
+                            codeLength = entry & 15;
+                            hold >>>= codeLength;
+                            bitCount -= codeLength;
+                            target.put(outputPosition++, (byte) (entry >>> 4));
+                        }
+                    }
+                    continue;
+                }
+                if (symbol == END_OF_BLOCK_SYMBOL) {
+                    finishBlock();
+                    break;
+                }
+                if (symbol > LAST_LENGTH_SYMBOL) throw malformed("literal/length symbol " + symbol + " is invalid");
+                int index = symbol - FIRST_LENGTH_SYMBOL;
+                if (symbol == LAST_LENGTH_SYMBOL && format == Format.DEFLATE64) {
+                    lengthIndex = index;
+                    parseState = ParseState.LENGTH_EXTRA;
+                    break;
+                }
+                int extra = LENGTH_EXTRA_BITS[index];
+                int length = LENGTH_BASES[index] + ((int) hold & ((1 << extra) - 1));
+                hold >>>= extra;
+                bitCount -= extra;
+                entry = distances.decodeEntry(hold);
+                codeLength = entry & 15;
+                symbol = entry >>> 4;
+                hold >>>= codeLength;
+                bitCount -= codeLength;
+                if (symbol > format.maximumDistanceSymbol()) throw malformed("distance symbol " + symbol + " is invalid");
+                extra = symbol < 4 ? 0 : (symbol >>> 1) - 1;
+                int distance = (symbol < 4 ? symbol + 1 : ((2 + (symbol & 1)) << extra) + 1)
+                        + ((int) hold & ((1 << extra) - 1));
+                hold >>>= extra;
+                bitCount -= extra;
+                int available = Math.min(window.length,
+                        availableHistory + Math.min(window.length, outputPosition - outputStart));
+                if (distance > available) {
+                    throw malformed("match distance " + distance + " exceeds available history " + available);
+                }
+                copyMatchBytes(target, outputPosition, length, distance, outputStart);
+                outputPosition += length;
+            }
+        } finally {
+            // Only partial bytes remain owned by the bit reader; lookahead after a block belongs to the caller.
+            inputPosition -= bitCount >>> 3;
+            bitCount &= 7;
+            bits.buffer = hold & ((1L << bitCount) - 1);
+            bits.bitCount = bitCount;
+            source.position(inputPosition);
+            target.position(outputPosition);
         }
     }
 
@@ -334,7 +445,6 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 acceptHuffmanBoundary(symbol);
                 break;
             }
-            recordDecodedByte(symbol);
             target.put((byte) symbol);
         }
     }
@@ -366,55 +476,113 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         state = State.CLOSED;
     }
 
-    /// Copies byte-aligned stored-block content into the history window and caller target.
+    /// Copies byte-aligned stored-block content directly to the caller target.
     private void copyStored(ByteBuffer source, ByteBuffer target) {
         int copied = Math.min(storedRemaining, Math.min(source.remaining(), target.remaining()));
-        copied = Math.min(copied, window.length - windowPosition);
-        source.get(window, windowPosition, copied);
-        target.put(window, windowPosition, copied);
-        windowPosition = (windowPosition + copied) & windowMask;
+        target.put(target.position(), source, source.position(), copied);
+        source.position(source.position() + copied);
+        target.position(target.position() + copied);
         storedRemaining -= copied;
-        availableHistory = Math.min(window.length, availableHistory + copied);
     }
 
     /// Copies as much of the active LZ match as the caller target can accept.
-    private void copyMatch(ByteBuffer target) {
-        while (matchRemaining > 0 && target.hasRemaining()) {
-            int sourcePosition = (windowPosition - matchDistance) & windowMask;
-            int copied = Math.min(matchRemaining, target.remaining());
-            copied = Math.min(copied, window.length - windowPosition);
-            if (matchDistance == 1) {
-                Arrays.fill(window, windowPosition, windowPosition + copied, window[sourcePosition]);
+    private void copyMatch(ByteBuffer target, int outputStart) {
+        int copied = Math.min(matchRemaining, target.remaining());
+        copyMatchBytes(target, target.position(), copied, matchDistance, outputStart);
+        target.position(target.position() + copied);
+        matchRemaining -= copied;
+    }
+
+    /// Expands an exact match range from previous-call history followed by this call's output.
+    private void copyMatchBytes(ByteBuffer target, int outputPosition, int remaining, int distance, int outputStart) {
+        while (remaining > 0) {
+            int produced = outputPosition - outputStart;
+            int copied = remaining;
+            if (distance > produced) {
+                int previousDistance = distance - produced;
+                int sourcePosition = (windowPosition - previousDistance) & windowMask;
+                copied = Math.min(copied, Math.min(previousDistance, window.length - sourcePosition));
+                target.put(outputPosition, window, sourcePosition, copied);
             } else {
-                int seed = Math.min(copied, Math.min(matchDistance, window.length - sourcePosition));
-                System.arraycopy(window, sourcePosition, window, windowPosition, seed);
-                if (seed < matchDistance) {
-                    copied = seed;
+                int sourcePosition = outputPosition - distance;
+                if (distance == 1) {
+                    fillTarget(target, outputPosition, copied, target.get(sourcePosition));
                 } else {
-                    // Every extension reads only bytes generated earlier in this contiguous destination range.
+                    int seed = Math.min(copied, distance);
+                    copyTarget(target, sourcePosition, outputPosition, seed);
                     int populated = seed;
                     while (populated < copied) {
                         int extension = Math.min(populated, copied - populated);
-                        System.arraycopy(window, windowPosition, window, windowPosition + populated, extension);
+                        copyTarget(target, outputPosition, outputPosition + populated, extension);
                         populated += extension;
                     }
                 }
             }
-            target.put(window, windowPosition, copied);
-            windowPosition = (windowPosition + copied) & windowMask;
-            matchRemaining -= copied;
-            availableHistory = Math.min(window.length, availableHistory + copied);
+            outputPosition += copied;
+            remaining -= copied;
         }
     }
 
-    /// Resumes the current grammar field and returns one decoded byte or the stream-end sentinel.
-    private int readDecodedByte(ByteBuffer source, boolean endOfInput) throws IOException {
+    /// Copies already produced bytes without changing the target position or reading an unfinished overlap.
+    private static void copyTarget(ByteBuffer target, int source, int destination, int count) {
+        if (target.hasArray()) {
+            System.arraycopy(target.array(), target.arrayOffset() + source,
+                    target.array(), target.arrayOffset() + destination, count);
+        } else {
+            target.put(destination, target, source, count);
+        }
+    }
+
+    /// Writes an exact repeated-byte range without changing the target position.
+    private static void fillTarget(ByteBuffer target, int position, int count, byte value) {
+        if (target.hasArray()) {
+            Arrays.fill(target.array(), target.arrayOffset() + position,
+                    target.arrayOffset() + position + count, value);
+        } else {
+            long word = Byte.toUnsignedLong(value) * 0x0101010101010101L;
+            int end = position + count;
+            while (position <= end - Long.BYTES) {
+                target.putLong(position, word);
+                position += Long.BYTES;
+            }
+            while (position < end) target.put(position++, value);
+        }
+    }
+
+    /// Preserves at most one window of newly produced output when the caller regains control.
+    private void updateHistory(ByteBuffer target, int outputStart) {
+        int produced = target.position() - outputStart;
+        if (produced == 0) return;
+        if (produced >= window.length) {
+            copyHistory(target, target.position() - window.length, 0, window.length);
+            windowPosition = 0;
+            availableHistory = window.length;
+        } else {
+            int first = Math.min(produced, window.length - windowPosition);
+            copyHistory(target, outputStart, windowPosition, first);
+            if (first < produced) copyHistory(target, outputStart + first, 0, produced - first);
+            windowPosition = (windowPosition + produced) & windowMask;
+            availableHistory = Math.min(window.length, availableHistory + produced);
+        }
+    }
+
+    /// Copies an output range into history without bulk-transfer setup for short direct-buffer ranges.
+    private void copyHistory(ByteBuffer target, int source, int destination, int length) {
+        if (target.hasArray()) {
+            System.arraycopy(target.array(), target.arrayOffset() + source, window, destination, length);
+        } else if (length <= 16) {
+            for (int i = 0; i < length; i++) window[destination + i] = target.get(source + i);
+        } else {
+            target.get(source, window, destination, length);
+        }
+    }
+
+    /// Resumes a grammar field and returns a literal, the pending-match sentinel, or the stream-end sentinel.
+    private int readDecodedByte(ByteBuffer source, ByteBuffer target, int outputStart, boolean endOfInput)
+            throws IOException {
         while (true) {
             if (matchRemaining > 0) {
-                int value = Byte.toUnsignedInt(window[(windowPosition - matchDistance) & windowMask]);
-                matchRemaining--;
-                recordDecodedByte(value);
-                return value;
+                return MATCH_READY;
             }
             switch (parseState) {
                 case BLOCK_HEADER -> {
@@ -455,7 +623,6 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                     } else {
                         int value = bits.readBits(8, source, endOfInput, format);
                         storedRemaining--;
-                        recordDecodedByte(value);
                         return value;
                     }
                 }
@@ -513,7 +680,6 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 case HUFFMAN_SYMBOL -> {
                     int symbol = Objects.requireNonNull(literalLengthTree).decode(bits, source, endOfInput, format);
                     if (symbol < END_OF_BLOCK_SYMBOL) {
-                        recordDecodedByte(symbol);
                         return symbol;
                     }
                     acceptHuffmanBoundary(symbol);
@@ -538,8 +704,10 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 }
                 case DISTANCE_EXTRA -> {
                     int distance = distanceBase + bits.readBits(distanceExtraBits, source, endOfInput, format);
-                    if (distance <= 0 || distance > availableHistory) {
-                        throw malformed("match distance " + distance + " exceeds available history " + availableHistory);
+                    int available = Math.min(window.length,
+                            availableHistory + Math.min(window.length, target.position() - outputStart));
+                    if (distance <= 0 || distance > available) {
+                        throw malformed("match distance " + distance + " exceeds available history " + available);
                     }
                     matchDistance = distance;
                     matchRemaining = pendingLength;
@@ -594,15 +762,6 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         parseState = ParseState.BLOCK_HEADER;
         if (currentBlockFinal) {
             endReached = true;
-        }
-    }
-
-    /// Adds one decoded byte to the circular history window.
-    private void recordDecodedByte(int value) {
-        window[windowPosition] = (byte) value;
-        windowPosition = (windowPosition + 1) & windowMask;
-        if (availableHistory < window.length) {
-            availableHistory++;
         }
     }
 
@@ -891,6 +1050,23 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
             zeroChildren[node] = -1;
             oneChildren[node] = -1;
             symbols[node] = -1;
+        }
+
+        /// Resolves one packed symbol and code length from at least fifteen low-order lookahead bits.
+        private int decodeEntry(long prefix) throws IOException {
+            int entry = fastLookup[(int) prefix & FAST_LOOKUP_MASK];
+            if (entry >= 0) return entry;
+            if (entry == INVALID_LOOKUP) throw invalidCode();
+            int node = -entry - 1;
+            int length = FAST_LOOKUP_BITS;
+            prefix >>>= FAST_LOOKUP_BITS;
+            while (symbols[node] < 0) {
+                node = (prefix & 1) == 0 ? zeroChildren[node] : oneChildren[node];
+                if (node < 0) throw invalidCode();
+                prefix >>>= 1;
+                length++;
+            }
+            return symbols[node] << 4 | length;
         }
 
         /// Uses one root lookup for byte-wide alphabets, consuming lookahead only when needed.

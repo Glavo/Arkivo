@@ -20,6 +20,7 @@ module org.glavo.arkivo.base {
             org.glavo.arkivo.archive.zip,
             org.glavo.arkivo.checksum.xxhash,
             org.glavo.arkivo.codec,
+            org.glavo.arkivo.codec.deflate,
             org.glavo.arkivo.codec.lz4,
             org.glavo.arkivo.codec.lzip,
             org.glavo.arkivo.codec.xz,

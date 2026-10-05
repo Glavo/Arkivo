@@ -46,9 +46,9 @@ import java.util.zip.Inflater;
 @State(Scope.Thread)
 @BenchmarkMode(Mode.Throughput)
 @OutputTimeUnit(TimeUnit.SECONDS)
-@Warmup(iterations = 3, time = 500, timeUnit = TimeUnit.MILLISECONDS)
+@Warmup(iterations = 3, time = 1, timeUnit = TimeUnit.SECONDS)
 @Measurement(iterations = 5, time = 1, timeUnit = TimeUnit.SECONDS)
-@Fork(value = 1, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
+@Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
 public class DeflateComparisonBenchmark {
     /// The uncompressed byte count processed by each benchmark invocation.
     private static final int SOURCE_SIZE = 4 * 1024 * 1024;
@@ -57,7 +57,7 @@ public class DeflateComparisonBenchmark {
     private static final int OUTPUT_SLACK = SOURCE_SIZE >>> 4;
 
     /// The deterministic source profile selected for the current benchmark trial.
-    @Param({"text", "mixed", "random"})
+    @Param({"text", "mixed", "random", "candidates"})
     public String profile = "mixed";
 
     /// The shared numeric compression level selected for both implementations.
@@ -356,6 +356,7 @@ public class DeflateComparisonBenchmark {
             case "text" -> createTextSource();
             case "mixed" -> createMixedSource();
             case "random" -> createRandomSource();
+            case "candidates" -> createCandidateSource();
             default -> throw new IllegalArgumentException("Unknown Deflate benchmark profile: " + profile);
         };
     }
@@ -397,6 +398,18 @@ public class DeflateComparisonBenchmark {
     private static byte @Unmodifiable [] createRandomSource() {
         byte[] result = new byte[SOURCE_SIZE];
         new Random(0x41524b49564fL).nextBytes(result);
+        return result;
+    }
+
+    /// Creates identical three-byte prefixes followed by varying bytes, stressing short matches and hash chains.
+    private static byte @Unmodifiable [] createCandidateSource() {
+        byte[] result = new byte[SOURCE_SIZE];
+        new Random(0x434841494eL).nextBytes(result);
+        for (int index = 0; index < result.length; index += 8) {
+            result[index] = 'a';
+            result[index + 1] = 'b';
+            result[index + 2] = 'c';
+        }
         return result;
     }
 

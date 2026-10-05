@@ -14,6 +14,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Random;
 import java.util.zip.Deflater;
@@ -24,6 +25,126 @@ import static org.junit.jupiter.api.Assertions.*;
 /// Exercises suspended grammar fields, long Huffman codes, and reused history across input boundaries.
 @NotNullByDefault
 final class DeflateIncrementalStateTest {
+    /// Matches spanning calls and windows preserve slice boundaries, byte order, and trailing input.
+    ///
+    /// @param direct whether input and output use direct storage
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void decodesThroughWindowedOutputSlices(boolean direct) throws Exception {
+        byte[] body = new byte[150_031];
+        new Random(0x57494e44L).nextBytes(body);
+        for (int i = 16_384; i < body.length; i++) body[i] = body[i % 16_384];
+        Arrays.fill(body, 65_500, 75_000, (byte) 'a');
+        byte[] compressed = compress(body, false);
+        try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
+            for (ByteOrder order : new ByteOrder[]{ByteOrder.BIG_ENDIAN, ByteOrder.LITTLE_ENDIAN}) {
+                for (int outputSize : new int[]{257, 258, 259, 8192, 32768, 65536}) {
+                    for (int chunk : new int[]{7, 8192, compressed.length + 8}) {
+                        decoder.reset();
+                        ByteBuffer storage = direct ? ByteBuffer.allocateDirect(compressed.length + 13)
+                                : ByteBuffer.allocate(compressed.length + 13);
+                        storage.position(5).put(compressed).putLong(0x123456789abcdef0L).flip().position(5);
+                        ByteBuffer source = storage.asReadOnlyBuffer().order(order);
+                        source.limit(Math.min(storage.limit(), 5 + chunk));
+                        ByteBuffer outputStorage = direct ? ByteBuffer.allocateDirect(outputSize + 15)
+                                : ByteBuffer.allocate(outputSize + 15);
+                        ByteBuffer output = outputStorage.slice(4, outputSize + 7).order(order);
+                        byte[] scratch = new byte[outputSize];
+                        var decoded = new ByteArrayOutputStream();
+                        CodecOutcome outcome;
+                        do {
+                            output.clear();
+                            for (int i = 0; i < output.capacity(); i++) output.put(i, (byte) 0x5a);
+                            output.position(3).limit(3 + outputSize);
+                            outcome = source.limit() == storage.limit()
+                                    ? decoder.finish(source, output) : decoder.decode(source, output);
+                            int produced = output.position() - 3;
+                            output.get(3, scratch, 0, produced);
+                            decoded.write(scratch, 0, produced);
+                            assertEquals((byte) 0x5a, output.get(2));
+                            assertEquals(3 + outputSize, output.limit());
+                            output.limit(output.capacity());
+                            assertEquals((byte) 0x5a, output.get(3 + outputSize));
+                            assertSame(order, source.order());
+                            assertSame(order, output.order());
+                            if (outcome == CodecOutcome.NEEDS_INPUT) {
+                                assertFalse(source.hasRemaining());
+                                assertTrue(source.limit() < storage.limit());
+                                source.limit(Math.min(storage.limit(), source.limit() + chunk));
+                            } else {
+                                assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
+                            }
+                        } while (outcome != CodecOutcome.FINISHED);
+                        assertArrayEquals(body, decoded.toByteArray());
+                        assertEquals(compressed.length + 5, source.position());
+                    }
+                }
+            }
+        }
+    }
+
+    /// An invalid fast-path match reports completed literals without exposing speculative output or consuming a trailer.
+    @Test
+    void preservesProgressWhenFastDistanceValidationFails() throws Exception {
+        BitWriter writer = new BitWriter();
+        writer.write(3, 3);
+        for (int i = 0; i < 16; i++) writer.write(Integer.reverse(48 + 'a') >>> 24, 8);
+        writer.write(Integer.reverse(1) >>> 25, 7); // Length three.
+        writer.write(Integer.reverse(14) >>> 27, 5); // Distance 129 exceeds sixteen produced literals.
+        writer.write(0, 6);
+        byte[] invalid = writer.finish();
+        byte[] framed = Arrays.copyOf(invalid, invalid.length + 8);
+        Arrays.fill(framed, invalid.length, framed.length, (byte) 0x7f);
+        for (boolean direct : new boolean[]{false, true}) {
+            try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
+                ByteBuffer source = ByteBuffer.wrap(framed).asReadOnlyBuffer();
+                ByteBuffer target = direct ? ByteBuffer.allocateDirect(300) : ByteBuffer.allocate(300);
+                target.position(3);
+                IOException failure = assertThrows(IOException.class, () -> decoder.finish(source, target));
+                assertTrue(failure.getMessage().contains("exceeds available history 16"));
+                assertEquals(19, target.position());
+                assertTrue(source.position() <= invalid.length);
+                for (int i = 3; i < 19; i++) assertEquals((byte) 'a', target.get(i));
+                assertEquals((byte) 0, target.get(19));
+                decoder.reset();
+                byte[] valid = compress(new byte[]{1, 2, 3}, false);
+                assertArrayEquals(new byte[]{1, 2, 3}, decode(decoder, valid, 1, 0, 7));
+            }
+        }
+    }
+
+    /// Reserved symbols are rejected before producing a match or consuming speculative trailer bytes.
+    ///
+    /// @param symbol the reserved literal/length or distance symbol
+    @ParameterizedTest
+    @ValueSource(ints = {286, 287, 30, 31})
+    void rejectsReservedFastPathSymbols(int symbol) throws Exception {
+        BitWriter writer = new BitWriter();
+        writer.write(3, 3);
+        for (int i = 0; i < 16; i++) writer.write(Integer.reverse(48 + 'a') >>> 24, 8);
+        if (symbol < 32) {
+            writer.write(Integer.reverse(1) >>> 25, 7);
+            writer.write(Integer.reverse(symbol) >>> 27, 5);
+        } else {
+            writer.write(Integer.reverse(192 + symbol - 280) >>> 24, 8);
+        }
+        byte[] invalid = writer.finish();
+        byte[] framed = Arrays.copyOf(invalid, invalid.length + 8);
+        Arrays.fill(framed, invalid.length, framed.length, (byte) 0x7f);
+        for (boolean direct : new boolean[]{false, true}) {
+            try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
+                ByteBuffer source = ByteBuffer.wrap(framed).asReadOnlyBuffer();
+                ByteBuffer target = direct ? ByteBuffer.allocateDirect(300) : ByteBuffer.allocate(300);
+                IOException failure = assertThrows(IOException.class, () -> decoder.finish(source, target));
+                assertTrue(failure.getMessage().contains("symbol " + symbol + " is invalid"));
+                assertEquals(16, target.position());
+                assertTrue(source.position() <= invalid.length);
+                for (int i = 0; i < 16; i++) assertEquals((byte) 'a', target.get(i));
+                assertEquals((byte) 0, target.get(16));
+            }
+        }
+    }
+
     /// Dynamic headers and overlapping matches survive independent input and output fragmentation.
     @Test
     void resumesAcrossBufferShapesAndReset() throws Exception {
