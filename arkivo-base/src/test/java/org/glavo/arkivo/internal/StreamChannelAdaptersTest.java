@@ -4,6 +4,7 @@
 package org.glavo.arkivo.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -25,6 +26,8 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -32,6 +35,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies progress-safe and close-retryable stream/channel adaptation.
 @NotNullByDefault
 final class StreamChannelAdaptersTest {
+    /// Heap and empty reads need no transfer workspace; nonempty direct reads allocate it only once.
+    @Test
+    void allocatesTransferStorageOnlyForDirectReads() throws Exception {
+        try (var channel = StreamChannelAdapters.readableChannel(new ByteArrayInputStream(new byte[]{1, 2, 3}))) {
+            var field = channel.getClass().getDeclaredField("transferBuffer");
+            field.setAccessible(true);
+            assertNull(field.get(channel));
+            assertEquals(1, channel.read(ByteBuffer.allocate(1)));
+            assertNull(field.get(channel));
+            assertEquals(0, channel.read(ByteBuffer.allocateDirect(0)));
+            assertNull(field.get(channel));
+            assertEquals(1, channel.read(ByteBuffer.allocateDirect(1)));
+            @Nullable Object storage = field.get(channel);
+            assertNotNull(storage);
+            assertEquals(1, channel.read(ByteBuffer.allocateDirect(1)));
+            assertSame(storage, field.get(channel));
+        }
+    }
+
     /// Directory for the seekable-channel fixture.
     @TempDir
     Path temporaryDirectory;

@@ -40,7 +40,7 @@ final class Deflate64BufferEngineTest {
         assertEquals(compressed.length, decoded.consumedInput());
     }
 
-    /// Verifies a dynamic Huffman header whose transactional parse spans one-byte source buffers.
+    /// Verifies a dynamic Huffman header whose incremental parse spans one-byte source buffers.
     @Test
     void decodesDynamicHeaderAcrossOneByteSources() throws IOException {
         byte[] compressed = dynamicLiteralAWriter().toByteArray();

@@ -69,8 +69,8 @@ public final class StreamChannelAdapters {
         /// The backing input stream.
         private final InputStream source;
 
-        /// The reusable transfer buffer for direct targets.
-        private final byte[] transferBuffer = new byte[TRANSFER_SIZE];
+        /// Transfer storage allocated on the first nonempty read into an inaccessible backing array.
+        private byte @Nullable [] transferBuffer;
 
         /// Whether this adapter remains open.
         private boolean open = true;
@@ -104,9 +104,14 @@ public final class StreamChannelAdapters {
                 return read;
             }
 
-            int read = source.read(transferBuffer, 0, Math.min(target.remaining(), transferBuffer.length));
+            byte @Nullable [] buffer = transferBuffer;
+            if (buffer == null) {
+                buffer = new byte[TRANSFER_SIZE];
+                transferBuffer = buffer;
+            }
+            int read = source.read(buffer, 0, Math.min(target.remaining(), buffer.length));
             if (read > 0) {
-                target.put(transferBuffer, 0, read);
+                target.put(buffer, 0, read);
             }
             return read;
         }

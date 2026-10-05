@@ -109,6 +109,15 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// The common archive read-limit tracker.
     private final ArkivoReadLimitTracker readLimits;
 
+    /// The single idle Deflate workspace retained between serialized entries.
+    private final ZipDeflateDecoderPool deflateDecoders = new ZipDeflateDecoderPool(1);
+
+    /// Lazily allocated storage for draining an unfinished entry during cursor advancement or closure.
+    private byte @Nullable [] discardBuffer;
+
+    /// Reusable copy storage for returning decoder read-ahead to the pushback source.
+    private byte @Nullable [] pushbackBytes;
+
     /// The optional state lock.
     private final @Nullable ReentrantLock lock;
 
@@ -170,6 +179,11 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 closeCurrentEntry();
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
+            }
+            try {
+                deflateDecoders.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
             }
             if (!inputClosed) {
                 try {
@@ -1447,12 +1461,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             long expectedCrc32,
             long expectedUncompressedSize
     ) throws IOException {
-        DecompressingReadableByteChannel decoder = ZipCompressionFormats.newReadableByteChannel(
-                "deflate",
-                compressedInput,
-                expectedUncompressedSize,
-                config.readLimits()
-        );
+        DecompressingReadableByteChannel decoder = deflateDecoders.open(
+                compressedInput, expectedUncompressedSize, config.readLimits());
         return new KnownSizeEntryInputStream(
                 decoder,
                 compressedSizeOffset,
@@ -1854,6 +1864,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// The source stream.
         private final InputStream input;
 
+        /// Reusable storage for single-byte reads.
+        private final byte[] singleByte = new byte[1];
+
         /// The decoder that reports compressed progress, or `null` for non-codec streams.
         private final @Nullable DecompressingReadableByteChannel decoder;
 
@@ -1931,9 +1944,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// Reads one byte from the entry.
         @Override
         public int read() throws IOException {
-            byte[] buffer = new byte[1];
-            int read = read(buffer, 0, 1);
-            return read < 0 ? -1 : Byte.toUnsignedInt(buffer[0]);
+            int read = read(singleByte, 0, 1);
+            return read < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
         }
 
         /// Reads bytes from the entry.
@@ -1978,9 +1990,11 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
             Throwable failure = null;
             try {
-                byte[] discard = new byte[8192];
-                while (readUnchecked(discard, 0, discard.length) >= 0) {
-                    // Drain known-size data so it can be validated.
+                if (!finishedEntry) {
+                    byte[] discard = new byte[8192];
+                    while (readUnchecked(discard, 0, discard.length) >= 0) {
+                        // Drain known-size data so it can be validated.
+                    }
                 }
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
@@ -1999,13 +2013,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             try {
                 input.close();
             } catch (IOException | RuntimeException | Error exception) {
-                if (failure != null) {
-                    if (failure != exception) {
-                        failure.addSuppressed(exception);
-                    }
-                } else {
-                    failure = exception;
-                }
+                Throwable closeFailure = exception instanceof EOFException
+                        ? new IOException("ZIP entry data does not match local header", exception) : exception;
+                failure = mergeFailure(failure, closeFailure);
             }
             if (failure instanceof IOException exception) {
                 throw exception;
@@ -2024,7 +2034,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 return;
             }
             finishedEntry = true;
-            DecompressingReadableByteChannel codecDecoder = decoder;
+            @Nullable DecompressingReadableByteChannel codecDecoder = decoder;
             validateKnownEntryData(
                     codecDecoder == null
                             ? ZipArkivoEntryAttributes.UNKNOWN_SIZE
@@ -2035,6 +2045,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     expectedCrc32,
                     expectedUncompressedSize
             );
+            if (codecDecoder instanceof ZipDeflateDecoderPool.Lease lease) lease.verified();
         }
 
         /// Requires this stream to be open.
@@ -2057,6 +2068,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// Whether this stream is open.
         private boolean inputOpen = true;
 
+        /// Whether a read already observed the validated end of this entry.
+        private boolean endOfEntry;
+
+        /// Storage for repeated single-byte reads.
+        private final byte[] singleByte = new byte[1];
+
         /// Creates a current entry input stream.
         CurrentEntryInputStream(ZipArkivoStreamingReaderImpl owner, InputStream input) {
             this.owner = Objects.requireNonNull(owner, "owner");
@@ -2066,9 +2083,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// Reads one byte from the entry.
         @Override
         public int read() throws IOException {
-            byte[] buffer = new byte[1];
-            int read = read(buffer, 0, 1);
-            return read < 0 ? -1 : Byte.toUnsignedInt(buffer[0]);
+            int read = read(singleByte, 0, 1);
+            return read < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
         }
 
         /// Reads bytes from the entry.
@@ -2083,7 +2099,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 if (length == 0) {
                     return 0;
                 }
-                return input.read(bytes, offset, length);
+                int read = input.read(bytes, offset, length);
+                if (read < 0) endOfEntry = true;
+                return read;
             } finally {
                 owner.unlock();
             }
@@ -2100,7 +2118,13 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 inputOpen = false;
                 Throwable failure = null;
                 try {
-                    input.transferTo(OutputStream.nullOutputStream());
+                    if (!endOfEntry) {
+                        byte[] discard = owner.discardBuffer();
+                        while (input.read(discard, 0, discard.length) >= 0) {
+                            // Account for and validate unread entry content before closing it.
+                        }
+                        endOfEntry = true;
+                    }
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
                 } finally {
@@ -2125,6 +2149,16 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         }
     }
 
+    /// Returns reusable storage for draining this reader's sole current entry.
+    private byte[] discardBuffer() {
+        byte @Nullable [] buffer = discardBuffer;
+        if (buffer == null) {
+            buffer = new byte[8192];
+            discardBuffer = buffer;
+        }
+        return buffer;
+    }
+
     /// Selects a decoder source that can preserve the following plaintext ZIP metadata.
     private static InputStream dataDescriptorDecoderSource(
             InputStream compressedInput,
@@ -2141,6 +2175,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     private final class CodecDataDescriptorInputStream extends InputStream {
         /// The raw ZIP input stream.
         private final PushbackInputStream input;
+
+        /// Reusable storage for single-byte reads.
+        private final byte[] singleByte = new byte[1];
 
         /// The channel-first compression decoder.
         private final DecompressingReadableByteChannel decoder;
@@ -2234,12 +2271,14 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     stopAtFrame,
                     terminalStatus,
                     input,
-                    ZipCompressionFormats.newReadableByteChannel(
-                            formatName,
-                            dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder),
-                            ZipArkivoEntryAttributes.UNKNOWN_SIZE,
-                            config.readLimits()
-                    ),
+                    formatName.equals("deflate")
+                            ? deflateDecoders.open(
+                                    dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder),
+                                    ZipArkivoEntryAttributes.UNKNOWN_SIZE, config.readLimits())
+                            : ZipCompressionFormats.newReadableByteChannel(
+                                    formatName,
+                                    dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder),
+                                    ZipArkivoEntryAttributes.UNKNOWN_SIZE, config.readLimits()),
                     compressedSizeOffset,
                     aesDecryptor,
                     authenticationCodeSize,
@@ -2282,9 +2321,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// Reads one decoded byte.
         @Override
         public int read() throws IOException {
-            byte[] buffer = new byte[1];
-            int read = read(buffer, 0, 1);
-            return read < 0 ? -1 : Byte.toUnsignedInt(buffer[0]);
+            int read = read(singleByte, 0, 1);
+            return read < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
         }
 
         /// Reads decoded bytes.
@@ -2343,9 +2381,11 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
             Throwable failure = null;
             try {
-                byte[] discard = new byte[8192];
-                while (readUnchecked(discard, 0, discard.length) >= 0) {
-                    // Drain compressed data so the following descriptor can be parsed.
+                if (!finishedEntry) {
+                    byte[] discard = discardBuffer();
+                    while (readUnchecked(discard, 0, discard.length) >= 0) {
+                        // Drain compressed data so the following descriptor can be parsed.
+                    }
                 }
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
@@ -2371,10 +2411,14 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             if (remainder.remaining() > PUSHBACK_BUFFER_SIZE) {
                 throw new IOException("ZIP pushback buffer is too small for " + formatDisplayName + " data descriptor");
             }
-            for (int index = remainder.limit() - 1; index >= remainder.position(); index--) {
-                input.unread(Byte.toUnsignedInt(remainder.get(index)));
+            byte @Nullable [] buffer = pushbackBytes;
+            if (buffer == null) {
+                buffer = new byte[PUSHBACK_BUFFER_SIZE];
+                pushbackBytes = buffer;
             }
-            remainder.position(remainder.limit());
+            int count = remainder.remaining();
+            remainder.get(buffer, 0, count);
+            input.unread(buffer, 0, count);
         }
 
         /// Finishes the current entry and validates the following data descriptor.
@@ -2409,6 +2453,14 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                         uncompressedSize
                 )) {
                     failure = mergeFailure(failure, new IOException(descriptorMismatchMessage));
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
+            }
+            try {
+                if (failure == null && decoder instanceof ZipDeflateDecoderPool.Lease lease) {
+                    readLimits.requireWithinLimits();
+                    lease.verified();
                 }
             } catch (IOException | RuntimeException | Error exception) {
                 failure = mergeFailure(failure, exception);
@@ -3300,9 +3352,11 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             closed = true;
 
-            byte[] discard = new byte[8192];
-            while (readUnchecked(discard, 0, discard.length) >= 0) {
-                // Drain remaining bounded data.
+            if (remaining > 0) {
+                byte[] discard = new byte[8192];
+                while (readUnchecked(discard, 0, discard.length) >= 0) {
+                    // Drain remaining bounded data.
+                }
             }
         }
 

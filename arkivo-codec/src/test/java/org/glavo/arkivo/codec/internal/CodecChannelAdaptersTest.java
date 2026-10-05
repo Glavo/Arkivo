@@ -39,6 +39,42 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the blocking channel adapters independently from any concrete compression algorithm.
 @NotNullByDefault
 final class CodecChannelAdaptersTest {
+    /// A caller-supplied input workspace may be reused only after its preceding adapter is closed.
+    @Test
+    void reusesExclusiveInputStorageWithoutReactivatingClosedAdapter() throws IOException {
+        ByteBuffer storage = ByteBuffer.allocate(8);
+        DecompressingReadableByteChannel first = CodecChannelAdapters.newReadableByteChannel(
+                new ChunkedReadableChannel(new byte[]{10, 20, 30}), ResourceOwnership.OWNED,
+                SingleByteDecoder::new, storage);
+        assertEquals(1, first.read(ByteBuffer.allocate(4)));
+        assertArrayEquals(new byte[]{20, 30}, remainingBytes(first.unconsumedInput()));
+        assertTrue(first.unconsumedInput().isReadOnly());
+        first.close();
+        try (var second = CodecChannelAdapters.newReadableByteChannel(
+                new ChunkedReadableChannel(new byte[]{40, 50}), ResourceOwnership.OWNED,
+                SingleByteDecoder::new, storage)) {
+            assertEquals(0, second.sourceBytes());
+            ByteBuffer output = ByteBuffer.allocate(4);
+            assertEquals(1, second.read(output));
+            assertEquals(40, output.get(0));
+            assertArrayEquals(new byte[]{50}, remainingBytes(second.unconsumedInput()));
+            assertThrows(ClosedChannelException.class, () -> first.read(output));
+            first.close();
+            assertTrue(second.isOpen());
+        }
+    }
+
+    /// Invalid leased storage is rejected before creating an engine or changing source ownership.
+    @Test
+    void rejectsReadOnlyAndEmptyInputStorage() {
+        for (ByteBuffer input : new ByteBuffer[]{ByteBuffer.allocate(0), ByteBuffer.allocate(8).asReadOnlyBuffer()}) {
+            var source = new ChunkedReadableChannel(new byte[]{1});
+            assertThrows(IllegalArgumentException.class, () -> CodecChannelAdapters.newReadableByteChannel(
+                    source, ResourceOwnership.OWNED, () -> { throw new AssertionError("Factory was called"); }, input));
+            assertTrue(source.isOpen());
+        }
+    }
+
     /// Verifies factory results expose exactly the capabilities implemented by their engines.
     @Test
     void selectsDeclaredCapabilitiesForPlainEndpoints() throws IOException {

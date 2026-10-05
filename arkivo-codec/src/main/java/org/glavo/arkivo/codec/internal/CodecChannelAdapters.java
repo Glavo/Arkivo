@@ -178,18 +178,44 @@ public final class CodecChannelAdapters {
             ResourceOwnership ownership,
             DecoderFactory<? extends CompressionDecoder> factory
     ) throws IOException {
+        return newReadableByteChannel(source, ownership, factory, ByteBuffer.allocateDirect(BUFFER_SIZE));
+    }
+
+    /// Creates a decoding channel with exclusive use of the supplied staging buffer until channel closure.
+    ///
+    /// The buffer must be writable and have positive capacity. Its position and limit are initialized by this method.
+    /// The caller must not access it while the channel is open. Views returned by the channel's unconsumed-input method
+    /// cease to be valid when the buffer is reused after closure.
+    ///
+    /// @param source compressed-data source
+    /// @param ownership whether closing the adapter closes the source
+    /// @param factory factory for an independent decoder
+    /// @param input exclusively leased compressed-input storage
+    /// @return a decoder channel with the engine's frame and source's interruption capabilities
+    /// @throws IllegalArgumentException if the staging buffer is read-only or has zero capacity
+    /// @throws IOException if engine creation or source cleanup fails
+    public static DecompressingReadableByteChannel newReadableByteChannel(
+            ReadableByteChannel source,
+            ResourceOwnership ownership,
+            DecoderFactory<? extends CompressionDecoder> factory,
+            ByteBuffer input
+    ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(ownership, "ownership");
         Objects.requireNonNull(factory, "factory");
+        Objects.requireNonNull(input, "input");
+        if (input.isReadOnly() || input.capacity() == 0) {
+            throw new IllegalArgumentException("Decoder input storage must be writable and nonempty");
+        }
         OwnedChannelCloser sourceCloser = new OwnedChannelCloser(source, ownership);
         CompressionDecoder decoder = createDecoder(factory, sourceCloser);
         if (decoder instanceof CompressionDecoder.Framed framedDecoder) {
-            FramedDecodingChannel channel = new FramedDecodingChannel(source, sourceCloser, framedDecoder);
+            FramedDecodingChannel channel = new FramedDecodingChannel(source, sourceCloser, framedDecoder, input);
             return source instanceof InterruptibleChannel
                     ? new InterruptibleFramedDecodingChannel(source, channel)
                     : channel;
         }
-        DecodingChannel channel = new DecodingChannel(source, sourceCloser, decoder, false);
+        DecodingChannel channel = new DecodingChannel(source, sourceCloser, decoder, false, input);
         return source instanceof InterruptibleChannel
                 ? new InterruptibleDecodingChannel(source, channel)
                 : channel;
@@ -827,7 +853,7 @@ public final class CodecChannelAdapters {
         private final boolean concatenatedFrames;
 
         /// Buffered compressed input visible to the engine.
-        private final ByteBuffer input = ByteBuffer.allocateDirect(BUFFER_SIZE);
+        private final ByteBuffer input;
 
         /// Number of compressed bytes logically consumed by the engine.
         private long inputBytes;
@@ -860,10 +886,23 @@ public final class CodecChannelAdapters {
                 CompressionDecoder decoder,
                 boolean concatenatedFrames
         ) {
+            this(source, sourceCloser, decoder, concatenatedFrames, ByteBuffer.allocateDirect(BUFFER_SIZE));
+        }
+
+        /// Takes exclusive use of staging storage for this adapter lifecycle.
+        private DecodingChannel(
+                ReadableByteChannel source,
+                OwnedChannelCloser sourceCloser,
+                CompressionDecoder decoder,
+                boolean concatenatedFrames,
+                ByteBuffer input
+        ) {
             this.source = source;
             this.sourceCloser = sourceCloser;
             this.decoder = decoder;
             this.concatenatedFrames = concatenatedFrames;
+            this.input = input;
+            input.clear();
             input.limit(0);
         }
 
@@ -1106,6 +1145,16 @@ public final class CodecChannelAdapters {
                 CompressionDecoder.Framed decoder
         ) {
             super(source, sourceCloser, decoder, true);
+        }
+
+        /// Creates a frame-capable channel with exclusively leased staging storage.
+        private FramedDecodingChannel(
+                ReadableByteChannel source,
+                OwnedChannelCloser sourceCloser,
+                CompressionDecoder.Framed decoder,
+                ByteBuffer input
+        ) {
+            super(source, sourceCloser, decoder, true, input);
         }
 
         /// Decodes through the end of the current frame without starting a following frame.

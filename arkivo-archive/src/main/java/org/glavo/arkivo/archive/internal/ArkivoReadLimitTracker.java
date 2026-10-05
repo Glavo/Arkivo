@@ -264,8 +264,8 @@ public final class ArkivoReadLimitTracker {
         /// The number of decoded bytes observed for this entry.
         private long observedSize;
 
-        /// The reusable buffer used to account for skipped decoded bytes.
-        private final byte[] skipBuffer = new byte[SKIP_BUFFER_SIZE];
+        /// Storage allocated when decoded bytes are first skipped through the accounting path.
+        private byte @Nullable [] skipBuffer;
 
         /// Creates an unknown-size entry tracker.
         private UnknownSizeInputStream(String path, InputStream input) {
@@ -302,10 +302,15 @@ public final class ArkivoReadLimitTracker {
             if (count <= 0L) {
                 return 0L;
             }
+            byte @Nullable [] buffer = skipBuffer;
+            if (buffer == null) {
+                buffer = new byte[SKIP_BUFFER_SIZE];
+                skipBuffer = buffer;
+            }
             long skipped = 0L;
             while (skipped < count) {
-                int requested = (int) Math.min(count - skipped, skipBuffer.length);
-                int read = read(skipBuffer, 0, requested);
+                int requested = (int) Math.min(count - skipped, buffer.length);
+                int read = read(buffer, 0, requested);
                 if (read < 0) {
                     break;
                 }

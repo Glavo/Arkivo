@@ -25,6 +25,7 @@ import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.glavo.arkivo.archive.zip.ZipMethod;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -171,6 +172,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
     /// Serializes ownership changes of path-backed channel leases.
     private final Object pathChannelLock = new Object();
+
+    /// Deflate workspaces retained independently of physical archive handles.
+    private final ZipDeflateDecoderPool deflateDecoders = new ZipDeflateDecoderPool(4);
     /// Discovered physical volumes, fixed for this read-only session.
     private @Nullable @Unmodifiable List<Path> pathVolumes;
     /// Idle logical channels, each owning the session's physical volume set.
@@ -322,11 +326,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     @Override
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
-            if (!open && volumesClosed && closeActionCompleted && decodedEntryStorage.isClosed()) {
-                return;
-            }
             open = false;
             Throwable failure = null;
+            try {
+                deflateDecoders.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
             if (!volumesClosed) {
                 try {
                     if (volumes != null) {
@@ -336,7 +342,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     }
                     volumesClosed = true;
                 } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
+                    failure = mergeFailure(failure, exception);
                 }
             }
             Runnable action = closeAction;
@@ -1482,6 +1488,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             validateEntryDataDescriptor(archive, dataOffset, entry);
             SeekableByteChannel compressed = ArchiveSliceChannel.open(archive, dataOffset, entry.compressedSize);
             InputStream input = Channels.newInputStream(compressed);
+            @Nullable ZipDeflateDecoderPool.Lease deflateDecoder = null;
             ZipAesExtraField aes = entry.aesExtraField();
             if (entry.encrypted()) {
                 input = aes != null
@@ -1489,7 +1496,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         : openTraditionalDecryptingStream(path, entry, input);
             }
             if (entry.compressionMethod() == ZipMethod.DEFLATED.id()) {
-                input = openDeflateInputStream(input, entry.uncompressedSize);
+                deflateDecoder = deflateDecoders.open(input, entry.uncompressedSize, config.readLimits());
+                input = StreamChannelAdapters.inputStream(deflateDecoder);
             } else if (entry.compressionMethod() == ZipMethod.DEFLATE64.id()) {
                 input = openDeflate64InputStream(input, entry.uncompressedSize);
             } else if (entry.compressionMethod() == ZipMethod.BZIP2.id()) {
@@ -1502,7 +1510,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 input = openXzInputStream(input, entry.uncompressedSize);
             }
             long expectedCrc32 = aes != null ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : entry.crc32;
-            input = new ValidatingEntryInputStream(input, expectedCrc32, entry.uncompressedSize);
+            input = new ValidatingEntryInputStream(input, expectedCrc32, entry.uncompressedSize, deflateDecoder);
             completed = true;
             return input;
         } catch (IOException | RuntimeException | Error exception) {
@@ -1530,11 +1538,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 "ZIP data descriptor offset"
         );
         dataDescriptorSize(channel, descriptorOffset, entry);
-    }
-
-    /// Opens a raw Deflate decoding stream and owns the compressed stream.
-    private InputStream openDeflateInputStream(InputStream input, long decodedSize) throws IOException {
-        return ZipCompressionFormats.newInputStream("deflate", input, decodedSize, config.readLimits());
     }
 
     /// Opens a Deflate64 decoding stream and owns the compressed stream.
@@ -3635,6 +3638,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// The decoded entry data stream.
         private final InputStream input;
 
+        /// The optional Deflate lease requiring this wrapper's integrity confirmation.
+        private final @Nullable ZipDeflateDecoderPool.Lease deflateDecoder;
+
         /// The expected CRC-32 value from the central directory.
         private final long expectedCrc32;
 
@@ -3643,6 +3649,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
         /// The CRC-32 value of bytes returned so far.
         private final CRC32 crc32 = new CRC32();
+
+        /// Reusable storage for single-byte reads.
+        private final byte[] singleByte = new byte[1];
 
         /// The number of decoded bytes returned so far.
         private long uncompressedSize;
@@ -3657,18 +3666,20 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         private boolean inputClosed;
 
         /// Creates a validating ZIP entry stream.
-        private ValidatingEntryInputStream(InputStream input, long expectedCrc32, long expectedUncompressedSize) {
+        private ValidatingEntryInputStream(
+                InputStream input, long expectedCrc32, long expectedUncompressedSize,
+                @Nullable ZipDeflateDecoderPool.Lease deflateDecoder) {
             this.input = Objects.requireNonNull(input, "input");
             this.expectedCrc32 = expectedCrc32;
             this.expectedUncompressedSize = expectedUncompressedSize;
+            this.deflateDecoder = deflateDecoder;
         }
 
         /// Reads one decoded byte from the entry.
         @Override
         public int read() throws IOException {
-            byte[] buffer = new byte[1];
-            int read = read(buffer, 0, 1);
-            return read < 0 ? -1 : Byte.toUnsignedInt(buffer[0]);
+            int read = read(singleByte, 0, 1);
+            return read < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
         }
 
         /// Reads decoded bytes from the entry.
@@ -3709,9 +3720,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             if (!closed) {
                 closed = true;
                 try {
-                    byte[] discard = new byte[8192];
-                    while (readUnchecked(discard, 0, discard.length) >= 0) {
-                        // Drain unread entry data so central directory metadata can be validated.
+                    if (!finishedEntry) {
+                        byte[] discard = new byte[8192];
+                        while (readUnchecked(discard, 0, discard.length) >= 0) {
+                            // Drain unread entry data so central directory metadata can be validated.
+                        }
                     }
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
@@ -3743,6 +3756,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     && uncompressedSize != expectedUncompressedSize) {
                 throw new IOException("ZIP entry data does not match central directory");
             }
+            if (deflateDecoder != null) deflateDecoder.verified();
         }
 
         /// Requires this stream to be open.

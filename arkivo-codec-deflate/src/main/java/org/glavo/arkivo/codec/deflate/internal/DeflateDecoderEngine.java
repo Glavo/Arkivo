@@ -78,7 +78,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
     /// Configured dictionary bytes restored by reset, or null.
     private final byte @Nullable @Unmodifiable [] dictionary;
 
-    /// The little-endian transactional bit reader.
+    /// The little-endian incremental bit reader.
     private final BitInput bits = new BitInput();
 
     /// The configured decoded history window.
@@ -120,6 +120,92 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
     /// Whether the final block has ended.
     private boolean endReached;
 
+    /// The next field or symbol to parse.
+    private ParseState parseState = ParseState.BLOCK_HEADER;
+
+    /// The literal/length alphabet size declared by the current dynamic header.
+    private int literalCount;
+
+    /// The distance alphabet size declared by the current dynamic header.
+    private int distanceCount;
+
+    /// The number of declared code-length alphabet entries.
+    private int codeLengthCount;
+
+    /// The next code-length alphabet entry to read.
+    private int codeLengthPosition;
+
+    /// The next combined data-tree code length to expand.
+    private int lengthPosition;
+
+    /// The previously expanded code length.
+    private int previousLength;
+
+    /// A code-length repeat waiting for its extra bits.
+    private int repeatSymbol;
+
+    /// A length symbol waiting for its extra bits.
+    private int lengthIndex;
+
+    /// The complete length waiting for its distance.
+    private int pendingLength;
+
+    /// The base of a distance waiting for its extra bits.
+    private int distanceBase;
+
+    /// The number of extra bits in the pending distance.
+    private int distanceExtraBits;
+
+    /// Reused code-length alphabet lengths.
+    private final int[] codeLengths = new int[19];
+
+    /// Reused combined literal/length and distance lengths.
+    private final int[] combinedLengths = new int[320];
+
+    /// Reused literal/length lengths, including reserved symbols.
+    private final int[] literalLengths = new int[288];
+
+    /// Reused distance lengths, including Deflate64 symbols.
+    private final int[] distanceLengths = new int[32];
+
+    /// Reused dynamic code-length tree.
+    private final HuffmanTree dynamicCodeLengths;
+
+    /// Reused dynamic literal/length tree.
+    private final HuffmanTree dynamicLiterals;
+
+    /// Reused dynamic distance tree.
+    private final HuffmanTree dynamicDistances;
+
+    /// Resumable grammar fields; each transition occurs only after its required bits are available.
+    @NotNullByDefault
+    private enum ParseState {
+        /// Final flag and block type.
+        BLOCK_HEADER,
+        /// Byte-aligned stored-block length.
+        STORED_LENGTH,
+        /// Stored-block length complement.
+        STORED_COMPLEMENT,
+        /// Stored-block payload.
+        STORED_DATA,
+        /// Dynamic alphabet sizes.
+        DYNAMIC_COUNTS,
+        /// Code-length alphabet entries.
+        DYNAMIC_CODE_LENGTHS,
+        /// Combined data-tree lengths.
+        DYNAMIC_SYMBOL,
+        /// Extra bits for a code-length repeat.
+        DYNAMIC_REPEAT,
+        /// A literal, end-of-block, or length symbol.
+        HUFFMAN_SYMBOL,
+        /// Extra bits for the pending length.
+        LENGTH_EXTRA,
+        /// The distance symbol of a match.
+        DISTANCE_SYMBOL,
+        /// Extra bits for the pending distance.
+        DISTANCE_EXTRA
+    }
+
     /// Creates a decoder with the selected format's maximum history window.
     ///
     /// @param format selected bitstream semantics
@@ -152,6 +238,9 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         this.dictionary = dictionary != null ? dictionary.clone() : null;
         this.window = new byte[windowSize];
         this.windowMask = windowSize - 1;
+        dynamicCodeLengths = new HuffmanTree(19, format.displayName() + " code-length");
+        dynamicLiterals = new HuffmanTree(288, format.displayName() + " literal/length");
+        dynamicDistances = new HuffmanTree(32, format.displayName() + " distance");
         restoreDictionary();
     }
 
@@ -200,6 +289,24 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
             if (!target.hasRemaining()) {
                 return CodecOutcome.NEEDS_OUTPUT;
             }
+            if (parseState == ParseState.HUFFMAN_SYMBOL) {
+                // Consecutive literals do not need to re-enter the block-header and match grammar.
+                HuffmanTree tree = Objects.requireNonNull(literalLengthTree);
+                try {
+                    while (target.hasRemaining()) {
+                        int symbol = tree.decode(bits, source, endOfInput, format);
+                        if (symbol >= END_OF_BLOCK_SYMBOL) {
+                            acceptHuffmanBoundary(symbol);
+                            break;
+                        }
+                        recordDecodedByte(symbol);
+                        target.put((byte) symbol);
+                    }
+                } catch (NeedsInputException exception) {
+                    return CodecOutcome.NEEDS_INPUT;
+                }
+                continue;
+            }
             int value;
             try {
                 value = readDecodedByte(source, endOfInput);
@@ -227,6 +334,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         matchRemaining = 0;
         matchDistance = 0;
         endReached = false;
+        parseState = ParseState.BLOCK_HEADER;
         restoreDictionary();
         state = State.ACTIVE;
     }
@@ -256,13 +364,24 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         while (matchRemaining > 0 && target.hasRemaining()) {
             int sourcePosition = (windowPosition - matchDistance) & windowMask;
             int copied = Math.min(matchRemaining, target.remaining());
-
-            // A shorter distance requires newly generated bytes to become history before the next copy.
-            copied = Math.min(copied, matchDistance);
             copied = Math.min(copied, window.length - windowPosition);
-            copied = Math.min(copied, window.length - sourcePosition);
-
-            System.arraycopy(window, sourcePosition, window, windowPosition, copied);
+            if (matchDistance == 1) {
+                Arrays.fill(window, windowPosition, windowPosition + copied, window[sourcePosition]);
+            } else {
+                int seed = Math.min(copied, Math.min(matchDistance, window.length - sourcePosition));
+                System.arraycopy(window, sourcePosition, window, windowPosition, seed);
+                if (seed < matchDistance) {
+                    copied = seed;
+                } else {
+                    // Every extension reads only bytes generated earlier in this contiguous destination range.
+                    int populated = seed;
+                    while (populated < copied) {
+                        int extension = Math.min(populated, copied - populated);
+                        System.arraycopy(window, windowPosition, window, windowPosition + populated, extension);
+                        populated += extension;
+                    }
+                }
+            }
             target.put(window, windowPosition, copied);
             windowPosition = (windowPosition + copied) & windowMask;
             matchRemaining -= copied;
@@ -270,194 +389,175 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         }
     }
 
-    /// Decodes one byte or returns the end-of-stream sentinel.
+    /// Resumes the current grammar field and returns one decoded byte or the stream-end sentinel.
     private int readDecodedByte(ByteBuffer source, boolean endOfInput) throws IOException {
         while (true) {
             if (matchRemaining > 0) {
-                int sourcePosition = (windowPosition - matchDistance) & windowMask;
-                int value = Byte.toUnsignedInt(window[sourcePosition]);
+                int value = Byte.toUnsignedInt(window[(windowPosition - matchDistance) & windowMask]);
                 matchRemaining--;
                 recordDecodedByte(value);
                 return value;
             }
-
-            if (blockState == BLOCK_NONE) {
-                if (endReached) {
-                    return -1;
+            switch (parseState) {
+                case BLOCK_HEADER -> {
+                    if (endReached) return -1;
+                    int header = bits.readBits(3, source, endOfInput, format);
+                    currentBlockFinal = (header & 1) != 0;
+                    switch (header >>> 1) {
+                        case 0 -> {
+                            bits.alignToByte();
+                            parseState = ParseState.STORED_LENGTH;
+                        }
+                        case 1 -> {
+                            literalLengthTree = FIXED_LITERAL_LENGTH_TREE;
+                            distanceTree = FIXED_DISTANCE_TREE;
+                            blockState = BLOCK_HUFFMAN;
+                            parseState = ParseState.HUFFMAN_SYMBOL;
+                        }
+                        case 2 -> parseState = ParseState.DYNAMIC_COUNTS;
+                        default -> throw malformed("reserved block type");
+                    }
                 }
-                openBlock(source, endOfInput);
-                continue;
-            }
-
-            if (blockState == BLOCK_STORED) {
-                if (storedRemaining == 0) {
-                    finishBlock();
-                    continue;
+                case STORED_LENGTH -> {
+                    storedRemaining = bits.readBits(16, source, endOfInput, format);
+                    parseState = ParseState.STORED_COMPLEMENT;
                 }
-                int value = bits.readBits(8, source, endOfInput, format);
-                storedRemaining--;
-                recordDecodedByte(value);
-                return value;
-            }
-
-            bits.beginTransaction();
-            try {
-                HuffmanTree literals = Objects.requireNonNull(literalLengthTree, "literalLengthTree");
-                int symbol = literals.decode(bits, source, endOfInput, format);
-                if (symbol < END_OF_BLOCK_SYMBOL) {
-                    bits.commitTransaction();
-                    recordDecodedByte(symbol);
-                    return symbol;
-                }
-                if (symbol == END_OF_BLOCK_SYMBOL) {
-                    bits.commitTransaction();
-                    finishBlock();
-                    continue;
-                }
-                if (symbol > LAST_LENGTH_SYMBOL) {
-                    throw malformed("literal/length symbol " + symbol + " is invalid");
-                }
-
-                int lengthIndex = symbol - FIRST_LENGTH_SYMBOL;
-                int length;
-                if (symbol == LAST_LENGTH_SYMBOL && format == Format.DEFLATE64) {
-                    length = 3 + bits.readBits(16, source, endOfInput, format);
-                } else {
-                    length = LENGTH_BASES[lengthIndex]
-                            + bits.readBits(LENGTH_EXTRA_BITS[lengthIndex], source, endOfInput, format);
-                }
-                HuffmanTree distances = Objects.requireNonNull(distanceTree, "distanceTree");
-                int distanceSymbol = distances.decode(bits, source, endOfInput, format);
-                if (distanceSymbol < 0 || distanceSymbol > format.maximumDistanceSymbol()) {
-                    throw malformed("distance symbol " + distanceSymbol + " is invalid");
-                }
-                int distanceExtraBits = distanceSymbol < 4 ? 0 : (distanceSymbol >>> 1) - 1;
-                int distanceBase = distanceSymbol < 4
-                        ? distanceSymbol + 1
-                        : ((2 + (distanceSymbol & 1)) << distanceExtraBits) + 1;
-                int distance = distanceBase + bits.readBits(distanceExtraBits, source, endOfInput, format);
-                if (distance <= 0 || distance > availableHistory) {
-                    throw malformed(
-                            "match distance " + distance + " exceeds available history " + availableHistory
-                    );
-                }
-                bits.commitTransaction();
-                matchDistance = distance;
-                matchRemaining = length;
-            } catch (NeedsInputException exception) {
-                bits.rollbackTransaction();
-                throw exception;
-            } catch (IOException | RuntimeException | Error exception) {
-                bits.abortTransaction();
-                throw exception;
-            }
-        }
-    }
-
-    /// Reads and initializes the next complete block header transactionally.
-    private void openBlock(ByteBuffer source, boolean endOfInput) throws IOException {
-        bits.beginTransaction();
-        try {
-            boolean finalBlock = bits.readBits(1, source, endOfInput, format) != 0;
-            int type = bits.readBits(2, source, endOfInput, format);
-            switch (type) {
-                case 0 -> {
-                    bits.alignToByte();
-                    int length = bits.readBits(16, source, endOfInput, format);
-                    int complement = bits.readBits(16, source, endOfInput, format);
-                    if ((length ^ 0xffff) != complement) {
+                case STORED_COMPLEMENT -> {
+                    if ((storedRemaining ^ 0xffff) != bits.readBits(16, source, endOfInput, format)) {
                         throw malformed("stored block length complement does not match");
                     }
-                    storedRemaining = length;
                     literalLengthTree = null;
                     distanceTree = null;
                     blockState = BLOCK_STORED;
+                    parseState = ParseState.STORED_DATA;
                 }
-                case 1 -> {
-                    literalLengthTree = FIXED_LITERAL_LENGTH_TREE;
-                    distanceTree = FIXED_DISTANCE_TREE;
-                    blockState = BLOCK_HUFFMAN;
+                case STORED_DATA -> {
+                    if (storedRemaining == 0) {
+                        finishBlock();
+                    } else {
+                        int value = bits.readBits(8, source, endOfInput, format);
+                        storedRemaining--;
+                        recordDecodedByte(value);
+                        return value;
+                    }
                 }
-                case 2 -> {
-                    HuffmanTrees trees = readDynamicTrees(source, endOfInput);
-                    literalLengthTree = trees.literalLengthTree();
-                    distanceTree = trees.distanceTree();
-                    blockState = BLOCK_HUFFMAN;
+                case DYNAMIC_COUNTS -> {
+                    int counts = bits.readBits(14, source, endOfInput, format);
+                    literalCount = (counts & 31) + 257;
+                    distanceCount = (counts >>> 5 & 31) + 1;
+                    codeLengthCount = (counts >>> 10) + 4;
+                    codeLengthPosition = 0;
+                    Arrays.fill(codeLengths, 0);
+                    parseState = ParseState.DYNAMIC_CODE_LENGTHS;
                 }
-                default -> throw malformed("reserved block type");
+                case DYNAMIC_CODE_LENGTHS -> {
+                    while (codeLengthPosition < codeLengthCount) {
+                        int length = bits.readBits(3, source, endOfInput, format);
+                        codeLengths[CODE_LENGTH_ORDER[codeLengthPosition++]] = length;
+                    }
+                    dynamicCodeLengths.rebuild(codeLengths, false);
+                    lengthPosition = 0;
+                    previousLength = 0;
+                    parseState = ParseState.DYNAMIC_SYMBOL;
+                }
+                case DYNAMIC_SYMBOL -> {
+                    int total = literalCount + distanceCount;
+                    while (lengthPosition < total && parseState == ParseState.DYNAMIC_SYMBOL) {
+                        int symbol = dynamicCodeLengths.decode(bits, source, endOfInput, format);
+                        if (symbol <= 15) {
+                            combinedLengths[lengthPosition++] = symbol;
+                            previousLength = symbol;
+                        } else if (symbol <= 18) {
+                            if (symbol == 16 && lengthPosition == 0) {
+                                throw malformed("repeat code 16 has no previous length");
+                            }
+                            repeatSymbol = symbol;
+                            parseState = ParseState.DYNAMIC_REPEAT;
+                        } else {
+                            throw malformed("code-length symbol " + symbol + " is invalid");
+                        }
+                    }
+                    if (lengthPosition == total) {
+                        installDynamicTrees();
+                        parseState = ParseState.HUFFMAN_SYMBOL;
+                    }
+                }
+                case DYNAMIC_REPEAT -> {
+                    int extra = repeatSymbol == 16 ? 2 : repeatSymbol == 17 ? 3 : 7;
+                    int repeat = bits.readBits(extra, source, endOfInput, format)
+                            + (repeatSymbol == 18 ? 11 : 3);
+                    requireRepeatCapacity(lengthPosition, repeat, literalCount + distanceCount);
+                    if (repeatSymbol != 16) previousLength = 0;
+                    Arrays.fill(combinedLengths, lengthPosition, lengthPosition + repeat, previousLength);
+                    lengthPosition += repeat;
+                    parseState = ParseState.DYNAMIC_SYMBOL;
+                }
+                case HUFFMAN_SYMBOL -> {
+                    int symbol = Objects.requireNonNull(literalLengthTree).decode(bits, source, endOfInput, format);
+                    if (symbol < END_OF_BLOCK_SYMBOL) {
+                        recordDecodedByte(symbol);
+                        return symbol;
+                    }
+                    acceptHuffmanBoundary(symbol);
+                }
+                case LENGTH_EXTRA -> {
+                    if (lengthIndex == LAST_LENGTH_SYMBOL - FIRST_LENGTH_SYMBOL && format == Format.DEFLATE64) {
+                        pendingLength = 3 + bits.readBits(16, source, endOfInput, format);
+                    } else {
+                        pendingLength = LENGTH_BASES[lengthIndex]
+                                + bits.readBits(LENGTH_EXTRA_BITS[lengthIndex], source, endOfInput, format);
+                    }
+                    parseState = ParseState.DISTANCE_SYMBOL;
+                }
+                case DISTANCE_SYMBOL -> {
+                    int symbol = Objects.requireNonNull(distanceTree).decode(bits, source, endOfInput, format);
+                    if (symbol > format.maximumDistanceSymbol()) {
+                        throw malformed("distance symbol " + symbol + " is invalid");
+                    }
+                    distanceExtraBits = symbol < 4 ? 0 : (symbol >>> 1) - 1;
+                    distanceBase = symbol < 4 ? symbol + 1 : ((2 + (symbol & 1)) << distanceExtraBits) + 1;
+                    parseState = ParseState.DISTANCE_EXTRA;
+                }
+                case DISTANCE_EXTRA -> {
+                    int distance = distanceBase + bits.readBits(distanceExtraBits, source, endOfInput, format);
+                    if (distance <= 0 || distance > availableHistory) {
+                        throw malformed("match distance " + distance + " exceeds available history " + availableHistory);
+                    }
+                    matchDistance = distance;
+                    matchRemaining = pendingLength;
+                    parseState = ParseState.HUFFMAN_SYMBOL;
+                }
             }
-            currentBlockFinal = finalBlock;
-            bits.commitTransaction();
-        } catch (NeedsInputException exception) {
-            bits.rollbackTransaction();
-            throw exception;
-        } catch (IOException | RuntimeException | Error exception) {
-            bits.abortTransaction();
-            throw exception;
         }
     }
 
-    /// Reads and validates both canonical trees from one dynamic block header.
-    private HuffmanTrees readDynamicTrees(ByteBuffer source, boolean endOfInput) throws IOException {
-        int literalLengthCount = bits.readBits(5, source, endOfInput, format) + 257;
-        int distanceCount = bits.readBits(5, source, endOfInput, format) + 1;
-        int codeLengthCount = bits.readBits(4, source, endOfInput, format) + 4;
-
-        int[] codeLengthLengths = new int[19];
-        for (int index = 0; index < codeLengthCount; index++) {
-            codeLengthLengths[CODE_LENGTH_ORDER[index]] = bits.readBits(3, source, endOfInput, format);
-        }
-        HuffmanTree codeLengthTree = HuffmanTree.create(
-                codeLengthLengths,
-                false,
-                format.displayName() + " code-length"
-        );
-
-        int total = literalLengthCount + distanceCount;
-        int[] lengths = new int[total];
-        int position = 0;
-        int previousLength = 0;
-        while (position < total) {
-            int symbol = codeLengthTree.decode(bits, source, endOfInput, format);
-            if (symbol <= 15) {
-                lengths[position++] = symbol;
-                previousLength = symbol;
-            } else if (symbol == 16) {
-                if (position == 0) {
-                    throw malformed("repeat code 16 has no previous length");
-                }
-                int repeat = bits.readBits(2, source, endOfInput, format) + 3;
-                requireRepeatCapacity(position, repeat, total);
-                Arrays.fill(lengths, position, position + repeat, previousLength);
-                position += repeat;
-            } else if (symbol == 17) {
-                int repeat = bits.readBits(3, source, endOfInput, format) + 3;
-                requireRepeatCapacity(position, repeat, total);
-                Arrays.fill(lengths, position, position + repeat, 0);
-                position += repeat;
-                previousLength = 0;
-            } else if (symbol == 18) {
-                int repeat = bits.readBits(7, source, endOfInput, format) + 11;
-                requireRepeatCapacity(position, repeat, total);
-                Arrays.fill(lengths, position, position + repeat, 0);
-                position += repeat;
-                previousLength = 0;
-            } else {
-                throw malformed("code-length symbol " + symbol + " is invalid");
+    /// Advances the grammar after an end-of-block or validated length symbol.
+    private void acceptHuffmanBoundary(int symbol) throws IOException {
+        if (symbol == END_OF_BLOCK_SYMBOL) {
+            finishBlock();
+        } else {
+            if (symbol > LAST_LENGTH_SYMBOL) {
+                throw malformed("literal/length symbol " + symbol + " is invalid");
             }
+            lengthIndex = symbol - FIRST_LENGTH_SYMBOL;
+            parseState = ParseState.LENGTH_EXTRA;
         }
+    }
 
-        int[] literalLengths = new int[288];
-        System.arraycopy(lengths, 0, literalLengths, 0, literalLengthCount);
+    /// Installs validated data trees after the complete dynamic header has been expanded.
+    private void installDynamicTrees() throws IOException {
+        Arrays.fill(literalLengths, 0);
+        Arrays.fill(distanceLengths, 0);
+        System.arraycopy(combinedLengths, 0, literalLengths, 0, literalCount);
+        System.arraycopy(combinedLengths, literalCount, distanceLengths, 0, distanceCount);
         if (literalLengths[END_OF_BLOCK_SYMBOL] == 0) {
             throw malformed("dynamic block has no end-of-block symbol");
         }
-        int[] distanceLengths = new int[32];
-        System.arraycopy(lengths, literalLengthCount, distanceLengths, 0, distanceCount);
-        return new HuffmanTrees(
-                HuffmanTree.create(literalLengths, false, format.displayName() + " literal/length"),
-                HuffmanTree.create(distanceLengths, true, format.displayName() + " distance")
-        );
+        dynamicLiterals.rebuild(literalLengths, false);
+        dynamicDistances.rebuild(distanceLengths, true);
+        literalLengthTree = dynamicLiterals;
+        distanceTree = dynamicDistances;
+        blockState = BLOCK_HUFFMAN;
     }
 
     /// Rejects a code-length repeat that extends beyond the target arrays.
@@ -473,6 +573,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         literalLengthTree = null;
         distanceTree = null;
         storedRemaining = 0;
+        parseState = ParseState.BLOCK_HEADER;
         if (currentBlockFinal) {
             endReached = true;
         }
@@ -588,403 +689,233 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         }
     }
 
-    /// Holds both trees parsed from a dynamic block header.
-    ///
-    /// @param literalLengthTree literal and length tree
-    /// @param distanceTree distance tree
-    @NotNullByDefault
-    private record HuffmanTrees(HuffmanTree literalLengthTree, HuffmanTree distanceTree) {
-    }
-
-    /// Reads least-significant-bit-first fields with replayable input transactions.
+    /// Reads least-significant-bit-first fields without replaying caller input.
     @NotNullByDefault
     private static final class BitInput {
-        /// Buffered packed bits, with the next bit in bit zero.
+        /// Unread packed bits, with the next bit in bit zero.
         private long buffer;
 
-        /// The number of available buffered bits.
+        /// The number of unread packed bits.
         private int bitCount;
 
-        /// Owned bytes consumed during an incomplete transaction.
-        private byte[] replay = new byte[32];
+        /// The node of an incomplete canonical symbol, or zero before its first bit.
+        private int symbolNode;
 
-        /// Number of valid bytes in the replay array.
-        private int replaySize;
-
-        /// Next replay byte used by the active transaction.
-        private int replayPosition;
-
-        /// Whether a parser transaction is active.
-        private boolean transactionActive;
-
-        /// Packed-bit value at the active transaction boundary.
-        private long transactionBuffer;
-
-        /// Available-bit count at the active transaction boundary.
-        private int transactionBitCount;
-
-        /// Begins or retries one parser transaction.
-        private void beginTransaction() {
-            if (transactionActive) {
-                throw new IllegalStateException("Nested Deflate bit transactions are not supported");
-            }
-            transactionActive = true;
-            transactionBuffer = buffer;
-            transactionBitCount = bitCount;
-            replayPosition = 0;
-        }
-
-        /// Commits all bits and owned source bytes consumed by the active transaction.
-        private void commitTransaction() {
-            requireTransaction();
-            transactionActive = false;
-            replaySize = 0;
-            replayPosition = 0;
-        }
-
-        /// Restores packed bits while retaining copied source bytes for the next call.
-        private void rollbackTransaction() {
-            requireTransaction();
-            buffer = transactionBuffer;
-            bitCount = transactionBitCount;
-            replayPosition = 0;
-            transactionActive = false;
-        }
-
-        /// Abandons a malformed transaction and discards its replay storage.
-        private void abortTransaction() {
-            if (transactionActive) {
-                buffer = transactionBuffer;
-                bitCount = transactionBitCount;
-                transactionActive = false;
-            }
-            replaySize = 0;
-            replayPosition = 0;
-        }
-
-        /// Reads an unsigned field of up to sixteen bits.
-        private int readBits(
-                int count,
-                ByteBuffer source,
-                boolean endOfInput,
-                Format format
-        ) throws IOException {
-            if (count < 0 || count > 16) {
-                throw new IllegalArgumentException("Deflate bit count must be between 0 and 16");
-            }
-            while (bitCount < count) {
-                int value = readByte(source, endOfInput, format);
-                buffer |= (long) value << bitCount;
-                bitCount += 8;
-            }
-            int result = count == 0 ? 0 : (int) (buffer & ((1L << count) - 1L));
+        /// Reads an unsigned field of at most sixteen bits, retaining an incomplete field.
+        private int readBits(int count, ByteBuffer source, boolean endOfInput, Format format) throws IOException {
+            while (bitCount < count) appendRequiredByte(source, endOfInput, format);
+            int result = (int) (buffer & ((1L << count) - 1L));
             buffer >>>= count;
             bitCount -= count;
             return result;
         }
 
-        /// Returns the number of bits already buffered without reading caller input.
-        private int availableBitCount() {
-            return bitCount;
-        }
-
-        /// Returns the requested low-order buffered bits without consuming them.
-        private int peekBits(int count) {
-            if (count < 0 || count > bitCount || count > 16) {
-                throw new IllegalArgumentException("Unavailable Deflate peek bit count: " + count);
+        /// Appends exactly one byte required by an incomplete field or symbol prefix.
+        private void appendRequiredByte(ByteBuffer source, boolean endOfInput, Format format) throws IOException {
+            if (!source.hasRemaining()) {
+                if (endOfInput) throw new EOFException(format.truncatedMessage());
+                throw NeedsInputException.INSTANCE;
             }
-            return count == 0 ? 0 : (int) (buffer & ((1L << count) - 1L));
+            buffer |= Byte.toUnsignedLong(source.get()) << bitCount;
+            bitCount += Byte.SIZE;
         }
 
-        /// Discards bits already proven to belong to one decoded value.
+        /// Discards already validated low-order bits.
         private void discardBits(int count) {
-            if (count < 0 || count > bitCount) {
-                throw new IllegalArgumentException("Unavailable Deflate discard bit count: " + count);
-            }
             buffer >>>= count;
             bitCount -= count;
         }
 
-        /// Appends one required source byte after the current bits were proven to be an incomplete prefix.
-        private void appendRequiredByte(ByteBuffer source, boolean endOfInput, Format format) throws IOException {
-            int value = readByte(source, endOfInput, format);
-            buffer |= (long) value << bitCount;
-            bitCount += 8;
-        }
-
-        /// Reads one byte from transaction replay or the current caller-owned source.
-        private int readByte(ByteBuffer source, boolean endOfInput, Format format) throws IOException {
-            if (transactionActive && replayPosition < replaySize) {
-                return Byte.toUnsignedInt(replay[replayPosition++]);
-            }
-            if (!source.hasRemaining()) {
-                if (endOfInput) {
-                    throw new EOFException(format.truncatedMessage());
-                }
-                throw NeedsInputException.INSTANCE;
-            }
-            int value = Byte.toUnsignedInt(source.get());
-            if (transactionActive) {
-                ensureReplayCapacity(replaySize + 1);
-                replay[replaySize++] = (byte) value;
-                replayPosition++;
-            }
-            return value;
-        }
-
         /// Discards padding through the next byte boundary.
         private void alignToByte() {
-            int discard = bitCount & 7;
-            buffer >>>= discard;
-            bitCount -= discard;
+            discardBits(bitCount & 7);
         }
 
-        /// Restores an empty bit-reader session.
+        /// Restores an empty bit and symbol reader.
         private void reset() {
             buffer = 0L;
             bitCount = 0;
-            replaySize = 0;
-            replayPosition = 0;
-            transactionActive = false;
-            transactionBuffer = 0L;
-            transactionBitCount = 0;
-        }
-
-        /// Expands owned transaction replay storage when necessary.
-        private void ensureReplayCapacity(int requiredCapacity) {
-            if (requiredCapacity > replay.length) {
-                replay = Arrays.copyOf(replay, Math.max(requiredCapacity, replay.length << 1));
-            }
-        }
-
-        /// Requires an active parser transaction.
-        private void requireTransaction() {
-            if (!transactionActive) {
-                throw new IllegalStateException("No Deflate bit transaction is active");
-            }
+            symbolNode = 0;
         }
     }
 
-    /// Decodes one canonical Huffman alphabet.
+    /// Builds bounded canonical trees and decodes their low-order input prefixes.
     @NotNullByDefault
     private static final class HuffmanTree {
-        /// The number of root bits decoded by one fast lookup.
+        /// Bits covered by the root table.
         private static final int FAST_LOOKUP_BITS = 8;
 
-        /// The mask used to unpack a fast lookup symbol length.
-        private static final int FAST_LENGTH_MASK = (1 << 4) - 1;
+        /// Mask for the packed symbol's code length.
+        private static final int FAST_LENGTH_MASK = 15;
 
-        /// The lookup sentinel for an invalid bit prefix.
+        /// A root-table entry that cannot identify a valid symbol.
         private static final int INVALID_LOOKUP = Integer.MIN_VALUE;
 
-        /// The zero-bit child index for every node.
-        private final int @Unmodifiable [] zeroChildren;
+        /// Zero-bit child indices.
+        private final int[] zeroChildren;
 
-        /// The one-bit child index for every node.
-        private final int @Unmodifiable [] oneChildren;
+        /// One-bit child indices.
+        private final int[] oneChildren;
 
-        /// The symbol stored at every leaf, or `-1` for internal nodes.
-        private final int @Unmodifiable [] symbols;
+        /// Leaf symbols, or negative values at internal nodes.
+        private final int[] symbols;
 
-        /// Packed root symbols and lengths, continuation nodes, or invalid-prefix sentinels.
-        private final int @Unmodifiable [] fastLookup;
+        /// Packed symbols and lengths, continuation nodes, or invalid prefixes.
+        private final int[] fastLookup = new int[1 << FAST_LOOKUP_BITS];
 
-        /// The maximum code length.
-        private final int maximumLength;
+        /// Reused counts of codes at each depth.
+        private final int[] counts = new int[16];
 
-        /// Description used in malformed-stream errors.
+        /// Reused next canonical codes at each depth.
+        private final int[] nextCodes = new int[16];
+
+        /// Error description fixed for this alphabet.
         private final String description;
 
-        /// Creates one immutable Huffman tree.
-        private HuffmanTree(
-                int @Unmodifiable [] zeroChildren,
-                int @Unmodifiable [] oneChildren,
-                int @Unmodifiable [] symbols,
-                int maximumLength,
-                String description
-        ) {
-            this.zeroChildren = zeroChildren;
-            this.oneChildren = oneChildren;
-            this.symbols = symbols;
-            this.fastLookup = createFastLookup(zeroChildren, oneChildren, symbols);
-            this.maximumLength = maximumLength;
+        /// The maximum valid code length, or zero for an empty tree.
+        private int maximumLength;
+
+        /// Reserves enough nodes for a complete binary alphabet or a single one-bit code.
+        private HuffmanTree(int alphabetSize, String description) {
+            int capacity = Math.max(2, alphabetSize * 2);
+            zeroChildren = new int[capacity];
+            oneChildren = new int[capacity];
+            symbols = new int[capacity];
             this.description = description;
         }
 
-        /// Builds the eight-bit root lookup without changing the canonical tree representation.
-        private static int @Unmodifiable [] createFastLookup(
-                int @Unmodifiable [] zeroChildren,
-                int @Unmodifiable [] oneChildren,
-                int @Unmodifiable [] symbols
-        ) {
-            int[] lookup = new int[1 << FAST_LOOKUP_BITS];
-            for (int prefix = 0; prefix < lookup.length; prefix++) {
-                int node = 0;
-                int entry = INVALID_LOOKUP;
-                for (int depth = 0; depth < FAST_LOOKUP_BITS; depth++) {
-                    node = (prefix >>> depth & 1) == 0 ? zeroChildren[node] : oneChildren[node];
-                    if (node < 0) {
-                        break;
-                    }
-                    int symbol = symbols[node];
-                    if (symbol >= 0) {
-                        entry = symbol << 4 | depth + 1;
-                        break;
-                    }
-                }
-                if (entry == INVALID_LOOKUP && node >= 0) {
-                    entry = -node - 1;
-                }
-                lookup[prefix] = entry;
-            }
-            return lookup;
+        /// Builds an independently owned tree used by a shared fixed alphabet.
+        private static HuffmanTree create(int[] lengths, boolean allowEmpty, String description) throws IOException {
+            HuffmanTree tree = new HuffmanTree(lengths.length, description);
+            tree.rebuild(lengths, allowEmpty);
+            return tree;
         }
 
-        /// Builds and validates a canonical Huffman tree.
-        private static HuffmanTree create(int[] lengths, boolean allowEmpty, String description) throws IOException {
-            int[] counts = new int[16];
+        /// Validates lengths and replaces the active nodes without allocating additional arrays.
+        private void rebuild(int[] lengths, boolean allowEmpty) throws IOException {
+            Arrays.fill(counts, 0);
             int nonZeroCount = 0;
-            int maximumLength = 0;
+            maximumLength = 0;
             for (int length : lengths) {
-                if (length < 0 || length > 15) {
-                    throw new IOException(description + " code length is out of range");
-                }
+                if (length < 0 || length > 15) throw new IOException(description + " code length is out of range");
                 if (length != 0) {
                     counts[length]++;
                     nonZeroCount++;
                     maximumLength = Math.max(maximumLength, length);
                 }
             }
+            initializeNode(0);
             if (nonZeroCount == 0) {
-                if (!allowEmpty) {
-                    throw new IOException(description + " tree is empty");
-                }
-                return empty(description);
+                if (!allowEmpty) throw new IOException(description + " tree is empty");
+                Arrays.fill(fastLookup, INVALID_LOOKUP);
+                return;
             }
-
             int remainingCodes = 1;
             for (int length = 1; length <= 15; length++) {
                 remainingCodes = (remainingCodes << 1) - counts[length];
-                if (remainingCodes < 0) {
-                    throw new IOException(description + " tree is oversubscribed");
-                }
+                if (remainingCodes < 0) throw new IOException(description + " tree is oversubscribed");
             }
             if (remainingCodes != 0 && !(nonZeroCount == 1 && maximumLength == 1)) {
                 throw new IOException(description + " tree is incomplete");
             }
-
-            int[] nextCodes = new int[16];
             int code = 0;
             for (int length = 1; length <= 15; length++) {
                 code = (code + counts[length - 1]) << 1;
                 nextCodes[length] = code;
             }
-
-            int capacity = 1 + nonZeroCount * maximumLength;
-            int[] zeroChildren = new int[capacity];
-            int[] oneChildren = new int[capacity];
-            int[] symbols = new int[capacity];
-            Arrays.fill(zeroChildren, -1);
-            Arrays.fill(oneChildren, -1);
-            Arrays.fill(symbols, -1);
             int nodeCount = 1;
-
             for (int symbol = 0; symbol < lengths.length; symbol++) {
                 int length = lengths[symbol];
-                if (length == 0) {
-                    continue;
-                }
+                if (length == 0) continue;
                 int symbolCode = nextCodes[length]++;
                 int node = 0;
                 for (int depth = 0; depth < length; depth++) {
-                    if (symbols[node] >= 0) {
-                        throw new IOException(description + " tree has a prefix collision");
-                    }
                     int bit = symbolCode >>> (length - depth - 1) & 1;
                     int child = bit == 0 ? zeroChildren[node] : oneChildren[node];
                     if (child < 0) {
                         child = nodeCount++;
-                        if (bit == 0) {
-                            zeroChildren[node] = child;
-                        } else {
-                            oneChildren[node] = child;
-                        }
+                        initializeNode(child);
+                        if (bit == 0) zeroChildren[node] = child;
+                        else oneChildren[node] = child;
                     }
                     node = child;
                 }
-                if (symbols[node] >= 0 || zeroChildren[node] >= 0 || oneChildren[node] >= 0) {
-                    throw new IOException(description + " tree has a duplicate code");
-                }
                 symbols[node] = symbol;
             }
-            return new HuffmanTree(
-                    Arrays.copyOf(zeroChildren, nodeCount),
-                    Arrays.copyOf(oneChildren, nodeCount),
-                    Arrays.copyOf(symbols, nodeCount),
-                    maximumLength,
-                    description
-            );
+            rebuildFastLookup();
         }
 
-        /// Creates an empty tree that rejects every attempted symbol.
-        private static HuffmanTree empty(String description) {
-            return new HuffmanTree(new int[]{-1}, new int[]{-1}, new int[]{-1}, 0, description);
+        /// Clears one node before it becomes reachable from the current root.
+        private void initializeNode(int node) {
+            zeroChildren[node] = -1;
+            oneChildren[node] = -1;
+            symbols[node] = -1;
         }
 
-        /// Decodes one symbol from the transactional bit input.
-        private int decode(
-                BitInput input,
-                ByteBuffer source,
-                boolean endOfInput,
-                Format format
-        ) throws IOException {
-            int available = input.availableBitCount();
-            if (available < FAST_LOOKUP_BITS) {
-                int prefix = input.peekBits(available);
+        /// Replaces the root lookup table for the current canonical alphabet.
+        private void rebuildFastLookup() {
+            for (int prefix = 0; prefix < fastLookup.length; prefix++) {
                 int node = 0;
-                for (int depth = 0; depth < available; depth++) {
+                int entry = INVALID_LOOKUP;
+                for (int depth = 0; depth < FAST_LOOKUP_BITS; depth++) {
                     node = (prefix >>> depth & 1) == 0 ? zeroChildren[node] : oneChildren[node];
-                    if (node < 0) {
-                        throw new IOException("Invalid " + description + " Huffman code");
-                    }
-                    int symbol = symbols[node];
-                    if (symbol >= 0) {
-                        input.discardBits(depth + 1);
-                        return symbol;
+                    if (node < 0) break;
+                    if (symbols[node] >= 0) {
+                        entry = symbols[node] << 4 | depth + 1;
+                        break;
                     }
                 }
-                if (available >= maximumLength) {
-                    throw new IOException("Invalid " + description + " Huffman code");
-                }
+                if (entry == INVALID_LOOKUP && node >= 0) entry = -node - 1;
+                fastLookup[prefix] = entry;
+            }
+        }
 
-                // The complete buffered prefix is an internal node, so at least one more source bit is required.
-                input.appendRequiredByte(source, endOfInput, format);
-            }
-
-            int entry = fastLookup[input.peekBits(FAST_LOOKUP_BITS)];
-            if (entry == INVALID_LOOKUP) {
-                throw new IOException("Invalid " + description + " Huffman code");
-            }
-            if (entry >= 0) {
-                int length = entry & FAST_LENGTH_MASK;
-                input.discardBits(length);
-                return entry >>> 4;
-            }
-
-            int node = -entry - 1;
-            input.discardBits(FAST_LOOKUP_BITS);
-            for (int depth = FAST_LOOKUP_BITS; depth < maximumLength; depth++) {
-                int bit = input.readBits(1, source, endOfInput, format);
-                node = bit == 0 ? zeroChildren[node] : oneChildren[node];
-                if (node < 0) {
-                    throw new IOException("Invalid " + description + " Huffman code");
+        /// Decodes one symbol while retaining an incomplete long-code traversal.
+        private int decode(BitInput input, ByteBuffer source, boolean endOfInput, Format format) throws IOException {
+            if (maximumLength == 0) throw invalidCode();
+            int node = input.symbolNode;
+            if (node == 0) {
+                while (true) {
+                    int entry = fastLookup[(int) input.buffer & 255];
+                    if (entry >= 0 && (entry & FAST_LENGTH_MASK) <= input.bitCount) {
+                        input.discardBits(entry & FAST_LENGTH_MASK);
+                        return entry >>> 4;
+                    }
+                    if (input.bitCount >= FAST_LOOKUP_BITS) {
+                        if (entry == INVALID_LOOKUP) throw invalidCode();
+                        input.discardBits(FAST_LOOKUP_BITS);
+                        node = -entry - 1;
+                        break;
+                    }
+                    if (entry == INVALID_LOOKUP) {
+                        // A zero-extended table miss may still have a valid, incomplete buffered prefix.
+                        int prefixNode = 0;
+                        for (int depth = 0; depth < input.bitCount; depth++) {
+                            prefixNode = (input.buffer >>> depth & 1L) == 0
+                                    ? zeroChildren[prefixNode] : oneChildren[prefixNode];
+                            if (prefixNode < 0) throw invalidCode();
+                        }
+                    }
+                    input.appendRequiredByte(source, endOfInput, format);
                 }
-                int symbol = symbols[node];
-                if (symbol >= 0) {
-                    return symbol;
-                }
             }
-            throw new IOException("Invalid " + description + " Huffman code");
+            try {
+                while (symbols[node] < 0) {
+                    node = input.readBits(1, source, endOfInput, format) == 0
+                            ? zeroChildren[node] : oneChildren[node];
+                    if (node < 0) throw invalidCode();
+                }
+            } catch (NeedsInputException exception) {
+                input.symbolNode = node;
+                throw exception;
+            }
+            input.symbolNode = 0;
+            return symbols[node];
+        }
+
+        /// Creates the malformed-code diagnostic for this alphabet.
+        private IOException invalidCode() {
+            return new IOException("Invalid " + description + " Huffman code");
         }
     }
 
