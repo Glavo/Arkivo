@@ -13,6 +13,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
@@ -218,7 +219,7 @@ public final class ZipEntryNameDecoder {
             return null;
         }
 
-        return strictDecode(extraData, dataOffset + 5, dataSize - 5, java.nio.charset.StandardCharsets.UTF_8);
+        return strictDecode(extraData, dataOffset + 5, dataSize - 5, StandardCharsets.UTF_8);
     }
 
     /// Decodes raw bytes after authoritative Unicode metadata has been considered.
@@ -232,7 +233,7 @@ public final class ZipEntryNameDecoder {
             int versionMadeBy
     ) throws IOException {
         if ((generalPurposeFlags & UTF_8_FLAG) != 0) {
-            return strictDecode(rawValue, java.nio.charset.StandardCharsets.UTF_8);
+            return strictDecode(rawValue, StandardCharsets.UTF_8);
         }
 
         @Nullable Charset detectedCharset;
@@ -264,6 +265,18 @@ public final class ZipEntryNameDecoder {
             int length,
             Charset charset
     ) throws CharacterCodingException {
+        if (charset == StandardCharsets.ISO_8859_1) {
+            return new String(value, offset, length, StandardCharsets.ISO_8859_1);
+        }
+        if (charset == StandardCharsets.UTF_8 || charset == StandardCharsets.US_ASCII || charset == CP437) {
+            int end = offset + length;
+            int index = offset;
+            while (index < end && value[index] >= 0) index++;
+            if (index == end) {
+                // These built-in charsets map ASCII identically; no replacement decoding is needed.
+                return new String(value, offset, length, StandardCharsets.ISO_8859_1);
+            }
+        }
         return charset.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT)

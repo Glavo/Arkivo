@@ -150,6 +150,46 @@ final class ZipEntryNameValidationTest {
         }
     }
 
+    /// Indexed names normalize only separators and whole dot segments while preserving their encoded metadata.
+    ///
+    /// @param name the stored ZIP name
+    /// @param key the normalized filesystem key
+    @ParameterizedTest
+    @MethodSource("normalizedIndexedNames")
+    void normalizesIndexedPathComponents(String name, String key) throws IOException {
+        byte[] raw = name.getBytes(StandardCharsets.UTF_8);
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                new ReadOnlyByteArrayChannel(archive(UTF8_FLAG, List.of(raw))))) {
+            var path = fileSystem.getPath("/" + key);
+            var attributes = Files.readAttributes(path, ZipArkivoEntryAttributes.class);
+            assertEquals(name.replace('\\', '/'), attributes.path());
+            assertArrayEquals(raw, attributes.rawPath());
+            assertEquals(name.endsWith("/") || name.endsWith("\\"), attributes.isDirectory());
+        }
+    }
+
+    /// Names cover normalization beginning at the first, middle, and last component.
+    private static Stream<Arguments> normalizedIndexedNames() {
+        return Stream.of(
+                Arguments.of("plain.txt", "plain.txt"),
+                Arguments.of("a/b/c.txt", "a/b/c.txt"),
+                Arguments.of("./a", "a"),
+                Arguments.of(".\\a", "a"),
+                Arguments.of("a/./b", "a/b"),
+                Arguments.of("a//b", "a/b"),
+                Arguments.of("a\\/b", "a/b"),
+                Arguments.of("a/\\b", "a/b"),
+                Arguments.of("a\\b\\c", "a/b/c"),
+                Arguments.of("././/a/.\\b//./c", "a/b/c"),
+                Arguments.of("a/.", "a"),
+                Arguments.of("a/./", "a"),
+                Arguments.of("a//", "a"),
+                Arguments.of("a\\", "a"),
+                Arguments.of(".hidden/.../..file", ".hidden/.../..file"),
+                Arguments.of("目录//./文件.txt", "目录/文件.txt")
+        );
+    }
+
     /// Verifies exact, normalized, mixed-separator, and file-parent conflicts are rejected while indexing.
     ///
     /// @param description the case name used in parameterized-test output
@@ -182,6 +222,10 @@ final class ZipEntryNameValidationTest {
                 Arguments.of("absolute", bytes("/evil.txt"), 0, "ZIP entry path must be relative"),
                 Arguments.of("drive root", bytes("C:/evil.txt"), 0, "ZIP entry path must be relative"),
                 Arguments.of("backslash parent segment", bytes("..\\evil.txt"), 0,
+                        "ZIP entry path must not contain .."),
+                Arguments.of("nested parent segment", bytes("safe/path/../evil.txt"), 0,
+                        "ZIP entry path must not contain .."),
+                Arguments.of("parent after normalized prefix", bytes("safe//./path\\..\\evil.txt"), 0,
                         "ZIP entry path must not contain ..")
         );
     }

@@ -8,8 +8,12 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -136,6 +140,72 @@ public final class ZipEntryNameDecoderTest {
         ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(bytes -> null);
 
         assertEquals("München.txt", decoder.decodePath(rawPath, 0, new byte[0]));
+    }
+
+    /// ASCII metadata still consults the detector and obeys non-ASCII-compatible charsets.
+    @Test
+    public void asciiBytesRespectSelectedCharset() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(bytes -> {
+            calls.incrementAndGet();
+            return StandardCharsets.UTF_16BE;
+        });
+        byte[] raw = {0, 'A', 0, 'B'};
+        assertEquals("AB", decoder.decodePath(raw, 0, new byte[0]));
+        assertEquals("AB", decoder.decodeComment(raw, 0, new byte[0]));
+        assertEquals(2, calls.get());
+        decoder = new ZipEntryNameDecoder(bytes -> {
+            calls.incrementAndGet();
+            return null;
+        });
+        assertEquals("entry.txt", decoder.decodePath("entry.txt".getBytes(StandardCharsets.US_ASCII), 0, new byte[0]));
+        assertEquals(3, calls.get());
+    }
+
+    /// Built-in single-byte mappings and UTF-8 agree with strict charset decoding for every byte value.
+    @Test
+    public void byteValuesMatchStrictDecoding() throws Exception {
+        for (Charset charset : new Charset[]{StandardCharsets.UTF_8, StandardCharsets.US_ASCII,
+                StandardCharsets.ISO_8859_1, Charset.forName("IBM437")}) {
+            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(bytes -> charset);
+            for (int value = 0; value < 256; value++) {
+                byte[] raw = {'a', (byte) value, 'z'};
+                String expected;
+                try {
+                    expected = charset.newDecoder().decode(ByteBuffer.wrap(raw)).toString();
+                } catch (CharacterCodingException exception) {
+                    assertThrows(CharacterCodingException.class, () -> decoder.decodePath(raw, 0, new byte[0]));
+                    assertThrows(IOException.class, () -> decoder.decodeComment(raw, 0, new byte[0]));
+                    continue;
+                }
+                assertEquals(expected, decoder.decodePath(raw, 0, new byte[0]));
+                assertEquals(expected, decoder.decodeComment(raw, 0, new byte[0]));
+            }
+        }
+    }
+
+    /// An ASCII prefix does not hide overlong sequences, surrogate encodings, or truncated UTF-8 tails.
+    @Test
+    public void malformedUtf8AfterAsciiPrefix() {
+        ZipEntryNameDecoder decoder = decoderWithUnusedDetector();
+        byte[] prefix = new byte[257];
+        Arrays.fill(prefix, (byte) 'a');
+        for (byte[] suffix : new byte[][]{{(byte) 0xc0, (byte) 0x80}, {(byte) 0xed, (byte) 0xa0, (byte) 0x80},
+                {(byte) 0xf4, (byte) 0x90, (byte) 0x80, (byte) 0x80}, {(byte) 0xe2, (byte) 0x82}}) {
+            byte[] raw = concatenate(prefix, suffix);
+            assertThrows(CharacterCodingException.class,
+                    () -> decoder.decodePath(raw, ZipEntryNameDecoder.UTF_8_FLAG, new byte[0]));
+        }
+    }
+
+    /// ASCII Unicode payloads use only the selected extra-field range and still override the legacy bytes.
+    @Test
+    public void asciiUnicodePayloadUsesExactRange() throws Exception {
+        byte[] raw = {(byte) 0xff, (byte) 0x80};
+        byte[] extra = concatenate(
+                unicodeExtraField(ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID, raw, "ascii.txt"),
+                new byte[]{(byte) 0xff, (byte) 0xff, 1, 0, (byte) 0xff});
+        assertEquals("ascii.txt", decoderWithUnusedDetector().decodePath(raw, ZipEntryNameDecoder.UTF_8_FLAG, extra));
     }
 
     /// Returns a decoder whose detector fails if authoritative Unicode handling delegates to it.

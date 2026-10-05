@@ -998,8 +998,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         localHeaderOffset,
                         "local header offset"
                 );
+                FileTime dosFallback = ZipExtraFieldMetadata.dosTime(lastModifiedDate, lastModifiedTime);
                 ZipExtraFieldMetadata.EntryMetadata entryMetadata = ZipExtraFieldMetadata.resolve(
-                        new byte[0], extraData, ZipExtraFieldMetadata.dosTime(lastModifiedDate, lastModifiedTime));
+                        new byte[0], extraData, dosFallback);
                 ZipEntryRecord entry = new ZipEntryRecord(
                         key,
                         rawPath,
@@ -1022,7 +1023,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         entryMetadata,
                         directory,
                         (flags & DATA_DESCRIPTOR_FLAG) != 0,
-                        ZipExtraFieldMetadata.dosTime(lastModifiedDate, lastModifiedTime)
+                        dosFallback
                 );
                 if (entries.put(key, entry) != null) {
                     throw new IOException("Duplicate ZIP entry path: " + decodedPath);
@@ -1726,21 +1727,29 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 || path.length() >= 2 && path.charAt(1) == ':') {
             throw new IOException("ZIP entry path must be relative");
         }
-        ArrayList<String> names = new ArrayList<>();
+        @Nullable StringBuilder normalized = null;
         int start = 0;
         while (start <= path.length()) {
             int end = nextEntryPathSeparator(path, start);
-
-            String name = path.substring(start, end);
-            if (!name.isEmpty() && !".".equals(name)) {
-                if ("..".equals(name)) {
-                    throw new IOException("ZIP entry path must not contain ..");
+            int length = end - start;
+            if (length == 2 && path.charAt(start) == '.' && path.charAt(start + 1) == '.') {
+                throw new IOException("ZIP entry path must not contain ..");
+            }
+            if (length == 0 || length == 1 && path.charAt(start) == '.') {
+                if (normalized == null) {
+                    normalized = new StringBuilder(path.length());
+                    if (start > 0) normalized.append(path, 0, start - 1);
                 }
-                names.add(name);
+            } else if (normalized != null) {
+                if (!normalized.isEmpty()) normalized.append('/');
+                normalized.append(path, start, end);
+            }
+            if (normalized == null && end < path.length() && path.charAt(end) == '\\') {
+                normalized = new StringBuilder(path.length()).append(path, 0, end);
             }
             start = end + 1;
         }
-        return String.join("/", names);
+        return normalized != null ? normalized.toString() : path;
     }
 
     /// Returns the index of the next entry path separator, or the path length.
@@ -1814,9 +1823,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// Reads a byte array range from a buffer without changing its position.
     private static byte[] readBytes(ByteBuffer buffer, int offset, int length) {
         byte[] bytes = new byte[length];
-        ByteBuffer duplicate = buffer.duplicate();
-        duplicate.position(offset);
-        duplicate.get(bytes);
+        buffer.get(offset, bytes);
         return bytes;
     }
 
