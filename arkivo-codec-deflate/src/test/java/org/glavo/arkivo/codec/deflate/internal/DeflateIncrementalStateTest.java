@@ -8,6 +8,8 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -48,11 +50,15 @@ final class DeflateIncrementalStateTest {
     }
 
     /// Fifteen-bit symbols retain their traversal node when their input ends after any byte.
-    @Test
-    void resumesLongCanonicalCodesAndRejectsTruncation() throws Exception {
-        byte[] body = new byte[75];
-        for (int i = 0; i < body.length; i++) body[i] = (byte) (i % 15);
-        byte[] compressed = longCodes(body);
+    ///
+    /// @param minimumLength the shortest code, selecting dense or byte-wide alphabets
+    @ParameterizedTest
+    @ValueSource(ints = {1, 7})
+    void resumesLongCanonicalCodesAndRejectsTruncation(int minimumLength) throws Exception {
+        int symbols = (1 << minimumLength) - 1 + 15 - minimumLength;
+        byte[] body = new byte[symbols * 5];
+        for (int i = 0; i < body.length; i++) body[i] = (byte) (i % symbols);
+        byte[] compressed = longCodes(body, minimumLength);
         Inflater reference = new Inflater(true);
         try {
             reference.setInput(compressed);
@@ -101,6 +107,51 @@ final class DeflateIncrementalStateTest {
                 assertEquals(4, source.remaining());
                 assertArrayEquals(body, Arrays.copyOf(target.array(), target.position()));
                 assertSame(original, workspace.get(decoder));
+            }
+        }
+    }
+
+    /// Short end codes stop at every final-byte alignment without consuming a following record.
+    ///
+    /// @param maximumLength the maximum code length in the test alphabet
+    @ParameterizedTest
+    @ValueSource(ints = {1, 8})
+    void shortCodesPreserveEveryTrailingByteAlignment(int maximumLength) throws Exception {
+        int[] lengths = new int[257];
+        if (maximumLength == 1) {
+            lengths['a'] = lengths[256] = 1;
+        } else {
+            Arrays.fill(lengths, 0, 126, 7);
+            lengths[126] = lengths[127] = 8;
+            lengths[256] = 7;
+        }
+        try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
+            for (int size = 0; size < 16; size++) {
+                byte[] body = new byte[size];
+                Arrays.fill(body, (byte) 'a');
+                byte[] compressed = literalCodes(body, lengths);
+                for (int shape = 0; shape < 3; shape++) {
+                    decoder.reset();
+                    ByteBuffer storage = shape == 1
+                            ? ByteBuffer.allocateDirect(compressed.length + 8)
+                            : ByteBuffer.allocate(compressed.length + 8);
+                    storage.position(3).put(compressed).put(new byte[]{1, 2, 3, 4, 5}).flip().position(3);
+                    ByteBuffer source = shape == 2 ? storage.asReadOnlyBuffer() : storage;
+                    int originalLimit = source.limit();
+                    var decoded = new ByteArrayOutputStream();
+                    ByteBuffer target = ByteBuffer.allocate(1);
+                    CodecOutcome outcome;
+                    do {
+                        target.clear();
+                        outcome = decoder.finish(source, target);
+                        if (target.position() != 0) decoded.write(target.get(0));
+                        assertTrue(outcome == CodecOutcome.FINISHED || outcome == CodecOutcome.NEEDS_OUTPUT);
+                    } while (outcome != CodecOutcome.FINISHED);
+                    assertArrayEquals(body, decoded.toByteArray());
+                    assertEquals(originalLimit, source.limit());
+                    assertEquals(compressed.length + 3, source.position());
+                    assertEquals(5, source.remaining());
+                }
             }
         }
     }
@@ -176,7 +227,7 @@ final class DeflateIncrementalStateTest {
         try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
             for (int chunk : new int[]{1, 7, empty.length}) {
                 decoder.reset();
-                assertArrayEquals(body, decode(decoder, longCodes(body), chunk, 0, 7));
+                assertArrayEquals(body, decode(decoder, longCodes(body, 1), chunk, 0, 7));
                 decoder.reset();
                 assertArrayEquals(new byte[0], decode(decoder, empty, chunk, 0, 7));
                 decoder.reset();
@@ -247,11 +298,13 @@ final class DeflateIncrementalStateTest {
         }
     }
 
-    /// Builds a complete comb-shaped literal alphabet with code lengths from one through fifteen.
-    private static byte[] longCodes(byte[] body) {
+    /// Splits one leaf of a complete alphabet into a comb ending in two fifteen-bit codes.
+    private static byte[] longCodes(byte[] body, int minimumLength) {
         int[] lengths = new int[257];
-        for (int symbol = 0; symbol < 14; symbol++) lengths[symbol] = symbol + 1;
-        lengths[14] = lengths[256] = 15;
+        int symbol = (1 << minimumLength) - 1;
+        Arrays.fill(lengths, 0, symbol, minimumLength);
+        for (int length = minimumLength + 1; length < 15; length++) lengths[symbol++] = length;
+        lengths[symbol] = lengths[256] = 15;
         return literalCodes(body, lengths);
     }
 

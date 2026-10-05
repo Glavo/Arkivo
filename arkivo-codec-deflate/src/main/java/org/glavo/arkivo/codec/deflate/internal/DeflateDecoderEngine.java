@@ -293,6 +293,10 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 // Consecutive literals do not need to re-enter the block-header and match grammar.
                 HuffmanTree tree = Objects.requireNonNull(literalLengthTree);
                 try {
+                    if (tree.minimumLength >= HuffmanTree.FAST_LOOKUP_BITS - 1) {
+                        decodeWideLiterals(tree, source, target, endOfInput);
+                        continue;
+                    }
                     while (target.hasRemaining()) {
                         int symbol = tree.decode(bits, source, endOfInput, format);
                         if (symbol >= END_OF_BLOCK_SYMBOL) {
@@ -318,6 +322,20 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 return CodecOutcome.FINISHED;
             }
             target.put((byte) value);
+        }
+    }
+
+    /// Decodes byte-wide literals without repeating the alphabet selection for every symbol.
+    private void decodeWideLiterals(HuffmanTree tree, ByteBuffer source, ByteBuffer target, boolean endOfInput)
+            throws IOException {
+        while (target.hasRemaining()) {
+            int symbol = tree.decodeWide(bits, source, endOfInput, format);
+            if (symbol >= END_OF_BLOCK_SYMBOL) {
+                acceptHuffmanBoundary(symbol);
+                break;
+            }
+            recordDecodedByte(symbol);
+            target.put((byte) symbol);
         }
     }
 
@@ -778,6 +796,9 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         /// The maximum valid code length, or zero for an empty tree.
         private int maximumLength;
 
+        /// The minimum valid code length, or zero for an empty tree.
+        private int minimumLength;
+
         /// Reserves enough nodes for a complete binary alphabet or a single one-bit code.
         private HuffmanTree(int alphabetSize, String description) {
             int capacity = Math.max(2, alphabetSize * 2);
@@ -799,16 +820,19 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
             Arrays.fill(counts, 0);
             int nonZeroCount = 0;
             maximumLength = 0;
+            minimumLength = 15;
             for (int length : lengths) {
                 if (length < 0 || length > 15) throw new IOException(description + " code length is out of range");
                 if (length != 0) {
                     counts[length]++;
                     nonZeroCount++;
                     maximumLength = Math.max(maximumLength, length);
+                    minimumLength = Math.min(minimumLength, length);
                 }
             }
             Arrays.fill(fastLookup, INVALID_LOOKUP);
             if (nonZeroCount == 0) {
+                minimumLength = 0;
                 if (!allowEmpty) throw new IOException(description + " tree is empty");
                 return;
             }
@@ -867,6 +891,27 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
             zeroChildren[node] = -1;
             oneChildren[node] = -1;
             symbols[node] = -1;
+        }
+
+        /// Uses one root lookup for byte-wide alphabets, consuming lookahead only when needed.
+        private int decodeWide(BitInput input, ByteBuffer source, boolean endOfInput, Format format) throws IOException {
+            if (input.symbolNode == 0 && source.hasRemaining()) {
+                int position = source.position();
+                long prefix = input.buffer | Byte.toUnsignedLong(source.get(position)) << input.bitCount;
+                int entry = fastLookup[(int) prefix & FAST_LOOKUP_MASK];
+                if (entry >= 0) {
+                    int length = entry & FAST_LENGTH_MASK;
+                    if (length > input.bitCount) {
+                        // Lookahead is consumed only when the selected symbol actually needs it.
+                        source.position(position + 1);
+                        input.buffer = prefix;
+                        input.bitCount += Byte.SIZE;
+                    }
+                    input.discardBits(length);
+                    return entry >>> 4;
+                }
+            }
+            return decode(input, source, endOfInput, format);
         }
 
         /// Decodes one symbol while retaining an incomplete long-code traversal.

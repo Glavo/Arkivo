@@ -47,7 +47,7 @@ public class DeflateReadBenchmark {
     public String api = "arkivo";
 
     /// The match or block-header workload.
-    @Param({"blocks", "short-distance"})
+    @Param({"blocks", "skewed-literals", "short-distance"})
     public String profile = "blocks";
 
     /// Compressed bytes exposed to the decoder at each input boundary.
@@ -73,28 +73,34 @@ public class DeflateReadBenchmark {
     @Setup
     public void setup() throws IOException, DataFormatException {
         if (!api.equals("arkivo") && !api.equals("jdk")) throw new IllegalArgumentException(api);
-        if (!profile.equals("blocks") && !profile.equals("short-distance")) {
+        if (!profile.equals("blocks") && !profile.equals("skewed-literals") && !profile.equals("short-distance")) {
             throw new IllegalArgumentException(profile);
         }
         if (chunk <= 0) throw new IllegalArgumentException("chunk must be positive");
+        boolean literalOnly = !profile.equals("short-distance");
         byte[] body = new byte[SIZE];
         if (profile.equals("blocks")) {
             new Random(42).nextBytes(body);
             for (int i = 0; i < body.length; i++) body[i] &= 15;
+        } else if (profile.equals("skewed-literals")) {
+            new Random(42).nextBytes(body);
+            for (int i = 0; i < body.length; i++) {
+                if ((i & 31) != 0) body[i] = 'a';
+            }
         } else {
             Arrays.fill(body, 0, SIZE / 2, (byte) 'A');
             for (int i = SIZE / 2; i < SIZE; i++) body[i] = (byte) ('A' + i % 3);
         }
         Deflater encoder = new Deflater(6, true);
         try {
-            if (profile.equals("blocks")) encoder.setStrategy(Deflater.HUFFMAN_ONLY);
+            if (literalOnly) encoder.setStrategy(Deflater.HUFFMAN_ONLY);
             var bytes = new ByteArrayOutputStream();
             byte[] buffer = new byte[8192];
             for (int position = 0; position < SIZE; position += 4096) {
                 encoder.setInput(body, position, Math.min(4096, SIZE - position));
                 while (true) {
                     int written = encoder.deflate(buffer, 0, buffer.length,
-                            profile.equals("blocks") ? Deflater.FULL_FLUSH : Deflater.NO_FLUSH);
+                            literalOnly ? Deflater.FULL_FLUSH : Deflater.NO_FLUSH);
                     bytes.write(buffer, 0, written);
                     if (encoder.needsInput() && written < buffer.length) break;
                 }
