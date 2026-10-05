@@ -14,6 +14,7 @@ module org.glavo.arkivo.codec {
 
     exports org.glavo.arkivo.codec;
     exports org.glavo.arkivo.codec.internal to
+            org.glavo.arkivo.archive.zip,
             org.glavo.arkivo.codec.bzip2,
             org.glavo.arkivo.codec.compress,
             org.glavo.arkivo.codec.deflate,

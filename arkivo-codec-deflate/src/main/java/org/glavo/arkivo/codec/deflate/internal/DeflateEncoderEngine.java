@@ -13,9 +13,7 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.Objects;
-import java.util.PriorityQueue;
 
 /// Incrementally encodes the shared Deflate bitstream grammar without retaining caller-owned buffers.
 ///
@@ -131,6 +129,19 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
     /// Ordered merged weights used to calculate an allocation-free Huffman cost lower bound.
     private final long[] huffmanCostMerged = new long[286];
+
+    /// Scratch storage for deterministic canonical-tree construction.
+    private final HuffmanWorkspace huffmanWorkspace = new HuffmanWorkspace();
+    /// Reusable literal/length codes for the current block.
+    private final HuffmanCode literalLengthCode = new HuffmanCode(286);
+    /// Reusable distance codes for the current block.
+    private final HuffmanCode distanceCode = new HuffmanCode(32);
+    /// Reusable code-length codes for the current block.
+    private final HuffmanCode codeLengthCode = new HuffmanCode(19);
+    /// Concatenated data-tree code lengths.
+    private final int[] combinedLengths = new int[318];
+    /// Reusable run-length encoding of the data-tree lengths.
+    private final RunLengthEncoding runLengths = new RunLengthEncoding(318);
 
     /// Current encoder lifecycle state.
     private State state = State.ACTIVE;
@@ -528,19 +539,15 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
     /// Creates the dynamic trees and run-length encoded tree description for the current token stream.
     private DynamicPlan createDynamicPlan() {
-        HuffmanCode literalLengthCode = HuffmanCode.create(
-                literalLengthFrequencies,
-                MAXIMUM_DATA_CODE_LENGTH
-        );
-        HuffmanCode distanceCode = HuffmanCode.create(distanceFrequencies, MAXIMUM_DATA_CODE_LENGTH);
+        huffmanWorkspace.build(literalLengthFrequencies, MAXIMUM_DATA_CODE_LENGTH, literalLengthCode);
+        huffmanWorkspace.build(distanceFrequencies, MAXIMUM_DATA_CODE_LENGTH, distanceCode);
         int literalLengthCount = Math.max(257, lastNonZero(literalLengthCode.lengths()) + 1);
         int distanceCount = Math.max(1, lastNonZero(distanceCode.lengths()) + 1);
-        int[] combinedLengths = new int[literalLengthCount + distanceCount];
         System.arraycopy(literalLengthCode.lengths(), 0, combinedLengths, 0, literalLengthCount);
         System.arraycopy(distanceCode.lengths(), 0, combinedLengths, literalLengthCount, distanceCount);
 
-        RunLengthEncoding runLengths = RunLengthEncoding.create(combinedLengths);
-        HuffmanCode codeLengthCode = HuffmanCode.create(runLengths.frequencies(), MAXIMUM_CODE_LENGTH);
+        runLengths.encode(combinedLengths, literalLengthCount + distanceCount);
+        huffmanWorkspace.build(runLengths.frequencies(), MAXIMUM_CODE_LENGTH, codeLengthCode);
         int codeLengthCount = 4;
         for (int index = CODE_LENGTH_ORDER.length - 1; index >= 4; index--) {
             if (codeLengthCode.length(CODE_LENGTH_ORDER[index]) != 0) {
@@ -939,28 +946,35 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         }
     }
 
-    /// Stores one generated canonical Huffman tree.
+    /// Builds canonical trees using encoder-owned primitive storage.
     @NotNullByDefault
-    private static final class HuffmanCode implements SymbolCode {
-        /// Bit lengths indexed by symbol.
-        private final int[] lengths;
-
-        /// Reversed canonical codes indexed by symbol.
-        private final int[] codes;
-
-        /// Creates one immutable code table from generated arrays.
-        private HuffmanCode(int[] lengths, int[] codes) {
-            this.lengths = lengths;
-            this.codes = codes;
-        }
+    static final class HuffmanWorkspace {
+        /// Node weights, including internal tree nodes.
+        private final long[] weights = new long[572];
+        /// Lowest symbol under each node, used to resolve equal weights.
+        private final int[] minimumSymbols = new int[572];
+        /// Parent links for each node.
+        private final int[] parents = new int[572];
+        /// Primitive minimum heap of active node indices.
+        private final int[] heap = new int[572];
+        /// The number of nodes currently in the heap.
+        private int heapSize;
+        /// Symbols ordered by weight and symbol index.
+        private final int[] orderedSymbols = new int[286];
+        /// Number of codes at each permitted length.
+        private final int[] lengthCounts = new int[16];
+        /// Next canonical code for each length.
+        private final int[] nextCodes = new int[16];
 
         /// Builds a length-limited canonical tree from symbol frequencies.
-        private static HuffmanCode create(int[] frequencies, int maximumLength) {
+        void build(int[] frequencies, int maximumLength, HuffmanCode result) {
             int symbolCount = frequencies.length;
-            long[] weights = new long[symbolCount * 2];
-            int[] minimumSymbols = new int[symbolCount * 2];
-            int[] parents = new int[symbolCount * 2];
-            Arrays.fill(parents, -1);
+            Arrays.fill(weights, 0, symbolCount * 2, 0L);
+            Arrays.fill(parents, 0, symbolCount * 2, -1);
+            Arrays.fill(lengthCounts, 0);
+            Arrays.fill(result.lengths, 0);
+            Arrays.fill(result.codes, 0);
+            heapSize = 0;
             int activeSymbols = 0;
             for (int symbol = 0; symbol < symbolCount; symbol++) {
                 if (frequencies[symbol] > 0) {
@@ -977,28 +991,23 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
                 }
             }
 
-            Comparator<Integer> order = Comparator
-                    .comparingLong((Integer node) -> weights[node])
-                    .thenComparingInt(node -> minimumSymbols[node]);
-            PriorityQueue<Integer> queue = new PriorityQueue<>(order);
             for (int symbol = 0; symbol < symbolCount; symbol++) {
                 if (weights[symbol] != 0L) {
-                    queue.add(symbol);
+                    add(symbol);
                 }
             }
             int nextNode = symbolCount;
-            while (queue.size() > 1) {
-                int left = queue.remove();
-                int right = queue.remove();
+            while (heapSize > 1) {
+                int left = remove();
+                int right = remove();
                 int parent = nextNode++;
                 weights[parent] = weights[left] + weights[right];
                 minimumSymbols[parent] = Math.min(minimumSymbols[left], minimumSymbols[right]);
                 parents[left] = parent;
                 parents[right] = parent;
-                queue.add(parent);
+                add(parent);
             }
 
-            int[] lengthCounts = new int[maximumLength + 1];
             for (int symbol = 0; symbol < symbolCount; symbol++) {
                 if (weights[symbol] == 0L) {
                     continue;
@@ -1010,7 +1019,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
                 lengthCounts[Math.min(length, maximumLength)]++;
             }
 
-            int remainingCodes = remainingCodeSlots(lengthCounts, maximumLength);
+            int remainingCodes = HuffmanCode.remainingCodeSlots(lengthCounts, maximumLength);
             while (remainingCodes < 0) {
                 int length = maximumLength - 1;
                 while (length > 0 && lengthCounts[length] == 0) {
@@ -1028,41 +1037,85 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
                 throw new AssertionError("Length-limited Huffman tree is incomplete");
             }
 
-            Integer[] orderedSymbols = new Integer[activeSymbols];
-            int orderedIndex = 0;
+            heapSize = 0;
             for (int symbol = 0; symbol < symbolCount; symbol++) {
-                if (weights[symbol] != 0L) {
-                    orderedSymbols[orderedIndex++] = symbol;
-                }
+                if (weights[symbol] != 0L) add(symbol);
             }
-            Arrays.sort(orderedSymbols, Comparator
-                    .comparingLong((Integer symbol) -> weights[symbol])
-                    .thenComparingInt(Integer::intValue));
-            int[] lengths = new int[symbolCount];
-            orderedIndex = 0;
+            for (int i = 0; i < activeSymbols; i++) orderedSymbols[i] = remove();
+            int[] lengths = result.lengths;
+            int orderedIndex = 0;
             for (int length = maximumLength; length >= 1; length--) {
                 for (int count = lengthCounts[length]; count > 0; count--) {
                     lengths[orderedSymbols[orderedIndex++]] = length;
                 }
             }
-            if (orderedIndex != orderedSymbols.length) {
+            if (orderedIndex != activeSymbols) {
                 throw new AssertionError("Huffman length assignment is incomplete");
             }
 
-            int[] nextCodes = new int[maximumLength + 1];
             int code = 0;
             for (int length = 1; length <= maximumLength; length++) {
                 code = (code + lengthCounts[length - 1]) << 1;
                 nextCodes[length] = code;
             }
-            int[] codes = new int[symbolCount];
+            int[] codes = result.codes;
             for (int symbol = 0; symbol < symbolCount; symbol++) {
                 int length = lengths[symbol];
                 if (length != 0) {
                     codes[symbol] = reverseBits(nextCodes[length]++, length);
                 }
             }
-            return new HuffmanCode(lengths, codes);
+        }
+
+        /// Compares tree nodes with the same ordering as canonical construction.
+        private boolean less(int left, int right) {
+            return weights[left] < weights[right]
+                    || weights[left] == weights[right] && minimumSymbols[left] < minimumSymbols[right];
+        }
+
+        /// Inserts a node into the primitive minimum heap.
+        private void add(int node) {
+            int index = heapSize++;
+            while (index > 0) {
+                int parent = (index - 1) >>> 1;
+                if (!less(node, heap[parent])) break;
+                heap[index] = heap[parent];
+                index = parent;
+            }
+            heap[index] = node;
+        }
+
+        /// Removes the least node from the primitive minimum heap.
+        private int remove() {
+            int first = heap[0];
+            int replacement = heap[--heapSize];
+            int index = 0;
+            int half = heapSize >>> 1;
+            while (index < half) {
+                int child = index * 2 + 1;
+                if (child + 1 < heapSize && less(heap[child + 1], heap[child])) child++;
+                if (!less(heap[child], replacement)) break;
+                heap[index] = heap[child];
+                index = child;
+            }
+            heap[index] = replacement;
+            return first;
+        }
+    }
+
+    /// Stores one generated canonical Huffman tree.
+    @NotNullByDefault
+    static final class HuffmanCode implements SymbolCode {
+        /// Bit lengths indexed by symbol.
+        private final int[] lengths;
+
+        /// Reversed canonical codes indexed by symbol.
+        private final int[] codes;
+
+        /// Allocates a reusable code table for one alphabet.
+        HuffmanCode(int symbolCount) {
+            this.lengths = new int[symbolCount];
+            this.codes = new int[symbolCount];
         }
 
         /// Returns unused code slots at the maximum depth, or a negative oversubscription count.
@@ -1112,35 +1165,25 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         private final int[] frequencies;
 
         /// Number of populated encoded entries.
-        private final int count;
+        private int count;
 
-        /// Creates one run-length encoding from populated arrays.
-        private RunLengthEncoding(
-                int[] symbols,
-                int[] extraValues,
-                int[] extraBits,
-                int[] frequencies,
-                int count
-        ) {
-            this.symbols = symbols;
-            this.extraValues = extraValues;
-            this.extraBits = extraBits;
-            this.frequencies = frequencies;
-            this.count = count;
+        /// Allocates the reusable arrays for a combined data-tree alphabet.
+        private RunLengthEncoding(int capacity) {
+            symbols = new int[capacity];
+            extraValues = new int[capacity];
+            extraBits = new int[capacity];
+            frequencies = new int[19];
         }
 
         /// Encodes a concatenated literal/length and distance length table.
-        private static RunLengthEncoding create(int[] lengths) {
-            int[] symbols = new int[lengths.length];
-            int[] extraValues = new int[lengths.length];
-            int[] extraBits = new int[lengths.length];
-            int[] frequencies = new int[19];
-            int count = 0;
+        private void encode(int[] lengths, int lengthCount) {
+            Arrays.fill(frequencies, 0);
+            count = 0;
             int position = 0;
-            while (position < lengths.length) {
+            while (position < lengthCount) {
                 int value = lengths[position];
                 int runEnd = position + 1;
-                while (runEnd < lengths.length && lengths[runEnd] == value) {
+                while (runEnd < lengthCount && lengths[runEnd] == value) {
                     runEnd++;
                 }
                 int runLength = runEnd - position;
@@ -1172,7 +1215,6 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
                 }
                 position = runEnd;
             }
-            return new RunLengthEncoding(symbols, extraValues, extraBits, frequencies, count);
         }
 
         /// Adds one encoded length entry and returns the next insertion position.
@@ -1237,9 +1279,9 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             HuffmanCode literalLengthCode,
             HuffmanCode distanceCode,
             HuffmanCode codeLengthCode,
-            int @Unmodifiable [] runLengthSymbols,
-            int @Unmodifiable [] runLengthExtraValues,
-            int @Unmodifiable [] runLengthExtraBits,
+            int[] runLengthSymbols,
+            int[] runLengthExtraValues,
+            int[] runLengthExtraBits,
             int runLengthCount,
             int literalLengthCount,
             int distanceCount,

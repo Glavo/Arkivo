@@ -269,6 +269,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// Whether this file system is open.
     private boolean open = true;
 
+    /// The reusable Deflate workspace owned by this writing session.
+    private final ZipDeflateEncoderPool deflateEncoders = new ZipDeflateEncoderPool();
+
     /// Whether closure of the current output stream has completed.
     private boolean outputClosed;
 
@@ -927,10 +930,16 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     }
                     failure = closeRewriteStorage(failure);
                 } else {
+                    failure = closeExistingArchiveReader(failure);
                     failure = finishCommitOutput(failure);
                 }
                 failure = closeExistingArchiveReader(failure);
                 failure = closeArchiveSource(failure);
+                try {
+                    deflateEncoders.close();
+                } catch (RuntimeException | Error exception) {
+                    failure = appendFailure(failure, exception);
+                }
                 Runnable action = closeAction;
                 try {
                     if (action != null) {
@@ -957,6 +966,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 try {
                     copySurvivingLocalRecords();
                     writeCentralDirectory();
+                    throwFailure(closeExistingArchiveReader(null));
                 } catch (IOException | RuntimeException | Error exception) {
                     splitOutput.fail(exception);
                     throw exception;
@@ -1068,6 +1078,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Publishes an assembled archive through the configured commit target.
     private void publishAssembledArchive(ArkivoStoredContent assembledArchive) throws IOException {
+        // Cached source handles must be released before replacing the original file on Windows.
+        throwFailure(closeExistingArchiveReader(null));
         @Nullable Path sourcePath = archivePath;
         ArkivoCommitTarget target = config.commitTarget();
         if (target == null) {
@@ -1227,7 +1239,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// Closes the borrowed read-only archive view and returns the accumulated failure.
     private @Nullable Throwable closeExistingArchiveReader(@Nullable Throwable failure) {
         ZipArkivoReadOnlyFileSystemImpl reader = existingArchiveReader;
-        if (reader != null && reader.isOpen()) {
+        if (reader != null) {
             try {
                 reader.close();
             } catch (IOException | RuntimeException | Error exception) {
@@ -3964,10 +3976,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             this.aesOutput = entryAesOutput;
             @Nullable CompressingWritableByteChannel entryCompressingWritableByteChannel = null;
             if (metadata.method == DEFLATED_METHOD) {
-                entryCompressingWritableByteChannel = ZipCompressionFormats.newWritableByteChannel(
-                        "deflate",
-                        dataOutput
-                );
+                entryCompressingWritableByteChannel = deflateEncoders.open(dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else if (metadata.method == DEFLATE64_METHOD) {
                 entryCompressingWritableByteChannel = ZipCompressionFormats.newWritableByteChannel(

@@ -28,6 +28,10 @@ import java.util.Objects;
 /// or volume source must therefore remain byte-for-byte stable until the file system closes. Paths and
 /// `ZipArkivoEntryAttributes` are snapshots and do not observe external source changes. The common option's
 /// thread-safety strategy controls concurrent operations and the treatment of active entry resources during close.
+/// Directory enumeration validates central-directory metadata without loading every local header. Accessing complete
+/// entry attributes or content validates that entry's local header and storage range; a malformed local record may
+/// therefore be reported only when the corresponding entry is accessed. Successfully loaded local metadata is cached.
+/// Path-backed sessions may retain file handles until close, including while no entry stream is open.
 ///
 /// Path and seekable-channel updates preserve surviving local-record bytes while publishing a complete replacement
 /// archive. Existing entries, including one with an active replacement channel, expose their preceding state until

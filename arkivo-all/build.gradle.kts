@@ -56,6 +56,8 @@ dependencies {
     add("tier3TestImplementation", testFixtures(project()))
     add(benchmarkSourceSet.compileOnlyConfigurationName, "org.jetbrains:annotations:26.1.0")
     add(benchmarkSourceSet.implementationConfigurationName, "org.openjdk.jmh:jmh-core:1.37")
+    add(benchmarkSourceSet.implementationConfigurationName, "org.apache.commons:commons-compress:1.28.0")
+    add(benchmarkSourceSet.implementationConfigurationName, "org.tukaani:xz:1.12")
     add(
         benchmarkSourceSet.annotationProcessorConfigurationName,
         "org.openjdk.jmh:jmh-generator-annprocess:1.37"
@@ -496,6 +498,7 @@ val verifyModuleDescriptors by tasks.registering {
         val expectedQualifiedExports = mapOf(
             codecModule to mapOf(
                 "org.glavo.arkivo.codec.internal" to setOf(
+                    "org.glavo.arkivo.archive.zip",
                     "org.glavo.arkivo.codec.bzip2",
                     "org.glavo.arkivo.codec.compress",
                     "org.glavo.arkivo.codec.deflate",

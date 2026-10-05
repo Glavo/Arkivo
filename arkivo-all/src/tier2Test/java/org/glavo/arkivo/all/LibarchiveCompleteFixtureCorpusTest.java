@@ -25,6 +25,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -230,7 +231,7 @@ final class LibarchiveCompleteFixtureCorpusTest {
                     }
                 }
                 fileSystemOutcome = ProbeOutcome.SUCCESS;
-            } catch (IOException expectedRejection) {
+            } catch (IOException | UncheckedIOException expectedRejection) {
                 fileSystemOutcome = ProbeOutcome.REJECTED;
             } catch (UnsupportedOperationException expectedUnsupportedFeature) {
                 fileSystemOutcome = ProbeOutcome.UNSUPPORTED;

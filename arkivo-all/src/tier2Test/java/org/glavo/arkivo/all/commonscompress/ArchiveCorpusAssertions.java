@@ -11,6 +11,7 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -58,6 +59,9 @@ final class ArchiveCorpusAssertions {
                         body.crc32()
                 ));
             }
+        } catch (UncheckedIOException exception) {
+            // Files.walk wraps failures encountered after the root has been opened.
+            throw exception.getCause();
         }
         entries.sort(Comparator.comparing(EntryDigest::path));
         return List.copyOf(entries);

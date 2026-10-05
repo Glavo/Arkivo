@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.EOFException;
@@ -152,11 +153,106 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
     /// Whether the current BZip2 frame has reached its validated boundary.
     private boolean frameBoundaryPending;
 
-    /// Whether the current stream header has been parsed.
-    private boolean frameHeaderRead;
-
     /// Whether this decoder has closed.
     private boolean closed;
+
+    /// The next atomic parsing step.
+    private ParseState parseState = ParseState.HEADER;
+    /// The next stream-header byte to validate.
+    private int headerPosition;
+    /// The declared inverse-BWT starting position.
+    private int originalPointer;
+    /// The sixteen groups that contain used byte values.
+    private int usedGroups;
+    /// The next used-byte group to parse.
+    private int usedGroup;
+    /// The current byte alphabet.
+    private final byte[] usedBytes = new byte[256];
+    /// The current alphabet size excluding RUNA and RUNB.
+    private int usedByteCount;
+    /// The number of Huffman groups.
+    private int groupCount;
+    /// The number of declared selectors, including surplus selectors.
+    private int declaredSelectors;
+    /// The retained selector sequence.
+    private byte[] selectors = new byte[0];
+    /// The number of selectors usable by this block.
+    private int retainedSelectors;
+    /// The selector currently being parsed.
+    private int selectorPosition;
+    /// The unary MTF index currently being parsed.
+    private int selectorMtfPosition;
+    /// The selector MTF list.
+    private final byte[] selectorMtf = new byte[MAX_GROUP_COUNT];
+    /// The current Huffman group being constructed.
+    private int treeGroup;
+    /// The code length being adjusted.
+    private int currentLength;
+    /// The next alphabet symbol whose length is being parsed.
+    private int lengthPosition;
+    /// Code lengths for the current tree.
+    private int[] lengths = new int[0];
+    /// Validated trees for the current block.
+    private final @Nullable HuffmanTree[] trees = new HuffmanTree[MAX_GROUP_COUNT];
+    /// The byte MTF list for the current block.
+    private final byte[] moveToFront = new byte[256];
+    /// The post-BWT byte column.
+    private byte[] lastColumn = new byte[0];
+    /// The number of valid bytes in the post-BWT column.
+    private int columnLength;
+    /// Inverse-BWT links reused between blocks.
+    private int[] bwtNext = new int[0];
+    /// Inverse-BWT byte frequencies and prefix offsets.
+    private final int[] bwtCounts = new int[256];
+    /// The number of valid bytes in the decoded block buffer.
+    private int blockLength;
+    /// The next selector to use for Huffman data.
+    private int dataSelector;
+    /// The symbols remaining under the selected tree.
+    private int groupRemaining;
+    /// The selected data tree.
+    private @Nullable HuffmanTree currentTree;
+    /// The node of a partly read Huffman symbol.
+    private int symbolNode;
+    /// The accumulated RUNA/RUNB length.
+    private long runValue;
+    /// The weight of the next RUNA/RUNB digit.
+    private long runPower = 1L;
+
+    /// Atomic parser steps; a step advances only after its required bits are available.
+    @NotNullByDefault
+    private enum ParseState {
+        /// The four-byte stream header.
+        HEADER,
+        /// A block or end marker.
+        MARKER,
+        /// The combined stream CRC.
+        STREAM_CRC,
+        /// The block CRC.
+        BLOCK_CRC,
+        /// The randomized-block flag.
+        RANDOMIZED,
+        /// The inverse-BWT pointer.
+        POINTER,
+        /// The used-byte group mask.
+        GROUP_MASK,
+        /// A group's used-byte mask.
+        USED_BYTES,
+        /// The Huffman group count.
+        GROUP_COUNT,
+        /// The declared selector count.
+        SELECTOR_COUNT,
+        /// Unary selector MTF values.
+        SELECTORS,
+        /// The initial code length of one tree.
+        LENGTH_START,
+        /// A code-length continuation bit.
+        LENGTHS,
+        /// A code-length adjustment bit.
+        LENGTH_DELTA,
+        /// Huffman-coded block symbols.
+        SYMBOLS
+    }
 
     /// Creates an empty BZip2 decoder.
     public BZip2Decoder() {
@@ -210,12 +306,9 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
                 return CodecOutcome.FINISHED;
             }
 
-            boolean parsed = parseBufferedUnit(source, endOfInput, !frameHeaderRead);
+            boolean parsed = parseBufferedUnit(source, endOfInput);
             if (!parsed) {
                 return CodecOutcome.NEEDS_INPUT;
-            }
-            if (!frameHeaderRead) {
-                frameHeaderRead = true;
             }
         }
     }
@@ -227,7 +320,7 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
             throw new IllegalStateException("BZip2 decoder is closed");
         }
         blockSizeLimit = 0;
-        blockData = new byte[0];
+        blockLength = 0;
         blockPosition = 0;
         expectedBlockCrc = 0;
         blockCrc.reset();
@@ -240,7 +333,9 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
         randomRemaining = 0;
         blockActive = false;
         frameBoundaryPending = false;
-        frameHeaderRead = false;
+        parseState = ParseState.HEADER;
+        headerPosition = 0;
+        currentTree = null;
         bits.reset();
     }
 
@@ -249,6 +344,12 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
     public void close() {
         closed = true;
         blockData = new byte[0];
+        lastColumn = new byte[0];
+        bwtNext = new int[0];
+        selectors = new byte[0];
+        lengths = new int[0];
+        Arrays.fill(trees, null);
+        currentTree = null;
         bits.reset();
     }
 
@@ -258,7 +359,7 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
             repeatRemaining--;
             return recordDecodedByte(runByte);
         }
-        if (blockPosition >= blockData.length) {
+        if (blockPosition >= blockLength) {
             finishBlock();
             return -1;
         }
@@ -271,7 +372,7 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
             runLength = 1;
         }
         if (runLength == 4) {
-            if (blockPosition >= blockData.length) {
+            if (blockPosition >= blockLength) {
                 throw new IOException("Truncated BZip2 run-length sequence");
             }
             repeatRemaining = readBlockByte();
@@ -280,259 +381,281 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
         return recordDecodedByte(value);
     }
 
-    /// Transactionally parses one stream header, compressed block, or stream trailer.
-    private boolean parseBufferedUnit(
-            ByteBuffer source,
-            boolean endOfInput,
-            boolean header
-    ) throws IOException {
-        int appended = bits.append(source);
-        BitInput.Snapshot snapshot = bits.snapshot();
+    /// Resumes parsing without revisiting bytes consumed by earlier calls.
+    private boolean parseBufferedUnit(ByteBuffer source, boolean endOfInput) throws IOException {
         try {
-            if (header) {
-                readFrameHeader(bits.readBits(8));
-            } else {
-                openNextBlock();
+            while (!blockActive && !frameBoundaryPending) {
+                switch (parseState) {
+                    case HEADER -> {
+                        int value = bits.readBits(8, source);
+                        if (headerPosition < 3 && value != "BZh".charAt(headerPosition)) {
+                            throw new IOException("Invalid BZip2 stream header");
+                        }
+                        if (++headerPosition == 4) {
+                            int size = value - '0';
+                            if (size < 1 || size > 9) {
+                                throw new IOException("Invalid BZip2 block size: " + size);
+                            }
+                            blockSizeLimit = size * BLOCK_SIZE_UNIT;
+                            parseState = ParseState.MARKER;
+                        }
+                    }
+                    case MARKER -> {
+                        long marker = bits.readLong(48, source);
+                        if (marker == END_MAGIC) {
+                            parseState = ParseState.STREAM_CRC;
+                        } else if (marker == BLOCK_MAGIC) {
+                            parseState = ParseState.BLOCK_CRC;
+                        } else {
+                            throw new IOException("Invalid BZip2 block marker");
+                        }
+                    }
+                    case STREAM_CRC -> {
+                        if (bits.readBits(32, source) != combinedCrc) {
+                            throw new IOException("BZip2 combined CRC mismatch");
+                        }
+                        bits.finishFrame();
+                        frameBoundaryPending = true;
+                    }
+                    case BLOCK_CRC -> {
+                        expectedBlockCrc = bits.readBits(32, source);
+                        parseState = ParseState.RANDOMIZED;
+                    }
+                    case RANDOMIZED -> {
+                        randomized = bits.readBits(1, source) != 0;
+                        parseState = ParseState.POINTER;
+                    }
+                    case POINTER -> {
+                        originalPointer = bits.readBits(24, source);
+                        parseState = ParseState.GROUP_MASK;
+                    }
+                    case GROUP_MASK -> {
+                        usedGroups = bits.readBits(16, source);
+                        usedGroup = 0;
+                        usedByteCount = 0;
+                        parseState = ParseState.USED_BYTES;
+                    }
+                    case USED_BYTES -> {
+                        while (usedGroup < 16) {
+                            if ((usedGroups & (1 << (15 - usedGroup))) != 0) {
+                                int mask = bits.readBits(16, source);
+                                for (int offset = 0; offset < 16; offset++) {
+                                    if ((mask & (1 << (15 - offset))) != 0) {
+                                        usedBytes[usedByteCount++] = (byte) (usedGroup * 16 + offset);
+                                    }
+                                }
+                            }
+                            usedGroup++;
+                        }
+                        if (usedByteCount == 0) {
+                            throw new IOException("BZip2 block has an empty byte alphabet");
+                        }
+                        parseState = ParseState.GROUP_COUNT;
+                    }
+                    case GROUP_COUNT -> {
+                        groupCount = bits.readBits(3, source);
+                        if (groupCount < MIN_GROUP_COUNT || groupCount > MAX_GROUP_COUNT) {
+                            throw new IOException("Invalid BZip2 Huffman group count: " + groupCount);
+                        }
+                        parseState = ParseState.SELECTOR_COUNT;
+                    }
+                    case SELECTOR_COUNT -> {
+                        declaredSelectors = bits.readBits(15, source);
+                        if (declaredSelectors == 0) {
+                            throw new IOException("Invalid BZip2 selector count: 0");
+                        }
+                        retainedSelectors = Math.min(declaredSelectors, 2 + blockSizeLimit / GROUP_SIZE);
+                        if (selectors.length < retainedSelectors) {
+                            selectors = new byte[retainedSelectors];
+                        }
+                        for (int i = 0; i < groupCount; i++) selectorMtf[i] = (byte) i;
+                        selectorPosition = 0;
+                        selectorMtfPosition = 0;
+                        parseState = ParseState.SELECTORS;
+                    }
+                    case SELECTORS -> {
+                        while (selectorPosition < declaredSelectors) {
+                            if (bits.readBits(1, source) != 0) {
+                                if (++selectorMtfPosition >= groupCount) {
+                                    throw new IOException("Invalid BZip2 selector MTF value");
+                                }
+                            } else {
+                                if (selectorPosition < retainedSelectors) {
+                                    byte selector = selectorMtf[selectorMtfPosition];
+                                    System.arraycopy(selectorMtf, 0, selectorMtf, 1, selectorMtfPosition);
+                                    selectorMtf[0] = selector;
+                                    selectors[selectorPosition] = selector;
+                                }
+                                selectorPosition++;
+                                selectorMtfPosition = 0;
+                            }
+                        }
+                        treeGroup = 0;
+                        if (lengths.length != usedByteCount + 2) lengths = new int[usedByteCount + 2];
+                        parseState = ParseState.LENGTH_START;
+                    }
+                    case LENGTH_START -> {
+                        currentLength = bits.readBits(5, source);
+                        validateLength();
+                        lengthPosition = 0;
+                        parseState = ParseState.LENGTHS;
+                    }
+                    case LENGTHS -> {
+                        if (bits.readBits(1, source) != 0) {
+                            parseState = ParseState.LENGTH_DELTA;
+                        } else {
+                            lengths[lengthPosition++] = currentLength;
+                            if (lengthPosition == lengths.length) {
+                                trees[treeGroup++] = new HuffmanTree(lengths);
+                                if (treeGroup < groupCount) {
+                                    parseState = ParseState.LENGTH_START;
+                                } else {
+                                    prepareColumn();
+                                    parseState = ParseState.SYMBOLS;
+                                }
+                            }
+                        }
+                    }
+                    case LENGTH_DELTA -> {
+                        currentLength += bits.readBits(1, source) != 0 ? -1 : 1;
+                        validateLength();
+                        parseState = ParseState.LENGTHS;
+                    }
+                    case SYMBOLS -> decodeColumn(source);
+                }
             }
         } catch (NeedInputException exception) {
-            bits.restore(snapshot);
-            if (endOfInput) {
-                throw new EOFException("Truncated BZip2 stream");
-            }
+            if (endOfInput) throw new EOFException("Truncated BZip2 stream");
             return false;
         }
-        bits.commit(source, appended);
         return true;
     }
 
-    /// Reads and validates one BZip2 stream header.
-    private void readFrameHeader(int firstByte) throws IOException {
-        if (firstByte != 'B' || bits.readBits(8) != 'Z' || bits.readBits(8) != 'h') {
-            throw new IOException("Invalid BZip2 stream header");
+    /// Rejects a code length outside the BZip2 format range.
+    private void validateLength() throws IOException {
+        if (currentLength < 1 || currentLength > MAX_CODE_LENGTH) {
+            throw new IOException("Invalid BZip2 Huffman code length: " + currentLength);
         }
-        int blockSize = bits.readBits(8) - '0';
-        if (blockSize < 1 || blockSize > 9) {
-            throw new IOException("Invalid BZip2 block size: " + blockSize);
+    }
+
+    /// Initializes bounded storage and state for the Huffman-coded column.
+    private void prepareColumn() {
+        if (lastColumn.length < blockSizeLimit) {
+            lastColumn = new byte[blockSizeLimit];
+            blockData = new byte[blockSizeLimit];
+            bwtNext = new int[blockSizeLimit];
         }
-        blockSizeLimit = blockSize * BLOCK_SIZE_UNIT;
-        combinedCrc = 0;
-        frameBoundaryPending = false;
+        System.arraycopy(usedBytes, 0, moveToFront, 0, usedByteCount);
+        columnLength = 0;
+        dataSelector = 0;
+        groupRemaining = 0;
+        symbolNode = 0;
+        runValue = 0;
+        runPower = 1L;
+    }
+
+    /// Resumes Huffman, RLE2, and MTF decoding at the exact pending symbol.
+    private void decodeColumn(ByteBuffer source) throws IOException {
+        while (true) {
+            if (groupRemaining == 0) {
+                if (dataSelector >= retainedSelectors) {
+                    throw new IOException("BZip2 selector sequence ended before the block");
+                }
+                currentTree = Objects.requireNonNull(trees[Byte.toUnsignedInt(selectors[dataSelector++])]);
+                groupRemaining = GROUP_SIZE;
+            }
+            HuffmanTree tree = Objects.requireNonNull(currentTree);
+            int symbol = readSymbol(tree, source);
+            groupRemaining--;
+            if (symbol == RUNA || symbol == RUNB) {
+                runValue += symbol == RUNA ? runPower : runPower << 1;
+                if (runValue > blockSizeLimit - columnLength) {
+                    throw new IOException("BZip2 block exceeds its declared size");
+                }
+                runPower <<= 1;
+                continue;
+            }
+            if (runValue != 0) {
+                Arrays.fill(lastColumn, columnLength, columnLength + (int) runValue, moveToFront[0]);
+                columnLength += (int) runValue;
+                runValue = 0;
+                runPower = 1L;
+            }
+            if (symbol == usedByteCount + 1) {
+                activateBlock();
+                parseState = ParseState.MARKER;
+                return;
+            }
+            int index = symbol - 1;
+            if (index <= 0 || index >= usedByteCount) throw new IOException("Invalid BZip2 MTF symbol: " + symbol);
+            if (columnLength >= blockSizeLimit) throw new IOException("BZip2 block exceeds its declared size");
+            byte value = moveToFront[index];
+            System.arraycopy(moveToFront, 0, moveToFront, 1, index);
+            moveToFront[0] = value;
+            lastColumn[columnLength++] = value;
+        }
+    }
+
+    /// Saves an unfinished tree traversal only when the caller's input runs out.
+    private int readSymbol(HuffmanTree tree, ByteBuffer source) throws IOException {
+        int node = symbolNode;
+        long buffer = bits.buffer;
+        int remaining = bits.bitCount;
+        while (tree.symbols[node] < 0) {
+            if (remaining == 0) {
+                if (!source.hasRemaining()) {
+                    symbolNode = node;
+                    bits.buffer = 0;
+                    bits.bitCount = 0;
+                    throw NeedInputException.INSTANCE;
+                }
+                buffer = Byte.toUnsignedLong(source.get());
+                remaining = Byte.SIZE;
+            }
+            node = ((buffer >>> --remaining) & 1L) != 0 ? tree.right[node] : tree.left[node];
+            if (node < 0) {
+                bits.buffer = buffer & ((1L << remaining) - 1);
+                bits.bitCount = remaining;
+                throw new IOException("Invalid BZip2 Huffman code");
+            }
+        }
+        bits.buffer = buffer & ((1L << remaining) - 1);
+        bits.bitCount = remaining;
+        symbolNode = 0;
+        return tree.symbols[node];
+    }
+
+    /// Reverses BWT once after a complete column and starts incremental RLE output.
+    private void activateBlock() throws IOException {
+        if (columnLength == 0 || originalPointer < 0 || originalPointer >= columnLength) {
+            throw new IOException("Invalid BZip2 original pointer: " + originalPointer);
+        }
+        Arrays.fill(bwtCounts, 0);
+        for (int i = 0; i < columnLength; i++) bwtCounts[Byte.toUnsignedInt(lastColumn[i])]++;
+        int total = 0;
+        for (int i = 0; i < bwtCounts.length; i++) {
+            int count = bwtCounts[i];
+            bwtCounts[i] = total;
+            total += count;
+        }
+        for (int i = 0; i < columnLength; i++) bwtNext[bwtCounts[Byte.toUnsignedInt(lastColumn[i])]++] = i;
+        int position = bwtNext[originalPointer];
+        for (int i = 0; i < columnLength; i++) {
+            blockData[i] = lastColumn[position];
+            position = bwtNext[position];
+        }
+        blockLength = columnLength;
+        blockPosition = 0;
+        blockCrc.reset();
+        runByte = -1;
+        runLength = repeatRemaining = randomPosition = randomRemaining = 0;
+        blockActive = true;
     }
 
     /// Records one decoded byte in the current block CRC and returns it.
     private int recordDecodedByte(int value) {
         blockCrc.update((byte) value);
         return value;
-    }
-
-    /// Reads and decodes the next compressed block or stream terminator.
-    private void openNextBlock() throws IOException {
-        long marker = bits.readMarker();
-        if (marker == END_MAGIC) {
-            int expectedCombinedCrc = bits.readBits(32);
-            if (combinedCrc != expectedCombinedCrc) {
-                throw new IOException("BZip2 combined CRC mismatch");
-            }
-            bits.finishFrame();
-            frameBoundaryPending = true;
-            return;
-        }
-        if (marker != BLOCK_MAGIC) {
-            throw new IOException("Invalid BZip2 block marker");
-        }
-
-        expectedBlockCrc = bits.readBits(32);
-        randomized = bits.readBit();
-        int originalPointer = bits.readBits(24);
-        byte[] usedBytes = readUsedBytes();
-        int alphabetSize = usedBytes.length + 2;
-        int groupCount = bits.readBits(3);
-        if (groupCount < MIN_GROUP_COUNT || groupCount > MAX_GROUP_COUNT) {
-            throw new IOException("Invalid BZip2 Huffman group count: " + groupCount);
-        }
-        int selectorCount = bits.readBits(15);
-        int maximumSelectorCount = 2 + blockSizeLimit / GROUP_SIZE;
-        if (selectorCount < 1) {
-            throw new IOException("Invalid BZip2 selector count: " + selectorCount);
-        }
-
-        byte[] selectors = readSelectors(
-                groupCount,
-                selectorCount,
-                Math.min(selectorCount, maximumSelectorCount)
-        );
-        HuffmanTree[] trees = readHuffmanTrees(groupCount, alphabetSize);
-        byte[] lastColumn = decodeLastColumn(usedBytes, selectors, trees);
-        if (lastColumn.length == 0 || originalPointer < 0 || originalPointer >= lastColumn.length) {
-            throw new IOException("Invalid BZip2 original pointer: " + originalPointer);
-        }
-
-        blockData = inverseBurrowsWheeler(lastColumn, originalPointer);
-        blockPosition = 0;
-        blockCrc.reset();
-        runByte = -1;
-        runLength = 0;
-        repeatRemaining = 0;
-        randomPosition = 0;
-        randomRemaining = 0;
-        blockActive = true;
-    }
-
-    /// Reads the byte alphabet used by the current block.
-    private byte[] readUsedBytes() throws IOException {
-        boolean[] usedGroups = new boolean[16];
-        int groupCount = 0;
-        for (int group = 0; group < usedGroups.length; group++) {
-            usedGroups[group] = bits.readBit();
-            if (usedGroups[group]) {
-                groupCount++;
-            }
-        }
-
-        byte[] values = new byte[groupCount * 16];
-        int count = 0;
-        for (int group = 0; group < usedGroups.length; group++) {
-            if (!usedGroups[group]) {
-                continue;
-            }
-            for (int offset = 0; offset < 16; offset++) {
-                if (bits.readBit()) {
-                    values[count++] = (byte) (group * 16 + offset);
-                }
-            }
-        }
-        if (count == 0) {
-            throw new IOException("BZip2 block has an empty byte alphabet");
-        }
-        return Arrays.copyOf(values, count);
-    }
-
-    /// Reads every declared selector while retaining the prefix that the current block can use.
-    private byte[] readSelectors(
-            int groupCount,
-            int declaredSelectorCount,
-            int retainedSelectorCount
-    ) throws IOException {
-        byte[] selectors = new byte[retainedSelectorCount];
-        byte[] moveToFront = new byte[groupCount];
-        for (int index = 0; index < groupCount; index++) {
-            moveToFront[index] = (byte) index;
-        }
-        for (int index = 0; index < declaredSelectorCount; index++) {
-            int position = 0;
-            while (bits.readBit()) {
-                position++;
-                if (position >= groupCount) {
-                    throw new IOException("Invalid BZip2 selector MTF value");
-                }
-            }
-            if (index >= retainedSelectorCount) {
-                continue;
-            }
-            byte selector = moveToFront[position];
-            System.arraycopy(moveToFront, 0, moveToFront, 1, position);
-            moveToFront[0] = selector;
-            selectors[index] = selector;
-        }
-        return selectors;
-    }
-
-    /// Reads all canonical Huffman trees declared by the block.
-    private HuffmanTree[] readHuffmanTrees(int groupCount, int alphabetSize) throws IOException {
-        HuffmanTree[] trees = new HuffmanTree[groupCount];
-        for (int group = 0; group < groupCount; group++) {
-            int currentLength = bits.readBits(5);
-            if (currentLength < 1 || currentLength > MAX_CODE_LENGTH) {
-                throw new IOException("Invalid BZip2 Huffman code length: " + currentLength);
-            }
-            int[] lengths = new int[alphabetSize];
-            for (int symbol = 0; symbol < alphabetSize; symbol++) {
-                while (bits.readBit()) {
-                    currentLength += bits.readBit() ? -1 : 1;
-                    if (currentLength < 1 || currentLength > MAX_CODE_LENGTH) {
-                        throw new IOException("Invalid BZip2 Huffman code length: " + currentLength);
-                    }
-                }
-                lengths[symbol] = currentLength;
-            }
-            trees[group] = new HuffmanTree(lengths);
-        }
-        return trees;
-    }
-
-    /// Decodes the post-BWT byte column through Huffman, RLE2, and move-to-front stages.
-    private byte[] decodeLastColumn(byte[] usedBytes, byte[] selectors, HuffmanTree[] trees) throws IOException {
-        int endSymbol = usedBytes.length + 1;
-        byte[] moveToFront = usedBytes.clone();
-        byte[] output = new byte[blockSizeLimit];
-        int outputLength = 0;
-        SymbolReader reader = new SymbolReader(bits, selectors, trees);
-        int symbol = reader.nextSymbol();
-        while (symbol != endSymbol) {
-            if (symbol == RUNA || symbol == RUNB) {
-                long runLengthValue = 0L;
-                long power = 1L;
-                do {
-                    runLengthValue += symbol == RUNA ? power : power << 1;
-                    if (runLengthValue > blockSizeLimit - outputLength) {
-                        throw new IOException("BZip2 block exceeds its declared size");
-                    }
-                    symbol = reader.nextSymbol();
-                    if (symbol == RUNA || symbol == RUNB) {
-                        if (power > blockSizeLimit / 2L) {
-                            throw new IOException("Invalid BZip2 run-length sequence");
-                        }
-                        power <<= 1;
-                    }
-                } while (symbol == RUNA || symbol == RUNB);
-                Arrays.fill(output, outputLength, outputLength + (int) runLengthValue, moveToFront[0]);
-                outputLength += (int) runLengthValue;
-                if (symbol == endSymbol) {
-                    break;
-                }
-            }
-
-            int moveToFrontIndex = symbol - 1;
-            if (moveToFrontIndex <= 0 || moveToFrontIndex >= moveToFront.length) {
-                throw new IOException("Invalid BZip2 MTF symbol: " + symbol);
-            }
-            if (outputLength >= output.length) {
-                throw new IOException("BZip2 block exceeds its declared size");
-            }
-            byte value = moveToFront[moveToFrontIndex];
-            System.arraycopy(moveToFront, 0, moveToFront, 1, moveToFrontIndex);
-            moveToFront[0] = value;
-            output[outputLength++] = value;
-            symbol = reader.nextSymbol();
-        }
-        return Arrays.copyOf(output, outputLength);
-    }
-
-    /// Reverses the Burrows-Wheeler transform for one block.
-    private static byte[] inverseBurrowsWheeler(byte[] lastColumn, int originalPointer) {
-        int[] counts = new int[256];
-        for (byte value : lastColumn) {
-            counts[Byte.toUnsignedInt(value)]++;
-        }
-        int total = 0;
-        for (int value = 0; value < counts.length; value++) {
-            int count = counts[value];
-            counts[value] = total;
-            total += count;
-        }
-
-        int[] next = new int[lastColumn.length];
-        for (int index = 0; index < lastColumn.length; index++) {
-            int value = Byte.toUnsignedInt(lastColumn[index]);
-            next[counts[value]++] = index;
-        }
-        byte[] output = new byte[lastColumn.length];
-        int position = next[originalPointer];
-        for (int index = 0; index < output.length; index++) {
-            output[index] = lastColumn[position];
-            position = next[position];
-        }
-        return output;
     }
 
     /// Reads one inverse-BWT byte and applies legacy derandomization when requested.
@@ -559,7 +682,7 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
         }
         // BZip2 rotates the stream CRC once for each completed block.
         combinedCrc = Integer.rotateLeft(combinedCrc, 1) ^ actualBlockCrc;
-        blockData = new byte[0];
+        blockLength = 0;
         blockPosition = 0;
         blockActive = false;
     }
@@ -571,150 +694,47 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
         }
     }
 
-    /// Reads BZip2 fields in most-significant-bit-first order without reading past the current byte.
+    /// Reads only the bits needed by the active parser step; caller buffers are never retained.
     @NotNullByDefault
     private static final class BitInput {
-        /// Initial owned staging capacity for buffer-driven decoding.
-        private static final int INITIAL_STAGING_CAPACITY = 8192;
-
-        /// Owned bytes retained across incomplete block parses.
-        private byte[] stagedBytes = new byte[INITIAL_STAGING_CAPACITY];
-
-        /// The next owned staged byte to parse.
-        private int stagedPosition;
-
-        /// The position following the last owned staged byte.
-        private int stagedLimit;
-
-        /// The unread low-order bits from source bytes already consumed.
+        /// Unconsumed low-order bits.
         private long buffer;
-
-        /// The number of unread bits held in `buffer`.
+        /// The number of buffered bits.
         private int bitCount;
 
-        /// Creates a bit reader that accepts caller buffers transactionally.
-        private BitInput() {
-        }
-
-        /// Appends all remaining caller bytes into owned staging and returns their count.
-        private int append(ByteBuffer input) {
-            int length = input.remaining();
-            ensureStagingCapacity(length);
-            input.get(stagedBytes, stagedLimit, length);
-            stagedLimit += length;
-            return length;
-        }
-
-        /// Captures the transactional parse position while retaining appended bytes.
-        private Snapshot snapshot() {
-            return new Snapshot(stagedPosition, buffer, bitCount);
-        }
-
-        /// Restores a transactional parse position after incomplete input.
-        private void restore(Snapshot snapshot) {
-            stagedPosition = snapshot.stagedPosition();
-            buffer = snapshot.buffer();
-            bitCount = snapshot.bitCount();
-        }
-
-        /// Commits a successful parse and returns unread bytes to the current caller source.
-        private void commit(ByteBuffer input, int appended) {
-            int unread = stagedLimit - stagedPosition;
-            if (unread < 0 || unread > appended) {
-                throw new AssertionError("BZip2 parser retained bytes from an earlier input fragment");
-            }
-            input.position(input.position() - unread);
-            stagedLimit -= unread;
-            compactStaging();
-        }
-
-        /// Clears all retained input and bit state.
+        /// Clears the bit reservoir.
         private void reset() {
-            stagedPosition = 0;
-            stagedLimit = 0;
             buffer = 0L;
             bitCount = 0;
         }
 
-        /// Validates zero padding and aligns after one complete BZip2 stream.
+        /// Validates the stream's byte-alignment padding.
         private void finishFrame() throws IOException {
-            if (buffer != 0L) {
-                throw new IOException("Invalid BZip2 stream padding");
-            }
+            if (buffer != 0L) throw new IOException("Invalid BZip2 stream padding");
             bitCount = 0;
         }
 
-        /// Reads one bit as a boolean value.
-        private boolean readBit() throws IOException {
-            return readBits(1) != 0;
-        }
-
-        /// Reads up to 32 bits as an integer.
-        private int readBits(int count) throws IOException {
-            if (count < 0 || count > 32) {
-                throw new IllegalArgumentException("Bit count must be between 0 and 32");
-            }
+        /// Reads an unsigned bit field of at most 48 bits without discarding partial input.
+        private long readLong(int count, ByteBuffer source) throws NeedInputException {
             while (bitCount < count) {
-                int value = readRawByte();
-                buffer = (buffer << 8) | value;
+                if (!source.hasRemaining()) throw NeedInputException.INSTANCE;
+                buffer = (buffer << 8) | Byte.toUnsignedLong(source.get());
                 bitCount += 8;
             }
             int remaining = bitCount - count;
-            long mask = count == 32 ? 0xffff_ffffL : (1L << count) - 1L;
-            int value = (int) ((buffer >>> remaining) & mask);
+            long value = (buffer >>> remaining) & ((1L << count) - 1);
             bitCount = remaining;
-            buffer = remaining == 0 ? 0L : buffer & ((1L << remaining) - 1L);
+            buffer &= (1L << remaining) - 1;
             return value;
         }
 
-        /// Reads one 48-bit block or end marker.
-        private long readMarker() throws IOException {
-            return (Integer.toUnsignedLong(readBits(16)) << 32)
-                    | Integer.toUnsignedLong(readBits(32));
-        }
-
-        /// Reads one raw byte from owned staging.
-        private int readRawByte() throws NeedInputException {
-            if (stagedPosition >= stagedLimit) {
-                throw NeedInputException.INSTANCE;
-            }
-            return Byte.toUnsignedInt(stagedBytes[stagedPosition++]);
-        }
-
-        /// Ensures owned staging can accept another caller fragment.
-        private void ensureStagingCapacity(int additionalLength) {
-            int required = Math.addExact(stagedLimit, additionalLength);
-            if (required <= stagedBytes.length) {
-                return;
-            }
-            int capacity = stagedBytes.length;
-            while (capacity < required) {
-                capacity = Math.max(Math.addExact(capacity, capacity >>> 1), required);
-            }
-            stagedBytes = Arrays.copyOf(stagedBytes, capacity);
-        }
-
-        /// Removes raw bytes already incorporated into committed bit state.
-        private void compactStaging() {
-            int remaining = stagedLimit - stagedPosition;
-            if (remaining > 0) {
-                System.arraycopy(stagedBytes, stagedPosition, stagedBytes, 0, remaining);
-            }
-            stagedPosition = 0;
-            stagedLimit = remaining;
-        }
-
-        /// Captures the mutable fields changed by a speculative block parse.
-        ///
-        /// @param stagedPosition next owned raw byte
-        /// @param buffer unread bit value
-        /// @param bitCount number of unread bits
-        @NotNullByDefault
-        private record Snapshot(int stagedPosition, long buffer, int bitCount) {
+        /// Reads a bit field of at most 32 bits.
+        private int readBits(int count, ByteBuffer source) throws NeedInputException {
+            return (int) readLong(count, source);
         }
     }
 
-    /// Signals that a speculative buffer-driven parse needs another compressed byte.
+    /// Signals that the suspended parse needs another compressed byte.
     @NotNullByDefault
     private static final class NeedInputException extends IOException {
         /// Serialization identifier.
@@ -801,62 +821,5 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
             }
         }
 
-        /// Reads one symbol from this tree.
-        private int readSymbol(BitInput bits) throws IOException {
-            int node = 0;
-            for (int length = 1; length <= MAX_CODE_LENGTH; length++) {
-                node = bits.readBit() ? right[node] : left[node];
-                if (node < 0) {
-                    throw new IOException("Invalid BZip2 Huffman code");
-                }
-                if (symbols[node] >= 0) {
-                    return symbols[node];
-                }
-            }
-            throw new IOException("Invalid BZip2 Huffman code");
-        }
-    }
-
-    /// Applies the block's selector sequence while reading Huffman symbols.
-    @NotNullByDefault
-    private static final class SymbolReader {
-        /// The compressed bit source.
-        private final BitInput bits;
-
-        /// The expanded Huffman selector sequence.
-        private final byte[] selectors;
-
-        /// The available Huffman trees.
-        private final HuffmanTree[] trees;
-
-        /// The next selector index.
-        private int selectorIndex;
-
-        /// The number of symbols remaining under the current selector.
-        private int groupRemaining;
-
-        /// The current Huffman tree.
-        private HuffmanTree currentTree;
-
-        /// Creates a selector-aware symbol reader.
-        private SymbolReader(BitInput bits, byte[] selectors, HuffmanTree[] trees) {
-            this.bits = bits;
-            this.selectors = selectors;
-            this.trees = trees;
-            this.currentTree = trees[0];
-        }
-
-        /// Reads the next Huffman symbol.
-        private int nextSymbol() throws IOException {
-            if (groupRemaining == 0) {
-                if (selectorIndex >= selectors.length) {
-                    throw new IOException("BZip2 selector sequence ended before the block");
-                }
-                currentTree = trees[Byte.toUnsignedInt(selectors[selectorIndex++])];
-                groupRemaining = GROUP_SIZE;
-            }
-            groupRemaining--;
-            return currentTree.readSymbol(bits);
-        }
     }
 }
