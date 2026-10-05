@@ -105,6 +105,86 @@ final class DeflateIncrementalStateTest {
         }
     }
 
+    /// Complete canonical alphabets with different short-code and continuation layouts agree with the JDK.
+    @Test
+    void decodesGeneratedCanonicalAlphabets() throws Exception {
+        Random random = new Random(0x48554646L);
+        try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
+            for (int iteration = 0; iteration < 48; iteration++) {
+                int leafCount = switch (iteration % 4) {
+                    case 0 -> 2;
+                    case 1 -> 16;
+                    case 2 -> 128;
+                    default -> 257;
+                };
+                int[] lengths = new int[257];
+                for (int count = 1; count < leafCount; count++) {
+                    int split;
+                    do {
+                        split = random.nextInt(count);
+                    } while (lengths[split] == 15);
+                    lengths[count] = ++lengths[split];
+                }
+                for (int index = lengths.length - 1; index > 0; index--) {
+                    int other = random.nextInt(index + 1);
+                    int length = lengths[index];
+                    lengths[index] = lengths[other];
+                    lengths[other] = length;
+                }
+                if (lengths[256] == 0) {
+                    int symbol = 0;
+                    while (lengths[symbol] == 0) symbol++;
+                    lengths[256] = lengths[symbol];
+                    lengths[symbol] = 0;
+                }
+                var bodyBytes = new ByteArrayOutputStream();
+                for (int repeat = 0; repeat < 3; repeat++) {
+                    for (int symbol = 0; symbol < 256; symbol++) {
+                        if (lengths[symbol] != 0) bodyBytes.write(symbol);
+                    }
+                }
+                byte[] body = bodyBytes.toByteArray();
+                byte[] compressed = literalCodes(body, lengths);
+                Inflater reference = new Inflater(true);
+                try {
+                    reference.setInput(compressed);
+                    byte[] actual = new byte[body.length + 1];
+                    assertEquals(body.length, reference.inflate(actual));
+                    assertTrue(reference.finished());
+                    assertArrayEquals(body, Arrays.copyOf(actual, body.length));
+                } finally {
+                    reference.end();
+                }
+                for (int chunk : new int[]{1, 7, compressed.length}) {
+                    decoder.reset();
+                    assertArrayEquals(body, decode(decoder, compressed, chunk, iteration % 3, 7));
+                }
+            }
+        }
+    }
+
+    /// An unused one-bit branch is rejected after a complete alphabet has occupied the same workspace.
+    @Test
+    void rejectsUnusedSingletonBranchAfterReset() throws Exception {
+        int[] lengths = new int[257];
+        lengths[256] = 1;
+        byte[] empty = literalCodes(new byte[0], lengths);
+        byte[] invalid = empty.clone();
+        int endBit = 3 + 5 + 5 + 4 + 19 * 3 + 258 * 4;
+        invalid[endBit >>> 3] |= (byte) (1 << (endBit & 7));
+        byte[] body = {0, 1, 14, 2, 13};
+        try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, null)) {
+            for (int chunk : new int[]{1, 7, empty.length}) {
+                decoder.reset();
+                assertArrayEquals(body, decode(decoder, longCodes(body), chunk, 0, 7));
+                decoder.reset();
+                assertArrayEquals(new byte[0], decode(decoder, empty, chunk, 0, 7));
+                decoder.reset();
+                assertThrows(IOException.class, () -> decode(decoder, invalid, chunk, 0, 7));
+            }
+        }
+    }
+
     /// Supplies disjoint caller buffers and accumulates small output fragments until the raw stream ends.
     private static byte[] decode(
             CompressionDecoder decoder, byte[] compressed, int chunk, int shape, int outputSize
@@ -169,6 +249,14 @@ final class DeflateIncrementalStateTest {
 
     /// Builds a complete comb-shaped literal alphabet with code lengths from one through fifteen.
     private static byte[] longCodes(byte[] body) {
+        int[] lengths = new int[257];
+        for (int symbol = 0; symbol < 14; symbol++) lengths[symbol] = symbol + 1;
+        lengths[14] = lengths[256] = 15;
+        return literalCodes(body, lengths);
+    }
+
+    /// Encodes a literal-only final block using independently assigned canonical codes.
+    private static byte[] literalCodes(byte[] body, int[] lengths) {
         BitWriter writer = new BitWriter();
         writer.write(5, 3);
         writer.write(0, 5);
@@ -176,9 +264,6 @@ final class DeflateIncrementalStateTest {
         writer.write(15, 4);
         int @Unmodifiable [] order = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
         for (int symbol : order) writer.write(symbol < 16 ? 4 : 0, 3);
-        int[] lengths = new int[257];
-        for (int symbol = 0; symbol < 14; symbol++) lengths[symbol] = symbol + 1;
-        lengths[14] = lengths[256] = 15;
         for (int length : lengths) writer.write(Integer.reverse(length) >>> 28, 4);
         writer.write(8, 4); // The one-bit distance code length, encoded by the code-length alphabet.
         int[] counts = new int[16];
@@ -193,7 +278,7 @@ final class DeflateIncrementalStateTest {
             int symbol = Byte.toUnsignedInt(value);
             writer.write(Integer.reverse(codes[symbol]) >>> (32 - lengths[symbol]), lengths[symbol]);
         }
-        writer.write(Integer.reverse(codes[256]) >>> 17, 15);
+        writer.write(Integer.reverse(codes[256]) >>> (32 - lengths[256]), lengths[256]);
         return writer.finish();
     }
 

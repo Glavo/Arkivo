@@ -745,16 +745,19 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         /// Bits covered by the root table.
         private static final int FAST_LOOKUP_BITS = 8;
 
+        /// Mask selecting the buffered root-table prefix.
+        private static final int FAST_LOOKUP_MASK = (1 << FAST_LOOKUP_BITS) - 1;
+
         /// Mask for the packed symbol's code length.
         private static final int FAST_LENGTH_MASK = 15;
 
         /// A root-table entry that cannot identify a valid symbol.
         private static final int INVALID_LOOKUP = Integer.MIN_VALUE;
 
-        /// Zero-bit child indices.
+        /// Zero-bit child indices for codes extending beyond the root table.
         private final int[] zeroChildren;
 
-        /// One-bit child indices.
+        /// One-bit child indices for codes extending beyond the root table.
         private final int[] oneChildren;
 
         /// Leaf symbols, or negative values at internal nodes.
@@ -804,10 +807,9 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                     maximumLength = Math.max(maximumLength, length);
                 }
             }
-            initializeNode(0);
+            Arrays.fill(fastLookup, INVALID_LOOKUP);
             if (nonZeroCount == 0) {
                 if (!allowEmpty) throw new IOException(description + " tree is empty");
-                Arrays.fill(fastLookup, INVALID_LOOKUP);
                 return;
             }
             int remainingCodes = 1;
@@ -828,8 +830,24 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 int length = lengths[symbol];
                 if (length == 0) continue;
                 int symbolCode = nextCodes[length]++;
-                int node = 0;
-                for (int depth = 0; depth < length; depth++) {
+                int reversedCode = Integer.reverse(symbolCode) >>> (32 - length);
+                if (length <= FAST_LOOKUP_BITS) {
+                    int entry = symbol << 4 | length;
+                    for (int prefix = reversedCode; prefix < fastLookup.length; prefix += 1 << length) {
+                        fastLookup[prefix] = entry;
+                    }
+                    continue;
+                }
+                int prefix = reversedCode & FAST_LOOKUP_MASK;
+                int node;
+                if (fastLookup[prefix] == INVALID_LOOKUP) {
+                    node = nodeCount++;
+                    initializeNode(node);
+                    fastLookup[prefix] = -node - 1;
+                } else {
+                    node = -fastLookup[prefix] - 1;
+                }
+                for (int depth = FAST_LOOKUP_BITS; depth < length; depth++) {
                     int bit = symbolCode >>> (length - depth - 1) & 1;
                     int child = bit == 0 ? zeroChildren[node] : oneChildren[node];
                     if (child < 0) {
@@ -842,7 +860,6 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 }
                 symbols[node] = symbol;
             }
-            rebuildFastLookup();
         }
 
         /// Clears one node before it becomes reachable from the current root.
@@ -852,31 +869,13 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
             symbols[node] = -1;
         }
 
-        /// Replaces the root lookup table for the current canonical alphabet.
-        private void rebuildFastLookup() {
-            for (int prefix = 0; prefix < fastLookup.length; prefix++) {
-                int node = 0;
-                int entry = INVALID_LOOKUP;
-                for (int depth = 0; depth < FAST_LOOKUP_BITS; depth++) {
-                    node = (prefix >>> depth & 1) == 0 ? zeroChildren[node] : oneChildren[node];
-                    if (node < 0) break;
-                    if (symbols[node] >= 0) {
-                        entry = symbols[node] << 4 | depth + 1;
-                        break;
-                    }
-                }
-                if (entry == INVALID_LOOKUP && node >= 0) entry = -node - 1;
-                fastLookup[prefix] = entry;
-            }
-        }
-
         /// Decodes one symbol while retaining an incomplete long-code traversal.
         private int decode(BitInput input, ByteBuffer source, boolean endOfInput, Format format) throws IOException {
             if (maximumLength == 0) throw invalidCode();
             int node = input.symbolNode;
             if (node == 0) {
                 while (true) {
-                    int entry = fastLookup[(int) input.buffer & 255];
+                    int entry = fastLookup[(int) input.buffer & FAST_LOOKUP_MASK];
                     if (entry >= 0 && (entry & FAST_LENGTH_MASK) <= input.bitCount) {
                         input.discardBits(entry & FAST_LENGTH_MASK);
                         return entry >>> 4;
@@ -887,14 +886,9 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                         node = -entry - 1;
                         break;
                     }
-                    if (entry == INVALID_LOOKUP) {
-                        // A zero-extended table miss may still have a valid, incomplete buffered prefix.
-                        int prefixNode = 0;
-                        for (int depth = 0; depth < input.bitCount; depth++) {
-                            prefixNode = (input.buffer >>> depth & 1L) == 0
-                                    ? zeroChildren[prefixNode] : oneChildren[prefixNode];
-                            if (prefixNode < 0) throw invalidCode();
-                        }
+                    if (entry == INVALID_LOOKUP && input.bitCount != 0) {
+                        // Only a single one-bit alphabet may be incomplete; its unused branch is already known.
+                        throw invalidCode();
                     }
                     input.appendRequiredByte(source, endOfInput, format);
                 }
