@@ -21,8 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
 /// Checks encoded bytes and synchronization boundaries against deterministic reference fingerprints.
 @NotNullByDefault
-final class DeflateEncodingDeterminismTest {
-    /// Covers all levels and strategies, both window profiles, dictionaries, flushes, and reused engines.
+final class Deflate64EncodingDeterminismTest {
+    /// Covers all levels and strategies, flushes, and reused Deflate64 engines.
     @Test
     void preservesEncodedBytesAndFlushBoundaries() throws Exception {
         MessageDigest aggregate = MessageDigest.getInstance("SHA-256");
@@ -37,30 +37,26 @@ final class DeflateEncodingDeterminismTest {
                 for (int i = 0; i < body.length; i++) body[i] = dictionary[i % dictionary.length];
                 Arrays.fill(body, 35_000, 40_000, (byte) 'a');
             }
-            for (DeflateEncoderEngine.Format format : DeflateEncoderEngine.Format.values()) {
-                for (int level = 0; level <= 9; level++) {
-                    for (DeflateStrategy strategy : DeflateStrategy.values()) {
-                        try (var encoder = new DeflateEncoderEngine(format, level,
-                                format == DeflateEncoderEngine.Format.DEFLATE && profile == 2 ? dictionary : null,
-                                strategy)) {
-                            for (boolean flush : new boolean[]{false, true}) {
-                                encoder.reset();
-                                byte[] first = encode(encoder, body, aggregate, flush);
-                                encoder.reset();
-                                assertArrayEquals(first, encode(encoder, body, aggregate, flush));
-                            }
+            for (int level = 0; level <= 9; level++) {
+                for (DeflateStrategy strategy : DeflateStrategy.values()) {
+                    try (var encoder = new Deflate64EncoderEngine(level, strategy)) {
+                        for (boolean flush : new boolean[]{false, true}) {
+                            encoder.reset();
+                            byte[] first = encode(encoder, body, aggregate, flush);
+                            encoder.reset();
+                            assertArrayEquals(first, encode(encoder, body, aggregate, flush));
                         }
                     }
                 }
             }
         }
-        assertEquals("35740ed49925e1b65bfa4bbd837de97ad7f61900e3a65974dbdc3c6a300debb1",
+        assertEquals("eb0a2936fe94f8d7414727356dafad241b61a1fd4bd46c4615f7fa737e80f2de",
                 HexFormat.of().formatHex(aggregate.digest()));
     }
 
     /// Records output lengths and byte digests at each synchronization boundary.
     private static byte @Unmodifiable [] encode(
-            DeflateEncoderEngine encoder, byte[] body, MessageDigest aggregate, boolean flush)
+            Deflate64EncoderEngine encoder, byte[] body, MessageDigest aggregate, boolean flush)
             throws Exception {
         ByteBuffer source = ByteBuffer.wrap(body).asReadOnlyBuffer();
         ByteBuffer target = ByteBuffer.allocate(257);

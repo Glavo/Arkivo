@@ -8,7 +8,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateDecoderEngine;
-import org.glavo.arkivo.codec.deflate.internal.DeflateEncoderEngine;
+import org.glavo.arkivo.codec.deflate.internal.Deflate64EncoderEngine;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -188,10 +188,8 @@ public final class Deflate64Codec
     @Override
     public CompressionEncoder.Flushable newEncoder(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
-        return new DeflateEncoderEngine(
-                DeflateEncoderEngine.Format.DEFLATE64,
+        return new Deflate64EncoderEngine(
                 compressionLevel,
-                null,
                 DeflateStrategy.DEFAULT
         );
     }

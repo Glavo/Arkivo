@@ -26,6 +26,9 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
     /// Configured compression level restored by reset.
     private final int compressionLevel;
 
+    /// Whether only literal entropy coding is enabled, selecting the fastest header flag.
+    private final boolean huffmanOnly;
+
     /// Whether a preset dictionary is configured.
     private final boolean dictionaryConfigured;
 
@@ -58,13 +61,14 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
             DeflateStrategy strategy
     ) {
         this.compressionLevel = compressionLevel;
-        this.dictionaryConfigured = dictionary != null;
+        this.huffmanOnly = strategy == DeflateStrategy.HUFFMAN_ONLY;
+        this.dictionaryConfigured = dictionary != null && dictionary.size() > 0;
         this.dictionaryId = dictionary != null ? dictionary.adler32() : 0L;
         this.body = new DeflateEncoderEngine(
-                DeflateEncoderEngine.Format.DEFLATE,
                 compressionLevel,
                 dictionary != null ? dictionary.bytes() : null,
-                Objects.requireNonNull(strategy, "strategy")
+                Objects.requireNonNull(strategy, "strategy"),
+                dictionaryConfigured ? 6 : 2
         );
         this.pendingHeader = createHeader();
     }
@@ -177,14 +181,14 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
     /// Creates the RFC 1950 header and optional preset-dictionary identifier.
     private ByteBuffer createHeader() {
         int compressionMethodAndInfo = 0x78;
-        int compressionLevelFlags = compressionLevel <= 1
+        int compressionLevelFlags = huffmanOnly || compressionLevel <= 1
                 ? 0
                 : compressionLevel <= 5 ? 1 : compressionLevel == 6 ? 2 : 3;
         int flags = compressionLevelFlags << 6;
         if (dictionaryConfigured) {
             flags |= 0x20;
         }
-        flags |= (31 - ((compressionMethodAndInfo << 8 | flags) % 31)) % 31;
+        flags |= 31 - ((compressionMethodAndInfo << 8 | flags) % 31);
 
         ByteBuffer header = ByteBuffer.allocate(
                 dictionaryConfigured ? 6 : 2

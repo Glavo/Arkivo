@@ -75,7 +75,7 @@ final class Deflate64BufferEngineTest {
         System.arraycopy(second, 0, expected, first.length, second.length);
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
-        try (DeflateEncoderEngine encoder = newEncoder()) {
+        try (Deflate64EncoderEngine encoder = newEncoder()) {
             encodeSegment(encoder, first, 19, 2, compressed);
             int beforeFlush = compressed.size();
             flush(encoder, 1, compressed);
@@ -99,7 +99,7 @@ final class Deflate64BufferEngineTest {
         byte[] expected = encode(retained, 29, 4);
         ByteArrayOutputStream actual = new ByteArrayOutputStream();
 
-        try (DeflateEncoderEngine encoder = newEncoder()) {
+        try (Deflate64EncoderEngine encoder = newEncoder()) {
             ByteBuffer source = directBuffer(abandoned, 0, abandoned.length);
             ByteBuffer target = ByteBuffer.allocateDirect(1);
             assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.encode(source, target));
@@ -134,7 +134,7 @@ final class Deflate64BufferEngineTest {
     /// Encodes one complete stream using fresh direct source and target buffers for every call.
     private static byte[] encode(byte[] input, int sourceChunkSize, int targetChunkSize) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (DeflateEncoderEngine encoder = newEncoder()) {
+        try (Deflate64EncoderEngine encoder = newEncoder()) {
             encodeSegment(encoder, input, sourceChunkSize, targetChunkSize, output);
             finish(encoder, targetChunkSize, output);
         }
@@ -143,7 +143,7 @@ final class Deflate64BufferEngineTest {
 
     /// Feeds one input segment through newly allocated caller buffers.
     private static void encodeSegment(
-            DeflateEncoderEngine encoder,
+            Deflate64EncoderEngine encoder,
             byte[] input,
             int sourceChunkSize,
             int targetChunkSize,
@@ -166,7 +166,7 @@ final class Deflate64BufferEngineTest {
     }
 
     /// Completes a flush using a new target buffer for every operation.
-    private static void flush(DeflateEncoderEngine encoder, int targetChunkSize, ByteArrayOutputStream output) {
+    private static void flush(Deflate64EncoderEngine encoder, int targetChunkSize, ByteArrayOutputStream output) {
         while (true) {
             ByteBuffer target = ByteBuffer.allocateDirect(targetChunkSize);
             CodecOutcome outcome = encoder.flush(target);
@@ -179,7 +179,7 @@ final class Deflate64BufferEngineTest {
     }
 
     /// Completes stream finalization using a new target buffer for every operation.
-    private static void finish(DeflateEncoderEngine encoder, int targetChunkSize, ByteArrayOutputStream output) {
+    private static void finish(Deflate64EncoderEngine encoder, int targetChunkSize, ByteArrayOutputStream output) {
         while (true) {
             ByteBuffer target = ByteBuffer.allocateDirect(targetChunkSize);
             CodecOutcome outcome = encoder.finish(target);
@@ -228,11 +228,9 @@ final class Deflate64BufferEngineTest {
     }
 
     /// Creates a Deflate64 encoder using the test suite's standard compression level.
-    private static DeflateEncoderEngine newEncoder() {
-        return new DeflateEncoderEngine(
-                DeflateEncoderEngine.Format.DEFLATE64,
+    private static Deflate64EncoderEngine newEncoder() {
+        return new Deflate64EncoderEngine(
                 6,
-                null,
                 DeflateStrategy.DEFAULT
         );
     }

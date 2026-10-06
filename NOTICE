@@ -21,3 +21,13 @@ zlib-ng
 Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
 Portions copyright (C) 2014-2021 Konstantin Nosov
 https://github.com/zlib-ng/zlib-ng
+
+The Deflate encoder's sliding-window matching, level configuration,
+Huffman construction, tree-length encoding, and block selection include
+adaptations of zlib 1.3.1's deflate.c and trees.c.
+Reference release: v1.3.1, https://github.com/madler/zlib/tree/v1.3.1.
+These implementations have been modified for Java's bounded buffers and
+Arkivo's incremental engine contracts. See LICENSES/Zlib.txt.
+
+zlib
+Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler

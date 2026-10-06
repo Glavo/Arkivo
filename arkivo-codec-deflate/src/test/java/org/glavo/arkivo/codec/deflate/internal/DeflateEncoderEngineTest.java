@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies pure Java Deflate block selection, Huffman generation, and independent decoder interoperability.
 @NotNullByDefault
 final class DeflateEncoderEngineTest {
-    /// Verifies exact-cost selection of stored, fixed-Huffman, and dynamic-Huffman blocks.
+    /// Verifies selection of stored, fixed-Huffman, and dynamic-Huffman blocks.
     @Test
     void selectsAllDeflateBlockTypes() throws IOException, DataFormatException {
         byte[] storedInput = new byte[2_048];
@@ -46,7 +46,7 @@ final class DeflateEncoderEngineTest {
 
     /// Verifies length limiting for a deliberately deep literal-only Huffman tree.
     @Test
-    void limitsAdversarialHuffmanDepth() throws IOException, DataFormatException {
+    void limitsAdversarialHuffmanDepth() throws Exception {
         ByteArrayOutputStream input = new ByteArrayOutputStream();
         int previous = 1;
         int current = 1;
@@ -66,6 +66,8 @@ final class DeflateEncoderEngineTest {
 
         assertEquals(2, firstBlockType(encoded));
         assertArrayEquals(source, inflate(encoded));
+        JdkDeflateAlignmentTest.verify(source, 9, DeflateStrategy.HUFFMAN_ONLY, true, null,
+                new int[0], 97, 5, true);
     }
 
     /// Verifies every strategy with fragmented caller buffers and an independent RFC 1951 decoder.
@@ -117,7 +119,6 @@ final class DeflateEncoderEngineTest {
     ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (DeflateEncoderEngine encoder = new DeflateEncoderEngine(
-                DeflateEncoderEngine.Format.DEFLATE,
                 compressionLevel,
                 null,
                 strategy

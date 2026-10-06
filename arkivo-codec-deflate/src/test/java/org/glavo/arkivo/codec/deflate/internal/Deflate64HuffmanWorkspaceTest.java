@@ -13,14 +13,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /// Checks primitive-workspace construction against an independent priority-queue reference.
 @NotNullByDefault
-final class DeflateHuffmanWorkspaceTest {
+final class Deflate64HuffmanWorkspaceTest {
     /// Covers sparse, tied, skewed, and changing alphabets while repeatedly reusing one workspace.
     @Test
     void preservesCodeLengthsAcrossReuse() {
-        var workspace = new DeflateEncoderEngine.HuffmanWorkspace();
+        var workspace = new Deflate64EncoderEngine.HuffmanWorkspace();
         Random random = new Random(0x48554646L);
         for (int alphabet : new int[]{19, 32, 286}) {
-            var code = new DeflateEncoderEngine.HuffmanCode(alphabet);
+            var code = new Deflate64EncoderEngine.HuffmanCode(alphabet);
             int maximumLength = alphabet == 19 ? 7 : 15;
             for (int trial = 0; trial < 500; trial++) {
                 int[] frequencies = new int[alphabet];

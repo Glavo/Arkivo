@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
-// Portions adapted from zlib-ng; see NOTICE and LICENSES/Zlib.txt.
+// Portions adapted from zlib 1.3.1 and zlib-ng; see NOTICE and LICENSES/Zlib.txt.
 // This Java implementation differs from the original C sources.
 
 package org.glavo.arkivo.codec.deflate.internal;
@@ -8,33 +8,29 @@ package org.glavo.arkivo.codec.deflate.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.DeflateStrategy;
-import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Incrementally encodes the shared Deflate bitstream grammar without retaining caller-owned buffers.
+/// Incrementally encodes RFC 1951 streams using bounded sliding-window and symbol workspaces.
 ///
-/// Format parameters select RFC 1951 Deflate or Deflate64 window, length, and distance semantics. The encoder chooses
-/// stored, fixed-Huffman, or dynamic-Huffman blocks from their exact encoded bit costs and retains only bounded format
-/// history plus the current block.
+/// Match selection and block construction follow zlib's level and strategy rules. Caller buffers are never retained.
 @NotNullByDefault
 public final class DeflateEncoderEngine implements CompressionEncoder.Flushable {
-    /// The maximum uncompressed bytes buffered before a block decision.
+    /// The input capacity of the canonical level-zero reference schedule.
     private static final int BLOCK_SIZE = 1 << 16;
 
     /// The hash-table size used by the bounded match finder.
-    private static final int HASH_SIZE = 1 << 16;
+    private static final int HASH_SIZE = 1 << 15;
 
-    /// The polynomial multiplier retained by scalar and batched three-byte hashes.
-    private static final int HASH_MULTIPLIER = 251;
+    /// The number of bits contributed by each byte to the rolling hash.
+    private static final int HASH_SHIFT = 5;
 
-    /// The minimum match length represented by either format.
+    /// The minimum Deflate match length.
     private static final int MINIMUM_MATCH_LENGTH = 3;
 
     /// The end-of-block literal/length symbol.
@@ -51,9 +47,6 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
     /// The maximum code-length Huffman code length.
     private static final int MAXIMUM_CODE_LENGTH = 7;
-
-    /// Minimum dynamic-block header cost before encoded code-length symbols.
-    private static final int MINIMUM_DYNAMIC_HEADER_BIT_COST = 29;
 
     /// Shared empty output marker.
     private static final @Unmodifiable ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0);
@@ -88,286 +81,423 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
     };
 
-    /// Selected Deflate-family format.
-    private final Format format;
-
-    /// Configured compression level restored by reset.
+    /// History capacity and mask for hash-chain links.
+    private static final int WINDOW_SIZE = 32768;
+    /// Minimum lookahead required before deciding a match without a flush.
+    private static final int MINIMUM_LOOKAHEAD = 262;
+    /// Maximum literal or match tokens in one block at memLevel eight.
+    private static final int MAXIMUM_TOKENS = 16383;
+    /// Search tuning indexed by compression level: good, lazy, nice, and chain lengths.
+    private static final int @Unmodifiable [] @Unmodifiable [] CONFIGURATION = {
+            {0, 0, 0, 0}, {4, 4, 8, 4}, {4, 5, 16, 8}, {4, 6, 32, 32},
+            {4, 4, 16, 16}, {8, 16, 32, 32}, {8, 16, 128, 128},
+            {8, 32, 128, 256}, {32, 128, 258, 1024}, {32, 258, 258, 4096}
+    };
+    /// Immutable compression level.
     private final int compressionLevel;
-
-    /// Configured Deflate strategy restored by reset.
+    /// Immutable token-selection strategy.
     private final DeflateStrategy strategy;
-
-    /// Configured preset dictionary bytes, or null.
+    /// Initial history, or null when no dictionary is configured.
     private final byte @Nullable @Unmodifiable [] dictionary;
-
-    /// The maximum hash-chain candidates examined for each position.
-    private final int searchLimit;
-
-    /// The little-endian bit writer.
-    private final BitOutput bits = new BitOutput();
-
-    /// The current uncompressed block.
-    private final byte[] block = new byte[BLOCK_SIZE];
-
-    /// History retained from the dictionary and preceding blocks.
-    private final byte[] history;
-
-    /// Contiguous retained history and current block used by the match finder.
-    private final byte[] matchBytes;
-
-    /// Hash-chain heads for the combined history and current block.
+    /// Sliding history and unprocessed lookahead, including safe comparison guards.
+    private final byte[] window = new byte[2 * WINDOW_SIZE + 258];
+    /// Most recent window position for each three-byte hash.
     private final int[] hashHeads = new int[HASH_SIZE];
-
-    /// Previous positions in the combined bounded search domain.
-    private final int[] previous;
-
-    /// Literal values or match lengths for the current token stream.
-    private final int[] tokenValues = new int[BLOCK_SIZE];
-
-    /// Match distances, or zero for literal tokens.
-    private final int[] tokenDistances = new int[BLOCK_SIZE];
-
-    /// Literal/length symbol frequencies for the current block.
+    /// Previous positions in each hash chain.
+    private final int[] previous = new int[WINDOW_SIZE];
+    /// Literal bytes or match lengths in the active block.
+    private final int[] tokenValues = new int[MAXIMUM_TOKENS];
+    /// Match distances, or zero for literals.
+    private final int[] tokenDistances = new int[MAXIMUM_TOKENS];
+    /// Literal/length frequencies, including end of block.
     private final int[] literalLengthFrequencies = new int[286];
-
-    /// Distance symbol frequencies for the current block.
-    private final int[] distanceFrequencies = new int[32];
-
-    /// Sorted nonzero weights used to calculate an allocation-free Huffman cost lower bound.
-    private final long[] huffmanCostLeaves = new long[286];
-
-    /// Ordered merged weights used to calculate an allocation-free Huffman cost lower bound.
-    private final long[] huffmanCostMerged = new long[286];
-
-    /// Scratch storage for deterministic canonical-tree construction.
+    /// Distance frequencies.
+    private final int[] distanceFrequencies = new int[30];
+    /// Primitive workspace for frequency/depth-ordered tree construction.
     private final HuffmanWorkspace huffmanWorkspace = new HuffmanWorkspace();
-    /// Reusable literal/length codes for the current block.
+    /// Literal/length codes for the active block.
     private final HuffmanCode literalLengthCode = new HuffmanCode(286);
-    /// Reusable distance codes for the current block.
-    private final HuffmanCode distanceCode = new HuffmanCode(32);
-    /// Reusable code-length codes for the current block.
+    /// Distance codes for the active block.
+    private final HuffmanCode distanceCode = new HuffmanCode(30);
+    /// Codes describing the two data trees.
     private final HuffmanCode codeLengthCode = new HuffmanCode(19);
-    /// Concatenated data-tree code lengths.
-    private final int[] combinedLengths = new int[318];
-    /// Reusable run-length encoding of the data-tree lengths.
+    /// Reusable encoded tree lengths.
     private final RunLengthEncoding runLengths = new RunLengthEncoding(318);
-
-    /// Current encoder lifecycle state.
-    private State state = State.ACTIVE;
-
-    /// Complete compressed bytes waiting for caller-owned target space.
+    /// Number of literal/length codes transmitted in the active dynamic header.
+    private int dynamicLiteralCount;
+    /// Number of distance codes transmitted in the active dynamic header.
+    private int dynamicDistanceCount;
+    /// Number of code-length codes transmitted in the active dynamic header.
+    private int dynamicCodeLengthCount;
+    /// Reusable bit writer.
+    private final DeflateBitOutput bits = new DeflateBitOutput();
+    /// Completed bytes awaiting caller target space.
     private ByteBuffer pendingOutput = EMPTY_OUTPUT;
-
-    /// The number of bytes in the current block.
-    private int blockSize;
-
-    /// The number of retained history bytes.
-    private int historySize;
-
-    /// The number of generated literal or match tokens.
+    /// Current lifecycle.
+    private State state = State.ACTIVE;
+    /// Position of the next unprocessed input byte in the window.
+    private int strstart;
+    /// Number of available unprocessed bytes.
+    private int lookahead;
+    /// First raw byte of the active block; negative after it slides out of the window.
+    private int blockStart;
+    /// Number of input positions awaiting hash insertion after a boundary.
+    private int insert;
+    /// Length of the pending lazy match.
+    private int matchLength = 2;
+    /// Start position of the pending lazy match.
+    private int matchStart;
+    /// Whether the preceding byte is waiting for a lazy decision.
+    private boolean matchAvailable;
+    /// Number of active literal or match tokens.
     private int tokenCount;
-
-    /// Extra bits contributed by the current block's match tokens.
+    /// Match extra-bit cost for the active block.
     private long tokenExtraBitCost;
+    /// Whether a nonterminal boundary was emitted without subsequent input.
+    private boolean alreadyFlushed;
+    /// Whether the current boundary's final bytes were prepared.
+    private boolean boundaryPrepared;
+    /// Canonical level-zero input staging and retained un-emitted bytes.
+    private final byte[] stored;
+    /// Number of bytes staged for level zero.
+    private int storedSize;
+    /// Bytes accepted in the current canonical level-zero input chunk.
+    private int storedInputCount;
 
-    /// Whether the current flush has already encoded its synchronization boundary.
-    private boolean flushPrepared;
+    /// Wrapper bytes occupying the first canonical output buffer.
+    private final int wrapperHeaderSize;
+    /// Whether no stored block has yet been emitted.
+    private boolean firstStoredBlock = true;
 
-    /// Creates an encoder for one Deflate-family format and immutable stream configuration.
+    /// Creates a raw Deflate encoder with immutable level, dictionary, and strategy.
     ///
-    /// @param format           selected bitstream semantics
-    /// @param compressionLevel bounded match-search level from zero through nine
-    /// @param dictionary       initial history content, or null
-    /// @param strategy         match-selection strategy
-    public DeflateEncoderEngine(
-            Format format,
-            int compressionLevel,
-            byte @Nullable [] dictionary,
-            DeflateStrategy strategy
-    ) {
-        this.format = Objects.requireNonNull(format, "format");
+    /// @param compressionLevel compression level from zero through nine
+    /// @param dictionary initial history, or null
+    /// @param strategy match-selection strategy
+    public DeflateEncoderEngine(int compressionLevel, byte @Nullable [] dictionary, DeflateStrategy strategy) {
+        this(compressionLevel, dictionary, strategy, 0);
+    }
+
+    /// Creates an engine whose first canonical output buffer includes a wrapper header.
+    ///
+    /// @param compressionLevel compression level from zero through nine
+    /// @param dictionary initial history, or null
+    /// @param strategy match-selection strategy
+    /// @param wrapperHeaderSize bytes preceding the raw payload in the first reference output buffer
+    DeflateEncoderEngine(int compressionLevel, byte @Nullable [] dictionary, DeflateStrategy strategy,
+                         int wrapperHeaderSize) {
         if (compressionLevel < 0 || compressionLevel > 9) {
-            throw new IllegalArgumentException(format.displayName() + " compression level must be between 0 and 9");
-        }
-        if (format == Format.DEFLATE64 && dictionary != null) {
-            throw new IllegalArgumentException("Deflate64 does not support preset dictionaries");
+            throw new IllegalArgumentException("Deflate compression level must be between 0 and 9");
         }
         this.compressionLevel = compressionLevel;
         this.strategy = Objects.requireNonNull(strategy, "strategy");
-        this.dictionary = dictionary != null ? dictionary.clone() : null;
-        this.searchLimit = searchLimit(compressionLevel, strategy);
-        this.history = new byte[format.windowSize()];
-        this.matchBytes = new byte[format.windowSize() + BLOCK_SIZE];
-        this.previous = new int[format.windowSize() + BLOCK_SIZE];
+        this.dictionary = dictionary == null ? null : dictionary.clone();
+        this.wrapperHeaderSize = wrapperHeaderSize;
+        this.stored = new byte[compressionLevel == 0 ? 2 * BLOCK_SIZE : 0];
         restoreDictionary();
     }
 
-    /// Encodes source bytes until the source or target is exhausted.
+    /// Consumes input without retaining caller buffers or creating implicit flush boundaries.
     @Override
-    public CodecOutcome encode(ByteBuffer source, ByteBuffer target) throws IOException {
+    public CodecOutcome encode(ByteBuffer source, ByteBuffer target) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         requireState(State.ACTIVE, "encode");
-
         while (true) {
             copyPendingOutput(target);
-            if (pendingOutput.hasRemaining()) {
-                return CodecOutcome.NEEDS_OUTPUT;
-            }
+            if (pendingOutput.hasRemaining()) return CodecOutcome.NEEDS_OUTPUT;
             pendingOutput = EMPTY_OUTPUT;
-
-            if (!source.hasRemaining()) {
-                return CodecOutcome.NEEDS_INPUT;
-            }
-            int copied = Math.min(source.remaining(), block.length - blockSize);
-            source.get(block, blockSize, copied);
-            blockSize += copied;
-            if (blockSize == block.length) {
-                writeBlock(false);
-                pendingOutput = bits.takeOutput();
+            if (compressionLevel == 0) {
+                if (!source.hasRemaining()) return CodecOutcome.NEEDS_INPUT;
+                int count = Math.min(source.remaining(), BLOCK_SIZE - storedInputCount);
+                source.get(stored, storedSize, count);
+                storedSize += count;
+                storedInputCount += count;
+                alreadyFlushed = false;
+                if (storedInputCount == BLOCK_SIZE) {
+                    storedInputCount = 0;
+                    writeStoredPrefix(Math.min(storedSize, BLOCK_SIZE - 5
+                            - (firstStoredBlock ? wrapperHeaderSize : 0)), false);
+                    // A full retained window becomes a pending block even when the reference output is full.
+                    if (storedSize >= WINDOW_SIZE) {
+                        writeStoredPrefix(Math.min(storedSize, BLOCK_SIZE - 5), false);
+                    }
+                    pendingOutput = bits.takeOutput();
+                }
+            } else if (strategy == DeflateStrategy.HUFFMAN_ONLY) {
+                if (!source.hasRemaining()) return CodecOutcome.NEEDS_INPUT;
+                int count = Math.min(source.remaining(), MAXIMUM_TOKENS - tokenCount);
+                source.get(window, strstart, count);
+                for (int end = strstart + count; strstart < end; strstart++) {
+                    addLiteral(Byte.toUnsignedInt(window[strstart]));
+                }
+                alreadyFlushed = false;
+                if (tokenCount == MAXIMUM_TOKENS) {
+                    writeBlock(false);
+                    strstart = blockStart = 0;
+                    pendingOutput = bits.takeOutput();
+                }
+            } else {
+                if (lookahead < MINIMUM_LOOKAHEAD) fillWindow(source);
+                if (lookahead < MINIMUM_LOOKAHEAD) return CodecOutcome.NEEDS_INPUT;
+                processToken();
             }
         }
     }
 
-    /// Ends the current block with a byte-aligned empty stored-block synchronization marker.
+    /// Emits a sync boundary once; repeated flushes without new input produce no additional marker.
     @Override
     public CodecOutcome flush(ByteBuffer target) {
         Objects.requireNonNull(target, "target");
         requireOpen();
         if (state == State.FINISHING || state == State.FINISHED) {
-            throw new IllegalStateException("Cannot flush a finishing or finished " + format.displayName() + " stream");
+            throw new IllegalStateException("Cannot flush a finishing or finished Deflate stream");
         }
         if (state == State.ACTIVE) {
+            if (alreadyFlushed) return CodecOutcome.FLUSHED;
             state = State.FLUSHING;
-            flushPrepared = false;
+            boundaryPrepared = false;
         }
-
-        copyPendingOutput(target);
-        if (pendingOutput.hasRemaining()) {
-            return CodecOutcome.NEEDS_OUTPUT;
-        }
-        pendingOutput = EMPTY_OUTPUT;
-
-        if (!flushPrepared) {
-            if (blockSize > 0) {
-                writeBlock(false);
-            }
-            writeSyncFlushMarker();
-            pendingOutput = bits.takeOutput();
-            flushPrepared = true;
-        }
-        copyPendingOutput(target);
-        if (pendingOutput.hasRemaining()) {
-            return CodecOutcome.NEEDS_OUTPUT;
-        }
-
-        pendingOutput = EMPTY_OUTPUT;
-        flushPrepared = false;
-        state = State.ACTIVE;
-        return CodecOutcome.FLUSHED;
+        return finishBoundary(target, false);
     }
 
-    /// Finishes the raw stream without releasing encoder-owned state.
+    /// Emits the final block, leaving finalization resumable when target space is exhausted.
     @Override
     public CodecOutcome finish(ByteBuffer target) {
         Objects.requireNonNull(target, "target");
         requireOpen();
-        if (state == State.FLUSHING) {
-            throw new IllegalStateException(
-                    "Complete the active flush before finishing the " + format.displayName() + " stream"
-            );
-        }
-        if (state == State.FINISHED) {
-            return CodecOutcome.FINISHED;
-        }
+        if (state == State.FLUSHING) throw new IllegalStateException("Complete the active flush before finishing");
+        if (state == State.FINISHED) return CodecOutcome.FINISHED;
         if (state == State.ACTIVE) {
-            copyPendingOutput(target);
-            if (pendingOutput.hasRemaining()) {
-                return CodecOutcome.NEEDS_OUTPUT;
-            }
-            pendingOutput = EMPTY_OUTPUT;
-
-            writeBlock(true);
-            bits.finish();
-            pendingOutput = bits.takeOutput();
             state = State.FINISHING;
+            boundaryPrepared = false;
         }
-
-        copyPendingOutput(target);
-        if (pendingOutput.hasRemaining()) {
-            return CodecOutcome.NEEDS_OUTPUT;
-        }
-        pendingOutput = EMPTY_OUTPUT;
-        state = State.FINISHED;
-        return CodecOutcome.FINISHED;
+        return finishBoundary(target, true);
     }
 
-    /// Abandons the current stream and restores its configured initial history.
+    /// Completes pending token decisions and then emits one logical boundary.
+    private CodecOutcome finishBoundary(ByteBuffer target, boolean terminal) {
+        while (true) {
+            copyPendingOutput(target);
+            if (pendingOutput.hasRemaining()) return CodecOutcome.NEEDS_OUTPUT;
+            pendingOutput = EMPTY_OUTPUT;
+            if (boundaryPrepared) {
+                state = terminal ? State.FINISHED : State.ACTIVE;
+                alreadyFlushed = !terminal;
+                return terminal ? CodecOutcome.FINISHED : CodecOutcome.FLUSHED;
+            }
+            if (compressionLevel == 0) {
+                // The final canonical input chunk is processed before the empty-input finish operation.
+                if (storedInputCount > 0 && storedSize >= WINDOW_SIZE) {
+                    storedInputCount = 0;
+                    writeStoredPrefix(Math.min(storedSize, BLOCK_SIZE - 5
+                            - (firstStoredBlock ? wrapperHeaderSize : 0)), false);
+                    if (storedSize >= WINDOW_SIZE) {
+                        writeStoredPrefix(Math.min(storedSize, BLOCK_SIZE - 5), false);
+                    }
+                    pendingOutput = bits.takeOutput();
+                    continue;
+                }
+                if (terminal || storedSize > 0) writeStoredPrefix(storedSize, terminal);
+                storedInputCount = 0;
+            } else {
+                if (lookahead > 0) {
+                    processToken();
+                    continue;
+                }
+                if (matchAvailable) {
+                    addLiteral(Byte.toUnsignedInt(window[strstart - 1]));
+                    matchAvailable = false;
+                }
+                insert = Math.min(strstart, 2);
+                if (terminal || tokenCount > 0) writeBlock(terminal);
+                if (strategy == DeflateStrategy.HUFFMAN_ONLY) {
+                    strstart = blockStart = insert = 0;
+                }
+            }
+            if (terminal) bits.finish();
+            else writeSyncFlushMarker();
+            firstStoredBlock = false;
+            pendingOutput = bits.takeOutput();
+            boundaryPrepared = true;
+        }
+    }
+
+    /// Restores the immutable configuration and abandons every unfinished block.
     @Override
     public void reset() {
         requireOpen();
-        blockSize = 0;
-        tokenCount = 0;
-        flushPrepared = false;
-        pendingOutput = EMPTY_OUTPUT;
         bits.reset();
-        restoreDictionary();
+        pendingOutput = EMPTY_OUTPUT;
+        strstart = lookahead = blockStart = insert = matchStart = tokenCount = storedSize = storedInputCount = 0;
+        matchLength = 2;
+        matchAvailable = alreadyFlushed = boundaryPrepared = false;
+        firstStoredBlock = true;
         state = State.ACTIVE;
+        restoreDictionary();
     }
 
-    /// Releases encoder-owned stream state without finishing pending data.
+    /// Releases pending output without generating a trailer.
     @Override
     public void close() {
         state = State.CLOSED;
         pendingOutput = EMPTY_OUTPUT;
-        blockSize = 0;
-        historySize = 0;
-        tokenCount = 0;
         bits.reset();
     }
 
-    /// Selects and writes one block, then retains its trailing history.
-    private void writeBlock(boolean finalBlock) {
-        if (compressionLevel == 0) {
-            writeStoredBlock(finalBlock);
-        } else {
-            generateTokens();
-            long fixedCost = fixedBlockBitCost();
-            long storedCost = storedBlockBitCost();
-            if (storedCost <= fixedCost && dynamicBlockBitCostLowerBound() >= storedCost) {
-                writeStoredBlock(finalBlock);
-            } else {
-                DynamicPlan dynamicPlan = createDynamicPlan();
-                if (storedCost <= fixedCost && storedCost <= dynamicPlan.bitCost()) {
-                    writeStoredBlock(finalBlock);
-                } else if (dynamicPlan.bitCost() < fixedCost) {
-                    writeDynamicBlock(finalBlock, dynamicPlan);
-                } else {
-                    writeFixedBlock(finalBlock);
-                }
-            }
+    /// Fills lookahead and slides retained history using the same window positions as zlib.
+    private void fillWindow(ByteBuffer source) {
+        if (strstart >= 2 * WINDOW_SIZE - MINIMUM_LOOKAHEAD) {
+            System.arraycopy(window, WINDOW_SIZE, window, 0, WINDOW_SIZE);
+            strstart -= WINDOW_SIZE;
+            blockStart -= WINDOW_SIZE;
+            matchStart -= WINDOW_SIZE;
+            for (int i = 0; i < HASH_SIZE; i++) hashHeads[i] = Math.max(0, hashHeads[i] - WINDOW_SIZE);
+            for (int i = 0; i < WINDOW_SIZE; i++) previous[i] = Math.max(0, previous[i] - WINDOW_SIZE);
+            insert = Math.min(insert, strstart);
         }
-        retainHistory();
-        blockSize = 0;
-        tokenCount = 0;
+        int count = Math.min(source.remaining(), 2 * WINDOW_SIZE - strstart - lookahead);
+        if (count == 0) return;
+        source.get(window, strstart + lookahead, count);
+        lookahead += count;
+        alreadyFlushed = false;
+        while (insert > 0 && lookahead + insert >= 3) {
+            insertPosition(strstart - insert);
+            insert--;
+        }
     }
 
-    /// Writes one or more byte-aligned stored blocks containing the current block bytes.
-    private void writeStoredBlock(boolean finalBlock) {
-        int offset = 0;
-        int remaining = blockSize;
+    /// Inserts one position and returns the preceding chain head; window position zero is the sentinel.
+    private int insertPosition(int position) {
+        int hash = ((Byte.toUnsignedInt(window[position]) << (2 * HASH_SHIFT))
+                ^ (Byte.toUnsignedInt(window[position + 1]) << HASH_SHIFT)
+                ^ Byte.toUnsignedInt(window[position + 2])) & (HASH_SIZE - 1);
+        int head = hashHeads[hash];
+        previous[position & (WINDOW_SIZE - 1)] = head;
+        hashHeads[hash] = position;
+        return head;
+    }
+
+    /// Searches the chain in descending position order, retaining the first longest match.
+    private int longestMatch(int candidate, int previousLength) {
+        int[] configuration = CONFIGURATION[compressionLevel];
+        int chain = configuration[3];
+        if (previousLength >= configuration[0]) chain >>>= 2;
+        int best = previousLength;
+        int maximum = Math.min(258, lookahead);
+        int nice = Math.min(configuration[2], lookahead);
+        int limit = Math.max(0, strstart - (WINDOW_SIZE - MINIMUM_LOOKAHEAD));
         do {
-            int length = Math.min(remaining, 0xffff);
-            boolean lastStoredBlock = remaining <= 0xffff;
-            bits.writeBits(1, finalBlock && lastStoredBlock ? 1 : 0);
-            bits.writeBits(2, 0);
+            if (best < maximum && window[candidate + best] == window[strstart + best]
+                    && window[candidate + best - 1] == window[strstart + best - 1]
+                    && window[candidate] == window[strstart] && window[candidate + 1] == window[strstart + 1]) {
+                int mismatch = Arrays.mismatch(window, candidate + 2, candidate + maximum,
+                        window, strstart + 2, strstart + maximum);
+                int length = mismatch < 0 ? maximum : mismatch + 2;
+                if (length > best) {
+                    matchStart = candidate;
+                    best = length;
+                    if (length >= nice) break;
+                }
+            }
+            candidate = previous[candidate & (WINDOW_SIZE - 1)];
+        } while (candidate > limit && --chain != 0);
+        return Math.min(best, lookahead);
+    }
+
+    /// Advances one greedy or lazy decision, emitting a block when its symbol workspace fills.
+    private void processToken() {
+        int head = lookahead >= 3 ? insertPosition(strstart) : 0;
+        if (compressionLevel <= 3) {
+            matchLength = 2;
+            if (head != 0 && strstart - head <= WINDOW_SIZE - MINIMUM_LOOKAHEAD) {
+                matchLength = longestMatch(head, 2);
+            }
+            if (matchLength >= 3) {
+                int length = matchLength;
+                addMatch(length, strstart - matchStart);
+                lookahead -= length;
+                if (length <= CONFIGURATION[compressionLevel][1] && lookahead >= 3) {
+                    for (int end = strstart + length; ++strstart < end;) insertPosition(strstart);
+                } else strstart += length;
+                matchLength = 2;
+            } else {
+                addLiteral(Byte.toUnsignedInt(window[strstart++]));
+                lookahead--;
+            }
+            if (tokenCount == MAXIMUM_TOKENS) publishBlock();
+            return;
+        }
+        int previousLength = matchLength;
+        int previousMatch = matchStart;
+        matchLength = 2;
+        if (head != 0 && previousLength < CONFIGURATION[compressionLevel][1]
+                && strstart - head <= WINDOW_SIZE - MINIMUM_LOOKAHEAD) {
+            matchLength = longestMatch(head, previousLength);
+            if (matchLength <= 5 && (strategy == DeflateStrategy.FILTERED
+                    || matchLength == 3 && strstart - matchStart > 4096)) matchLength = 2;
+        }
+        if (previousLength >= 3 && matchLength <= previousLength) {
+            addMatch(previousLength, strstart - 1 - previousMatch);
+            int maximumInsert = strstart + lookahead - 3;
+            lookahead -= previousLength - 1;
+            for (int remaining = previousLength - 2; remaining > 0; remaining--) {
+                if (++strstart <= maximumInsert) insertPosition(strstart);
+            }
+            strstart++;
+            matchAvailable = false;
+            matchLength = 2;
+            if (tokenCount == MAXIMUM_TOKENS) publishBlock();
+        } else if (matchAvailable) {
+            addLiteral(Byte.toUnsignedInt(window[strstart - 1]));
+            // This byte still awaits the next lazy decision and belongs to the following raw block.
+            if (tokenCount == MAXIMUM_TOKENS) publishBlock();
+            strstart++;
+            lookahead--;
+        } else {
+            matchAvailable = true;
+            strstart++;
+            lookahead--;
+        }
+    }
+
+    /// Writes a full nonfinal symbol block and stages its complete bytes.
+    private void publishBlock() {
+        writeBlock(false);
+        pendingOutput = bits.takeOutput();
+    }
+
+    /// Selects a block using zlib's rounded byte costs and tie rules.
+    private void writeBlock(boolean terminal) {
+        long fixed = (tokenBitCost(FixedCode.INSTANCE, FixedDistanceCode.INSTANCE) + 3 + 7) >>> 3;
+        long dynamic = (prepareDynamicBlock() + 7) >>> 3;
+        int rawLength = strstart - blockStart;
+        if (blockStart >= 0 && rawLength <= 65535 && rawLength + 4L <= Math.min(fixed, dynamic)) {
+            bits.writeBits(3, terminal ? 1 : 0);
             bits.alignToByte();
-            bits.writeBits(16, length);
-            bits.writeBits(16, length ^ 0xffff);
-            bits.writeBytes(block, offset, length);
-            offset += length;
-            remaining -= length;
-        } while (remaining > 0);
+            bits.writeBits(16, rawLength);
+            bits.writeBits(16, rawLength ^ 0xffff);
+            bits.writeBytes(window, blockStart, rawLength);
+        } else if (fixed <= dynamic) writeFixedBlock(terminal);
+        else writeDynamicBlock(terminal);
+        blockStart = strstart;
+        tokenCount = 0;
+        tokenExtraBitCost = 0;
+        Arrays.fill(literalLengthFrequencies, 0);
+        Arrays.fill(distanceFrequencies, 0);
+        literalLengthFrequencies[END_OF_BLOCK_SYMBOL] = 1;
+    }
+
+    /// Emits a level-zero prefix and retains the un-emitted bytes in canonical input staging.
+    private void writeStoredPrefix(int length, boolean terminal) {
+        firstStoredBlock = false;
+        bits.writeBits(3, terminal ? 1 : 0);
+        bits.alignToByte();
+        bits.writeBits(16, length);
+        bits.writeBits(16, length ^ 0xffff);
+        bits.writeBytes(stored, 0, length);
+        storedSize -= length;
+        System.arraycopy(stored, length, stored, 0, storedSize);
     }
 
     /// Writes one fixed-Huffman block from the current token stream.
@@ -378,21 +508,21 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
     }
 
     /// Writes one dynamic-Huffman block and its canonical tree description.
-    private void writeDynamicBlock(boolean finalBlock, DynamicPlan plan) {
+    private void writeDynamicBlock(boolean finalBlock) {
         bits.writeBits(1, finalBlock ? 1 : 0);
         bits.writeBits(2, 2);
-        bits.writeBits(5, plan.literalLengthCount() - 257);
-        bits.writeBits(5, plan.distanceCount() - 1);
-        bits.writeBits(4, plan.codeLengthCount() - 4);
-        for (int index = 0; index < plan.codeLengthCount(); index++) {
-            bits.writeBits(3, plan.codeLengthCode().length(CODE_LENGTH_ORDER[index]));
+        bits.writeBits(5, dynamicLiteralCount - 257);
+        bits.writeBits(5, dynamicDistanceCount - 1);
+        bits.writeBits(4, dynamicCodeLengthCount - 4);
+        for (int index = 0; index < dynamicCodeLengthCount; index++) {
+            bits.writeBits(3, codeLengthCode.length(CODE_LENGTH_ORDER[index]));
         }
-        for (int index = 0; index < plan.runLengthCount(); index++) {
-            int symbol = plan.runLengthSymbols()[index];
-            plan.codeLengthCode().writeSymbol(bits, symbol);
-            bits.writeBits(plan.runLengthExtraBits()[index], plan.runLengthExtraValues()[index]);
+        for (int index = 0; index < runLengths.count(); index++) {
+            int symbol = runLengths.symbols()[index];
+            codeLengthCode.writeSymbol(bits, symbol);
+            bits.writeBits(runLengths.extraBits()[index], runLengths.extraValues()[index]);
         }
-        writeTokens(plan.literalLengthCode(), plan.distanceCode());
+        writeTokens(literalLengthCode, distanceCode);
     }
 
     /// Writes all literal and match tokens followed by the end-of-block symbol.
@@ -412,41 +542,6 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             }
         }
         literalLengthCode.writeSymbol(bits, END_OF_BLOCK_SYMBOL);
-    }
-
-    /// Generates literal and match tokens and their data-tree frequencies.
-    private void generateTokens() {
-        Arrays.fill(literalLengthFrequencies, 0);
-        Arrays.fill(distanceFrequencies, 0);
-        tokenCount = 0;
-        tokenExtraBitCost = 0L;
-
-        if (strategy == DeflateStrategy.HUFFMAN_ONLY) {
-            for (int position = 0; position < blockSize; position++) {
-                addLiteral(Byte.toUnsignedInt(block[position]));
-            }
-        } else {
-            initializeMatchFinder();
-            int position = 0;
-            while (position < blockSize) {
-                int logicalPosition = historySize + position;
-                long match = findAndInsertMatch(logicalPosition);
-                int length = (int) match;
-                if (strategy == DeflateStrategy.FILTERED && length <= 5) {
-                    length = 0;
-                }
-                if (length >= MINIMUM_MATCH_LENGTH) {
-                    addMatch(length, (int) (match >>> Integer.SIZE));
-                    int end = position + length;
-                    insertPositions(logicalPosition + 1, historySize + end);
-                    position = end;
-                } else {
-                    addLiteral(Byte.toUnsignedInt(block[position]));
-                    position++;
-                }
-            }
-        }
-        literalLengthFrequencies[END_OF_BLOCK_SYMBOL]++;
     }
 
     /// Adds one literal token and updates its frequency.
@@ -469,89 +564,15 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         tokenExtraBitCost += lengthExtraBits(lengthSymbol) + distanceExtraBits(distanceSymbol);
     }
 
-    /// Initializes hash chains with the retained dictionary or preceding-block history.
-    private void initializeMatchFinder() {
-        System.arraycopy(history, 0, matchBytes, 0, historySize);
-        System.arraycopy(block, 0, matchBytes, historySize, blockSize);
-        Arrays.fill(hashHeads, -1);
-        insertPositions(0, historySize - 2);
-    }
-
-    /// Finds and inserts one position, returning length in the low word and distance in the high word, or zero.
-    private long findAndInsertMatch(int position) {
-        int remaining = Math.min(historySize + blockSize - position, format.maximumMatchLength());
-        if (searchLimit == 0 || remaining < MINIMUM_MATCH_LENGTH) {
-            return 0L;
-        }
-        int hash = hash(position);
-        int candidate = hashHeads[hash];
-        previous[position] = candidate;
-        hashHeads[hash] = position;
-        int bestLength = 0;
-        int bestDistance = 0;
-        int searched = 0;
-        while (candidate >= 0 && searched++ < searchLimit) {
-            int distance = position - candidate;
-            if (distance > format.windowSize()) {
-                break;
-            }
-            // A candidate differing at the current best endpoint cannot extend beyond that match.
-            if ((bestLength == 0 || matchBytes[candidate + bestLength] == matchBytes[position + bestLength])
-                    && matchBytes[candidate] == matchBytes[position]
-                    && matchBytes[candidate + 1] == matchBytes[position + 1]
-                    && matchBytes[candidate + 2] == matchBytes[position + 2]) {
-                int mismatch = Arrays.mismatch(
-                        matchBytes,
-                        candidate + MINIMUM_MATCH_LENGTH,
-                        candidate + remaining,
-                        matchBytes,
-                        position + MINIMUM_MATCH_LENGTH,
-                        position + remaining
-                );
-                int length = mismatch < 0 ? remaining : MINIMUM_MATCH_LENGTH + mismatch;
-                if (length > bestLength) {
-                    bestLength = length;
-                    bestDistance = distance;
-                    if (length == remaining) {
-                        break;
-                    }
-                }
-            }
-            candidate = previous[candidate];
-        }
-        return bestLength >= MINIMUM_MATCH_LENGTH
-                ? (long) bestDistance << Integer.SIZE | Integer.toUnsignedLong(bestLength)
-                : 0L;
-    }
-
-    /// Inserts consecutive positions in the original order using the same three-byte polynomial hash.
-    private void insertPositions(int position, int end) {
-        end = Math.min(end, historySize + blockSize - 2);
-        for (; position < end; position++) {
-            int hash = hash(position);
-            previous[position] = hashHeads[hash];
-            hashHeads[hash] = position;
-        }
-    }
-
-    /// Returns the hash of three bytes at one combined-domain position.
-    private int hash(int position) {
-        int value = Byte.toUnsignedInt(matchBytes[position]);
-        value = value * HASH_MULTIPLIER + Byte.toUnsignedInt(matchBytes[position + 1]);
-        value = value * HASH_MULTIPLIER + Byte.toUnsignedInt(matchBytes[position + 2]);
-        return value & (HASH_SIZE - 1);
-    }
-
     /// Creates the dynamic trees and run-length encoded tree description for the current token stream.
-    private DynamicPlan createDynamicPlan() {
+    private long prepareDynamicBlock() {
         huffmanWorkspace.build(literalLengthFrequencies, MAXIMUM_DATA_CODE_LENGTH, literalLengthCode);
         huffmanWorkspace.build(distanceFrequencies, MAXIMUM_DATA_CODE_LENGTH, distanceCode);
         int literalLengthCount = Math.max(257, lastNonZero(literalLengthCode.lengths()) + 1);
         int distanceCount = Math.max(1, lastNonZero(distanceCode.lengths()) + 1);
-        System.arraycopy(literalLengthCode.lengths(), 0, combinedLengths, 0, literalLengthCount);
-        System.arraycopy(distanceCode.lengths(), 0, combinedLengths, literalLengthCount, distanceCount);
-
-        runLengths.encode(combinedLengths, literalLengthCount + distanceCount);
+        runLengths.clear();
+        runLengths.encode(literalLengthCode.lengths(), literalLengthCount);
+        runLengths.encode(distanceCode.lengths(), distanceCount);
         huffmanWorkspace.build(runLengths.frequencies(), MAXIMUM_CODE_LENGTH, codeLengthCode);
         int codeLengthCount = 4;
         for (int index = CODE_LENGTH_ORDER.length - 1; index >= 4; index--) {
@@ -567,93 +588,10 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             bitCost += runLengths.extraBits()[index];
         }
         bitCost += tokenBitCost(literalLengthCode, distanceCode);
-        return new DynamicPlan(
-                literalLengthCode,
-                distanceCode,
-                codeLengthCode,
-                runLengths.symbols(),
-                runLengths.extraValues(),
-                runLengths.extraBits(),
-                runLengths.count(),
-                literalLengthCount,
-                distanceCount,
-                codeLengthCount,
-                bitCost
-        );
-    }
-
-    /// Returns a lower bound for the complete dynamic-Huffman block cost.
-    private long dynamicBlockBitCostLowerBound() {
-        return MINIMUM_DYNAMIC_HEADER_BIT_COST
-                + tokenExtraBitCost
-                + minimumHuffmanBitCost(literalLengthFrequencies)
-                + minimumHuffmanBitCost(distanceFrequencies);
-    }
-
-    /// Returns the unconstrained optimal Huffman data cost for one frequency alphabet.
-    private long minimumHuffmanBitCost(int[] frequencies) {
-        int leafCount = 0;
-        for (int frequency : frequencies) {
-            if (frequency > 0) {
-                huffmanCostLeaves[leafCount++] = frequency;
-            }
-        }
-        if (leafCount == 0) {
-            return 0L;
-        }
-        if (leafCount == 1) {
-            return huffmanCostLeaves[0];
-        }
-
-        Arrays.sort(huffmanCostLeaves, 0, leafCount);
-        int leafPosition = 0;
-        int mergedPosition = 0;
-        int mergedCount = 0;
-        long cost = 0L;
-        for (int merge = 1; merge < leafCount; merge++) {
-            long first;
-            if (leafPosition < leafCount
-                    && (mergedPosition >= mergedCount
-                    || huffmanCostLeaves[leafPosition] <= huffmanCostMerged[mergedPosition])) {
-                first = huffmanCostLeaves[leafPosition++];
-            } else {
-                first = huffmanCostMerged[mergedPosition++];
-            }
-
-            long second;
-            if (leafPosition < leafCount
-                    && (mergedPosition >= mergedCount
-                    || huffmanCostLeaves[leafPosition] <= huffmanCostMerged[mergedPosition])) {
-                second = huffmanCostLeaves[leafPosition++];
-            } else {
-                second = huffmanCostMerged[mergedPosition++];
-            }
-
-            long combined = first + second;
-            huffmanCostMerged[mergedCount++] = combined;
-            cost += combined;
-        }
-        return cost;
-    }
-
-    /// Returns the encoded cost of the fixed-Huffman block including its header.
-    private long fixedBlockBitCost() {
-        return 3L + tokenBitCost(FixedCode.INSTANCE, FixedDistanceCode.INSTANCE);
-    }
-
-    /// Returns the encoded cost of stored blocks at the current bit alignment.
-    private long storedBlockBitCost() {
-        int remaining = blockSize;
-        int bitOffset = bits.bitCount();
-        long cost = 0L;
-        do {
-            int length = Math.min(remaining, 0xffff);
-            int padding = -(bitOffset + 3) & 7;
-            cost += 3L + padding + 32L + 8L * length;
-            bitOffset = 0;
-            remaining -= length;
-        } while (remaining > 0);
-        return cost;
+        dynamicLiteralCount = literalLengthCount;
+        dynamicDistanceCount = distanceCount;
+        dynamicCodeLengthCount = codeLengthCount;
+        return bitCost;
     }
 
     /// Returns the encoded token and end-of-block cost for two symbol trees.
@@ -671,11 +609,10 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
     /// Resolves the literal/length symbol for one match length.
     private int lengthSymbol(int length) {
         if (length <= 258) return LENGTH_SYMBOLS[length];
-        if (length <= format.maximumMatchLength()) return LAST_LENGTH_SYMBOL;
         throw new AssertionError(length);
     }
 
-    /// Creates the bounded lookup shared by ordinary and extended Deflate match lengths.
+    /// Creates the symbol lookup for match lengths from three through 258.
     private static int[] lengthSymbols() {
         int[] result = new int[259];
         for (int length = MINIMUM_MATCH_LENGTH; length <= 258; length++) {
@@ -693,18 +630,15 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         return result;
     }
 
-    /// Returns the extra-bit count for one length symbol in the selected format.
+    /// Returns the extra-bit count for one Deflate length symbol.
     private int lengthExtraBits(int symbol) {
-        if (symbol == LAST_LENGTH_SYMBOL && format == Format.DEFLATE64) {
-            return 16;
-        }
         return LENGTH_EXTRA_BITS[symbol - FIRST_LENGTH_SYMBOL];
     }
 
     /// Returns the extra-bit value for one encoded match length.
     private int lengthExtraValue(int length, int symbol) {
         if (symbol == LAST_LENGTH_SYMBOL) {
-            return format == Format.DEFLATE64 ? length - MINIMUM_MATCH_LENGTH : 0;
+            return 0;
         }
         return length - LENGTH_BASES[symbol - FIRST_LENGTH_SYMBOL];
     }
@@ -741,36 +675,20 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         bits.writeBits(16, 0xffff);
     }
 
-    /// Retains the final format-window bytes of combined history and the current block.
-    private void retainHistory() {
-        int combinedSize = historySize + blockSize;
-        int retained = Math.min(format.windowSize(), combinedSize);
-        int start = combinedSize - retained;
-        if (start < historySize) {
-            int fromHistory = historySize - start;
-            System.arraycopy(history, start, history, 0, fromHistory);
-            System.arraycopy(block, 0, history, fromHistory, retained - fromHistory);
-        } else {
-            System.arraycopy(block, start - historySize, history, 0, retained);
-        }
-        historySize = retained;
-    }
-
-    /// Restores history bytes from the immutable configured dictionary.
+    /// Initializes hash chains from the dictionary's trailing window.
     private void restoreDictionary() {
-        byte @Nullable [] selectedDictionary = dictionary;
-        if (selectedDictionary == null || selectedDictionary.length == 0) {
-            historySize = 0;
-            return;
-        }
-        historySize = Math.min(selectedDictionary.length, history.length);
-        System.arraycopy(
-                selectedDictionary,
-                selectedDictionary.length - historySize,
-                history,
-                0,
-                historySize
-        );
+        Arrays.fill(hashHeads, 0);
+        Arrays.fill(previous, 0);
+        Arrays.fill(literalLengthFrequencies, 0);
+        Arrays.fill(distanceFrequencies, 0);
+        literalLengthFrequencies[END_OF_BLOCK_SYMBOL] = 1;
+        tokenExtraBitCost = 0;
+        if (compressionLevel == 0 || dictionary == null || dictionary.length == 0) return;
+        int size = Math.min(WINDOW_SIZE, dictionary.length);
+        System.arraycopy(dictionary, dictionary.length - size, window, 0, size);
+        for (int position = 0; position + 2 < size; position++) insertPosition(position);
+        strstart = blockStart = size;
+        insert = Math.min(size, 2);
     }
 
     /// Copies as many staged compressed bytes as fit in the caller-owned target.
@@ -798,20 +716,12 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         return 0;
     }
 
-    /// Resolves the bounded hash-chain search count for one compression configuration.
-    private static int searchLimit(int compressionLevel, DeflateStrategy strategy) {
-        if (compressionLevel == 0 || strategy == DeflateStrategy.HUFFMAN_ONLY) {
-            return 0;
-        }
-        return 1 << Math.min(compressionLevel + 1, 10);
-    }
-
     /// Requires the exact encoder state for an operation.
     private void requireState(State required, String operation) {
         requireOpen();
         if (state != required) {
             throw new IllegalStateException(
-                    "Cannot " + operation + " while " + format.displayName() + " encoder state is " + state
+                    "Cannot " + operation + " while Deflate encoder state is " + state
             );
         }
     }
@@ -819,57 +729,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
     /// Requires this encoder to remain open.
     private void requireOpen() {
         if (state == State.CLOSED) {
-            throw new IllegalStateException(format.displayName() + " encoder is closed");
-        }
-    }
-
-    /// Selects one Deflate-family bitstream profile.
-    @NotNullByDefault
-    public enum Format {
-        /// RFC 1951 Deflate with a 32 KiB window and 258-byte maximum match.
-        DEFLATE("raw Deflate", 1 << 15, 29, 258),
-
-        /// Deflate64 with a 64 KiB window, extended distances, and extended symbol 285.
-        DEFLATE64("Deflate64", 1 << 16, 31, 3 + 0xffff);
-
-        /// Human-readable format name used in errors.
-        private final String displayName;
-
-        /// History-window size.
-        private final int windowSize;
-
-        /// Largest valid distance symbol.
-        private final int maximumDistanceSymbol;
-
-        /// Largest representable match length.
-        private final int maximumMatchLength;
-
-        /// Creates one immutable encoder profile.
-        Format(String displayName, int windowSize, int maximumDistanceSymbol, int maximumMatchLength) {
-            this.displayName = displayName;
-            this.windowSize = windowSize;
-            this.maximumDistanceSymbol = maximumDistanceSymbol;
-            this.maximumMatchLength = maximumMatchLength;
-        }
-
-        /// Returns the human-readable stream name.
-        private String displayName() {
-            return displayName;
-        }
-
-        /// Returns the history-window size.
-        private int windowSize() {
-            return windowSize;
-        }
-
-        /// Returns the largest valid distance symbol.
-        private int maximumDistanceSymbol() {
-            return maximumDistanceSymbol;
-        }
-
-        /// Returns the largest representable match length.
-        private int maximumMatchLength() {
-            return maximumMatchLength;
+            throw new IllegalStateException("Deflate encoder is closed");
         }
     }
 
@@ -880,7 +740,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         int length(int symbol);
 
         /// Writes one symbol to the supplied bit output.
-        void writeSymbol(BitOutput output, int symbol);
+        void writeSymbol(DeflateBitOutput output, int symbol);
     }
 
     /// Provides the RFC 1951 fixed literal/length tree.
@@ -909,7 +769,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
         /// Writes one fixed literal/length symbol.
         @Override
-        public void writeSymbol(BitOutput output, int symbol) {
+        public void writeSymbol(DeflateBitOutput output, int symbol) {
             int code;
             if (symbol <= 143) {
                 code = 0x30 + symbol;
@@ -941,165 +801,128 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
         /// Writes one fixed distance symbol.
         @Override
-        public void writeSymbol(BitOutput output, int symbol) {
+        public void writeSymbol(DeflateBitOutput output, int symbol) {
             output.writeBits(5, reverseBits(symbol, 5));
         }
     }
 
-    /// Builds canonical trees using encoder-owned primitive storage.
+    /// Builds canonical trees with zlib's frequency/depth heap ordering and overflow repair.
     @NotNullByDefault
     static final class HuffmanWorkspace {
-        /// Node weights, including internal tree nodes.
+        /// Weights of leaves and combined nodes.
         private final long[] weights = new long[572];
-        /// Lowest symbol under each node, used to resolve equal weights.
-        private final int[] minimumSymbols = new int[572];
-        /// Parent links for each node.
+        /// Depths used to resolve equal weights.
+        private final int[] depths = new int[572];
+        /// Parent indices of combined nodes.
         private final int[] parents = new int[572];
-        /// Primitive minimum heap of active node indices.
-        private final int[] heap = new int[572];
-        /// The number of nodes currently in the heap.
-        private int heapSize;
-        /// Symbols ordered by weight and symbol index.
-        private final int[] orderedSymbols = new int[286];
-        /// Number of codes at each permitted length.
+        /// Provisional depths after walking the completed tree.
+        private final int[] nodeLengths = new int[572];
+        /// One-based heap and reverse-ordered removed nodes.
+        private final int[] heap = new int[573];
+        /// Code counts indexed by length.
         private final int[] lengthCounts = new int[16];
-        /// Next canonical code for each length.
+        /// Next unreversed canonical code indexed by length.
         private final int[] nextCodes = new int[16];
+        /// Number of active heap nodes.
+        private int heapSize;
 
-        /// Builds a length-limited canonical tree from symbol frequencies.
+        /// Builds a canonical tree without mutating the input frequencies.
         void build(int[] frequencies, int maximumLength, HuffmanCode result) {
-            int symbolCount = frequencies.length;
-            Arrays.fill(weights, 0, symbolCount * 2, 0L);
-            Arrays.fill(parents, 0, symbolCount * 2, -1);
-            Arrays.fill(lengthCounts, 0);
+            int symbols = frequencies.length;
+            Arrays.fill(weights, 0, symbols * 2, 0);
+            Arrays.fill(depths, 0, symbols * 2, 0);
             Arrays.fill(result.lengths, 0);
             Arrays.fill(result.codes, 0);
+            Arrays.fill(lengthCounts, 0);
             heapSize = 0;
-            int activeSymbols = 0;
-            for (int symbol = 0; symbol < symbolCount; symbol++) {
-                if (frequencies[symbol] > 0) {
-                    weights[symbol] = frequencies[symbol];
-                    minimumSymbols[symbol] = symbol;
-                    activeSymbols++;
+            int maximumCode = -1;
+            for (int n = 0; n < symbols; n++) {
+                weights[n] = frequencies[n];
+                if (frequencies[n] != 0) heap[++heapSize] = maximumCode = n;
+            }
+            while (heapSize < 2) {
+                int n = maximumCode < 2 ? ++maximumCode : 0;
+                heap[++heapSize] = n;
+                weights[n] = 1;
+            }
+            for (int n = heapSize / 2; n >= 1; n--) down(n);
+            int nextNode = symbols;
+            int heapMaximum = heap.length;
+            do {
+                int left = heap[1];
+                heap[1] = heap[heapSize--];
+                down(1);
+                int right = heap[1];
+                heap[--heapMaximum] = left;
+                heap[--heapMaximum] = right;
+                weights[nextNode] = weights[left] + weights[right];
+                depths[nextNode] = Math.max(depths[left], depths[right]) + 1;
+                parents[left] = parents[right] = nextNode;
+                heap[1] = nextNode++;
+                down(1);
+            } while (heapSize >= 2);
+            heap[--heapMaximum] = heap[1];
+            nodeLengths[heap[heapMaximum]] = 0;
+            int overflow = 0;
+            for (int h = heapMaximum + 1; h < heap.length; h++) {
+                int n = heap[h];
+                int length = nodeLengths[parents[n]] + 1;
+                if (length > maximumLength) {
+                    length = maximumLength;
+                    overflow++;
+                }
+                nodeLengths[n] = length;
+                if (n > maximumCode) continue;
+                result.lengths[n] = length;
+                lengthCounts[length]++;
+            }
+            if (overflow > 0) {
+                do {
+                    int length = maximumLength - 1;
+                    while (lengthCounts[length] == 0) length--;
+                    lengthCounts[length]--;
+                    lengthCounts[length + 1] += 2;
+                    lengthCounts[maximumLength]--;
+                    overflow -= 2;
+                } while (overflow > 0);
+                int h = heap.length;
+                for (int length = maximumLength; length > 0; length--) {
+                    for (int count = lengthCounts[length]; count > 0;) {
+                        int n = heap[--h];
+                        if (n > maximumCode) continue;
+                        result.lengths[n] = length;
+                        count--;
+                    }
                 }
             }
-            for (int symbol = 0; activeSymbols < 2 && symbol < symbolCount; symbol++) {
-                if (weights[symbol] == 0L) {
-                    weights[symbol] = 1L;
-                    minimumSymbols[symbol] = symbol;
-                    activeSymbols++;
-                }
-            }
-
-            for (int symbol = 0; symbol < symbolCount; symbol++) {
-                if (weights[symbol] != 0L) {
-                    add(symbol);
-                }
-            }
-            int nextNode = symbolCount;
-            while (heapSize > 1) {
-                int left = remove();
-                int right = remove();
-                int parent = nextNode++;
-                weights[parent] = weights[left] + weights[right];
-                minimumSymbols[parent] = Math.min(minimumSymbols[left], minimumSymbols[right]);
-                parents[left] = parent;
-                parents[right] = parent;
-                add(parent);
-            }
-
-            for (int symbol = 0; symbol < symbolCount; symbol++) {
-                if (weights[symbol] == 0L) {
-                    continue;
-                }
-                int length = 0;
-                for (int node = symbol; parents[node] >= 0; node = parents[node]) {
-                    length++;
-                }
-                lengthCounts[Math.min(length, maximumLength)]++;
-            }
-
-            int remainingCodes = HuffmanCode.remainingCodeSlots(lengthCounts, maximumLength);
-            while (remainingCodes < 0) {
-                int length = maximumLength - 1;
-                while (length > 0 && lengthCounts[length] == 0) {
-                    length--;
-                }
-                if (length == 0 || lengthCounts[maximumLength] == 0) {
-                    throw new AssertionError("Unable to limit Huffman code lengths");
-                }
-                lengthCounts[length]--;
-                lengthCounts[length + 1] += 2;
-                lengthCounts[maximumLength]--;
-                remainingCodes++;
-            }
-            if (remainingCodes != 0) {
-                throw new AssertionError("Length-limited Huffman tree is incomplete");
-            }
-
-            heapSize = 0;
-            for (int symbol = 0; symbol < symbolCount; symbol++) {
-                if (weights[symbol] != 0L) add(symbol);
-            }
-            for (int i = 0; i < activeSymbols; i++) orderedSymbols[i] = remove();
-            int[] lengths = result.lengths;
-            int orderedIndex = 0;
-            for (int length = maximumLength; length >= 1; length--) {
-                for (int count = lengthCounts[length]; count > 0; count--) {
-                    lengths[orderedSymbols[orderedIndex++]] = length;
-                }
-            }
-            if (orderedIndex != activeSymbols) {
-                throw new AssertionError("Huffman length assignment is incomplete");
-            }
-
             int code = 0;
             for (int length = 1; length <= maximumLength; length++) {
                 code = (code + lengthCounts[length - 1]) << 1;
                 nextCodes[length] = code;
             }
-            int[] codes = result.codes;
-            for (int symbol = 0; symbol < symbolCount; symbol++) {
-                int length = lengths[symbol];
-                if (length != 0) {
-                    codes[symbol] = reverseBits(nextCodes[length]++, length);
-                }
+            for (int n = 0; n <= maximumCode; n++) {
+                int length = result.lengths[n];
+                if (length != 0) result.codes[n] = reverseBits(nextCodes[length]++, length);
             }
         }
 
-        /// Compares tree nodes with the same ordering as canonical construction.
-        private boolean less(int left, int right) {
-            return weights[left] < weights[right]
-                    || weights[left] == weights[right] && minimumSymbols[left] < minimumSymbols[right];
+        /// Compares weights, then depths, retaining zlib's non-strict tie rule.
+        private boolean smaller(int left, int right) {
+            return weights[left] < weights[right] || weights[left] == weights[right] && depths[left] <= depths[right];
         }
 
-        /// Inserts a node into the primitive minimum heap.
-        private void add(int node) {
-            int index = heapSize++;
-            while (index > 0) {
-                int parent = (index - 1) >>> 1;
-                if (!less(node, heap[parent])) break;
-                heap[index] = heap[parent];
-                index = parent;
-            }
-            heap[index] = node;
-        }
-
-        /// Removes the least node from the primitive minimum heap.
-        private int remove() {
-            int first = heap[0];
-            int replacement = heap[--heapSize];
-            int index = 0;
-            int half = heapSize >>> 1;
-            while (index < half) {
-                int child = index * 2 + 1;
-                if (child + 1 < heapSize && less(heap[child + 1], heap[child])) child++;
-                if (!less(heap[child], replacement)) break;
+        /// Restores the heap after replacing one node.
+        private void down(int index) {
+            int value = heap[index];
+            int child = index * 2;
+            while (child <= heapSize) {
+                if (child < heapSize && smaller(heap[child + 1], heap[child])) child++;
+                if (smaller(value, heap[child])) break;
                 heap[index] = heap[child];
                 index = child;
+                child *= 2;
             }
-            heap[index] = replacement;
-            return first;
+            heap[index] = value;
         }
     }
 
@@ -1118,15 +941,6 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             this.codes = new int[symbolCount];
         }
 
-        /// Returns unused code slots at the maximum depth, or a negative oversubscription count.
-        private static int remainingCodeSlots(int[] lengthCounts, int maximumLength) {
-            int remaining = 1;
-            for (int length = 1; length <= maximumLength; length++) {
-                remaining = (remaining << 1) - lengthCounts[length];
-            }
-            return remaining;
-        }
-
         /// Returns the encoded bit length of one symbol.
         @Override
         public int length(int symbol) {
@@ -1135,7 +949,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
         /// Writes one generated canonical symbol.
         @Override
-        public void writeSymbol(BitOutput output, int symbol) {
+        public void writeSymbol(DeflateBitOutput output, int symbol) {
             int length = lengths[symbol];
             if (length == 0) {
                 throw new AssertionError("Huffman symbol has no code: " + symbol);
@@ -1175,45 +989,50 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             frequencies = new int[19];
         }
 
-        /// Encodes a concatenated literal/length and distance length table.
-        private void encode(int[] lengths, int lengthCount) {
+        /// Clears frequencies before scanning both data trees separately.
+        private void clear() {
             Arrays.fill(frequencies, 0);
             count = 0;
-            int position = 0;
-            while (position < lengthCount) {
-                int value = lengths[position];
-                int runEnd = position + 1;
-                while (runEnd < lengthCount && lengths[runEnd] == value) {
-                    runEnd++;
-                }
-                int runLength = runEnd - position;
-                if (value == 0) {
-                    while (runLength >= 11) {
-                        int repeated = Math.min(runLength, 138);
-                        count = add(symbols, extraValues, extraBits, frequencies, count, 18, repeated - 11, 7);
-                        runLength -= repeated;
+        }
+
+        /// Appends one tree's length description using zlib's adaptive repeat thresholds.
+        private void encode(int[] lengths, int lengthCount) {
+            int previousLength = -1;
+            int nextLength = lengths[0];
+            int repeated = 0;
+            int maximum = nextLength == 0 ? 138 : 7;
+            int minimum = nextLength == 0 ? 3 : 4;
+            for (int n = 0; n < lengthCount; n++) {
+                int current = nextLength;
+                nextLength = n + 1 < lengthCount ? lengths[n + 1] : 65535;
+                if (++repeated < maximum && current == nextLength) continue;
+                if (repeated < minimum) {
+                    do {
+                        count = add(symbols, extraValues, extraBits, frequencies, count, current, 0, 0);
+                    } while (--repeated != 0);
+                } else if (current != 0) {
+                    if (current != previousLength) {
+                        count = add(symbols, extraValues, extraBits, frequencies, count, current, 0, 0);
+                        repeated--;
                     }
-                    if (runLength >= 3) {
-                        int repeated = Math.min(runLength, 10);
-                        count = add(symbols, extraValues, extraBits, frequencies, count, 17, repeated - 3, 3);
-                        runLength -= repeated;
-                    }
-                    while (runLength-- > 0) {
-                        count = add(symbols, extraValues, extraBits, frequencies, count, 0, 0, 0);
-                    }
+                    count = add(symbols, extraValues, extraBits, frequencies, count, 16, repeated - 3, 2);
+                } else if (repeated <= 10) {
+                    count = add(symbols, extraValues, extraBits, frequencies, count, 17, repeated - 3, 3);
                 } else {
-                    count = add(symbols, extraValues, extraBits, frequencies, count, value, 0, 0);
-                    runLength--;
-                    while (runLength >= 3) {
-                        int repeated = Math.min(runLength, 6);
-                        count = add(symbols, extraValues, extraBits, frequencies, count, 16, repeated - 3, 2);
-                        runLength -= repeated;
-                    }
-                    while (runLength-- > 0) {
-                        count = add(symbols, extraValues, extraBits, frequencies, count, value, 0, 0);
-                    }
+                    count = add(symbols, extraValues, extraBits, frequencies, count, 18, repeated - 11, 7);
                 }
-                position = runEnd;
+                repeated = 0;
+                previousLength = current;
+                if (nextLength == 0) {
+                    maximum = 138;
+                    minimum = 3;
+                } else if (current == nextLength) {
+                    maximum = 6;
+                    minimum = 3;
+                } else {
+                    maximum = 7;
+                    minimum = 4;
+                }
             }
         }
 
@@ -1258,149 +1077,6 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         /// Returns the number of encoded entries.
         private int count() {
             return count;
-        }
-    }
-
-    /// Stores a complete dynamic-Huffman block plan.
-    ///
-    /// @param literalLengthCode    literal/length code table
-    /// @param distanceCode         distance code table
-    /// @param codeLengthCode       code-length code table
-    /// @param runLengthSymbols     encoded data-tree length symbols
-    /// @param runLengthExtraValues encoded repeat values
-    /// @param runLengthExtraBits   encoded repeat bit counts
-    /// @param runLengthCount       number of encoded length entries
-    /// @param literalLengthCount   number of transmitted literal/length code lengths
-    /// @param distanceCount        number of transmitted distance code lengths
-    /// @param codeLengthCount      number of transmitted code-length code lengths
-    /// @param bitCost              complete dynamic block cost
-    @NotNullByDefault
-    private record DynamicPlan(
-            HuffmanCode literalLengthCode,
-            HuffmanCode distanceCode,
-            HuffmanCode codeLengthCode,
-            int[] runLengthSymbols,
-            int[] runLengthExtraValues,
-            int[] runLengthExtraBits,
-            int runLengthCount,
-            int literalLengthCount,
-            int distanceCount,
-            int codeLengthCount,
-            long bitCost
-    ) {
-    }
-
-    /// Collects little-endian packed fields into reusable engine-owned complete bytes.
-    @NotNullByDefault
-    private static final class BitOutput {
-        /// Complete compressed-byte storage sized for one uncompressed block and its headers.
-        private byte[] output = new byte[BLOCK_SIZE + 64];
-
-        /// Reusable view of complete compressed bytes awaiting transfer.
-        private ByteBuffer outputView = ByteBuffer.wrap(output);
-
-        /// Number of complete compressed bytes currently stored.
-        private int outputSize;
-
-        /// Packed pending bits, with the next output bit in bit zero.
-        private long buffer;
-
-        /// The number of pending bits.
-        private int bitCount;
-
-        /// Writes up to sixteen low-order bits.
-        private void writeBits(int count, int value) {
-            if (count < 0 || count > 16) {
-                throw new IllegalArgumentException("Deflate bit count must be between 0 and 16");
-            }
-            if (count == 0) return;
-            long encoded = (long) value & ((1L << count) - 1L);
-            buffer |= encoded << bitCount;
-            int total = bitCount + count;
-            if (total >= Long.SIZE) {
-                ensureCapacity(Long.BYTES);
-                ByteArrayAccess.writeLongLittleEndian(output, outputSize, buffer);
-                outputSize += Long.BYTES;
-                buffer = encoded >>> (Long.SIZE - bitCount);
-                total -= Long.SIZE;
-            }
-            bitCount = total;
-        }
-
-        /// Writes aligned bytes directly to the completed output.
-        private void writeBytes(byte[] values, int offset, int length) {
-            drainCompleteBytes();
-            if (bitCount != 0) {
-                throw new IllegalStateException("Deflate byte output is not aligned");
-            }
-            ensureCapacity(length);
-            System.arraycopy(values, offset, output, outputSize, length);
-            outputSize += length;
-        }
-
-        /// Pads pending bits through the next byte boundary.
-        private void alignToByte() {
-            int padding = -bitCount & 7;
-            writeBits(padding, 0);
-        }
-
-        /// Pads the final partial byte into the complete-byte output.
-        private void finish() {
-            drainCompleteBytes();
-            if (bitCount > 0) {
-                writeByte((int) buffer);
-                buffer = 0L;
-                bitCount = 0;
-            }
-        }
-
-        /// Transfers all complete bytes through a view that remains stable until the next write.
-        private ByteBuffer takeOutput() {
-            drainCompleteBytes();
-            if (outputSize == 0) {
-                return EMPTY_OUTPUT;
-            }
-            outputView.clear().limit(outputSize);
-            outputSize = 0;
-            return outputView;
-        }
-
-        /// Returns the number of bits pending below the next byte boundary.
-        private int bitCount() {
-            return bitCount & 7;
-        }
-
-        /// Publishes complete bytes while retaining only the unfinished low-order byte.
-        private void drainCompleteBytes() {
-            while (bitCount >= Byte.SIZE) {
-                writeByte((int) buffer);
-                buffer >>>= Byte.SIZE;
-                bitCount -= Byte.SIZE;
-            }
-        }
-
-        /// Restores an empty bitstream session.
-        private void reset() {
-            outputSize = 0;
-            outputView.clear();
-            buffer = 0L;
-            bitCount = 0;
-        }
-
-        /// Appends one completed byte to reusable storage.
-        private void writeByte(int value) {
-            ensureCapacity(1);
-            output[outputSize++] = (byte) value;
-        }
-
-        /// Ensures reusable storage can append the requested byte count.
-        private void ensureCapacity(int additional) {
-            int required = outputSize + additional;
-            if (required <= output.length) {
-                return;
-            }
-            output = Arrays.copyOf(output, Math.max(required, output.length << 1));
-            outputView = ByteBuffer.wrap(output);
         }
     }
 

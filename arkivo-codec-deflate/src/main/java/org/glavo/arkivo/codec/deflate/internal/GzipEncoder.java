@@ -50,7 +50,6 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
     public GzipEncoder(int compressionLevel, DeflateStrategy strategy) {
         this.compressionLevel = compressionLevel;
         this.body = new DeflateEncoderEngine(
-                DeflateEncoderEngine.Format.DEFLATE,
                 compressionLevel,
                 null,
                 Objects.requireNonNull(strategy, "strategy")

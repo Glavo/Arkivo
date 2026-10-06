@@ -125,6 +125,10 @@ public class DeflateComparisonBenchmark {
             throw new AssertionError("Arkivo Deflate produced no output");
         }
         byte[] arkivoCompressed = Arrays.copyOf(arkivoEncoded.array(), arkivoSize);
+        if (!Arrays.equals(commonCompressed, arkivoCompressed)) {
+            throw new AssertionError("Deflate encoders differ for profile " + profile + " at level " + level
+                    + ": first differing byte=" + Arrays.mismatch(commonCompressed, arkivoCompressed));
+        }
         int arkivoDecodedSize = decompressArkivoOnce();
         int jdkDecodedSize = decompressJdkOnce();
         int jdkDecodedArkivoSize = decompressJdkOnce(arkivoCompressed);

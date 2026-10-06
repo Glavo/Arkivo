@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.deflate;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.glavo.arkivo.codec.deflate.internal.JdkDeflateAlignmentTest;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -53,7 +54,7 @@ final class DeflateEncoderConfigurationTest {
         assertArrayEquals(source, inflate(compressed));
     }
 
-    /// Verifies exact block costs select stored encoding for deterministic incompressible input.
+    /// Verifies rounded block costs select stored encoding for deterministic incompressible input.
     @Test
     void incompressibleInputSelectsStoredBlockAtNonzeroLevel() throws IOException {
         byte[] source = new byte[64 * 1024];
@@ -66,21 +67,25 @@ final class DeflateEncoderConfigurationTest {
         assertTrue(encoded.length < source.length + 32);
     }
 
-    /// Verifies matches spanning the retained-history boundary and overlapping source ranges.
+    /// Verifies overlapping matches and the zlib search-distance boundary without changing input coverage.
     @Test
-    void matchesAcrossBlocksAndOverlappingRanges() throws IOException {
-        byte[] pattern = new byte[32 * 1024];
-        new Random(0x1951_2026L).nextBytes(pattern);
-        byte[] source = new byte[3 * pattern.length + 4 * 1024];
-        System.arraycopy(pattern, 0, source, 0, pattern.length);
-        System.arraycopy(pattern, 0, source, pattern.length, pattern.length);
-        System.arraycopy(pattern, 0, source, 2 * pattern.length, pattern.length);
-        Arrays.fill(source, 3 * pattern.length, source.length, (byte) 'A');
+    void matchesAcrossBlocksAndOverlappingRanges() throws Exception {
+        for (int period : new int[]{32506, 32768}) {
+            byte[] pattern = new byte[period];
+            new Random(0x1951_2026L).nextBytes(pattern);
+            byte[] source = new byte[3 * pattern.length + 4 * 1024];
+            System.arraycopy(pattern, 0, source, 0, pattern.length);
+            System.arraycopy(pattern, 0, source, pattern.length, pattern.length);
+            System.arraycopy(pattern, 0, source, 2 * pattern.length, pattern.length);
+            Arrays.fill(source, 3 * pattern.length, source.length, (byte) 'A');
 
-        byte[] encoded = encode(source, configuration(9, DeflateStrategy.DEFAULT));
+            byte[] encoded = encode(source, configuration(9, DeflateStrategy.DEFAULT));
 
-        assertArrayEquals(source, inflate(encoded));
-        assertTrue(encoded.length < source.length / 2);
+            assertArrayEquals(source, inflate(encoded));
+            JdkDeflateAlignmentTest.verify(source, 9, DeflateStrategy.DEFAULT, true, null,
+                    new int[0], 8192, 257, false);
+            if (period == 32506) assertTrue(encoded.length < source.length / 2);
+        }
     }
 
     /// Verifies all Deflate strategies reach the pure Java encoder and produce interoperable streams.

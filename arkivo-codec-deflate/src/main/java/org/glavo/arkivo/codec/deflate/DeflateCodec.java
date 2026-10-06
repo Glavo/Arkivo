@@ -286,7 +286,6 @@ public final class DeflateCodec
     public CompressionEncoder.Flushable newEncoder(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
         return new DeflateEncoderEngine(
-                DeflateEncoderEngine.Format.DEFLATE,
                 compressionLevel,
                 dictionary != null ? dictionary.bytes() : null,
                 strategy
