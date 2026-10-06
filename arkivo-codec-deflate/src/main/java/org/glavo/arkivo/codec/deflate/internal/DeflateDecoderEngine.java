@@ -928,7 +928,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
     @NotNullByDefault
     private static final class HuffmanTree {
         /// Bits covered by the root table.
-        private static final int FAST_LOOKUP_BITS = 8;
+        private static final int FAST_LOOKUP_BITS = 9;
 
         /// Mask selecting the buffered root-table prefix.
         private static final int FAST_LOOKUP_MASK = (1 << FAST_LOOKUP_BITS) - 1;

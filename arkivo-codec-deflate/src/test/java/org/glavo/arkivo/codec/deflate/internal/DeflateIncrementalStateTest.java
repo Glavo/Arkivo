@@ -339,6 +339,102 @@ final class DeflateIncrementalStateTest {
         }
     }
 
+    /// Verifies maximum-width length/distance tokens at every byte alignment and an exact trailing-input boundary.
+    @Test
+    void decodesMaximumWidthTokensWithLargeCallerBuffers() throws Exception {
+        for (DeflateDecoderEngine.Format format : DeflateDecoderEngine.Format.values()) {
+            int windowSize = format == DeflateDecoderEngine.Format.DEFLATE ? 32768 : 65536;
+            byte[] history = new byte[windowSize];
+            new Random(0x48494646L).nextBytes(history);
+            try (var decoder = new DeflateDecoderEngine(format, history)) {
+                for (int padding = 0; padding < 8; padding++) {
+                    byte[] compressed = maximumWidthTokens(format, padding);
+                    byte[] expected = new byte[padding + 32 * 257];
+                    System.arraycopy(history, padding, expected, padding, 32 * 257);
+                    if (format == DeflateDecoderEngine.Format.DEFLATE) {
+                        Inflater reference = new Inflater(true);
+                        try {
+                            reference.setDictionary(history);
+                            reference.setInput(compressed);
+                            byte[] actual = new byte[expected.length + 1];
+                            assertEquals(expected.length, reference.inflate(actual));
+                            assertTrue(reference.finished());
+                            assertArrayEquals(expected, Arrays.copyOf(actual, expected.length));
+                        } finally {
+                            reference.end();
+                        }
+                    }
+                    for (boolean direct : new boolean[]{false, true}) {
+                        decoder.reset();
+                        ByteBuffer source = ByteBuffer.allocate(compressed.length + 16);
+                        source.put(compressed).put(new byte[16]).flip();
+                        source = source.asReadOnlyBuffer();
+                        ByteBuffer target = direct ? ByteBuffer.allocateDirect(expected.length + 8)
+                                : ByteBuffer.allocate(expected.length + 8);
+                        for (int i = 0; i < target.capacity(); i++) target.put(i, (byte) 0x55);
+                        target.position(3).limit(4 + expected.length);
+                        assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
+                        assertEquals(compressed.length, source.position());
+                        assertEquals(3 + expected.length, target.position());
+                        assertEquals((byte) 0x55, target.get(2));
+                        assertEquals((byte) 0x55, target.get(target.position()));
+                        byte[] actual = new byte[expected.length];
+                        target.get(3, actual);
+                        assertArrayEquals(expected, actual);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Builds complete comb alphabets whose match requires 48 bits, or 49 with an extended distance.
+    private static byte[] maximumWidthTokens(DeflateDecoderEngine.Format format, int padding) {
+        int[] literals = new int[286];
+        int[] distances = new int[format == DeflateDecoderEngine.Format.DEFLATE ? 30 : 32];
+        for (int i = 0; i < 14; i++) literals[i] = distances[i] = i + 1;
+        literals[256] = literals[284] = 15;
+        distances[distances.length - 2] = distances[distances.length - 1] = 15;
+        int[] literalCodes = canonicalCodes(literals);
+        int[] distanceCodes = canonicalCodes(distances);
+        BitWriter writer = new BitWriter();
+        writer.write(5, 3);
+        writer.write(literals.length - 257, 5);
+        writer.write(distances.length - 1, 5);
+        writer.write(15, 4);
+        int @Unmodifiable [] order = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+        for (int symbol : order) writer.write(symbol < 16 ? 4 : 0, 3);
+        for (int length : literals) writer.write(Integer.reverse(length) >>> 28, 4);
+        for (int length : distances) writer.write(Integer.reverse(length) >>> 28, 4);
+        for (int i = 0; i < padding; i++) writeCanonical(writer, literalCodes, literals, 0);
+        int distanceBits = format == DeflateDecoderEngine.Format.DEFLATE ? 13 : 14;
+        for (int i = 0; i < 32; i++) {
+            writeCanonical(writer, literalCodes, literals, 284);
+            writer.write(30, 5);
+            writeCanonical(writer, distanceCodes, distances, distances.length - 1);
+            writer.write((1 << distanceBits) - 1, distanceBits);
+        }
+        writeCanonical(writer, literalCodes, literals, 256);
+        return writer.finish();
+    }
+
+    /// Assigns canonical codes in symbol order for an independently constructed test alphabet.
+    private static int[] canonicalCodes(int[] lengths) {
+        int[] counts = new int[16];
+        for (int length : lengths) if (length != 0) counts[length]++;
+        int[] next = new int[16];
+        for (int length = 1; length < next.length; length++) next[length] = (next[length - 1] + counts[length - 1]) << 1;
+        int[] codes = new int[lengths.length];
+        for (int symbol = 0; symbol < lengths.length; symbol++) {
+            if (lengths[symbol] != 0) codes[symbol] = next[lengths[symbol]]++;
+        }
+        return codes;
+    }
+
+    /// Writes one canonical test symbol in Deflate wire order.
+    private static void writeCanonical(BitWriter writer, int[] codes, int[] lengths, int symbol) {
+        writer.write(Integer.reverse(codes[symbol]) >>> (32 - lengths[symbol]), lengths[symbol]);
+    }
+
     /// An unused one-bit branch is rejected after a complete alphabet has occupied the same workspace.
     @Test
     void rejectsUnusedSingletonBranchAfterReset() throws Exception {
@@ -444,14 +540,7 @@ final class DeflateIncrementalStateTest {
         for (int symbol : order) writer.write(symbol < 16 ? 4 : 0, 3);
         for (int length : lengths) writer.write(Integer.reverse(length) >>> 28, 4);
         writer.write(8, 4); // The one-bit distance code length, encoded by the code-length alphabet.
-        int[] counts = new int[16];
-        for (int length : lengths) if (length != 0) counts[length]++;
-        int[] next = new int[16];
-        for (int length = 1; length < next.length; length++) next[length] = (next[length - 1] + counts[length - 1]) << 1;
-        int[] codes = new int[lengths.length];
-        for (int symbol = 0; symbol < lengths.length; symbol++) {
-            if (lengths[symbol] != 0) codes[symbol] = next[lengths[symbol]]++;
-        }
+        int[] codes = canonicalCodes(lengths);
         for (byte value : body) {
             int symbol = Byte.toUnsignedInt(value);
             writer.write(Integer.reverse(codes[symbol]) >>> (32 - lengths[symbol]), lengths[symbol]);

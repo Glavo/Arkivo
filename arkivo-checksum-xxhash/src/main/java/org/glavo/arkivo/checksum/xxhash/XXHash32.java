@@ -242,8 +242,24 @@ public final class XXHash32 implements ChecksumAlgorithm.Width32 {
             }
 
             ByteBuffer view = source.slice().order(ByteOrder.LITTLE_ENDIAN);
-            while (view.remaining() >= memory.length) {
-                processStripe(view);
+            int lane1 = accumulator1;
+            int lane2 = accumulator2;
+            int lane3 = accumulator3;
+            int lane4 = accumulator4;
+            try {
+                while (view.remaining() >= memory.length) {
+                    long first = view.getLong();
+                    lane1 = round(lane1, (int) first);
+                    lane2 = round(lane2, (int) (first >>> 32));
+                    long second = view.getLong();
+                    lane3 = round(lane3, (int) second);
+                    lane4 = round(lane4, (int) (second >>> 32));
+                }
+            } finally {
+                accumulator1 = lane1;
+                accumulator2 = lane2;
+                accumulator3 = lane3;
+                accumulator4 = lane4;
             }
             memorySize = view.remaining();
             view.get(memory, 0, memorySize);
@@ -320,16 +336,6 @@ public final class XXHash32 implements ChecksumAlgorithm.Width32 {
             accumulator2 = round(accumulator2, ByteArrayAccess.readIntLittleEndian(source, offset + 4));
             accumulator3 = round(accumulator3, ByteArrayAccess.readIntLittleEndian(source, offset + 8));
             accumulator4 = round(accumulator4, ByteArrayAccess.readIntLittleEndian(source, offset + 12));
-        }
-
-        /// Processes one 16-byte stripe from a little-endian buffer view.
-        ///
-        /// @param source the source view
-        private void processStripe(ByteBuffer source) {
-            accumulator1 = round(accumulator1, source.getInt());
-            accumulator2 = round(accumulator2, source.getInt());
-            accumulator3 = round(accumulator3, source.getInt());
-            accumulator4 = round(accumulator4, source.getInt());
         }
 
         /// Requires this computation to remain active.
