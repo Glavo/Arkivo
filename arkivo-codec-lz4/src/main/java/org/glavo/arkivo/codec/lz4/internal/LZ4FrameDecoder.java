@@ -111,6 +111,15 @@ public final class LZ4FrameDecoder
     /// Current physical block payload, or null outside payload processing.
     private byte @Nullable [] payload;
 
+    /// Owned physical-block storage reused after pending output has been drained.
+    private byte[] payloadStorage = EMPTY_HISTORY;
+
+    /// Owned decoded-block storage reused by subsequent compressed blocks.
+    private byte[] decodedStorage = EMPTY_HISTORY;
+
+    /// Meaningful byte count of the active physical-block payload.
+    private int payloadLength;
+
     /// Number of collected physical block payload bytes.
     private int payloadSize;
 
@@ -125,6 +134,9 @@ public final class LZ4FrameDecoder
 
     /// Prefix history retained for the next linked block.
     private byte[] history = EMPTY_HISTORY;
+
+    /// Meaningful prefix length of linked-block history storage.
+    private int historySize;
 
     /// Decoded bytes awaiting caller-owned target space.
     private ByteBuffer output = EMPTY_OUTPUT;
@@ -239,10 +251,10 @@ public final class LZ4FrameDecoder
                 }
                 case BLOCK_PAYLOAD -> {
                     byte[] currentPayload = Objects.requireNonNull(payload);
-                    int copied = Math.min(source.remaining(), currentPayload.length - payloadSize);
+                    int copied = Math.min(source.remaining(), payloadLength - payloadSize);
                     source.get(currentPayload, payloadSize, copied);
                     payloadSize += copied;
-                    if (payloadSize != currentPayload.length) {
+                    if (payloadSize != payloadLength) {
                         return requireMoreInput(endOfInput);
                     }
                     if (blockChecksum) {
@@ -275,10 +287,10 @@ public final class LZ4FrameDecoder
                 }
                 case LEGACY_BLOCK_PAYLOAD -> {
                     byte[] currentPayload = Objects.requireNonNull(payload);
-                    int copied = Math.min(source.remaining(), currentPayload.length - payloadSize);
+                    int copied = Math.min(source.remaining(), payloadLength - payloadSize);
                     source.get(currentPayload, payloadSize, copied);
                     payloadSize += copied;
-                    if (payloadSize != currentPayload.length) {
+                    if (payloadSize != payloadLength) {
                         return requireMoreInput(endOfInput);
                     }
                     decodeLegacyBlock();
@@ -436,6 +448,7 @@ public final class LZ4FrameDecoder
         decodedContentSize = 0L;
         contentHash.reset();
         history = dictionaryHistory;
+        historySize = history.length;
         requiredDictionaryId = LZ4Dictionary.NO_DICTIONARY_ID;
         blockHeader.clear();
         state = State.BLOCK_HEADER;
@@ -462,9 +475,7 @@ public final class LZ4FrameDecoder
         if (size > maximumBlockSize) {
             throw new IOException("LZ4 physical block exceeds its descriptor maximum");
         }
-        requireMemory((long) size + retainedHistoryStorageSize());
-        payload = new byte[size];
-        payloadSize = 0;
+        preparePayload(size);
         state = State.BLOCK_PAYLOAD;
         return false;
     }
@@ -501,9 +512,7 @@ public final class LZ4FrameDecoder
 
         source.position(source.position() + Integer.BYTES);
         int size = Math.toIntExact(value);
-        requireMemory(size);
-        payload = new byte[size];
-        payloadSize = 0;
+        preparePayload(size);
         state = State.LEGACY_BLOCK_PAYLOAD;
         return null;
     }
@@ -511,13 +520,20 @@ public final class LZ4FrameDecoder
     /// Decodes one complete legacy block and queues its owned output.
     private void decodeLegacyBlock() throws IOException {
         byte[] currentPayload = Objects.requireNonNull(payload);
+        byte[] reusableDecoded = decodedStorage;
+        decodedStorage = EMPTY_HISTORY;
         LZ4BlockDecompression.Result result = LZ4BlockDecompression.decompress(
                 currentPayload,
+                payloadLength,
+                EMPTY_HISTORY,
+                0,
+                reusableDecoded,
                 LEGACY_BLOCK_SIZE,
                 maximumWindowSize,
                 memoryLimitAfterDetachedDictionaries(EMPTY_HISTORY)
         );
         byte[] decoded = result.bytes();
+        decodedStorage = decoded;
         int decodedLength = result.length();
         legacyPartialBlock = decodedLength < LEGACY_BLOCK_SIZE;
         output = ByteBuffer.wrap(decoded, 0, decodedLength).slice().asReadOnlyBuffer();
@@ -531,7 +547,7 @@ public final class LZ4FrameDecoder
         checksum.flip();
         int stored = ByteArrayAccess.readIntLittleEndian(checksum.array(), 0);
         checksum.clear();
-        if (verifyChecksums && stored != XXHash32.DEFAULT.computeInt(Objects.requireNonNull(payload))) {
+        if (verifyChecksums && stored != XXHash32.DEFAULT.computeInt(Objects.requireNonNull(payload), 0, payloadLength)) {
             throw new IOException("LZ4 block checksum mismatch");
         }
     }
@@ -543,17 +559,23 @@ public final class LZ4FrameDecoder
         int decodedLength;
         if (uncompressedBlock) {
             decoded = currentPayload;
-            decodedLength = currentPayload.length;
+            decodedLength = payloadLength;
         } else {
             byte[] blockDictionary = independentBlocks ? dictionaryHistory : history;
+            byte[] reusableDecoded = decodedStorage;
+            decodedStorage = EMPTY_HISTORY;
             LZ4BlockDecompression.Result result = LZ4BlockDecompression.decompress(
                     currentPayload,
+                    payloadLength,
                     blockDictionary,
+                    independentBlocks ? blockDictionary.length : historySize,
+                    reusableDecoded,
                     maximumBlockSize,
                     maximumWindowSize,
                     memoryLimitAfterDetachedDictionaries(blockDictionary)
             );
             decoded = result.bytes();
+            decodedStorage = decoded;
             decodedLength = result.length();
         }
 
@@ -570,15 +592,13 @@ public final class LZ4FrameDecoder
             contentHash.update(decoded, 0, decodedLength);
         }
         if (!independentBlocks) {
-            int retainedHistorySize = Math.min(MAXIMUM_HISTORY_SIZE, decodedLength + history.length);
-            long decodedStorageSize = decoded.length;
-            long payloadStorageSize = decoded == currentPayload ? 0L : currentPayload.length;
+            int retainedHistorySize = Math.min(MAXIMUM_HISTORY_SIZE, decodedLength + historySize);
+            boolean replaceHistory = history == dictionaryHistory || history == initialDictionaryHistory
+                    || history.length < retainedHistorySize;
             requireMemory(
-                    payloadStorageSize
-                            + decodedStorageSize
-                            + history.length
-                            + retainedHistorySize
-                            + detachedDictionaryStorageSize(history)
+                    (long) payloadStorage.length + decodedStorage.length
+                            + retainedHistoryStorageSize()
+                            + (replaceHistory ? retainedHistorySize : 0L)
             );
             appendHistory(decoded, decodedLength);
         }
@@ -617,19 +637,32 @@ public final class LZ4FrameDecoder
 
     /// Appends decoded bytes to the retained linked-block history window.
     private void appendHistory(byte[] decoded, int decodedLength) {
-        if (decodedLength >= MAXIMUM_HISTORY_SIZE) {
-            history = Arrays.copyOfRange(
-                    decoded,
-                    decodedLength - MAXIMUM_HISTORY_SIZE,
-                    decodedLength
-            );
-            return;
+        int copied = Math.min(decodedLength, MAXIMUM_HISTORY_SIZE);
+        int retained = Math.min(historySize, MAXIMUM_HISTORY_SIZE - copied);
+        int required = retained + copied;
+        byte[] updated = history;
+        if (updated == dictionaryHistory || updated == initialDictionaryHistory || updated.length < required) {
+            updated = new byte[required];
         }
-        int retained = Math.min(history.length, MAXIMUM_HISTORY_SIZE - decodedLength);
-        byte[] updated = new byte[retained + decodedLength];
-        System.arraycopy(history, history.length - retained, updated, 0, retained);
-        System.arraycopy(decoded, 0, updated, retained, decodedLength);
+        System.arraycopy(history, historySize - retained, updated, 0, retained);
+        System.arraycopy(decoded, decodedLength - copied, updated, retained, copied);
         history = updated;
+        historySize = required;
+    }
+
+    /// Reuses physical storage when its retained capacity fits the current working-memory budget.
+    private void preparePayload(int length) throws DecompressionMemoryLimitException {
+        if (maximumMemorySize >= 0L) {
+            // Retained output capacity must not crowd out a later block or growing linked history.
+            decodedStorage = EMPTY_HISTORY;
+            if (payloadStorage.length > length) payloadStorage = EMPTY_HISTORY;
+        }
+        requireMemory((long) Math.max(length, payloadStorage.length) + decodedStorage.length
+                + retainedHistoryStorageSize());
+        if (payloadStorage.length < length) payloadStorage = new byte[length];
+        payload = payloadStorage;
+        payloadLength = length;
+        payloadSize = 0;
     }
 
     /// Copies pending decoded bytes into a caller-owned target.
@@ -747,11 +780,15 @@ public final class LZ4FrameDecoder
         decodedContentSize = 0L;
         skippableBytes = 0L;
         payload = null;
+        payloadStorage = EMPTY_HISTORY;
+        decodedStorage = EMPTY_HISTORY;
+        payloadLength = 0;
         payloadSize = 0;
         uncompressedBlock = false;
         legacyPartialBlock = false;
         requiredDictionaryId = LZ4Dictionary.NO_DICTIONARY_ID;
         history = EMPTY_HISTORY;
+        historySize = 0;
         output = EMPTY_OUTPUT;
     }
 

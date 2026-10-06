@@ -19,6 +19,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -33,6 +34,70 @@ final class LZ4FrameDecoderLifecycleTest {
 
     /// The first standard skippable-frame magic value.
     private static final long SKIPPABLE_FRAME_MAGIC = 0x184d_2a50L;
+
+    /// Verifies changing physical payload lengths, linked history, checksums, and small caller output ranges.
+    @Test
+    void decodesMixedBlocksWithReusedStorage() throws IOException {
+        byte[] expected = new byte[3 * 65536 + 257];
+        new Random(0x4c5a34L).nextBytes(expected);
+        Arrays.fill(expected, 65536, 2 * 65536, (byte) 'a');
+        System.arraycopy(expected, 0, expected, 2 * 65536, 65536);
+        for (boolean independent : new boolean[]{false, true}) {
+            LZ4Codec codec = LZ4Codec.DEFAULT.withBlockSize(LZ4BlockSize.KIB_64)
+                    .withIndependentBlocks(independent).withBlockChecksum(true).withContentChecksum(true);
+            byte[] encoded = encode(codec, expected);
+            for (long limit : new long[]{UNLIMITED, 512 * 1024}) {
+                try (var decoder = decoder(null, limit)) {
+                    for (int shape = 0; shape < 2; shape++) {
+                        decoder.reset();
+                        ByteBuffer source = ByteBuffer.allocateDirect(encoded.length + 3);
+                        source.put(encoded).put(new byte[]{11, 22, 33}).flip();
+                        source = source.asReadOnlyBuffer();
+                        ByteBuffer target = shape == 0 ? ByteBuffer.allocate(expected.length + 1)
+                                : ByteBuffer.allocateDirect(expected.length + 1);
+                        target.limit(7);
+                        CodecOutcome outcome;
+                        do {
+                            outcome = decoder.finish(source, target);
+                            if (outcome == CodecOutcome.NEEDS_OUTPUT) {
+                                target.limit(Math.min(target.capacity(), target.limit() + 257));
+                            }
+                        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+                        assertEquals(CodecOutcome.FINISHED, outcome);
+                        assertEquals(encoded.length, source.position());
+                        assertBufferEquals(expected, target);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Verifies cached decoded capacity is released before a later stored block grows linked history.
+    @Test
+    void releasesCachedOutputUnderFiniteMemoryLimit() throws IOException {
+        byte[] first = new byte[10_000];
+        Arrays.fill(first, (byte) 'x');
+        byte[] second = patternedBytes(20_000);
+        LZ4Codec codec = LZ4Codec.DEFAULT.withBlockSize(LZ4BlockSize.KIB_64)
+                .withIndependentBlocks(false).withBlockChecksum(false).withContentChecksum(false);
+        ByteBuffer framing = ByteBuffer.allocate(32);
+        try (var encoder = codec.newEncoder()) {
+            assertEquals(CodecOutcome.FINISHED, encoder.finish(framing));
+        }
+        byte[] header = Arrays.copyOf(framing.array(), 7);
+        ByteBuffer compressed = LZ4BlockCodec.DEFAULT.compress(ByteBuffer.wrap(first));
+        ByteBuffer frame = ByteBuffer.allocate(header.length + compressed.remaining() + second.length + 12)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        frame.put(header).putInt(compressed.remaining()).put(compressed)
+                .putInt(0x8000_0000 | second.length).put(second).putInt(0).flip();
+        try (var decoder = decoder(null, 65_000)) {
+            ByteBuffer target = ByteBuffer.allocate(first.length + second.length + 1);
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(frame.asReadOnlyBuffer(), target));
+            byte[] expected = Arrays.copyOf(first, first.length + second.length);
+            System.arraycopy(second, 0, expected, first.length, second.length);
+            assertBufferEquals(expected, target);
+        }
+    }
 
     /// Verifies a completed standard frame remains stable until reset exposes the next frame.
     @Test

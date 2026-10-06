@@ -601,6 +601,29 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
         int node = symbolNode;
         long buffer = bits.buffer;
         int remaining = bits.bitCount;
+        if (node == 0) {
+            while (remaining < HuffmanTree.LOOKUP_BITS && source.hasRemaining()) {
+                buffer = buffer << Byte.SIZE | Byte.toUnsignedLong(source.get());
+                remaining += Byte.SIZE;
+            }
+            if (remaining >= HuffmanTree.LOOKUP_BITS) {
+                int entry = tree.lookup[(int) (buffer >>> (remaining - HuffmanTree.LOOKUP_BITS))
+                        & HuffmanTree.LOOKUP_MASK];
+                if (entry >= 0) {
+                    remaining -= entry & 31;
+                    bits.buffer = buffer & ((1L << remaining) - 1);
+                    bits.bitCount = remaining;
+                    return entry >>> 5;
+                }
+                if (entry == HuffmanTree.INVALID_LOOKUP) {
+                    bits.buffer = buffer & ((1L << remaining) - 1);
+                    bits.bitCount = remaining;
+                    throw new IOException("Invalid BZip2 Huffman code");
+                }
+                node = -entry - 1;
+                remaining -= HuffmanTree.LOOKUP_BITS;
+            }
+        }
         while (tree.symbols[node] < 0) {
             if (remaining == 0) {
                 if (!source.hasRemaining()) {
@@ -758,6 +781,18 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
     /// Decodes one canonical most-significant-bit-first Huffman alphabet.
     @NotNullByDefault
     private static final class HuffmanTree {
+        /// Most-significant input bits covered by one direct lookup.
+        private static final int LOOKUP_BITS = 8;
+
+        /// Mask selecting one root-table prefix.
+        private static final int LOOKUP_MASK = (1 << LOOKUP_BITS) - 1;
+
+        /// An unused prefix in an incomplete alphabet.
+        private static final int INVALID_LOOKUP = Integer.MIN_VALUE;
+
+        /// Packed symbols and lengths, continuation nodes, or invalid prefixes.
+        private final int[] lookup = new int[1 << LOOKUP_BITS];
+
         /// The left child index for each tree node.
         private final int[] left;
 
@@ -818,6 +853,15 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
                     throw new IOException("Invalid BZip2 Huffman prefix tree");
                 }
                 symbols[node] = symbol;
+            }
+            for (int prefix = 0; prefix < lookup.length; prefix++) {
+                int node = 0;
+                int depth = 0;
+                while (node >= 0 && symbols[node] < 0 && depth < LOOKUP_BITS) {
+                    node = (prefix >>> (LOOKUP_BITS - ++depth) & 1) == 0 ? left[node] : right[node];
+                }
+                lookup[prefix] = node < 0 ? INVALID_LOOKUP
+                        : symbols[node] >= 0 ? symbols[node] << 5 | depth : -node - 1;
             }
         }
 

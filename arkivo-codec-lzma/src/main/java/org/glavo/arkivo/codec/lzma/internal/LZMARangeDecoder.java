@@ -30,10 +30,10 @@ final class LZMARangeDecoder {
     private final LZMAInput input;
 
     /// The current unsigned 32-bit range.
-    private long range = 0xffff_ffffL;
+    private int range = -1;
 
     /// The current unsigned 32-bit code value.
-    private long code;
+    private int code;
 
     /// Probability arrays changed by the active speculative symbol.
     private final short[][] transactionProbabilityArrays = createTransactionProbabilityArrays();
@@ -48,10 +48,10 @@ final class LZMARangeDecoder {
     private int transactionMutationCount;
 
     /// Range value preceding the active speculative symbol.
-    private long transactionRange;
+    private int transactionRange;
 
     /// Code value preceding the active speculative symbol.
-    private long transactionCode;
+    private int transactionCode;
 
     /// Whether one speculative symbol transaction is active.
     private boolean transactionActive;
@@ -75,22 +75,18 @@ final class LZMARangeDecoder {
     /// Decodes one adaptive binary probability.
     int decodeBit(short[] probabilities, int index) throws IOException {
         int probability = Short.toUnsignedInt(probabilities[index]);
-        long bound = (range >>> 11) * probability;
-        int bit;
-        if (code < bound) {
-            range = bound;
-            probability += (PROBABILITY_TOTAL - probability) >>> PROBABILITY_MOVE_BITS;
-            bit = 0;
-        } else {
-            range -= bound;
-            code -= bound;
-            probability -= probability >>> PROBABILITY_MOVE_BITS;
-            bit = 1;
-        }
+        int bound = (range >>> 11) * probability;
+        // The unsigned subtraction selects both intervals without an unpredictable branch per bit.
+        int zeroMask = (int) ((Integer.toUnsignedLong(code) - Integer.toUnsignedLong(bound)) >> 63);
+        int oneRange = range - bound;
+        range = oneRange ^ ((oneRange ^ bound) & zeroMask);
+        code -= bound & ~zeroMask;
+        probability += ((PROBABILITY_TOTAL - probability) >>> PROBABILITY_MOVE_BITS) & zeroMask;
+        probability -= (probability >>> PROBABILITY_MOVE_BITS) & ~zeroMask;
         recordProbabilityMutation(probabilities, index);
         probabilities[index] = (short) probability;
         normalize();
-        return bit;
+        return zeroMask + 1;
     }
 
     /// Decodes a most-significant-bit-first direct-bit value.
@@ -99,7 +95,7 @@ final class LZMARangeDecoder {
         for (int index = 0; index < count; index++) {
             range >>>= 1;
             int bit;
-            if (code >= range) {
+            if (Integer.compareUnsigned(code, range) >= 0) {
                 code -= range;
                 bit = 1;
             } else {
@@ -176,7 +172,7 @@ final class LZMARangeDecoder {
 
     /// Returns whether the final range code has been reduced to zero.
     boolean finished() {
-        return code == 0L;
+        return code == 0;
     }
 
     /// Records one adaptive-probability update for reverse-order rollback.
@@ -220,9 +216,9 @@ final class LZMARangeDecoder {
 
     /// Reads another source byte whenever the range loses its high byte.
     private void normalize() throws IOException {
-        if (range < 1L << 24) {
+        if ((range & 0xff00_0000) == 0) {
             range <<= 8;
-            code = (code << 8 | readRequiredByte()) & 0xffff_ffffL;
+            code = code << 8 | readRequiredByte();
         }
     }
 

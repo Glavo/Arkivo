@@ -356,6 +356,8 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         int bitCount = bits.bitCount;
         long hold = bits.buffer;
         boolean reverseWords = source.order() == ByteOrder.BIG_ENDIAN;
+        byte @Nullable [] outputArray = target.hasArray() ? target.array() : null;
+        int outputOffset = outputArray == null ? 0 : target.arrayOffset();
         try {
             while (inputPosition <= source.limit() - Long.BYTES && outputPosition <= target.limit() - 258) {
                 if (bitCount < 56) {
@@ -373,20 +375,26 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 hold >>>= codeLength;
                 bitCount -= codeLength;
                 if (symbol < END_OF_BLOCK_SYMBOL) {
-                    target.put(outputPosition++, (byte) symbol);
+                    if (outputArray == null) target.put(outputPosition, (byte) symbol);
+                    else outputArray[outputOffset + outputPosition] = (byte) symbol;
+                    outputPosition++;
                     // The refill leaves enough bits for two additional root-table literals.
                     entry = literals.fastLookup[(int) hold & HuffmanTree.FAST_LOOKUP_MASK];
                     if (entry >= 0 && (entry >>> 4) < END_OF_BLOCK_SYMBOL) {
                         codeLength = entry & 15;
                         hold >>>= codeLength;
                         bitCount -= codeLength;
-                        target.put(outputPosition++, (byte) (entry >>> 4));
+                        if (outputArray == null) target.put(outputPosition, (byte) (entry >>> 4));
+                        else outputArray[outputOffset + outputPosition] = (byte) (entry >>> 4);
+                        outputPosition++;
                         entry = literals.fastLookup[(int) hold & HuffmanTree.FAST_LOOKUP_MASK];
                         if (entry >= 0 && (entry >>> 4) < END_OF_BLOCK_SYMBOL) {
                             codeLength = entry & 15;
                             hold >>>= codeLength;
                             bitCount -= codeLength;
-                            target.put(outputPosition++, (byte) (entry >>> 4));
+                            if (outputArray == null) target.put(outputPosition, (byte) (entry >>> 4));
+                            else outputArray[outputOffset + outputPosition] = (byte) (entry >>> 4);
+                            outputPosition++;
                         }
                     }
                     continue;
@@ -943,6 +951,15 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         /// Packed symbols and lengths, continuation nodes, or invalid prefixes.
         private final int[] fastLookup = new int[1 << FAST_LOOKUP_BITS];
 
+        /// Offsets of secondary tables for root prefixes containing longer codes.
+        private final int[] secondaryOffsets = new int[1 << FAST_LOOKUP_BITS];
+
+        /// Suffix widths required by secondary tables, or zero for direct root entries.
+        private final byte[] secondaryWidths = new byte[1 << FAST_LOOKUP_BITS];
+
+        /// Reused packed long-code entries, grown only when a block requires a larger table.
+        private int[] secondaryLookup = new int[0];
+
         /// Reused counts of codes at each depth.
         private final int[] counts = new int[16];
 
@@ -974,7 +991,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
             return tree;
         }
 
-        /// Validates lengths and replaces the active nodes without allocating additional arrays.
+        /// Validates lengths and replaces active tables, retaining workspace capacity for subsequent blocks.
         private void rebuild(int[] lengths, boolean allowEmpty) throws IOException {
             Arrays.fill(counts, 0);
             int nonZeroCount = 0;
@@ -990,6 +1007,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 }
             }
             Arrays.fill(fastLookup, INVALID_LOOKUP);
+            Arrays.fill(secondaryWidths, (byte) 0);
             if (nonZeroCount == 0) {
                 minimumLength = 0;
                 if (!allowEmpty) throw new IOException(description + " tree is empty");
@@ -1022,6 +1040,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                     continue;
                 }
                 int prefix = reversedCode & FAST_LOOKUP_MASK;
+                secondaryWidths[prefix] = (byte) Math.max(secondaryWidths[prefix], length - FAST_LOOKUP_BITS);
                 int node;
                 if (fastLookup[prefix] == INVALID_LOOKUP) {
                     node = nodeCount++;
@@ -1043,6 +1062,33 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 }
                 symbols[node] = symbol;
             }
+            rebuildSecondaryLookup();
+        }
+
+        /// Expands only long-code root prefixes into bounded suffix tables for the bulk decoder.
+        private void rebuildSecondaryLookup() {
+            int required = 0;
+            for (int prefix = 0; prefix < secondaryWidths.length; prefix++) {
+                int width = secondaryWidths[prefix];
+                if (width == 0) continue;
+                secondaryOffsets[prefix] = required;
+                required += 1 << width;
+            }
+            if (secondaryLookup.length < required) secondaryLookup = new int[required];
+            for (int prefix = 0; prefix < secondaryWidths.length; prefix++) {
+                int width = secondaryWidths[prefix];
+                if (width == 0) continue;
+                int offset = secondaryOffsets[prefix];
+                int root = -fastLookup[prefix] - 1;
+                for (int suffix = 0; suffix < 1 << width; suffix++) {
+                    int node = root;
+                    int depth = 0;
+                    while (symbols[node] < 0) {
+                        node = (suffix >>> depth++ & 1) == 0 ? zeroChildren[node] : oneChildren[node];
+                    }
+                    secondaryLookup[offset + suffix] = symbols[node] << 4 | FAST_LOOKUP_BITS + depth;
+                }
+            }
         }
 
         /// Clears one node before it becomes reachable from the current root.
@@ -1054,19 +1100,12 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
 
         /// Resolves one packed symbol and code length from at least fifteen low-order lookahead bits.
         private int decodeEntry(long prefix) throws IOException {
-            int entry = fastLookup[(int) prefix & FAST_LOOKUP_MASK];
+            int rootPrefix = (int) prefix & FAST_LOOKUP_MASK;
+            int entry = fastLookup[rootPrefix];
             if (entry >= 0) return entry;
             if (entry == INVALID_LOOKUP) throw invalidCode();
-            int node = -entry - 1;
-            int length = FAST_LOOKUP_BITS;
-            prefix >>>= FAST_LOOKUP_BITS;
-            while (symbols[node] < 0) {
-                node = (prefix & 1) == 0 ? zeroChildren[node] : oneChildren[node];
-                if (node < 0) throw invalidCode();
-                prefix >>>= 1;
-                length++;
-            }
-            return symbols[node] << 4 | length;
+            int mask = (1 << secondaryWidths[rootPrefix]) - 1;
+            return secondaryLookup[secondaryOffsets[rootPrefix] + ((int) (prefix >>> FAST_LOOKUP_BITS) & mask)];
         }
 
         /// Uses one root lookup for byte-wide alphabets, consuming lookahead only when needed.

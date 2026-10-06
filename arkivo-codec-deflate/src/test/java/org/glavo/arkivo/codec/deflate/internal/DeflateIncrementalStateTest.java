@@ -310,7 +310,7 @@ final class DeflateIncrementalStateTest {
                     lengths[symbol] = 0;
                 }
                 var bodyBytes = new ByteArrayOutputStream();
-                for (int repeat = 0; repeat < 3; repeat++) {
+                for (int repeat = 0; repeat < 16; repeat++) {
                     for (int symbol = 0; symbol < 256; symbol++) {
                         if (lengths[symbol] != 0) bodyBytes.write(symbol);
                     }
@@ -330,6 +330,10 @@ final class DeflateIncrementalStateTest {
                 for (int chunk : new int[]{1, 7, compressed.length}) {
                     decoder.reset();
                     assertArrayEquals(body, decode(decoder, compressed, chunk, iteration % 3, 7));
+                }
+                for (int shape = 0; shape < 3; shape++) {
+                    decoder.reset();
+                    assertArrayEquals(body, decode(decoder, compressed, compressed.length, shape, 8192));
                 }
             }
         }
