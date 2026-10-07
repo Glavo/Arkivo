@@ -92,6 +92,15 @@ final class ZipConstants {
     /// The Info-ZIP extended timestamp extra field identifier.
     static final int EXTENDED_TIMESTAMP_EXTRA_FIELD_ID = 0x5455;
 
+    /// The NTFS timestamp extra field identifier.
+    static final int NTFS_EXTRA_FIELD_ID = 0x000a;
+
+    /// The PKWARE Unix extra field identifier.
+    static final int UNIX_EXTRA_FIELD_ID = 0x000d;
+
+    /// The original Info-ZIP Unix extra field identifier.
+    static final int INFO_ZIP_UNIX_EXTRA_FIELD_ID = 0x5855;
+
     /// The Info-ZIP new Unix extra field identifier.
     static final int NEW_UNIX_EXTRA_FIELD_ID = 0x7875;
 

@@ -26,7 +26,6 @@ public final class Rar4NativeDecoderTest {
         BitWriter writer = new BitWriter();
         writer.write(0b00001, 5);
         writer.write(0xe5, 8);
-        writer.write(0, 16);
 
         Rar4Decoder.Session session = Rar4Decoder.newSession();
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -284,6 +283,59 @@ public final class Rar4NativeDecoderTest {
         session.release();
     }
 
+    /// Uses the preceding file's end marker to select replacement or retained tables in a solid sequence.
+    @Test
+    public void selectsRar3SolidTablesAfterDeclaredOutputIsComplete() throws IOException {
+        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            session.decode(new ByteArrayInputStream(rar3LiteralStream('A', true)), output, 29, 1, false);
+            session.decode(new ByteArrayInputStream(rar3LiteralStream('B', false)), output, 29, 1, true);
+            BitWriter continuation = new BitWriter();
+            continuation.write(0, 1);
+            continuation.write(1, 1);
+            continuation.write(0, 2);
+            session.decode(new ByteArrayInputStream(continuation.toByteArray()), output, 29, 1, true);
+            assertArrayEquals(new byte[]{'A', 'B', 'B'}, output.toByteArray());
+        } finally {
+            session.release();
+        }
+    }
+
+    /// Rejects every byte truncation, including a missing marker after the last literal.
+    @Test
+    public void rejectsTruncatedRar3LiteralAndEndMarker() {
+        byte[] packed = rar3LiteralStream('A', true);
+        for (int length = 0; length < packed.length; length++) {
+            Rar4Decoder.Session session = Rar4Decoder.newSession();
+            byte[] truncated = Arrays.copyOf(packed, length);
+            try {
+                assertThrows(IOException.class, () -> session.decode(
+                        new ByteArrayInputStream(truncated), new ByteArrayOutputStream(), 29, 1, false),
+                        "Truncated length: " + length);
+            } finally {
+                session.release();
+            }
+        }
+    }
+
+    /// Builds one complete literal file with an explicit next-file table selection.
+    private static byte[] rar3LiteralStream(int literal, boolean nextFileUsesNewTables) {
+        BitWriter writer = new BitWriter();
+        writer.write(0, 2);
+        writeRar3LevelAlphabet(writer);
+        writeZeroRun(writer, literal);
+        writeThreeSymbolLevelValue(writer, 1);
+        writeZeroRun(writer, 255 - literal);
+        writeThreeSymbolLevelValue(writer, 1);
+        writeZeroRun(writer, 147);
+        writer.write(0, 1);
+        writer.write(1, 1);
+        writer.write(0, 1);
+        writer.write(nextFileUsesNewTables ? 1 : 0, 1);
+        return writer.toByteArray();
+    }
+
     /// Decodes RAR 3.x VM-filtered blocks through every filter-descriptor length encoding.
     @Test
     public void decodesRar3FilterDescriptorLengths() throws IOException {
@@ -510,8 +562,12 @@ public final class Rar4NativeDecoderTest {
         writer.write(0, 1);
         writeRar3LevelAlphabet(writer);
         writeZeroRun(writer, 65);
-        writeThreeSymbolLevelValue(writer, 1);
-        writeZeroRun(writer, 197);
+        writeThreeSymbolLevelValue(writer, 2);
+        writeZeroRun(writer, 190);
+        writeThreeSymbolLevelValue(writer, 2);
+        for (int index = 0; index < 6; index++) {
+            writeThreeSymbolLevelValue(writer, 0);
+        }
         writeThreeSymbolLevelValue(writer, 2);
         for (int index = 0; index < 7; index++) {
             writeThreeSymbolLevelValue(writer, 0);
@@ -521,12 +577,13 @@ public final class Rar4NativeDecoderTest {
         writeThreeSymbolLevelValue(writer, 1);
         writeZeroRun(writer, 104);
 
-        writer.write(0, 1);
+        writer.write(0, 2);
         writer.write(0b11, 2);
         writer.write(0, 1);
         writer.write(0b10, 2);
         writer.write(0, 2);
-        writer.write(0, 16);
+        writer.write(0b01, 2);
+        writer.write(0, 2);
         return writer.toByteArray();
     }
 
@@ -535,27 +592,30 @@ public final class Rar4NativeDecoderTest {
         BitWriter writer = new BitWriter();
         writer.write(0, 1);
         writer.write(0, 1);
-        writeRar3LevelAlphabet(writer);
+        writeRar3FourSymbolLevelAlphabet(writer);
         writeZeroRun(writer, 65);
-        writeThreeSymbolLevelValue(writer, 2);
-        writeZeroRun(writer, 192);
-        writeThreeSymbolLevelValue(writer, 2);
-        writeThreeSymbolLevelValue(writer, 2);
+        writeFourSymbolLevelValue(writer, 3);
+        writeZeroRun(writer, 190);
+        writeFourSymbolLevelValue(writer, 3);
+        writeFourSymbolLevelValue(writer, 0);
+        writeFourSymbolLevelValue(writer, 3);
+        writeFourSymbolLevelValue(writer, 3);
         writeZeroRun(writer, 11);
-        writeThreeSymbolLevelValue(writer, 2);
+        writeFourSymbolLevelValue(writer, 3);
         writeZeroRun(writer, 27);
         writeThreeSymbolLevelValue(writer, 1);
         writeZeroRun(writer, 76);
         writeThreeSymbolLevelValue(writer, 1);
         writeZeroRun(writer, 27);
 
-        writer.write(0b00, 2);
-        writer.write(0b11, 2);
+        writer.write(0b000, 3);
+        writer.write(0b100, 3);
         writer.write(0, 1);
-        writer.write(0b01, 2);
-        writer.write(0b10, 2);
+        writer.write(0b010, 3);
+        writer.write(0b011, 3);
         writer.write(0, 1);
-        writer.write(0, 16);
+        writer.write(0b001, 3);
+        writer.write(0, 2);
         return writer.toByteArray();
     }
 
@@ -581,8 +641,12 @@ public final class Rar4NativeDecoderTest {
         writeRar3LevelAlphabet(writer);
         writeZeroRun(writer, 66);
         writeThreeSymbolLevelValue(writer, 1);
-        writeZeroRun(writer, 337);
+        writeZeroRun(writer, 189);
+        writeThreeSymbolLevelValue(writer, 1);
+        writeZeroRun(writer, 147);
         writer.write(0, 1);
+        writer.write(1, 1);
+        writer.write(0, 2);
         return writer.toByteArray();
     }
 
@@ -606,11 +670,12 @@ public final class Rar4NativeDecoderTest {
         writeRar3LevelAlphabet(writer);
         writeZeroRun(writer, 65);
         writeThreeSymbolLevelValue(writer, 1);
-        writeZeroRun(writer, 191);
-        writeThreeSymbolLevelValue(writer, 1);
+        writeZeroRun(writer, 190);
+        writeThreeSymbolLevelValue(writer, 2);
+        writeThreeSymbolLevelValue(writer, 2);
         writeZeroRun(writer, 146);
 
-        writer.write(1, 1);
+        writer.write(0b11, 2);
         if (payloadSize <= 6) {
             writer.write(0x20 | payloadSize - 1, 8);
         } else if (payloadSize == 7) {
@@ -624,6 +689,8 @@ public final class Rar4NativeDecoderTest {
         }
         writer.writeBytes(payload);
         writer.write(0, 3);
+        writer.write(0b10, 2);
+        writer.write(0, 2);
         return writer.toByteArray();
     }
 
@@ -635,8 +702,10 @@ public final class Rar4NativeDecoderTest {
         writeRar3LevelAlphabet(writer);
         writeZeroRun(writer, 65);
         writeThreeSymbolLevelValue(writer, 1);
-        writeZeroRun(writer, 205);
-        writeThreeSymbolLevelValue(writer, 1);
+        writeZeroRun(writer, 190);
+        writeThreeSymbolLevelValue(writer, 2);
+        writeZeroRun(writer, 14);
+        writeThreeSymbolLevelValue(writer, 2);
         writeZeroRun(writer, 37);
         writeThreeSymbolLevelValue(writer, 1);
         writeZeroRun(writer, 65);
@@ -644,13 +713,13 @@ public final class Rar4NativeDecoderTest {
         writeZeroRun(writer, 28);
 
         writeZeroBits(writer, 33);
-        writer.write(1, 1);
+        writer.write(0b11, 2);
         writer.write(0, 1);
-        writer.write(0, 4);
         writer.write(0, 1);
-        writer.write(1, 1);
+        writer.write(0b11, 2);
         writer.write(0, 1);
-        writer.write(0, 4);
+        writer.write(0b10, 2);
+        writer.write(0, 2);
         return writer.toByteArray();
     }
 
@@ -662,7 +731,11 @@ public final class Rar4NativeDecoderTest {
         writeRar3FourSymbolLevelAlphabet(writer);
         writeZeroRun(writer, 65);
         writeFourSymbolLevelValue(writer, 3);
-        writeZeroRun(writer, 196);
+        writeZeroRun(writer, 190);
+        writeFourSymbolLevelValue(writer, 3);
+        for (int index = 0; index < 5; index++) {
+            writeFourSymbolLevelValue(writer, 0);
+        }
         for (int symbol = 262; symbol <= 266; symbol++) {
             writeFourSymbolLevelValue(writer, 3);
         }
@@ -671,16 +744,18 @@ public final class Rar4NativeDecoderTest {
         writeZeroRun(writer, 27);
 
         writeZeroBits(writer, 60);
-        writer.write(0b010, 3);
-        writer.write(0, 2);
         writer.write(0b011, 3);
         writer.write(0, 2);
         writer.write(0b100, 3);
-        writer.write(0, 3);
+        writer.write(0, 2);
         writer.write(0b101, 3);
+        writer.write(0, 3);
+        writer.write(0b110, 3);
         writer.write(0, 4);
-        writer.write(0b001, 3);
+        writer.write(0b010, 3);
         writer.write(0, 1);
+        writer.write(0b001, 3);
+        writer.write(0, 2);
         return writer.toByteArray();
     }
 
@@ -695,8 +770,10 @@ public final class Rar4NativeDecoderTest {
         writeRar3LevelAlphabet(writer);
         writeZeroRun(writer, 65);
         writeThreeSymbolLevelValue(writer, 1);
-        writeZeroRun(writer, 232);
-        writeThreeSymbolLevelValue(writer, 1);
+        writeZeroRun(writer, 190);
+        writeThreeSymbolLevelValue(writer, 2);
+        writeZeroRun(writer, 41);
+        writeThreeSymbolLevelValue(writer, 2);
         writeZeroRun(writer, 36);
         writeThreeSymbolLevelValue(writer, 1);
         writeZeroRun(writer, 23);
@@ -704,11 +781,13 @@ public final class Rar4NativeDecoderTest {
         writeZeroRun(writer, 44);
 
         writeZeroBits(writer, distance);
-        writer.write(1, 1);
+        writer.write(0b11, 2);
         writer.write(0b1_1111, 5);
         writer.write(0, 1);
         writer.write(0, 12);
         writer.write(0, 1);
+        writer.write(0b10, 2);
+        writer.write(0, 2);
         return writer.toByteArray();
     }
 

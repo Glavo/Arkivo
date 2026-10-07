@@ -153,6 +153,216 @@ tasks.named<Test>("tier2Test") {
     )
 }
 
+val sharpCompressManifestFile = rootProject.file("gradle/test-data/sharpcompress.properties")
+val sharpCompressManifest = Properties().apply {
+    sharpCompressManifestFile.inputStream().use(::load)
+}
+val sharpCompressVersion = sharpCompressManifest.getProperty("version")
+val sharpCompressRoot = sharpCompressManifest.getProperty("archiveRoot")
+val sharpCompressSha256 = sharpCompressManifest.getProperty("archiveSha256")
+val sharpCompressArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$sharpCompressSha256/${sharpCompressManifest.getProperty("archiveName")}").asFile
+})
+val sharpCompressTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/sharpcompress/$sharpCompressVersion")
+
+val downloadSharpCompressTestSources = tasks.register<DownloadVerifiedFile>("downloadSharpCompressTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned SharpCompress source and test archives."
+    sourceUrl.set(sharpCompressManifest.getProperty("archiveUrl"))
+    expectedSha256.set(sharpCompressSha256)
+    expectedSize.set(sharpCompressManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(sharpCompressArchive)
+}
+
+val prepareSharpCompressTestCorpus = tasks.register<Sync>("prepareSharpCompressTestCorpus") {
+    group = "verification"
+    description = "Extracts SharpCompress archives, original files, and reference test sources."
+    dependsOn(downloadSharpCompressTestSources)
+    from(downloadSharpCompressTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$sharpCompressRoot/LICENSE*")
+        include("$sharpCompressRoot/tests/TestArchives/**")
+        include("$sharpCompressRoot/tests/SharpCompress.Test/**/*.cs")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == sharpCompressRoot) {
+                "Unexpected SharpCompress source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(sharpCompressManifestFile) { rename { "UPSTREAM.properties" } }
+    into(sharpCompressTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareSharpCompressTestCorpus)
+    inputs.dir(sharpCompressTestDataDirectory)
+    systemProperty("arkivo.sharpcompress.testDataDirectory", sharpCompressTestDataDirectory.get().asFile.absolutePath)
+}
+
+val libzipManifestFile = rootProject.file("gradle/test-data/libzip.properties")
+val libzipManifest = Properties().apply {
+    libzipManifestFile.inputStream().use(::load)
+}
+val libzipVersion = libzipManifest.getProperty("version")
+val libzipRoot = libzipManifest.getProperty("archiveRoot")
+val libzipSha256 = libzipManifest.getProperty("archiveSha256")
+val libzipArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$libzipSha256/${libzipManifest.getProperty("archiveName")}").asFile
+})
+val libzipTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/libzip/$libzipVersion")
+
+val downloadLibzipTestSources = tasks.register<DownloadVerifiedFile>("downloadLibzipTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned libzip source and regression data."
+    sourceUrl.set(libzipManifest.getProperty("archiveUrl"))
+    expectedSha256.set(libzipSha256)
+    expectedSize.set(libzipManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(libzipArchive)
+}
+
+val prepareLibzipTestCorpus = tasks.register<Sync>("prepareLibzipTestCorpus") {
+    group = "verification"
+    description = "Extracts libzip regression inputs, expected results, and licensing information."
+    dependsOn(downloadLibzipTestSources)
+    from(downloadLibzipTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$libzipRoot/LICENSE")
+        include("$libzipRoot/regress/**")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == libzipRoot) {
+                "Unexpected libzip source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(libzipManifestFile) { rename { "UPSTREAM.properties" } }
+    into(libzipTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareLibzipTestCorpus)
+    inputs.dir(libzipTestDataDirectory)
+    systemProperty("arkivo.libzip.testDataDirectory", libzipTestDataDirectory.get().asFile.absolutePath)
+}
+
+val rarfileManifestFile = rootProject.file("gradle/test-data/rarfile.properties")
+val rarfileManifest = Properties().apply {
+    rarfileManifestFile.inputStream().use(::load)
+}
+val rarfileVersion = rarfileManifest.getProperty("version")
+val rarfileRoot = rarfileManifest.getProperty("archiveRoot")
+val rarfileSha256 = rarfileManifest.getProperty("archiveSha256")
+val rarfileArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$rarfileSha256/${rarfileManifest.getProperty("archiveName")}").asFile
+})
+val rarfileTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/rarfile/$rarfileVersion")
+
+val downloadRarfileTestSources = tasks.register<DownloadVerifiedFile>("downloadRarfileTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned rarfile source and regression data."
+    sourceUrl.set(rarfileManifest.getProperty("archiveUrl"))
+    expectedSha256.set(rarfileSha256)
+    expectedSize.set(rarfileManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(rarfileArchive)
+}
+
+val prepareRarfileTestCorpus = tasks.register<Sync>("prepareRarfileTestCorpus") {
+    group = "verification"
+    description = "Extracts rarfile archives, expected metadata, and reference tests."
+    dependsOn(downloadRarfileTestSources)
+    from(downloadRarfileTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$rarfileRoot/LICENSE")
+        include("$rarfileRoot/test/**")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == rarfileRoot) {
+                "Unexpected rarfile source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(rarfileManifestFile) { rename { "UPSTREAM.properties" } }
+    into(rarfileTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareRarfileTestCorpus)
+    inputs.dir(rarfileTestDataDirectory)
+    systemProperty("arkivo.rarfile.testDataDirectory", rarfileTestDataDirectory.get().asFile.absolutePath)
+}
+
+val goManifestFile = rootProject.file("gradle/test-data/go.properties")
+val goManifest = Properties().apply {
+    goManifestFile.inputStream().use(::load)
+}
+val goVersion = goManifest.getProperty("version")
+val goRoot = goManifest.getProperty("archiveRoot")
+val goSha256 = goManifest.getProperty("archiveSha256")
+val goArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$goSha256/${goManifest.getProperty("archiveName")}").asFile
+})
+val goTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/go/$goVersion")
+
+val downloadGoTestSources = tasks.register<DownloadVerifiedFile>("downloadGoTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned Go source release."
+    sourceUrl.set(goManifest.getProperty("archiveUrl"))
+    expectedSha256.set(goSha256)
+    expectedSize.set(goManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(goArchive)
+}
+
+val prepareGoTestCorpus = tasks.register<Sync>("prepareGoTestCorpus") {
+    group = "verification"
+    description = "Extracts Go archive and compression fixtures with their reference tests and license."
+    dependsOn(downloadGoTestSources)
+    from(downloadGoTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$goRoot/LICENSE", "$goRoot/PATENTS")
+        include("$goRoot/src/archive/**/testdata/**", "$goRoot/src/archive/**/*_test.go")
+        include("$goRoot/src/compress/**/testdata/**", "$goRoot/src/compress/**/*_test.go")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == goRoot) {
+                "Unexpected Go source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(goManifestFile) { rename { "UPSTREAM.properties" } }
+    into(goTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareGoTestCorpus)
+    inputs.dir(goTestDataDirectory)
+    systemProperty("arkivo.go.testDataDirectory", goTestDataDirectory.get().asFile.absolutePath)
+}
+
 val benchmarkArguments = providers.gradleProperty("benchmarkArgs")
 
 val benchmark by tasks.registering(JavaExec::class) {

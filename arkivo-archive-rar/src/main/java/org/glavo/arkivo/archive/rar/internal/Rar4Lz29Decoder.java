@@ -166,7 +166,8 @@ final class Rar4Lz29Decoder {
         }
         Rar3OutputPipeline entryOutput = new Rar3OutputPipeline(output, unpackedSize);
 
-        while (!entryOutput.isComplete()) {
+        // The end marker carries the table-reuse flag for the next solid entry.
+        while (!ppmMode || !entryOutput.isComplete()) {
             if (ppmMode) {
                 if (!decodePpmOperation(bits, entryOutput)) break;
                 continue;

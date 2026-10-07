@@ -119,7 +119,7 @@ public final class ZlibBufferEngineTest {
             byte[] wrongBytes = dictionaryBytes.clone();
             wrongBytes[0] ^= 1;
             ZlibDictionary wrongDictionary = ZlibDictionary.of(wrongBytes);
-            assertThrows(IOException.class, () -> decoder.provideDictionary(wrongDictionary));
+            assertThrows(IllegalArgumentException.class, () -> decoder.provideDictionary(wrongDictionary));
             assertEquals(checksum.getValue(), decoder.dictionaryRequest().adler32());
             decoder.provideDictionary(dictionary);
 

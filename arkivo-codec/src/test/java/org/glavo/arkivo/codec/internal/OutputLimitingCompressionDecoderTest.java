@@ -153,7 +153,7 @@ final class OutputLimitingCompressionDecoderTest {
         );
     }
 
-    /// Verifies an empty target bypasses the delegate and ordinary decode uses the same exact-limit probe.
+    /// Verifies an empty target preserves output requests and ordinary decode uses the same exact-limit probe.
     @Test
     void handlesEmptyTargetsAndIncrementalDecode() throws IOException {
         CompressionDecoder decoder = CompressionDecoderSupport.limitEngineOutput(
@@ -171,6 +171,27 @@ final class OutputLimitingCompressionDecoderTest {
         assertEquals(1, target.position());
         assertEquals(3, target.limit());
         assertEquals(5, Byte.toUnsignedInt(target.get(0)));
+    }
+
+    /// Preserves completed and closed delegate states even when the caller supplies no output space.
+    @Test
+    void preservesTerminalStatesWithEmptyTargets() throws IOException {
+        for (int size : new int[]{0, 1, 3}) {
+            StagedDecoder delegate = new StagedDecoder(new byte[size]);
+            CompressionDecoder decoder = CompressionDecoderSupport.limitEngineOutput(delegate, size);
+            ByteBuffer source = ByteBuffer.wrap(new byte[]{17, 18});
+            ByteBuffer empty = ByteBuffer.allocate(0);
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(source, ByteBuffer.allocate(size + 1)));
+            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, empty));
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(source, empty));
+            assertEquals(0, source.position());
+            decoder.reset();
+            assertEquals(size == 0 ? CodecOutcome.FINISHED : CodecOutcome.NEEDS_OUTPUT,
+                    decoder.decode(source, empty));
+            decoder.close();
+            assertThrows(IllegalStateException.class, () -> decoder.decode(source, empty));
+            assertThrows(IllegalStateException.class, () -> decoder.finish(source, empty));
+        }
     }
 
     /// Verifies a delegate cannot request more probe output without producing the required probe byte.

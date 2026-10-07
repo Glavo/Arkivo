@@ -58,6 +58,19 @@ final class Rar4BitInput {
         return (int) (reservoir >>> (reservoirBits - count) & mask);
     }
 
+    /// Peeks at a 16-bit decoding prefix, padding unavailable low bits without making them consumable.
+    int peekPrefix() throws IOException {
+        while (reservoirBits < 16) {
+            int value = readBufferedByte();
+            if (value < 0) {
+                return (int) (reservoir << (16 - reservoirBits));
+            }
+            reservoir = reservoir << 8 | value;
+            reservoirBits += 8;
+        }
+        return (int) (reservoir >>> (reservoirBits - 16) & 0xffff);
+    }
+
     /// Discards the requested number of bits.
     void skipBits(int count) throws IOException {
         if (count < 0 || count > 32) {

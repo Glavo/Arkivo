@@ -113,7 +113,8 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
             throw limitException();
         }
         if (!target.hasRemaining()) {
-            return CodecOutcome.NEEDS_OUTPUT;
+            // Preserve terminal states and input-only progress without allowing any additional output.
+            return endOfInput ? decoder.finish(source, target) : decoder.decode(source, target);
         }
 
         long remaining = maximumOutputSize - outputBytes;

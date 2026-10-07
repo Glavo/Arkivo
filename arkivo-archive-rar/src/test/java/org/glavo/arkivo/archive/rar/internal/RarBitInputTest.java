@@ -57,6 +57,21 @@ final class RarBitInputTest {
         assertThrows(IOException.class, () -> input.peekBits(1));
     }
 
+    /// Allows short decoding lookahead without making synthetic padding available to field reads.
+    @Test
+    void padsLegacyLookaheadWithoutAcceptingTruncation() throws IOException {
+        Rar4BitInput input = legacyInput(0xb2, 0x34, 0x56);
+        assertEquals(0xb234, input.peekPrefix());
+        assertEquals(0xb234, input.peekPrefix());
+        input.skipBits(20);
+        assertEquals(0x6000, input.peekPrefix());
+        assertEquals(0x6000, input.peekPrefix());
+        assertThrows(IOException.class, () -> input.skipBits(5));
+        assertEquals(6, input.readBits(4));
+        assertEquals(0, input.peekPrefix());
+        assertThrows(IOException.class, () -> input.readBits(1));
+    }
+
     /// Verifies RAR5 positions and exact active-block boundaries while retaining prefetched bytes.
     @Test
     void enforcesRar5BlockBoundaries() throws IOException {

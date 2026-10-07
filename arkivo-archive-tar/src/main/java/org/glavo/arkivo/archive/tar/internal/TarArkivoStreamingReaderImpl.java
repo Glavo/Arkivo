@@ -224,7 +224,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 continue;
             }
             if (typeFlag == TarEntryAttributes.PAX_EXTENDED_HEADER_TYPE) {
-                mergePendingPaxHeaders(parsePaxHeaders(
+                setPendingPaxHeaders(parsePaxHeaders(
                         readCurrentEntryBodyBytes("PAX extended header", attributes.path()),
                         TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER,
                         Byte.toUnsignedInt(typeFlag)
@@ -813,11 +813,22 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                     "PAX keyword"
             );
             byte[] value = Arrays.copyOfRange(body, equals + 1, end - 1);
+            if (key.indexOf('\0') >= 0) {
+                throw new IOException("TAR PAX keyword contains NUL");
+            }
+            if (key.equals("path") || key.equals("linkpath") || key.equals("uname") || key.equals("gname")) {
+                for (byte element : value) {
+                    if (element == 0) {
+                        throw new IOException("TAR PAX " + key + " contains NUL");
+                    }
+                }
+            }
             rawRecords.add(new RawPaxRecord(key, value));
             index = end;
         }
 
-        boolean binary = activePaxBinaryEncoding();
+        @Nullable PaxValue globalCharset = globalPaxHeaders.get("hdrcharset");
+        boolean binary = globalCharset != null && asciiEquals(globalCharset.bytes(), "BINARY");
         for (RawPaxRecord record : rawRecords) {
             if (record.key().equals("hdrcharset")) {
                 binary = asciiEquals(record.bytes(), "BINARY");
@@ -832,12 +843,6 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             orderedRecords.add(new PaxRecord(rawRecord.key(), value));
         }
         return new ParsedPaxHeaders(records, List.copyOf(orderedRecords));
-    }
-
-    /// Returns whether the currently active PAX headers select binary string values.
-    private boolean activePaxBinaryEncoding() {
-        @Nullable PaxValue value = rawPaxValue("hdrcharset");
-        return value != null && asciiEquals(value.bytes(), "BINARY");
     }
 
     /// Returns the active raw PAX value for a key, preferring per-entry records.
@@ -1003,21 +1008,10 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         }
     }
 
-    /// Merges per-entry PAX records for the next real entry.
-    private void mergePendingPaxHeaders(ParsedPaxHeaders headers) {
-        HashMap<String, PaxValue> records = headers.values();
-        HashMap<String, PaxValue> pending = pendingPaxHeaders;
-        if (pending == null) {
-            pendingPaxHeaders = records;
-        } else {
-            pending.putAll(records);
-        }
-        ArrayList<PaxRecord> ordered = pendingPaxRecords;
-        if (ordered == null) {
-            pendingPaxRecords = new ArrayList<>(headers.orderedRecords());
-        } else {
-            ordered.addAll(headers.orderedRecords());
-        }
+    /// Replaces the per-entry PAX header while preserving repeated sparse keys within that header.
+    private void setPendingPaxHeaders(ParsedPaxHeaders headers) {
+        pendingPaxHeaders = headers.values();
+        pendingPaxRecords = new ArrayList<>(headers.orderedRecords());
     }
 
     /// Applies pending GNU and PAX metadata to a real TAR entry.

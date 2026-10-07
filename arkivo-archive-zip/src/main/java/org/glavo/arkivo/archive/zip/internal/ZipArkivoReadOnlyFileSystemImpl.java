@@ -1037,6 +1037,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 centralDirectory.position(nextOffset);
             }
 
+            if (storageEntries.size() != endRecord.entryCount) {
+                throw new IOException("ZIP central directory entry count does not match end record");
+            }
             validateDirectoryConflicts(entries, directories);
             return new ZipIndex(
                     endRecord,
@@ -2024,6 +2027,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 throw new IOException("ZIP central directory offset is inconsistent");
             }
             return new ZipEndRecord(
+                    Short.toUnsignedInt(buffer.getShort(index + 10)),
                     centralDirectorySize,
                     centralDirectoryOffset,
                     actualCentralDirectoryOffset,
@@ -2111,6 +2115,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             throw new IOException("ZIP64 central directory offset is inconsistent");
         }
         return new ZipEndRecord(
+                readZip64UnsignedLong(fixedRecord, 32, "entry count"),
                 centralDirectorySize,
                 centralDirectoryOffset,
                 actualCentralDirectoryOffset,
@@ -2898,6 +2903,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
     /// Stores the parsed ZIP end record values needed by the index.
     private static final class ZipEndRecord {
+        /// The total number of entries declared by the end record.
+        private final long entryCount;
+
         /// The central directory size in bytes.
         private final long centralDirectorySize;
 
@@ -2915,12 +2923,14 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
         /// Creates parsed ZIP end record values.
         private ZipEndRecord(
+                long entryCount,
                 long centralDirectorySize,
                 long centralDirectoryOffset,
                 long actualCentralDirectoryOffset,
                 long offsetAdjustment,
                 byte[] archiveComment
         ) {
+            this.entryCount = entryCount;
             this.centralDirectorySize = centralDirectorySize;
             this.centralDirectoryOffset = centralDirectoryOffset;
             this.actualCentralDirectoryOffset = actualCentralDirectoryOffset;

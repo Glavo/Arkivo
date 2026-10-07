@@ -196,7 +196,11 @@ public final class ZlibDecoder
         if (state != State.NEEDS_DICTIONARY) {
             throw new IllegalStateException("Zlib decoder is not waiting for a dictionary");
         }
-        applyDictionary(dictionary);
+        ZlibDictionaryRequest request = dictionaryRequest();
+        if (!request.matches(dictionary)) {
+            throw new IllegalArgumentException("Supplied zlib dictionary does not satisfy " + request);
+        }
+        beginBody(dictionary);
     }
 
     /// Abandons the current stream and restores the configured zlib decoder state.

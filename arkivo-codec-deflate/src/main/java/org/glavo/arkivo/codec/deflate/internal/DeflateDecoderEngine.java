@@ -608,6 +608,9 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 case DYNAMIC_COUNTS -> {
                     int counts = bits.readBits(14, source, endOfInput, format);
                     literalCount = (counts & 31) + 257;
+                    if (literalCount > LAST_LENGTH_SYMBOL + 1) {
+                        throw malformed("dynamic literal/length alphabet exceeds 286 symbols");
+                    }
                     distanceCount = (counts >>> 5 & 31) + 1;
                     codeLengthCount = (counts >>> 10) + 4;
                     codeLengthPosition = 0;

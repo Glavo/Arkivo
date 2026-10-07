@@ -1766,6 +1766,76 @@ public final class TarArchiveIntegrationTest {
         }
     }
 
+    /// Rejects NUL in PAX keywords and names before metadata decoding can truncate it.
+    @Test
+    public void rejectsNulInPaxNames() throws IOException {
+        for (String key : List.of("path", "linkpath", "uname", "gname", "invalid\0key")) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            writePaxHeader(output, Map.of(key, "value\0suffix"));
+            writeEntry(output, "file", new byte[0]);
+            output.write(new byte[1024]);
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+                IOException failure = assertThrows(IOException.class, reader::next, key);
+                assertTrue(failure.getMessage().contains("contains NUL"));
+            }
+        }
+    }
+
+    /// Allows binary values in opaque PAX extensions while rejecting NUL in their keywords.
+    @Test
+    public void preservesBinaryPaxExtensionValues() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writePaxHeader(output, Map.of("SCHILY.xattr.user.binary", "a\0b"));
+        writeEntry(output, "file", new byte[0]);
+        output.write(new byte[1024]);
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            assertEquals("file", reader.readAttributes().path());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Replaces consecutive local extension headers without discarding global metadata.
+    @Test
+    public void replacesConsecutivePaxHeaders() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of("uid", "42"));
+        writePaxHeader(output, Map.of("path", "discarded", "uid", "77"));
+        writePaxHeader(output, Map.of("gname", "group"));
+        writeEntry(output, "file", new byte[0]);
+        output.write(new byte[1024]);
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            var attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("file", attributes.path());
+            assertEquals(42, attributes.userId());
+            assertEquals("group", attributes.groupName());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Discards a replaced local charset declaration before decoding the next local PAX header.
+    @Test
+    public void consecutivePaxHeadersDoNotInheritLocalCharset() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writePaxHeader(output, Map.of("hdrcharset", "BINARY"));
+        writePaxHeader(output, Map.of("path", "\u00e9.txt"));
+        writeEntry(output, "file", new byte[0]);
+        output.write(new byte[1024]);
+        TarMetadataCharsetDetector detector = context -> {
+            if (context.source() == TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER) {
+                throw new AssertionError("Replaced local charset must not affect the next PAX header");
+            }
+            return StandardCharsets.UTF_8;
+        };
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()),
+                TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector))) {
+            assertTrue(reader.next());
+            assertEquals("\u00e9.txt", reader.readAttributes().path());
+            assertFalse(reader.next());
+        }
+    }
+
     /// Verifies that malformed PAX record boundaries are rejected.
     @Test
     public void rejectsMalformedPaxRecordBoundary() throws IOException {

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -129,6 +130,38 @@ final class ZipCompatibilityRegressionTest {
         ); var entries = Files.list(fileSystem.getPath("/"))) {
             assertEquals(UINT16_MAX, entries.count());
         }
+    }
+
+    /// Rejects both missing and excess classic central-directory entries instead of trusting directory size alone.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 2, 65535})
+    void rejectsIncorrectClassicEntryCount(int count) {
+        byte[] archive = classicArchiveWithEntryCount(1);
+        int endOffset = archive.length - 22;
+        ByteArrayAccess.writeShortLittleEndian(archive, endOffset + 8, (short) count);
+        ByteArrayAccess.writeShortLittleEndian(archive, endOffset + 10, (short) count);
+        assertThrows(IOException.class, () -> {
+            try (var fileSystem = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(archive));
+                 var entries = Files.list(fileSystem.getPath("/"))) {
+                entries.toList();
+            }
+        });
+    }
+
+    /// Rejects inconsistent ZIP64 counts, including unsigned values outside the supported long range.
+    @ParameterizedTest
+    @ValueSource(longs = {0, 2, Long.MAX_VALUE, Long.MIN_VALUE, -1})
+    void rejectsIncorrectZip64EntryCount(long count) {
+        byte[] archive = zip64Archive(new byte[0], true, false, false, false);
+        int zip64EndOffset = archive.length - 22 - 20 - 56;
+        ByteArrayAccess.writeLongLittleEndian(archive, zip64EndOffset + 24, count);
+        ByteArrayAccess.writeLongLittleEndian(archive, zip64EndOffset + 32, count);
+        assertThrows(IOException.class, () -> {
+            try (var fileSystem = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(archive));
+                 var entries = Files.list(fileSystem.getPath("/"))) {
+                entries.toList();
+            }
+        });
     }
 
     /// Verifies seekable and streaming reads of stored entries with signed and unsigned data descriptors.

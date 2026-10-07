@@ -137,6 +137,9 @@ final class ZipExtraFields {
                 || id == ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID
                 || id == ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID
                 || id == ZipConstants.EXTENDED_TIMESTAMP_EXTRA_FIELD_ID
+                || id == ZipConstants.NTFS_EXTRA_FIELD_ID
+                || id == ZipConstants.UNIX_EXTRA_FIELD_ID
+                || id == ZipConstants.INFO_ZIP_UNIX_EXTRA_FIELD_ID
                 || id == ZipConstants.NEW_UNIX_EXTRA_FIELD_ID;
     }
 

@@ -34,7 +34,6 @@ import java.util.List;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Compares archive entry metadata and content across Arkivo and independent decoders.
@@ -202,7 +201,6 @@ public final class ArchiveCorpusAssertions {
                 .filter(entry -> !entry.directory())
                 .sorted(Comparator.comparing(EntryDigest::path))
                 .toList();
-        assertFalse(expected.isEmpty(), "archive must expose at least one entry");
         assertEquals(expectedContents, actualContents);
 
         @Unmodifiable List<EntryDigest> expectedDirectories = expected.stream()

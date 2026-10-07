@@ -1808,6 +1808,26 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         byte @Nullable [] salt = (block.flags() & RAR4_FILE_FLAG_SALT) != 0
                 ? reader.readBytes(Rar3Crypto.SALT_SIZE, "RAR4 file encryption salt")
                 : null;
+        @Nullable FileTime creationTime = null;
+        @Nullable FileTime lastAccessTime = null;
+        if ((block.flags() & RAR4_FILE_FLAG_EXTENDED_TIME) != 0) {
+            int timeFlags = reader.readUInt16("RAR4 extended time flags");
+            for (int index = 0; index < 4; index++) {
+                int mode = timeFlags >>> ((3 - index) * 4) & 0x0f;
+                if ((mode & 8) == 0) {
+                    continue;
+                }
+                FileTime baseTime = index == 0 ? lastModifiedTime
+                        : fileTimeFromDosTime((int) reader.readUInt32("RAR4 extended DOS time"));
+                FileTime extendedTime = readRar4ExtendedTime(reader, mode, baseTime);
+                switch (index) {
+                    case 0 -> lastModifiedTime = extendedTime;
+                    case 1 -> creationTime = extendedTime;
+                    case 2 -> lastAccessTime = extendedTime;
+                    default -> { /* Archive time has no corresponding basic file attribute. */ }
+                }
+            }
+        }
         int hostOs = rar4HostOs(rawHostOs);
         int compressionMethod = rar4CompressionMethod(rawMethod);
         boolean directory = (block.flags() & RAR4_FILE_DICTIONARY_MASK) == RAR4_FILE_IS_DIRECTORY
@@ -1856,8 +1876,8 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                         (block.flags() & RAR4_FILE_FLAG_CONTINUE_PREVIOUS) != 0,
                         (block.flags() & RAR4_FILE_FLAG_CONTINUE_NEXT) != 0,
                         lastModifiedTime,
-                        lastModifiedTime,
-                        lastModifiedTime
+                        creationTime != null ? creationTime : lastModifiedTime,
+                        lastAccessTime != null ? lastAccessTime : lastModifiedTime
                 ),
                 encryptionInfo,
                 new Rar4CompressionInfo(
@@ -1865,6 +1885,19 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                         (block.flags() & RAR4_FILE_FLAG_SOLID) != 0L
                 )
         );
+    }
+
+    /// Reads the optional odd second and high-order fractional bytes of a RAR4 extended timestamp.
+    private static FileTime readRar4ExtendedTime(HeaderReader reader, int mode, FileTime baseTime) throws IOException {
+        int ticks = 0;
+        for (int index = 0; index < (mode & 3); index++) {
+            ticks = ticks >>> 8 | reader.readUnsignedByte("RAR4 fractional time") << 16;
+        }
+        if (ticks >= WINDOWS_FILETIME_TICKS_PER_SECOND) {
+            throw new IOException("RAR4 fractional time is out of range");
+        }
+        long seconds = baseTime.toInstant().getEpochSecond() + ((mode & 4) != 0 ? 1 : 0);
+        return fileTimeFromEpochSecond(seconds, ticks * 100L, "RAR4 extended time");
     }
 
     /// Returns whether a RAR4 extraction version selects the RAR 3.x AES-128 scheme.

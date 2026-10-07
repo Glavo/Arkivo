@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -27,6 +28,12 @@ final class ZipExtraFieldMetadata {
     /// The extended timestamp flag indicating a creation time.
     private static final int CREATION_TIME_FLAG = 1 << 2;
 
+    /// The number of 100-nanosecond FILETIME ticks in one second.
+    private static final long FILETIME_TICKS_PER_SECOND = 10_000_000L;
+
+    /// The number of seconds from the Windows epoch to the Unix epoch.
+    private static final long WINDOWS_EPOCH_OFFSET = 11_644_473_600L;
+
     /// Prevents instantiation.
     private ZipExtraFieldMetadata() {
     }
@@ -34,7 +41,8 @@ final class ZipExtraFieldMetadata {
     /// Resolves recognized metadata from local and central-directory extra fields.
     ///
     /// A local extended timestamp field replaces the corresponding central-directory field because the central form
-    /// can carry only the modification time. The new Unix field is defined only for local file headers.
+    /// can carry only the modification time. NTFS timestamps take precedence over extended Unix timestamps, followed
+    /// by the older Unix fields and the DOS fallback. The new Unix ID field is defined only for local file headers.
     static EntryMetadata resolve(
             byte @Unmodifiable [] localExtraData,
             byte @Unmodifiable [] centralExtraData,
@@ -51,6 +59,14 @@ final class ZipExtraFieldMetadata {
         @Nullable TimestampMetadata timestamps = timestampField != null
                 ? parseExtendedTimestamp(timestampSource, timestampField.dataOffset(), timestampField.dataSize())
                 : null;
+        // Merge complete fields in increasing precision, keeping absent timestamps from lower-priority fields.
+        @Nullable TimestampMetadata legacy = readTimestampField(localExtraData, centralExtraData,
+                ZipConstants.INFO_ZIP_UNIX_EXTRA_FIELD_ID);
+        legacy = mergeTimestamps(readTimestampField(localExtraData, centralExtraData,
+                ZipConstants.UNIX_EXTRA_FIELD_ID), legacy);
+        timestamps = mergeTimestamps(timestamps, legacy);
+        timestamps = mergeTimestamps(readTimestampField(localExtraData, centralExtraData,
+                ZipConstants.NTFS_EXTRA_FIELD_ID), timestamps);
         FileTime lastModifiedTime = timestamps != null && timestamps.lastModifiedTime() != null
                 ? timestamps.lastModifiedTime()
                 : dosFallback;
@@ -70,6 +86,93 @@ final class ZipExtraFieldMetadata {
             groupId = unixIds.groupId();
         }
         return new EntryMetadata(lastModifiedTime, lastAccessTime, creationTime, userId, groupId);
+    }
+
+    /// Resolves one timestamp field, preferring its local-header form over its central-directory form.
+    private static @Nullable TimestampMetadata readTimestampField(
+            byte @Unmodifiable [] local, byte @Unmodifiable [] central, int id
+    ) throws IOException {
+        @Nullable ZipExtraFields.Field field = ZipExtraFields.find(local, id);
+        byte @Unmodifiable [] source = local;
+        if (field == null) {
+            field = ZipExtraFields.find(central, id);
+            source = central;
+        }
+        if (field == null) {
+            return null;
+        }
+        if (id == ZipConstants.NTFS_EXTRA_FIELD_ID) {
+            return parseNtfsTimestamps(source, field.dataOffset(), field.dataSize());
+        }
+        if (field.dataSize() < 8) {
+            throw new IOException("ZIP Unix timestamp extra field is too short");
+        }
+        int offset = field.dataOffset();
+        return new TimestampMetadata(
+                FileTime.from(Instant.ofEpochSecond(Integer.toUnsignedLong(ZipLittleEndian.readInt(source, offset + 4)))),
+                FileTime.from(Instant.ofEpochSecond(Integer.toUnsignedLong(ZipLittleEndian.readInt(source, offset)))),
+                null);
+    }
+
+    /// Fills missing high-priority timestamps from another field.
+    private static @Nullable TimestampMetadata mergeTimestamps(
+            @Nullable TimestampMetadata preferred, @Nullable TimestampMetadata fallback
+    ) {
+        if (preferred == null) {
+            return fallback;
+        }
+        if (fallback == null) {
+            return preferred;
+        }
+        return new TimestampMetadata(
+                preferred.lastModifiedTime() != null ? preferred.lastModifiedTime() : fallback.lastModifiedTime(),
+                preferred.lastAccessTime() != null ? preferred.lastAccessTime() : fallback.lastAccessTime(),
+                preferred.creationTime() != null ? preferred.creationTime() : fallback.creationTime());
+    }
+
+    /// Reads the first NTFS time attribute and validates all nested attribute boundaries.
+    private static @Nullable TimestampMetadata parseNtfsTimestamps(
+            byte @Unmodifiable [] data, int offset, int length
+    ) throws IOException {
+        if (length < Integer.BYTES) {
+            throw new IOException("ZIP NTFS extra field is too short");
+        }
+        int end = offset + length;
+        offset += Integer.BYTES;
+        @Nullable TimestampMetadata timestamps = null;
+        while (offset < end) {
+            if (end - offset < 4) {
+                throw new IOException("Truncated ZIP NTFS attribute header");
+            }
+            int tag = ZipLittleEndian.readUnsignedShort(data, offset);
+            int size = ZipLittleEndian.readUnsignedShort(data, offset + 2);
+            offset += 4;
+            if (size > end - offset) {
+                throw new IOException("Truncated ZIP NTFS attribute");
+            }
+            if (tag == 1) {
+                if (size != 3 * Long.BYTES) {
+                    throw new IOException("Invalid ZIP NTFS timestamp attribute size");
+                }
+                if (timestamps == null) {
+                    timestamps = new TimestampMetadata(fileTime(data, offset), fileTime(data, offset + 8),
+                            fileTime(data, offset + 16));
+                }
+            }
+            offset += size;
+        }
+        return timestamps;
+    }
+
+    /// Converts an unsigned FILETIME value without discarding submillisecond precision; zero denotes an absent time.
+    private static @Nullable FileTime fileTime(byte @Unmodifiable [] data, int offset) {
+        long ticks = ByteArrayAccess.readLongLittleEndian(data, offset);
+        if (ticks == 0) {
+            return null;
+        }
+        long seconds = Long.divideUnsigned(ticks, FILETIME_TICKS_PER_SECOND) - WINDOWS_EPOCH_OFFSET;
+        long nanos = Long.remainderUnsigned(ticks, FILETIME_TICKS_PER_SECOND) * 100L;
+        return FileTime.from(Instant.ofEpochSecond(seconds, nanos));
     }
 
     /// Converts ZIP DOS date and time fields to a file time.

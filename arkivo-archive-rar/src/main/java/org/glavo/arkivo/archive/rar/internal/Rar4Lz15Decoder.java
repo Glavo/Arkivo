@@ -342,11 +342,14 @@ final class Rar4Lz15Decoder {
         if (place < 0 || place >= flags.length) {
             throw new IOException("Invalid RAR1.5 flag position");
         }
-        int value = flags[place];
-        flagBuffer = value >>> 8;
-        int newPlace = flagPositions[value & 0xff]++;
-        value++;
-        if ((value & 0xff) == 0) {
+        int value;
+        int newPlace;
+        while (true) {
+            value = flags[place];
+            flagBuffer = value >>> 8;
+            newPlace = flagPositions[value & 0xff]++;
+            value++;
+            if ((value & 0xff) != 0) break;
             correctFrequencies(flags, flagPositions);
         }
         swap(flags, place, newPlace, value);
@@ -354,7 +357,7 @@ final class Rar4Lz15Decoder {
 
     /// Decodes one adaptive literal or a static-mode match control.
     private void decodeLiteral(Rar4BitInput bits, EntryOutput output) throws IOException {
-        int prefix = bits.peekBits(16);
+        int prefix = bits.peekPrefix();
         int place;
         if (averagePlace > 0x75ff) {
             place = decodeNumber(bits, HUFFMAN_START_4, HUFFMAN_LIMITS_4, HUFFMAN_POSITIONS_4);
@@ -406,11 +409,15 @@ final class Rar4Lz15Decoder {
             lzActivity >>>= 1;
         }
 
-        int characterState = characters[place];
-        emit(characterState >>> 8, output);
-        int newPlace = characterPositions[characterState & 0xff]++;
-        characterState++;
-        if ((characterState & 0xff) > 0xa1) {
+        emit(characters[place] >>> 8, output);
+        int characterState;
+        int newPlace;
+        while (true) {
+            characterState = characters[place];
+            newPlace = characterPositions[characterState & 0xff]++;
+            characterState++;
+            if ((characterState & 0xff) <= 0xa1) break;
+            // Rescaling changes both the selected frequency and its destination.
             correctFrequencies(characters, characterPositions);
         }
         swap(characters, place, newPlace, characterState);
@@ -426,7 +433,7 @@ final class Rar4Lz15Decoder {
         }
         int oldAverageLength2 = averageLength2;
 
-        int prefix = bits.peekBits(16);
+        int prefix = bits.peekPrefix();
         int length;
         if (averageLength2 >= 122) {
             length = decodeNumber(bits, LENGTH_START_2, LENGTH_LIMITS_2, LENGTH_POSITIONS_2);
@@ -456,15 +463,18 @@ final class Rar4Lz15Decoder {
             throw new IOException("Invalid RAR1.5 long-distance position");
         }
 
-        int distanceState = longDistances[distancePlace];
-        int newPlace = longDistancePositions[distanceState & 0xff]++;
-        distanceState++;
-        if ((distanceState & 0xff) == 0) {
+        int distanceState;
+        int newPlace;
+        while (true) {
+            distanceState = longDistances[distancePlace];
+            newPlace = longDistancePositions[distanceState & 0xff]++;
+            distanceState++;
+            if ((distanceState & 0xff) != 0) break;
             correctFrequencies(longDistances, longDistancePositions);
         }
         swap(longDistances, distancePlace, newPlace, distanceState);
 
-        int distance = ((distanceState & 0xff00) | bits.peekBits(16) >>> 8) >>> 1;
+        int distance = ((distanceState & 0xff00) | bits.peekPrefix() >>> 8) >>> 1;
         bits.skipBits(7);
         int oldAverageLength3 = averageLength3;
         if (length != 1 && length != 4) {
@@ -493,7 +503,7 @@ final class Rar4Lz15Decoder {
     /// Decodes one compact short match or recent-distance control.
     private void decodeShortMatch(Rar4BitInput bits, EntryOutput output) throws IOException {
         huffmanCount = 0;
-        int prefix = bits.peekBits(16);
+        int prefix = bits.peekPrefix();
         if (shortRepeatCount == 2) {
             bits.skipBits(1);
             if (prefix >= 0x8000) {
@@ -544,9 +554,10 @@ final class Rar4Lz15Decoder {
         if (symbol == 14) {
             shortRepeatCount = 0;
             int length = decodeNumber(bits, LENGTH_START_2, LENGTH_LIMITS_2, LENGTH_POSITIONS_2) + 5;
-            int distance = (bits.peekBits(16) >>> 1) | 0x8000;
+            int distance = (bits.peekPrefix() >>> 1) | 0x8000;
             bits.skipBits(15);
-            rememberMatch(distance, length);
+            lastDistance = distance;
+            lastLength = length;
             copyMatch(distance, length, output);
             return;
         }
@@ -635,7 +646,7 @@ final class Rar4Lz15Decoder {
             int[] limits,
             int[] positions
     ) throws IOException {
-        int prefix = bits.peekBits(16) & 0xfff0;
+        int prefix = bits.peekPrefix() & 0xfff0;
         int tableIndex = 0;
         int width = startWidth;
         while (tableIndex < limits.length && limits[tableIndex] <= prefix) {

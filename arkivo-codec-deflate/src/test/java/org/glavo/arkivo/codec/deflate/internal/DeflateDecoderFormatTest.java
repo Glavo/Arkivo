@@ -9,6 +9,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -17,12 +18,59 @@ import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies RFC 1951 profile boundaries in the shared pure Java decoder.
 @NotNullByDefault
 final class DeflateDecoderFormatTest {
+    /// Rejects the two reserved HLIT values even when their extra symbols have zero code lengths.
+    @Test
+    void rejectsOversizedDynamicLiteralAlphabet() throws IOException {
+        for (DeflateDecoderEngine.Format format : DeflateDecoderEngine.Format.values()) {
+            try (CompressionDecoder decoder = new DeflateDecoderEngine(format, null)) {
+                for (int literalCount = 287; literalCount <= 288; literalCount++) {
+                    byte[] encoded = emptyDynamicBlock(literalCount);
+                    for (int length : new int[]{3, encoded.length}) {
+                        IOException failure = assertThrows(IOException.class,
+                                () -> decoder.decode(ByteBuffer.wrap(encoded, 0, length), ByteBuffer.allocate(1)));
+                        assertFalse(failure instanceof EOFException);
+                        assertTrue(failure.getMessage().contains("literal/length alphabet"));
+                        decoder.reset();
+                    }
+                }
+                ByteBuffer source = ByteBuffer.wrap(emptyDynamicBlock(286));
+                ByteBuffer target = ByteBuffer.allocate(1);
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
+                assertFalse(source.hasRemaining());
+                assertEquals(0, target.position());
+            }
+        }
+    }
+
+    /// Builds an empty dynamic block whose only nonzero data code length belongs to the end-of-block symbol.
+    private static byte[] emptyDynamicBlock(int literalCount) {
+        BitWriter writer = new BitWriter();
+        writer.writeBits(5, 3);
+        writer.writeBits(literalCount - 257, 5);
+        writer.writeBits(0, 5);
+        writer.writeBits(14, 4);
+        for (int symbol : new int[]{16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1}) {
+            writer.writeBits(symbol == 18 ? 1 : symbol == 0 || symbol == 1 ? 2 : 0, 3);
+        }
+        // Code 18 has one zero bit; codes 0 and 1 have bit-reversed values 1 and 3.
+        writer.writeBits(0, 1);
+        writer.writeBits(138 - 11, 7);
+        writer.writeBits(0, 1);
+        writer.writeBits(118 - 11, 7);
+        writer.writeBits(3, 2);
+        writer.writeBits(0, 1);
+        writer.writeBits(literalCount - 256 - 11, 7);
+        writer.writeBits(0, 1);
+        return writer.toByteArray();
+    }
+
     /// Verifies that symbol 285 means exactly 258 bytes without Deflate64 extra bits.
     @Test
     void decodesStandardLengthSymbol285() throws IOException {
