@@ -1021,49 +1021,40 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
                 if (value == 0) {
                     while (runLength >= 11) {
                         int repeated = Math.min(runLength, 138);
-                        count = add(symbols, extraValues, extraBits, frequencies, count, 18, repeated - 11, 7);
+                        add(18, repeated - 11, 7);
                         runLength -= repeated;
                     }
                     if (runLength >= 3) {
                         int repeated = Math.min(runLength, 10);
-                        count = add(symbols, extraValues, extraBits, frequencies, count, 17, repeated - 3, 3);
+                        add(17, repeated - 3, 3);
                         runLength -= repeated;
                     }
                     while (runLength-- > 0) {
-                        count = add(symbols, extraValues, extraBits, frequencies, count, 0, 0, 0);
+                        add(0, 0, 0);
                     }
                 } else {
-                    count = add(symbols, extraValues, extraBits, frequencies, count, value, 0, 0);
+                    add(value, 0, 0);
                     runLength--;
                     while (runLength >= 3) {
                         int repeated = Math.min(runLength, 6);
-                        count = add(symbols, extraValues, extraBits, frequencies, count, 16, repeated - 3, 2);
+                        add(16, repeated - 3, 2);
                         runLength -= repeated;
                     }
                     while (runLength-- > 0) {
-                        count = add(symbols, extraValues, extraBits, frequencies, count, value, 0, 0);
+                        add(value, 0, 0);
                     }
                 }
                 position = runEnd;
             }
         }
 
-        /// Adds one encoded length entry and returns the next insertion position.
-        private static int add(
-                int[] symbols,
-                int[] extraValues,
-                int[] extraBits,
-                int[] frequencies,
-                int position,
-                int symbol,
-                int extraValue,
-                int extraBitCount
-        ) {
-            symbols[position] = symbol;
-            extraValues[position] = extraValue;
-            extraBits[position] = extraBitCount;
+        /// Appends one code-length symbol and updates its frequency.
+        private void add(int symbol, int extraValue, int extraBitCount) {
+            symbols[count] = symbol;
+            extraValues[count] = extraValue;
+            extraBits[count] = extraBitCount;
             frequencies[symbol]++;
-            return position + 1;
+            count++;
         }
 
         /// Returns the encoded symbols.

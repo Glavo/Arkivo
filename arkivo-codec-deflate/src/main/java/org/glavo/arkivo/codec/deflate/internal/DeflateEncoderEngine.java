@@ -738,96 +738,148 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
 
         /// Builds a canonical tree without mutating the input frequencies.
         void build(int[] frequencies, int maximumLength, HuffmanCode result) {
-            int symbols = frequencies.length;
-            Arrays.fill(weights, 0, symbols * 2, 0);
-            Arrays.fill(depths, 0, symbols * 2, 0);
+            int symbolCount = frequencies.length;
+            Arrays.fill(weights, 0, symbolCount * 2, 0);
+            Arrays.fill(depths, 0, symbolCount * 2, 0);
             Arrays.fill(result.lengths, 0);
             Arrays.fill(result.codes, 0);
             Arrays.fill(lengthCounts, 0);
+
+            int maximumSymbol = initializeHeap(frequencies);
+            int rootIndex = mergeNodes(symbolCount);
+            int overflow = assignLengths(rootIndex, maximumSymbol, maximumLength, result);
+            if (overflow > 0) {
+                repairOverflow(overflow, maximumSymbol, maximumLength, result);
+            }
+            assignCanonicalCodes(maximumSymbol, maximumLength, result);
+        }
+
+        /// Builds the leaf heap and returns the highest included symbol, adding dummy leaves when needed.
+        private int initializeHeap(int[] frequencies) {
             heapSize = 0;
-            int maximumCode = -1;
-            for (int n = 0; n < symbols; n++) {
-                weights[n] = frequencies[n];
-                if (frequencies[n] != 0) heap[++heapSize] = maximumCode = n;
+            int maximumSymbol = -1;
+            for (int symbol = 0; symbol < frequencies.length; symbol++) {
+                weights[symbol] = frequencies[symbol];
+                if (frequencies[symbol] != 0) {
+                    heap[++heapSize] = symbol;
+                    maximumSymbol = symbol;
+                }
             }
+            // Two leaves are required even for empty and single-symbol alphabets.
             while (heapSize < 2) {
-                int n = maximumCode < 2 ? ++maximumCode : 0;
-                heap[++heapSize] = n;
-                weights[n] = 1;
+                int symbol = maximumSymbol < 2 ? ++maximumSymbol : 0;
+                heap[++heapSize] = symbol;
+                weights[symbol] = 1;
             }
-            for (int n = heapSize / 2; n >= 1; n--) down(n);
-            int nextNode = symbols;
-            int heapMaximum = heap.length;
+            for (int index = heapSize / 2; index >= 1; index--) {
+                siftDown(index);
+            }
+            return maximumSymbol;
+        }
+
+        /// Merges the two lightest nodes until one root remains and returns its index in the heap array.
+        ///
+        /// Removed nodes fill the array from the end. The resulting suffix orders every parent before
+        /// its children, allowing code lengths to be assigned in one forward pass.
+        private int mergeNodes(int symbolCount) {
+            int nextNode = symbolCount;
+            int sortedStart = heap.length;
             do {
                 int left = heap[1];
                 heap[1] = heap[heapSize--];
-                down(1);
+                siftDown(1);
                 int right = heap[1];
-                heap[--heapMaximum] = left;
-                heap[--heapMaximum] = right;
+                heap[--sortedStart] = left;
+                heap[--sortedStart] = right;
                 weights[nextNode] = weights[left] + weights[right];
                 depths[nextNode] = Math.max(depths[left], depths[right]) + 1;
-                parents[left] = parents[right] = nextNode;
+                parents[left] = nextNode;
+                parents[right] = nextNode;
                 heap[1] = nextNode++;
-                down(1);
+                siftDown(1);
             } while (heapSize >= 2);
-            heap[--heapMaximum] = heap[1];
-            nodeLengths[heap[heapMaximum]] = 0;
+            heap[--sortedStart] = heap[1];
+            return sortedStart;
+        }
+
+        /// Assigns bounded provisional lengths and returns the number of nodes exceeding the length limit.
+        private int assignLengths(int rootIndex, int maximumSymbol, int maximumLength, HuffmanCode result) {
+            nodeLengths[heap[rootIndex]] = 0;
             int overflow = 0;
-            for (int h = heapMaximum + 1; h < heap.length; h++) {
-                int n = heap[h];
-                int length = nodeLengths[parents[n]] + 1;
+            for (int index = rootIndex + 1; index < heap.length; index++) {
+                int node = heap[index];
+                int length = nodeLengths[parents[node]] + 1;
                 if (length > maximumLength) {
                     length = maximumLength;
                     overflow++;
                 }
-                nodeLengths[n] = length;
-                if (n > maximumCode) continue;
-                result.lengths[n] = length;
+                nodeLengths[node] = length;
+                if (node > maximumSymbol) {
+                    continue;
+                }
+                result.lengths[node] = length;
                 lengthCounts[length]++;
             }
-            if (overflow > 0) {
-                do {
-                    int length = maximumLength - 1;
-                    while (lengthCounts[length] == 0) length--;
-                    lengthCounts[length]--;
-                    lengthCounts[length + 1] += 2;
-                    lengthCounts[maximumLength]--;
-                    overflow -= 2;
-                } while (overflow > 0);
-                int h = heap.length;
-                for (int length = maximumLength; length > 0; length--) {
-                    for (int count = lengthCounts[length]; count > 0;) {
-                        int n = heap[--h];
-                        if (n > maximumCode) continue;
-                        result.lengths[n] = length;
-                        count--;
+            return overflow;
+        }
+
+        /// Redistributes overlong codes and reassigns leaf lengths in reverse heap order.
+        private void repairOverflow(int overflow, int maximumSymbol, int maximumLength, HuffmanCode result) {
+            do {
+                int length = maximumLength - 1;
+                while (lengthCounts[length] == 0) {
+                    length--;
+                }
+                lengthCounts[length]--;
+                lengthCounts[length + 1] += 2;
+                lengthCounts[maximumLength]--;
+                overflow -= 2;
+            } while (overflow > 0);
+
+            int index = heap.length;
+            for (int length = maximumLength; length > 0; length--) {
+                for (int count = lengthCounts[length]; count > 0;) {
+                    int node = heap[--index];
+                    if (node > maximumSymbol) {
+                        continue;
                     }
+                    result.lengths[node] = length;
+                    count--;
                 }
             }
+        }
+
+        /// Assigns canonical codes by symbol order and reverses them for least-significant-bit-first output.
+        private void assignCanonicalCodes(int maximumSymbol, int maximumLength, HuffmanCode result) {
             int code = 0;
             for (int length = 1; length <= maximumLength; length++) {
                 code = (code + lengthCounts[length - 1]) << 1;
                 nextCodes[length] = code;
             }
-            for (int n = 0; n <= maximumCode; n++) {
-                int length = result.lengths[n];
-                if (length != 0) result.codes[n] = reverseBits(nextCodes[length]++, length);
+            for (int symbol = 0; symbol <= maximumSymbol; symbol++) {
+                int length = result.lengths[symbol];
+                if (length != 0) {
+                    result.codes[symbol] = reverseBits(nextCodes[length]++, length);
+                }
             }
         }
 
         /// Compares weights, then depths, retaining zlib's non-strict tie rule.
-        private boolean smaller(int left, int right) {
+        private boolean comesFirst(int left, int right) {
             return weights[left] < weights[right] || weights[left] == weights[right] && depths[left] <= depths[right];
         }
 
         /// Restores the heap after replacing one node.
-        private void down(int index) {
+        private void siftDown(int index) {
             int value = heap[index];
             int child = index * 2;
             while (child <= heapSize) {
-                if (child < heapSize && smaller(heap[child + 1], heap[child])) child++;
-                if (smaller(value, heap[child])) break;
+                if (child < heapSize && comesFirst(heap[child + 1], heap[child])) {
+                    child++;
+                }
+                if (comesFirst(value, heap[child])) {
+                    break;
+                }
                 heap[index] = heap[child];
                 index = child;
                 child *= 2;
@@ -918,18 +970,18 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
                 if (++repeated < maximum && current == nextLength) continue;
                 if (repeated < minimum) {
                     do {
-                        count = add(symbols, extraValues, extraBits, frequencies, count, current, 0, 0);
+                        add(current, 0, 0);
                     } while (--repeated != 0);
                 } else if (current != 0) {
                     if (current != previousLength) {
-                        count = add(symbols, extraValues, extraBits, frequencies, count, current, 0, 0);
+                        add(current, 0, 0);
                         repeated--;
                     }
-                    count = add(symbols, extraValues, extraBits, frequencies, count, 16, repeated - 3, 2);
+                    add(16, repeated - 3, 2);
                 } else if (repeated <= 10) {
-                    count = add(symbols, extraValues, extraBits, frequencies, count, 17, repeated - 3, 3);
+                    add(17, repeated - 3, 3);
                 } else {
-                    count = add(symbols, extraValues, extraBits, frequencies, count, 18, repeated - 11, 7);
+                    add(18, repeated - 11, 7);
                 }
                 repeated = 0;
                 previousLength = current;
@@ -946,22 +998,13 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
             }
         }
 
-        /// Adds one encoded length entry and returns the next insertion position.
-        private static int add(
-                int[] symbols,
-                int[] extraValues,
-                int[] extraBits,
-                int[] frequencies,
-                int position,
-                int symbol,
-                int extraValue,
-                int extraBitCount
-        ) {
-            symbols[position] = symbol;
-            extraValues[position] = extraValue;
-            extraBits[position] = extraBitCount;
+        /// Appends one code-length symbol and updates its frequency.
+        private void add(int symbol, int extraValue, int extraBitCount) {
+            symbols[count] = symbol;
+            extraValues[count] = extraValue;
+            extraBits[count] = extraBitCount;
             frequencies[symbol]++;
-            return position + 1;
+            count++;
         }
 
         /// Returns the encoded symbols.
