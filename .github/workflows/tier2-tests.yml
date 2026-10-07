@@ -47,9 +47,13 @@ concurrency:
 
 jobs:
   test:
-    name: Compatibility and upstream corpora
-    runs-on: ubuntu-latest
+    name: Compatibility and upstream corpora / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - name: Checkout sources
@@ -68,3 +72,36 @@ jobs:
 
       - name: Run Tier 2 tests
         run: ./gradlew -g .gradle-user-home tier2Test --no-daemon --stacktrace
+
+  sevenzip-interop:
+    name: Required official 7-Zip interoperability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Install official 7-Zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes 7zip
+          executable="$(command -v 7z)"
+          test -x "$executable"
+          echo "ARKIVO_7Z_EXECUTABLE=$executable" >> "$GITHUB_ENV"
+          "$executable" i
+
+      - name: Verify encrypted BCJ2 archives
+        env:
+          ARKIVO_REQUIRE_7Z: "true"
+        run: ./gradlew -g .gradle-user-home :arkivo-archive-7z:tier2Test --tests '*SevenZipOfficialCliInteropTest' --no-daemon --stacktrace

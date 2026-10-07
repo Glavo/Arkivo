@@ -8,6 +8,7 @@ import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -20,7 +21,11 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -50,6 +55,21 @@ final class LibDMGCorpusTest {
                 byte[] actual = new byte[Math.toIntExact(hfs.size())];
                 try (SeekableByteChannel channel = image.openPartition(hfs)) {
                     readFully(channel, ByteBuffer.wrap(actual));
+                    Random random = new Random(0x55444946L);
+                    for (int trial = 0; trial < 64; trial++) {
+                        int position = random.nextInt(expected.length);
+                        int length = Math.min(expected.length - position, 1 + random.nextInt(65536));
+                        ByteBuffer slice = trial % 2 == 0 ? ByteBuffer.allocate(length) : ByteBuffer.allocateDirect(length);
+                        channel.position(position);
+                        readFully(channel, slice);
+                        byte[] bytes = new byte[length];
+                        slice.flip().get(bytes);
+                        assertArrayEquals(Arrays.copyOfRange(expected, position, position + length), bytes,
+                                fixture.dmg() + " offset " + position);
+                        assertEquals(position + length, channel.position());
+                    }
+                    channel.position(expected.length);
+                    assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
                 }
                 assertArrayEquals(expected, actual, fixture.dmg());
             }
@@ -98,9 +118,9 @@ final class LibDMGCorpusTest {
         assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
     }
 
-    /// Opens every DMG fixture in the upstream source tree as an HFS Plus file system.
+    /// Checks every user file against content from the upstream reference-image generation scripts.
     @Test
-    void opensAllReferenceImages() throws IOException {
+    void readsAllReferenceImageContents() throws IOException {
         Path root = Path.of(System.getProperty(SOURCE_DIRECTORY_PROPERTY));
         for (String relativePath : List.of(
                 "test/attribution_reference/hdiutila.hfs.dmg",
@@ -113,6 +133,27 @@ final class LibDMGCorpusTest {
         )) {
             try (DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(root.resolve(relativePath))) {
                 assertTrue(Files.isDirectory(fileSystem.getPath("/")), relativePath);
+                @Unmodifiable Map<String, String> expected = relativePath.contains("hfs_xattrs_reference")
+                        ? Map.of("a", "content-a\n", "b", "content-b\n") : Map.of("x", "content-x\n");
+                Map<String, String> actual = new TreeMap<>();
+                Path archiveRoot = fileSystem.getPath("/");
+                try (var paths = Files.walk(archiveRoot)) {
+                    for (Path path : paths.filter(Files::isRegularFile).toList()) {
+                        String name = archiveRoot.relativize(path).toString();
+                        try (SeekableByteChannel channel = Files.newByteChannel(path)) {
+                            ByteBuffer content = ByteBuffer.allocate(Math.toIntExact(channel.size()));
+                            while (content.hasRemaining()) {
+                                int end = content.limit();
+                                content.limit(Math.min(end, content.position() + 3));
+                                readFully(channel, content);
+                                content.limit(end);
+                            }
+                            actual.put(name, new String(content.array(), StandardCharsets.UTF_8));
+                            assertEquals(-1, channel.read(ByteBuffer.allocate(1)), name);
+                        }
+                    }
+                }
+                assertEquals(expected, actual, relativePath);
             }
         }
     }

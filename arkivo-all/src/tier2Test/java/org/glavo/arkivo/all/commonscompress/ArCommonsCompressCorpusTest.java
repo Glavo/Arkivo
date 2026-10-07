@@ -36,6 +36,7 @@ final class ArCommonsCompressCorpusTest {
         try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archive)) {
             seekable = ArchiveCorpusAssertions.readFileSystem(fileSystem);
         }
+        ArchiveCorpusAssertions.assertEquivalentEntries(seekable, ArchiveCorpusAssertions.readArReference(archive));
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(Files.newInputStream(archive))) {
             ArchiveCorpusAssertions.assertEquivalentEntries(

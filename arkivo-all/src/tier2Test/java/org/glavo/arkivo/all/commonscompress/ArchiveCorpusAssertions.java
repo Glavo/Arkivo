@@ -3,10 +3,18 @@
 
 package org.glavo.arkivo.all.commonscompress;
 
+import org.apache.commons.compress.archivers.ar.ArArchiveInputStream;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
+import org.apache.commons.compress.archivers.zip.ZipFile;
+import org.apache.commons.compress.archivers.zip.ZipSplitReadOnlySeekableByteChannel;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 import org.glavo.arkivo.archive.ArchiveEntryAttributes;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
@@ -16,8 +24,11 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.zip.CRC32;
 
@@ -25,9 +36,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Exercises archive entries through Arkivo's public file-system and streaming contracts.
+/// Compares archive entry metadata and content across Arkivo and independent decoders.
 @NotNullByDefault
-final class ArchiveCorpusAssertions {
+public final class ArchiveCorpusAssertions {
     /// The buffer size used while hashing entry bodies.
     private static final int BUFFER_SIZE = 16 * 1024;
 
@@ -36,7 +47,7 @@ final class ArchiveCorpusAssertions {
     }
 
     /// Reads every visible file-system entry and returns a deterministic content digest.
-    static @Unmodifiable List<EntryDigest> readFileSystem(ArkivoFileSystem fileSystem) throws IOException {
+    public static @Unmodifiable List<EntryDigest> readFileSystem(ArkivoFileSystem fileSystem) throws IOException {
         List<EntryDigest> entries = new ArrayList<>();
         Path root = fileSystem.getPath("/");
         try (var paths = Files.walk(root)) {
@@ -50,13 +61,14 @@ final class ArchiveCorpusAssertions {
                 );
                 BodyDigest body = attributes.isRegularFile()
                         ? digest(Files.newInputStream(path))
-                        : new BodyDigest(attributes.size(), 0L);
+                        : new BodyDigest(attributes.size(), 0L, "");
                 entries.add(new EntryDigest(
                         normalizePath(root.relativize(path).toString().replace('\\', '/')),
                         attributes.isDirectory(),
                         attributes.isSymbolicLink(),
                         body.size(),
-                        body.crc32()
+                        body.crc32(),
+                        body.sha256()
                 ));
             }
         } catch (UncheckedIOException exception) {
@@ -68,26 +80,98 @@ final class ArchiveCorpusAssertions {
     }
 
     /// Reads every streaming entry body and returns digests in physical archive order.
-    static @Unmodifiable List<EntryDigest> readStreaming(ArkivoStreamingReader reader) throws IOException {
+    public static @Unmodifiable List<EntryDigest> readStreaming(ArkivoStreamingReader reader) throws IOException {
         List<EntryDigest> entries = new ArrayList<>();
         while (reader.next()) {
             ArchiveEntryAttributes attributes = reader.readAttributes();
             BodyDigest body = attributes.isRegularFile()
                     ? digest(reader.openInputStream())
-                    : new BodyDigest(attributes.size(), 0L);
+                    : new BodyDigest(attributes.size(), 0L, "");
             entries.add(new EntryDigest(
                     normalizePath(attributes.path()),
                     attributes.isDirectory(),
                     attributes.isSymbolicLink(),
                     body.size(),
-                    body.crc32()
+                    body.crc32(),
+                    body.sha256()
             ));
         }
         return List.copyOf(entries);
     }
 
+    /// Reads physical ZIP entries with Commons Compress, independently of Arkivo's parsers and decoders.
+    public static @Unmodifiable List<EntryDigest> readZipReference(Path archive) throws IOException {
+        String name = archive.getFileName().toString();
+        // These upstream streaming fixtures have unusable central-directory size fields.
+        if (name.equals("bla-stored-dd.zip") || name.equals("bla-stored-dd-nosig.zip")) {
+            return readZipStreamingReference(archive);
+        }
+        int extension = name.lastIndexOf('.');
+        boolean split = extension >= 0 && Files.exists(archive.resolveSibling(name.substring(0, extension) + ".z01"));
+        List<EntryDigest> entries = new ArrayList<>();
+        try (var channel = split ? ZipSplitReadOnlySeekableByteChannel.buildFromLastSplitSegment(archive)
+                : Files.newByteChannel(archive);
+             ZipFile reference = ZipFile.builder().setSeekableByteChannel(channel).setCharset("IBM437").get()) {
+            var iterator = reference.getEntriesInPhysicalOrder();
+            while (iterator.hasMoreElements()) {
+                var entry = iterator.nextElement();
+                BodyDigest body = entry.isDirectory() || entry.isUnixSymlink()
+                        ? new BodyDigest(entry.getSize(), 0L, "")
+                        : digest(reference.getInputStream(entry));
+                entries.add(new EntryDigest(normalizePath(entry.getName()), entry.isDirectory(),
+                        entry.isUnixSymlink(), body.size(), body.crc32(), body.sha256()));
+            }
+        }
+        return List.copyOf(entries);
+    }
+
+    /// Reads ZIP local records independently, including archives without a usable central directory.
+    private static @Unmodifiable List<EntryDigest> readZipStreamingReference(Path archive) throws IOException {
+        List<EntryDigest> entries = new ArrayList<>();
+        try (var input = new ZipArchiveInputStream(Files.newInputStream(archive), "IBM437", true, true)) {
+            for (@Nullable var entry = input.getNextEntry(); entry != null; entry = input.getNextEntry()) {
+                BodyDigest body = entry.isDirectory() ? new BodyDigest(0, 0, "") : digestBody(input);
+                entries.add(new EntryDigest(normalizePath(entry.getName()), entry.isDirectory(), false,
+                        body.size(), body.crc32(), body.sha256()));
+            }
+        }
+        return List.copyOf(entries);
+    }
+
+    /// Reads all AR member bodies with the independent Commons Compress parser.
+    public static @Unmodifiable List<EntryDigest> readArReference(Path archive) throws IOException {
+        List<EntryDigest> entries = new ArrayList<>();
+        try (var input = new ArArchiveInputStream(Files.newInputStream(archive))) {
+            for (@Nullable var entry = input.getNextEntry(); entry != null; entry = input.getNextEntry()) {
+                BodyDigest body = digestBody(input);
+                assertEquals(entry.getSize(), body.size(), entry.getName());
+                entries.add(new EntryDigest(normalizePath(entry.getName()), false, false,
+                        body.size(), body.crc32(), body.sha256()));
+            }
+        }
+        return List.copyOf(entries);
+    }
+
+    /// Reads TAR bodies with Commons Compress, including the corpus's gzip and BZip2 wrappers.
+    public static @Unmodifiable List<EntryDigest> readTarReference(Path archive) throws IOException {
+        List<EntryDigest> entries = new ArrayList<>();
+        try (InputStream raw = Files.newInputStream(archive);
+             InputStream decoded = archive.toString().endsWith(".bz2") ? new BZip2CompressorInputStream(raw, true)
+                     : archive.toString().endsWith(".gz") || archive.toString().endsWith(".tgz")
+                     ? GzipCompressorInputStream.builder().setInputStream(raw).setDecompressConcatenated(true).get() : raw;
+             var input = new TarArchiveInputStream(decoded)) {
+            for (@Nullable var entry = input.getNextEntry(); entry != null; entry = input.getNextEntry()) {
+                BodyDigest body = entry.isFile() && !entry.isSymbolicLink()
+                        ? digestBody(input) : new BodyDigest(entry.getSize(), 0L, "");
+                entries.add(new EntryDigest(normalizePath(entry.getName()), entry.isDirectory(),
+                        entry.isSymbolicLink(), body.size(), body.crc32(), body.sha256()));
+            }
+        }
+        return List.copyOf(entries);
+    }
+
     /// Verifies that two access paths expose identical physical entries while allowing synthesized NIO directories.
-    static void assertEquivalentEntries(
+    public static void assertEquivalentEntries(
             @Unmodifiable List<EntryDigest> expected,
             @Unmodifiable List<EntryDigest> actual
     ) {
@@ -120,23 +204,35 @@ final class ArchiveCorpusAssertions {
         return digest(input).crc32();
     }
 
-    /// Computes the logical byte count and unsigned CRC-32 while fully consuming and closing a stream.
+    /// Computes the byte count, CRC-32, and SHA-256 while fully consuming and closing a stream.
     private static BodyDigest digest(InputStream input) throws IOException {
         try (input) {
-            CRC32 crc32 = new CRC32();
-            byte[] buffer = new byte[BUFFER_SIZE];
-            long size = 0L;
-            while (true) {
-                int read = input.read(buffer);
-                if (read < 0) {
-                    return new BodyDigest(size, crc32.getValue());
-                }
-                if (read == 0) {
-                    throw new IOException("Archive entry stream made no progress");
-                }
-                crc32.update(buffer, 0, read);
-                size = Math.addExact(size, read);
+            return digestBody(input);
+        }
+    }
+
+    /// Hashes the current entry without closing its containing archive stream.
+    private static BodyDigest digestBody(InputStream input) throws IOException {
+        MessageDigest sha256;
+        try {
+            sha256 = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException exception) {
+            throw new AssertionError(exception);
+        }
+        CRC32 crc32 = new CRC32();
+        byte[] buffer = new byte[BUFFER_SIZE];
+        long size = 0L;
+        while (true) {
+            int read = input.read(buffer);
+            if (read < 0) {
+                return new BodyDigest(size, crc32.getValue(), HexFormat.of().formatHex(sha256.digest()));
             }
+            if (read == 0) {
+                throw new IOException("Archive entry stream made no progress");
+            }
+            crc32.update(buffer, 0, read);
+            sha256.update(buffer, 0, read);
+            size = Math.addExact(size, read);
         }
     }
 
@@ -157,15 +253,17 @@ final class ArchiveCorpusAssertions {
     /// @param symbolicLink whether the entry is a symbolic link
     /// @param size         logical entry size
     /// @param crc32        unsigned CRC-32 for a regular file, or zero for another entry type
+    /// @param sha256       SHA-256 of regular-file content, or an empty string for other entry types
     @NotNullByDefault
-    record EntryDigest(String path, boolean directory, boolean symbolicLink, long size, long crc32) {
+    public record EntryDigest(String path, boolean directory, boolean symbolicLink, long size, long crc32, String sha256) {
     }
 
     /// Describes the body observations collected while consuming one entry stream.
     ///
     /// @param size  number of body bytes consumed
     /// @param crc32 unsigned CRC-32 of the consumed bytes
+    /// @param sha256 SHA-256 of the consumed bytes
     @NotNullByDefault
-    private record BodyDigest(long size, long crc32) {
+    private record BodyDigest(long size, long crc32, String sha256) {
     }
 }

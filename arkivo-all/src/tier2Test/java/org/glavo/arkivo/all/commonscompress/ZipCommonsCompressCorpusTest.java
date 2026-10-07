@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.all.commonscompress;
 
+import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
@@ -13,23 +14,31 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -184,6 +193,7 @@ final class ZipCommonsCompressCorpusTest {
             seekable = ArchiveCorpusAssertions.readFileSystem(fileSystem);
             assertStoredCrcValues(fileSystem);
         }
+        ArchiveCorpusAssertions.assertEquivalentEntries(seekable, ArchiveCorpusAssertions.readZipReference(archive));
         assertFalse(seekable.isEmpty(), "seekable ZIP view must expose at least one entry");
 
         @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> streaming;
@@ -202,6 +212,7 @@ final class ZipCommonsCompressCorpusTest {
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive)) {
             seekable = ArchiveCorpusAssertions.readFileSystem(fileSystem);
         }
+        ArchiveCorpusAssertions.assertEquivalentEntries(seekable, ArchiveCorpusAssertions.readZipReference(archive));
         if (resource.toLowerCase(Locale.ROOT).endsWith(".apk")) {
             assertFalse(seekable.isEmpty(), "APK must expose at least one ZIP entry");
             return;
@@ -211,6 +222,99 @@ final class ZipCommonsCompressCorpusTest {
             streaming = ArchiveCorpusAssertions.readStreaming(reader);
         }
         ArchiveCorpusAssertions.assertEquivalentEntries(seekable, streaming);
+    }
+
+    /// Verifies independent entry channels, backward seeks, small reads, and reopen against Commons-decoded bytes.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"bla.zip", "bla-stored.zip", "bzip2-zip.zip", "ordertest.zip", "utf8-7zip-test.zip"})
+    void readsRealEntriesAtArbitraryPositions(String resource) throws IOException {
+        Path archive = CommonsCompressTestResources.resource(resource);
+        Map<String, byte[]> expected = readReferenceBodies(archive);
+        assertFalse(expected.isEmpty());
+        Random random = new Random(0x5ee1L);
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            for (var entry : expected.entrySet()) {
+                Path path = fileSystem.getPath(entry.getKey());
+                byte[] body = entry.getValue();
+                try (var first = Files.newByteChannel(path); var second = Files.newByteChannel(path)) {
+                    assertEquals(body.length, first.size());
+                    assertEquals(body.length, second.size());
+                    for (int iteration = 0; iteration < 32; iteration++) {
+                        int position = random.nextInt(body.length + 1);
+                        assertRange(first, body, position, iteration % 2 == 0 ? 7 : 4096, iteration % 2 == 0);
+                        long firstPosition = first.position();
+                        assertRange(second, body, body.length - position, 31, iteration % 2 != 0);
+                        assertEquals(firstPosition, first.position(), "entry channels must have independent positions");
+                    }
+                    first.position(body.length);
+                    assertEquals(-1, first.read(ByteBuffer.allocate(1)));
+                }
+                assertArrayEquals(body, Files.readAllBytes(path), entry.getKey());
+            }
+        }
+    }
+
+    /// Checks real archive updates with an independent decoder, including raw copies of unchanged entries.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"ordertest.zip", "utf8-7zip-test.zip", "utf8-winzip-test.zip"})
+    void independentlyVerifiesUpdatedRealArchive(String resource, @TempDir Path directory) throws IOException {
+        Path archive = Files.copy(CommonsCompressTestResources.resource(resource), directory.resolve("updated.zip"));
+        Map<String, byte[]> expected = readReferenceBodies(archive);
+        @Unmodifiable List<String> names = List.copyOf(expected.keySet());
+        assertTrue(names.size() >= 3, "fixture must exercise replacement, rename, and deletion");
+        byte[] replacement = "replacement\n".repeat(97).getBytes(StandardCharsets.UTF_8);
+        byte[] added = "new independent content\n".getBytes(StandardCharsets.UTF_8);
+        try (var fileSystem = ZipArkivoFileSystem.update(archive)) {
+            Files.write(fileSystem.getPath(names.get(0)), replacement);
+            Files.move(fileSystem.getPath(names.get(1)), fileSystem.getPath("renamed-entry.bin"));
+            Files.delete(fileSystem.getPath(names.get(2)));
+            Files.write(fileSystem.getPath("added-entry.bin"), added);
+        }
+        expected.put(names.get(0), replacement);
+        expected.put("renamed-entry.bin", Objects.requireNonNull(expected.remove(names.get(1))));
+        expected.remove(names.get(2));
+        expected.put("added-entry.bin", added);
+        Map<String, byte[]> actual = readReferenceBodies(archive);
+        assertEquals(expected.keySet(), actual.keySet());
+        for (var entry : expected.entrySet()) {
+            assertArrayEquals(entry.getValue(), actual.get(entry.getKey()), entry.getKey());
+        }
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem),
+                    ArchiveCorpusAssertions.readZipReference(archive));
+        }
+    }
+
+    /// Reads small reference archives into a path-keyed snapshot without using Arkivo's decoders.
+    private static Map<String, byte[]> readReferenceBodies(Path archive) throws IOException {
+        Map<String, byte[]> result = new TreeMap<>();
+        try (var reference = ZipFile.builder().setPath(archive).setCharset("IBM437").get()) {
+            var entries = reference.getEntries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                if (!entry.isDirectory() && !entry.isUnixSymlink()) {
+                    try (var input = reference.getInputStream(entry)) {
+                        assertNull(result.put(entry.getName(), input.readAllBytes()), "duplicate reference path");
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /// Compares one bounded read range and its final channel position with independently decoded bytes.
+    private static void assertRange(SeekableByteChannel channel, byte[] expected, int position, int maximum,
+                                    boolean direct) throws IOException {
+        int length = Math.min(maximum, expected.length - position);
+        ByteBuffer buffer = direct ? ByteBuffer.allocateDirect(length) : ByteBuffer.allocate(length);
+        channel.position(position);
+        while (buffer.hasRemaining()) {
+            assertTrue(channel.read(buffer) > 0, "entry channel must fill a range before EOF");
+        }
+        assertEquals(position + length, channel.position());
+        byte[] actual = new byte[length];
+        buffer.flip().get(actual);
+        assertArrayEquals(Arrays.copyOfRange(expected, position, position + length), actual);
     }
 
     /// Rejects the Pack200 regression input whose `.jar` suffix does not describe a ZIP container.

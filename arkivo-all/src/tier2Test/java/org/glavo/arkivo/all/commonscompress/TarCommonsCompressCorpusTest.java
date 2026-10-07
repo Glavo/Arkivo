@@ -3,22 +3,26 @@
 
 package org.glavo.arkivo.all.commonscompress;
 
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.tar.TarArchiveOptions;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
@@ -153,6 +157,7 @@ final class TarCommonsCompressCorpusTest {
         try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archive)) {
             seekable = ArchiveCorpusAssertions.readFileSystem(fileSystem);
         }
+        ArchiveCorpusAssertions.assertEquivalentEntries(seekable, ArchiveCorpusAssertions.readTarReference(archive));
         assertFalse(seekable.isEmpty(), "seekable TAR view must expose at least one entry");
 
         @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> streaming;
@@ -160,6 +165,27 @@ final class TarCommonsCompressCorpusTest {
             streaming = ArchiveCorpusAssertions.readStreaming(reader);
         }
         ArchiveCorpusAssertions.assertEquivalentEntries(seekable, streaming);
+    }
+
+    /// Compares GNU long-link and AIX symbolic-link targets with the independent TAR parser.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"longsymlink/gnu.tar", "simple-aix-native-tar.tar"})
+    void comparesSymbolicLinkTargets(String resource) throws IOException {
+        Path archive = CommonsCompressTestResources.resource(resource);
+        int links = 0;
+        try (var reference = new TarArchiveInputStream(Files.newInputStream(archive));
+             var fileSystem = TarArkivoFileSystem.open(archive)) {
+            for (@Nullable var entry = reference.getNextEntry(); entry != null; entry = reference.getNextEntry()) {
+                if (entry.isSymbolicLink()) {
+                    Path path = fileSystem.getPath(entry.getName());
+                    var actual = Files.readAttributes(path, TarArkivoEntryAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                    assertTrue(actual.isSymbolicLink(), entry.getName());
+                    assertEquals(entry.getLinkName(), actual.linkName(), entry.getName());
+                    links++;
+                }
+            }
+        }
+        assertTrue(links > 0, "fixture must exercise symbolic links");
     }
 
     /// Verifies every COMPRESS-700 first-entry metadata value expressible through Arkivo's TAR attributes.

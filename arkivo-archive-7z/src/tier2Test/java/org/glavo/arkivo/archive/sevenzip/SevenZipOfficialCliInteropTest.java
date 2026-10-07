@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -23,6 +22,8 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies Arkivo 7z output with an explicitly configured official 7-Zip command-line tool.
 @NotNullByDefault
@@ -31,10 +32,14 @@ public final class SevenZipOfficialCliInteropTest {
     @TempDir
     private Path temporaryDirectory;
 
-    /// Verifies that the official CLI can fully test encrypted Arkivo BCJ2 output when configured.
+    /// Verifies every byte extracted by the official CLI from encrypted Arkivo BCJ2 output when configured.
     @Test
     public void officialSevenZipReadsBcj2OutputWhenAvailable() throws IOException {
         @Nullable String configuredExecutable = System.getenv("ARKIVO_7Z_EXECUTABLE");
+        if (Boolean.parseBoolean(System.getenv("ARKIVO_REQUIRE_7Z"))) {
+            assertTrue(configuredExecutable != null && Files.isRegularFile(Path.of(configuredExecutable)),
+                    "Required official 7-Zip CLI is missing: set ARKIVO_7Z_EXECUTABLE");
+        }
         Assumptions.assumeTrue(
                 configuredExecutable != null && Files.isRegularFile(Path.of(configuredExecutable)),
                 "ARKIVO_7Z_EXECUTABLE does not name an official 7-Zip CLI"
@@ -60,13 +65,17 @@ public final class SevenZipOfficialCliInteropTest {
                 }
             }
 
+            Path extracted = temporaryDirectory.resolve("extracted.bin");
+            Path diagnostics = temporaryDirectory.resolve("7zip.log");
             Process process = new ProcessBuilder(
                     executable,
-                    "t",
+                    "x",
+                    "-so",
                     "-bb0",
                     "-p" + passwordText,
-                    archivePath.toAbsolutePath().toString()
-            ).redirectErrorStream(true).start();
+                    archivePath.toAbsolutePath().toString(),
+                    "content.bin"
+            ).redirectOutput(extracted.toFile()).redirectError(diagnostics.toFile()).start();
             boolean completed;
             try {
                 completed = process.waitFor(30L, TimeUnit.SECONDS);
@@ -86,11 +95,8 @@ public final class SevenZipOfficialCliInteropTest {
                 throw new IOException("Timed out while testing BCJ2 output with 7-Zip");
             }
 
-            String output;
-            try (InputStream input = process.getInputStream()) {
-                output = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-            }
-            assertEquals(0, process.exitValue(), output);
+            assertEquals(0, process.exitValue(), Files.readString(diagnostics));
+            assertArrayEquals(content, Files.readAllBytes(extracted));
         } finally {
             Arrays.fill(password, (byte) 0);
         }

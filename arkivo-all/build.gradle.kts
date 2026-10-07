@@ -53,6 +53,7 @@ dependencies {
     testFixturesCompileOnly("org.jetbrains:annotations:26.1.0")
     testImplementation("org.tukaani:xz:1.12")
     testImplementation("org.apache.commons:commons-compress:1.28.0")
+    add("tier2TestImplementation", "com.github.luben:zstd-jni:1.5.7-9")
     add("tier3TestImplementation", testFixtures(project()))
     add(benchmarkSourceSet.compileOnlyConfigurationName, "org.jetbrains:annotations:26.1.0")
     add(benchmarkSourceSet.implementationConfigurationName, "org.openjdk.jmh:jmh-core:1.37")

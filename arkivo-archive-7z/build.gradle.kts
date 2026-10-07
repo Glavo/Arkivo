@@ -17,6 +17,11 @@ dependencies {
     testImplementation("org.apache.commons:commons-compress:1.28.0")
 }
 
+tasks.named<Test>("tier2Test") {
+    inputs.property("officialSevenZipExecutable", providers.environmentVariable("ARKIVO_7Z_EXECUTABLE").orElse(""))
+    inputs.property("requireOfficialSevenZip", providers.environmentVariable("ARKIVO_REQUIRE_7Z").orElse("false"))
+}
+
 val verifyPublishedSevenZipWriter by tasks.registering {
     group = "verification"
     description = "Verifies that the published 7z module contains the Arkivo archive writer."

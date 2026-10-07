@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.all.commonscompress.ArchiveCorpusAssertions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
@@ -35,6 +36,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -103,6 +105,71 @@ public final class LibarchiveArchiveCorpusTest {
             "invalid_pass".toCharArray(),
             StandardCharsets.UTF_8
     );
+
+    /// Compares complete bodies from independent producers with Commons Compress's decoding results.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {
+            "test_read_format_ar.ar.uu",
+            "test_compat_gtar_1.tar.uu",
+            "test_compat_gtar_2.tar.uu",
+            "test_read_format_zip_7z_deflate.zip.uu",
+            "test_read_format_zip_comment_stored_1.zip.uu",
+            "test_read_format_zip_comment_stored_2.zip.uu",
+            "test_read_format_zip_filename_utf8_jp.zip.uu",
+            "test_read_format_zip_filename_utf8_ru.zip.uu",
+            "test_read_format_zip_filename_utf8_ru2.zip.uu",
+            "test_read_format_zip_nofiletype.zip.uu",
+            "test_read_format_zip_zip64a.zip.uu",
+            "test_read_format_zip_zip64b.zip.uu",
+            "test_read_format_zip_bzip2.zipx.uu",
+            "test_read_format_zip_bzip2_multi.zipx.uu",
+            "test_read_format_zip_xz_multi.zipx.uu",
+            "test_read_format_zip_zstd.zipx.uu",
+            "test_read_format_zip_zstd_multi.zipx.uu"
+    })
+    void comparesCompleteContentsWithIndependentDecoder(String fixture, @TempDir Path directory) throws IOException {
+        String archiveName = fixture.substring(0, fixture.length() - 3);
+        Path archive = decodeFixture(fixture, archiveName, directory);
+        @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> expected = archiveName.endsWith(".ar")
+                ? ArchiveCorpusAssertions.readArReference(archive)
+                : archiveName.endsWith(".tar") ? ArchiveCorpusAssertions.readTarReference(archive)
+                : ArchiveCorpusAssertions.readZipReference(archive);
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive)) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), expected);
+        }
+    }
+
+    /// Reads padded local extra fields but rejects the fixture's damaged central-directory terminator.
+    @Test
+    void readsPaddedLocalFieldsBeforeRejectingDamagedTerminator(@TempDir Path directory) throws IOException {
+        Path archive = decodeFixture("test_read_format_zip_extra_padding.zip.uu", "padding.zip", directory);
+        try (var reader = ZipArkivoStreamingReader.open(archive)) {
+            assertTrue(reader.next());
+            var attributes = reader.readAttributes();
+            assertEquals("a", attributes.path());
+            assertTrue(attributes.isRegularFile());
+            assertEquals(0x5c1558d2L, attributes.lastModifiedTime().toInstant().getEpochSecond());
+            assertEquals(0x5c1558dbL, attributes.lastAccessTime().toInstant().getEpochSecond());
+            try (var input = reader.openInputStream()) {
+                assertEquals(2L, attributes.size());
+                assertArrayEquals(new byte[]{'b', '\n'}, input.readAllBytes());
+            }
+            IOException failure = assertThrows(IOException.class, reader::next);
+            assertEquals("Unexpected ZIP central-directory record signature: 6054b00", failure.getMessage());
+        }
+    }
+
+    /// Keeps mismatched local and central raw names rejected even when Unicode fields describe a usable path.
+    @Test
+    void rejectsUnicodeFixtureWithInconsistentRawNames(@TempDir Path directory) throws IOException {
+        Path archive = decodeFixture("test_read_format_zip_7075_utf8_paths.zip.uu", "unicode.zip", directory);
+        IOException failure = assertThrows(IOException.class, () -> {
+            try (var fileSystem = ArkivoFormats.openFileSystem(archive)) {
+                ArchiveCorpusAssertions.readFileSystem(fileSystem);
+            }
+        });
+        assertEquals("ZIP local header name does not match central directory", failure.getMessage());
+    }
 
     /// Verifies GNU and BSD AR long-name handling, metadata, and payload boundaries.
     @Test
