@@ -18,12 +18,6 @@ import java.time.ZoneId;
 /// Parses entry metadata carried by recognized ZIP extra fields.
 @NotNullByDefault
 final class ZipExtraFieldMetadata {
-    /// The Info-ZIP extended timestamp extra field identifier.
-    private static final int EXTENDED_TIMESTAMP_FIELD_ID = 0x5455;
-
-    /// The Info-ZIP new Unix extra field identifier.
-    private static final int NEW_UNIX_FIELD_ID = 0x7875;
-
     /// The extended timestamp flag indicating a modification time.
     private static final int MODIFY_TIME_FLAG = 1;
 
@@ -47,10 +41,10 @@ final class ZipExtraFieldMetadata {
             FileTime dosFallback
     ) throws IOException {
         @Nullable ZipExtraFields.Field timestampField =
-                ZipExtraFields.find(localExtraData, EXTENDED_TIMESTAMP_FIELD_ID);
+                ZipExtraFields.find(localExtraData, ZipConstants.EXTENDED_TIMESTAMP_EXTRA_FIELD_ID);
         byte @Unmodifiable [] timestampSource = localExtraData;
         if (timestampField == null) {
-            timestampField = ZipExtraFields.find(centralExtraData, EXTENDED_TIMESTAMP_FIELD_ID);
+            timestampField = ZipExtraFields.find(centralExtraData, ZipConstants.EXTENDED_TIMESTAMP_EXTRA_FIELD_ID);
             timestampSource = centralExtraData;
         }
 
@@ -69,7 +63,7 @@ final class ZipExtraFieldMetadata {
 
         long userId = ZipArkivoEntryAttributes.UNKNOWN_UNIX_ID;
         long groupId = ZipArkivoEntryAttributes.UNKNOWN_UNIX_ID;
-        @Nullable ZipExtraFields.Field unixField = ZipExtraFields.find(localExtraData, NEW_UNIX_FIELD_ID);
+        @Nullable ZipExtraFields.Field unixField = ZipExtraFields.find(localExtraData, ZipConstants.NEW_UNIX_EXTRA_FIELD_ID);
         if (unixField != null) {
             UnixIds unixIds = parseNewUnix(localExtraData, unixField.dataOffset(), unixField.dataSize());
             userId = unixIds.userId();

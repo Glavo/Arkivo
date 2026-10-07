@@ -155,6 +155,27 @@ final class ZipCompatibilityRegressionTest {
         assertArrayEquals(content, readStreamingEntry(archive));
     }
 
+    /// Preserves local zero padding when an update renames an existing entry.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3})
+    void renamesEntryWithShortZeroPadding(int padding, @TempDir Path directory) throws IOException {
+        byte @Unmodifiable [] content = "renamed zipalign entry".getBytes(StandardCharsets.UTF_8);
+        Path archive = directory.resolve("renamed-zipalign.zip");
+        Files.write(archive, storedArchiveWithLocalZeroPadding(content, padding));
+
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.update(archive)) {
+            Files.move(fileSystem.getPath("/payload.bin"), fileSystem.getPath("/renamed.bin"));
+        }
+
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive)) {
+            Path renamed = fileSystem.getPath("/renamed.bin");
+            assertFalse(Files.exists(fileSystem.getPath("/payload.bin")));
+            assertArrayEquals(content, Files.readAllBytes(renamed));
+            assertArrayEquals(new byte[padding], Files.readAttributes(renamed, ZipArkivoEntryAttributes.class).localExtraData());
+        }
+        assertArrayEquals(content, readStreamingEntry(archive));
+    }
+
     /// Verifies a stored data descriptor cannot contradict central-directory sizes.
     @Test
     void rejectsStoredDataDescriptorWithDifferentSizes(@TempDir Path directory) throws IOException {

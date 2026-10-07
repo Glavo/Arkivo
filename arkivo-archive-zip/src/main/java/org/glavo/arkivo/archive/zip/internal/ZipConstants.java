@@ -89,6 +89,12 @@ final class ZipConstants {
     /// The ZIP64 extended information extra field identifier.
     static final int ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID = 0x0001;
 
+    /// The Info-ZIP extended timestamp extra field identifier.
+    static final int EXTENDED_TIMESTAMP_EXTRA_FIELD_ID = 0x5455;
+
+    /// The Info-ZIP new Unix extra field identifier.
+    static final int NEW_UNIX_EXTRA_FIELD_ID = 0x7875;
+
     /// The DOS date field value for 1980-01-01.
     static final int DOS_DATE_1980_01_01 = 0x21;
 

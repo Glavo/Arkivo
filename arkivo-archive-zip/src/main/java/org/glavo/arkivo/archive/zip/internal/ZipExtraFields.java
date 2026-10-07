@@ -30,9 +30,6 @@ final class ZipExtraFields {
     static void validateForReading(byte[] extraData) throws IOException {
         int offset = 0;
         while (offset < extraData.length) {
-            if (isShortZeroPadding(extraData, offset)) {
-                return;
-            }
             @Nullable Field field = readForReading(extraData, offset);
             if (field == null) {
                 return;
@@ -45,12 +42,10 @@ final class ZipExtraFields {
     ///
     /// A truncated unknown trailing field is opaque compatibility metadata. Truncated recognized fields and nonzero
     /// fragments shorter than a field header remain malformed.
+    /// Data following the first matching record is not examined.
     static @Nullable Field find(byte[] extraData, int expectedId) throws IOException {
         int offset = 0;
         while (offset < extraData.length) {
-            if (isShortZeroPadding(extraData, offset)) {
-                return null;
-            }
             @Nullable Field field = readForReading(extraData, offset);
             if (field == null) {
                 return null;
@@ -63,7 +58,43 @@ final class ZipExtraFields {
         return null;
     }
 
-    /// Reads one extra field record starting at the given offset.
+    /// Removes all fields with the given identifier, preserving other records and short zero padding.
+    ///
+    /// Returns the input array unchanged if no matching field is present; otherwise returns a new array.
+    /// The input contents are not modified. All records are validated before a result is returned.
+    ///
+    /// @throws IOException if the data contains a truncated record or a nonzero short tail
+    static byte[] remove(byte[] extraData, int excludedId) throws IOException {
+        int retainedSize = extraData.length;
+        int recordsEnd = 0;
+        while (recordsEnd < extraData.length && !isShortZeroPadding(extraData, recordsEnd)) {
+            Field field = read(extraData, recordsEnd);
+            if (field.id() == excludedId) {
+                retainedSize -= field.nextOffset() - recordsEnd;
+            }
+            recordsEnd = field.nextOffset();
+        }
+        if (retainedSize == extraData.length) {
+            return extraData;
+        }
+
+        byte[] retained = new byte[retainedSize];
+        int targetOffset = 0;
+        int offset = 0;
+        while (offset < recordsEnd) {
+            Field field = read(extraData, offset);
+            int fieldSize = field.nextOffset() - offset;
+            if (field.id() != excludedId) {
+                System.arraycopy(extraData, offset, retained, targetOffset, fieldSize);
+                targetOffset += fieldSize;
+            }
+            offset = field.nextOffset();
+        }
+        System.arraycopy(extraData, recordsEnd, retained, targetOffset, extraData.length - recordsEnd);
+        return retained;
+    }
+
+    /// Reads one extra field record starting at the given offset; padding is not a record.
     static Field read(byte[] extraData, int offset) throws IOException {
         if (extraData.length - offset < Integer.BYTES) {
             throw new IOException("Invalid ZIP extra field length");
@@ -78,7 +109,7 @@ final class ZipExtraFields {
         return new Field(id, dataOffset, dataSize, dataOffset + dataSize);
     }
 
-    /// Reads one complete field for a read path, or returns null for a truncated unknown trailing field.
+    /// Reads a complete field, or returns `null` for short zero padding or a truncated unknown trailing field.
     static @Nullable Field readForReading(byte[] extraData, int offset) throws IOException {
         if (isShortZeroPadding(extraData, offset)) {
             return null;
@@ -105,11 +136,11 @@ final class ZipExtraFields {
                 || id == ZipConstants.WINZIP_AES_EXTRA_FIELD_ID
                 || id == ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID
                 || id == ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID
-                || id == 0x5455
-                || id == 0x7875;
+                || id == ZipConstants.EXTENDED_TIMESTAMP_EXTRA_FIELD_ID
+                || id == ZipConstants.NEW_UNIX_EXTRA_FIELD_ID;
     }
 
-    /// Returns whether the remaining one to three bytes are Android zipalign zero padding.
+    /// Returns whether no bytes remain or the remaining one to three bytes are Android zipalign zero padding.
     private static boolean isShortZeroPadding(byte[] extraData, int offset) {
         int remaining = extraData.length - offset;
         if (remaining >= Integer.BYTES) {
@@ -129,6 +160,7 @@ final class ZipExtraFields {
     /// @param dataOffset the offset of the field payload inside the extra data buffer
     /// @param dataSize the payload size in bytes
     /// @param nextOffset the offset immediately after this field record
+    @NotNullByDefault
     record Field(int id, int dataOffset, int dataSize, int nextOffset) {
     }
 }

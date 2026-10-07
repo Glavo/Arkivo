@@ -962,10 +962,10 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         localHeaderOffset,
                         localHeaderDiskNumber
                 );
-                uncompressedSize = zip64.uncompressedSize;
-                compressedSize = zip64.compressedSize;
-                localHeaderOffset = zip64.localHeaderOffset;
-                localHeaderDiskNumber = zip64.localHeaderDiskNumber;
+                uncompressedSize = zip64.uncompressedSize();
+                compressedSize = zip64.compressedSize();
+                localHeaderOffset = zip64.localHeaderOffset();
+                localHeaderDiskNumber = zip64.localHeaderDiskNumber();
 
                 String decodedPath;
                 try {
@@ -1925,10 +1925,10 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     0L,
                     0L
             );
-            if (localZip64.compressedSize != expectedCompressedSize) {
+            if (localZip64.compressedSize() != expectedCompressedSize) {
                 throw new IOException("ZIP local header compressed size does not match central directory");
             }
-            if (localZip64.uncompressedSize != expectedUncompressedSize) {
+            if (localZip64.uncompressedSize() != expectedUncompressedSize) {
                 throw new IOException("ZIP local header uncompressed size does not match central directory");
             }
         }
@@ -3129,105 +3129,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// Returns WinZip AES metadata for this entry, or `null` when the entry does not use WinZip AES.
         private @Nullable ZipAesExtraField aesExtraField() {
             return ZipAesExtraField.read(centralDirectoryExtraData);
-        }
-    }
-
-    /// Stores ZIP64 values decoded from an extended information extra field.
-    private static final class Zip64Values {
-        /// The uncompressed size.
-        private final long uncompressedSize;
-
-        /// The compressed size.
-        private final long compressedSize;
-
-        /// The local file header offset.
-        private final long localHeaderOffset;
-
-        /// The zero-based disk containing the local file header.
-        private final long localHeaderDiskNumber;
-
-        /// Creates decoded ZIP64 values.
-        private Zip64Values(
-                long uncompressedSize,
-                long compressedSize,
-                long localHeaderOffset,
-                long localHeaderDiskNumber
-        ) {
-            this.uncompressedSize = uncompressedSize;
-            this.compressedSize = compressedSize;
-            this.localHeaderOffset = localHeaderOffset;
-            this.localHeaderDiskNumber = localHeaderDiskNumber;
-        }
-
-        /// Reads ZIP64 values from central directory extra data when required.
-        private static Zip64Values read(
-                byte[] extraData,
-                long uncompressedSize,
-                long compressedSize,
-                long localHeaderOffset,
-                long localHeaderDiskNumber
-        ) throws IOException {
-            boolean needsUncompressedSize = uncompressedSize == UINT32_MAX;
-            boolean needsCompressedSize = compressedSize == UINT32_MAX;
-            boolean needsLocalHeaderOffset = localHeaderOffset == UINT32_MAX;
-            boolean needsLocalHeaderDiskNumber = localHeaderDiskNumber == UINT16_MAX;
-            if (!needsUncompressedSize
-                    && !needsCompressedSize
-                    && !needsLocalHeaderOffset
-                    && !needsLocalHeaderDiskNumber) {
-                return new Zip64Values(
-                        uncompressedSize,
-                        compressedSize,
-                        localHeaderOffset,
-                        localHeaderDiskNumber
-                );
-            }
-
-            ZipExtraFields.Field field = ZipExtraFields.find(extraData, ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID);
-            if (field == null) {
-                throw new IOException("Required ZIP64 extended information extra field is missing");
-            }
-
-            ByteBuffer data = ByteBuffer.wrap(extraData, field.dataOffset(), field.dataSize())
-                    .order(ByteOrder.LITTLE_ENDIAN);
-            if (needsUncompressedSize) {
-                uncompressedSize = readZip64Long(data);
-            }
-            if (needsCompressedSize) {
-                compressedSize = readZip64Long(data);
-            }
-            if (needsLocalHeaderOffset) {
-                localHeaderOffset = readZip64Long(data);
-            }
-            if (needsLocalHeaderDiskNumber) {
-                localHeaderDiskNumber = readZip64UnsignedInt(data);
-            }
-            return new Zip64Values(
-                    uncompressedSize,
-                    compressedSize,
-                    localHeaderOffset,
-                    localHeaderDiskNumber
-            );
-        }
-
-        /// Reads one little-endian ZIP64 long value.
-        private static long readZip64Long(ByteBuffer data) throws IOException {
-            if (data.remaining() < Long.BYTES) {
-                throw new IOException("Invalid ZIP64 extended information extra field");
-            }
-            long value = data.getLong();
-            if (value < 0) {
-                throw new IOException("ZIP64 extended information value is too large");
-            }
-            return value;
-        }
-
-        /// Reads one little-endian unsigned ZIP64 disk number.
-        private static long readZip64UnsignedInt(ByteBuffer data) throws IOException {
-            if (data.remaining() < Integer.BYTES) {
-                throw new IOException("Invalid ZIP64 extended information extra field");
-            }
-            return Integer.toUnsignedLong(data.getInt());
         }
     }
 

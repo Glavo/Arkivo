@@ -1183,7 +1183,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         long extraOffset = localHeaderOffset + ZIP_LOCAL_FILE_HEADER_MIN_SIZE + sourceNameLength;
         byte[] sourceExtraData = readExactRange(source, extraOffset, sourceExtraLength);
         byte[] localExtraData = renamedRawName != null
-                ? removeUnicodePathExtraField(sourceExtraData)
+                ? ZipExtraFields.remove(sourceExtraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID)
                 : sourceExtraData;
         requireUInt16(rawName.length, "entry name length");
         requireUInt16(localExtraData.length, "local extra data length");
@@ -3578,8 +3578,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             throw new IOException("Invalid ZIP central directory variable data length");
         }
 
-        byte[] extraData = removeUnicodePathExtraField(
-                Arrays.copyOfRange(rawEntry, oldExtraOffset, oldCommentOffset)
+        byte[] extraData = ZipExtraFields.remove(
+                Arrays.copyOfRange(rawEntry, oldExtraOffset, oldCommentOffset),
+                ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID
         );
         requireUInt16(extraData.length, "central directory extra data length");
         byte[] renamed = new byte[
@@ -3597,37 +3598,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         result.putShort(28, (short) rawName.length);
         result.putShort(30, (short) extraData.length);
         return renamed;
-    }
-
-    /// Removes every extra field with one identifier while preserving all other records byte-for-byte.
-    private static byte[] removeUnicodePathExtraField(byte[] extraData) throws IOException {
-        ZipExtraFields.validate(extraData);
-        int retainedSize = 0;
-        int offset = 0;
-        while (offset < extraData.length) {
-            ZipExtraFields.Field field = ZipExtraFields.read(extraData, offset);
-            if (field.id() != ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID) {
-                retainedSize += field.nextOffset() - offset;
-            }
-            offset = field.nextOffset();
-        }
-        if (retainedSize == extraData.length) {
-            return extraData;
-        }
-
-        byte[] retained = new byte[retainedSize];
-        int targetOffset = 0;
-        offset = 0;
-        while (offset < extraData.length) {
-            ZipExtraFields.Field field = ZipExtraFields.read(extraData, offset);
-            int fieldSize = field.nextOffset() - offset;
-            if (field.id() != ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID) {
-                System.arraycopy(extraData, offset, retained, targetOffset, fieldSize);
-                targetOffset += fieldSize;
-            }
-            offset = field.nextOffset();
-        }
-        return retained;
     }
 
     /// Writes a ZIP64 end record and returns its physical location.
@@ -4933,7 +4903,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     variableOffset + nameLength + extraLength,
                     nextOffset
             );
-            Zip64Values zip64 = Zip64Values.read(extraData, uncompressedSize, compressedSize, localHeaderOffset);
+            Zip64Values zip64 = Zip64Values.read(extraData, uncompressedSize, compressedSize, localHeaderOffset, 0L);
             ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyCharsetDetector());
             String decodedPath = decoder.decodePath(
                     rawPath,
@@ -4956,8 +4926,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                             versionNeeded,
                             versionMadeBy
                     ),
-                    zip64.compressedSize,
-                    zip64.uncompressedSize,
+                    zip64.compressedSize(),
+                    zip64.uncompressedSize(),
                     crc32,
                     flags,
                     versionMadeBy,
@@ -5155,58 +5125,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         @Override
         public @Unmodifiable Set<PosixFilePermission> permissions() {
             return ZipPosixSupport.permissions(versionMadeBy, externalAttributes, directory);
-        }
-    }
-
-    /// Stores ZIP64 values decoded from an extended information extra field.
-    ///
-    /// @param uncompressedSize  the uncompressed size
-    /// @param compressedSize    the compressed size
-    /// @param localHeaderOffset the local file header offset
-    private record Zip64Values(long uncompressedSize, long compressedSize, long localHeaderOffset) {
-        /// Reads ZIP64 values from central directory extra data when required.
-        private static Zip64Values read(
-                byte[] extraData,
-                long uncompressedSize,
-                long compressedSize,
-                long localHeaderOffset
-        ) throws IOException {
-            boolean needsUncompressedSize = uncompressedSize == UINT32_MAX;
-            boolean needsCompressedSize = compressedSize == UINT32_MAX;
-            boolean needsLocalHeaderOffset = localHeaderOffset == UINT32_MAX;
-            if (!needsUncompressedSize && !needsCompressedSize && !needsLocalHeaderOffset) {
-                return new Zip64Values(uncompressedSize, compressedSize, localHeaderOffset);
-            }
-
-            ZipExtraFields.Field field = ZipExtraFields.find(extraData, ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID);
-            if (field == null) {
-                throw new IOException("Required ZIP64 extended information extra field is missing");
-            }
-
-            ByteBuffer data = ByteBuffer.wrap(extraData, field.dataOffset(), field.dataSize())
-                    .order(ByteOrder.LITTLE_ENDIAN);
-            if (needsUncompressedSize) {
-                uncompressedSize = readZip64Long(data);
-            }
-            if (needsCompressedSize) {
-                compressedSize = readZip64Long(data);
-            }
-            if (needsLocalHeaderOffset) {
-                localHeaderOffset = readZip64Long(data);
-            }
-            return new Zip64Values(uncompressedSize, compressedSize, localHeaderOffset);
-        }
-
-        /// Reads one little-endian ZIP64 long value.
-        private static long readZip64Long(ByteBuffer data) throws IOException {
-            if (data.remaining() < Long.BYTES) {
-                throw new IOException("Invalid ZIP64 extended information extra field");
-            }
-            long value = data.getLong();
-            if (value < 0) {
-                throw new IOException("ZIP64 extended information value is too large");
-            }
-            return value;
         }
     }
 
@@ -6238,8 +6156,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     versionMadeBy,
                     internalAttributes,
                     externalAttributes,
-                    removeUnicodePathExtraField(localExtraData),
-                    removeUnicodePathExtraField(centralDirectoryExtraData),
+                    ZipExtraFields.remove(localExtraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID),
+                    ZipExtraFields.remove(centralDirectoryExtraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID),
                     rawComment,
                     false
             );
