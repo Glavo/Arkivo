@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
@@ -24,6 +25,38 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies pure Java Deflate block selection, Huffman generation, and independent decoder interoperability.
 @NotNullByDefault
 final class DeflateEncoderEngineTest {
+    /// Reset discards completed and unfinished hash chains, including chains that crossed the sliding window.
+    @Test
+    void resetMatchesJdkAfterUnrelatedHistories() throws Exception {
+        byte[] history = new byte[100013];
+        new Random(1951).nextBytes(history);
+        for (int level : new int[]{1, 6, 9}) {
+            for (DeflateStrategy strategy : new DeflateStrategy[]{DeflateStrategy.DEFAULT, DeflateStrategy.FILTERED}) {
+                for (boolean preset : new boolean[]{false, true}) {
+                    byte @Nullable [] dictionary = preset ? history : null;
+                    try (var encoder = new DeflateEncoderEngine(level, dictionary, strategy)) {
+                        for (int size : new int[]{65537, 0, 1, 7, 4096, 32769}) {
+                            encode(history, encoder, 8192, 8192);
+                            encoder.reset();
+                            byte[] input = new byte[size];
+                            new Random(size).nextBytes(input);
+                            if (size > 256) System.arraycopy(input, 0, input, size / 2, size / 2);
+                            byte[] reference = JdkDeflateAlignmentTest.verify(input, level, strategy, true,
+                                    dictionary, new int[0], 4096, 257, false);
+                            assertArrayEquals(reference, encode(input, encoder, 4096, 257));
+                            encoder.reset();
+                            // Leave a populated chain and pending output, then abandon the unfinished stream.
+                            encoder.encode(ByteBuffer.wrap(history), ByteBuffer.allocate(1));
+                            encoder.reset();
+                            assertArrayEquals(reference, encode(input, encoder, 4096, 257));
+                            encoder.reset();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Verifies selection of stored, fixed-Huffman, and dynamic-Huffman blocks.
     @Test
     void selectsAllDeflateBlockTypes() throws IOException, DataFormatException {
@@ -117,36 +150,42 @@ final class DeflateEncoderEngineTest {
             int sourceFragmentSize,
             int targetSize
     ) throws IOException {
+        try (DeflateEncoderEngine encoder = new DeflateEncoderEngine(compressionLevel, null, strategy)) {
+            return encode(input, encoder, sourceFragmentSize, targetSize);
+        }
+    }
+
+    /// Encodes through an existing engine without closing it, allowing reset verification.
+    private static byte @Unmodifiable [] encode(
+            byte[] input,
+            DeflateEncoderEngine encoder,
+            int sourceFragmentSize,
+            int targetSize
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (DeflateEncoderEngine encoder = new DeflateEncoderEngine(
-                compressionLevel,
-                null,
-                strategy
-        )) {
-            for (int offset = 0; offset < input.length; offset += sourceFragmentSize) {
-                int length = Math.min(sourceFragmentSize, input.length - offset);
-                ByteBuffer source = ByteBuffer.allocateDirect(length);
-                source.put(input, offset, length).flip();
-                while (true) {
-                    ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
-                    CodecOutcome outcome = encoder.encode(source, target);
-                    drain(target, output);
-                    if (outcome == CodecOutcome.NEEDS_INPUT) {
-                        assertEquals(false, source.hasRemaining());
-                        break;
-                    }
-                    assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome);
-                }
-            }
+        for (int offset = 0; offset < input.length; offset += sourceFragmentSize) {
+            int length = Math.min(sourceFragmentSize, input.length - offset);
+            ByteBuffer source = ByteBuffer.allocateDirect(length);
+            source.put(input, offset, length).flip();
             while (true) {
                 ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
-                CodecOutcome outcome = encoder.finish(target);
+                CodecOutcome outcome = encoder.encode(source, target);
                 drain(target, output);
-                if (outcome == CodecOutcome.FINISHED) {
+                if (outcome == CodecOutcome.NEEDS_INPUT) {
+                    assertEquals(false, source.hasRemaining());
                     break;
                 }
                 assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome);
             }
+        }
+        while (true) {
+            ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
+            CodecOutcome outcome = encoder.finish(target);
+            drain(target, output);
+            if (outcome == CodecOutcome.FINISHED) {
+                break;
+            }
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome);
         }
         return output.toByteArray();
     }

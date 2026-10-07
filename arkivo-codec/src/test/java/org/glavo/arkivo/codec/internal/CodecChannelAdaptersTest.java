@@ -39,6 +39,49 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the blocking channel adapters independently from any concrete compression algorithm.
 @NotNullByDefault
 final class CodecChannelAdaptersTest {
+    /// Reusing output storage preserves bytes and capabilities without reactivating a closed adapter.
+    @Test
+    void reusesExclusiveOutputStorageAcrossFramesAndChannels() throws IOException {
+        for (ByteBuffer storage : new ByteBuffer[]{ByteBuffer.allocate(1), ByteBuffer.allocateDirect(3)}) {
+            storage.position(storage.capacity());
+            var firstTarget = new CollectingWritableChannel();
+            var first = (CompressingWritableByteChannel.FlushableFramed) CodecChannelAdapters.newWritableByteChannel(
+                    firstTarget, ResourceOwnership.BORROWED, CapabilityEncoder::new, storage);
+            first.write(ByteBuffer.wrap(new byte[]{1, 2, 3, 4}));
+            first.flush();
+            first.finishFrame();
+            first.startFrame(EncodingOptions.DEFAULT);
+            first.write(ByteBuffer.wrap(new byte[]{5}));
+            first.close();
+            assertArrayEquals(new byte[]{1, 2, 3, 4, 'F', 'B', 5, 'T'}, firstTarget.bytes());
+            assertTrue(firstTarget.isOpen());
+
+            var secondTarget = new CollectingWritableChannel();
+            try (var second = CodecChannelAdapters.newWritableByteChannel(
+                    secondTarget, ResourceOwnership.OWNED, CopyEncoder::new, storage)) {
+                assertEquals(0, second.inputBytes());
+                assertEquals(0, second.outputBytes());
+                second.write(ByteBuffer.wrap(new byte[]{6, 7}));
+                assertThrows(ClosedChannelException.class, () -> first.write(ByteBuffer.wrap(new byte[]{8})));
+                first.close();
+                assertTrue(second.isOpen());
+            }
+            assertFalse(secondTarget.isOpen());
+            assertArrayEquals(new byte[]{6, 7, 'T'}, secondTarget.bytes());
+        }
+    }
+
+    /// Invalid output storage is rejected before creating an engine or taking target ownership.
+    @Test
+    void rejectsReadOnlyAndEmptyOutputStorage() {
+        for (ByteBuffer storage : new ByteBuffer[]{ByteBuffer.allocate(0), ByteBuffer.allocate(8).asReadOnlyBuffer()}) {
+            var target = new CollectingWritableChannel();
+            assertThrows(IllegalArgumentException.class, () -> CodecChannelAdapters.newWritableByteChannel(
+                    target, ResourceOwnership.OWNED, () -> { throw new AssertionError("Factory was called"); }, storage));
+            assertTrue(target.isOpen());
+        }
+    }
+
     /// A caller-supplied input workspace may be reused only after its preceding adapter is closed.
     @Test
     void reusesExclusiveInputStorageWithoutReactivatingClosedAdapter() throws IOException {

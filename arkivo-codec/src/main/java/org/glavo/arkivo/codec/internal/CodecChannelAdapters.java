@@ -52,31 +52,56 @@ public final class CodecChannelAdapters {
             ResourceOwnership ownership,
             EncoderFactory<? extends CompressionEncoder> factory
     ) throws IOException {
+        return newWritableByteChannel(target, ownership, factory, ByteBuffer.allocateDirect(BUFFER_SIZE));
+    }
+
+    /// Creates an encoding channel with exclusive use of the supplied output storage until closure.
+    ///
+    /// The buffer must be writable and have positive capacity. Its position and limit are initialized by this method.
+    /// The caller must not access it while an operation is active or the channel remains open.
+    ///
+    /// @param target compressed-data target
+    /// @param ownership whether closing the adapter closes the target
+    /// @param factory factory for an independent encoder
+    /// @param output exclusively leased compressed-output storage
+    /// @return an encoding channel with the engine's capabilities and the target's interruption capability
+    /// @throws IllegalArgumentException if the storage is read-only or has zero capacity
+    /// @throws IOException if engine creation or target cleanup fails
+    public static CompressingWritableByteChannel newWritableByteChannel(
+            WritableByteChannel target,
+            ResourceOwnership ownership,
+            EncoderFactory<? extends CompressionEncoder> factory,
+            ByteBuffer output
+    ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(ownership, "ownership");
         Objects.requireNonNull(factory, "factory");
+        Objects.requireNonNull(output, "output");
+        if (output.isReadOnly() || output.capacity() == 0) {
+            throw new IllegalArgumentException("Encoder output storage must be writable and nonempty");
+        }
         OwnedChannelCloser targetCloser = new OwnedChannelCloser(target, ownership);
         CompressionEncoder encoder = createEncoder(factory, targetCloser);
         if (encoder instanceof CompressionEncoder.FlushableFramed flushableFramedEncoder) {
             FlushableFramedEncodingChannel channel =
-                    new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder);
+                    new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder, output);
             return target instanceof InterruptibleChannel
                     ? new InterruptibleFlushableFramedEncodingChannel(target, channel)
                     : channel;
         }
         if (encoder instanceof CompressionEncoder.Framed framedEncoder) {
-            FramedEncodingChannel channel = new FramedEncodingChannel(target, targetCloser, framedEncoder);
+            FramedEncodingChannel channel = new FramedEncodingChannel(target, targetCloser, framedEncoder, output);
             return target instanceof InterruptibleChannel
                     ? new InterruptibleFramedEncodingChannel(target, channel)
                     : channel;
         }
         if (encoder instanceof CompressionEncoder.Flushable flushableEncoder) {
-            FlushableEncodingChannel channel = new FlushableEncodingChannel(target, targetCloser, flushableEncoder);
+            FlushableEncodingChannel channel = new FlushableEncodingChannel(target, targetCloser, flushableEncoder, output);
             return target instanceof InterruptibleChannel
                     ? new InterruptibleFlushableEncodingChannel(target, channel)
                     : channel;
         }
-        EncodingChannel channel = new EncodingChannel(target, targetCloser, encoder);
+        EncodingChannel channel = new EncodingChannel(target, targetCloser, encoder, output);
         return target instanceof InterruptibleChannel
                 ? new InterruptibleEncodingChannel(target, channel)
                 : channel;
@@ -94,22 +119,7 @@ public final class CodecChannelAdapters {
             ResourceOwnership ownership,
             EncoderFactory<? extends CompressionEncoder.Flushable> factory
     ) throws IOException {
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(ownership, "ownership");
-        Objects.requireNonNull(factory, "factory");
-        OwnedChannelCloser targetCloser = new OwnedChannelCloser(target, ownership);
-        CompressionEncoder.Flushable encoder = createEncoder(factory, targetCloser);
-        if (encoder instanceof CompressionEncoder.FlushableFramed flushableFramedEncoder) {
-            FlushableFramedEncodingChannel channel =
-                    new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder);
-            return target instanceof InterruptibleChannel
-                    ? new InterruptibleFlushableFramedEncodingChannel(target, channel)
-                    : channel;
-        }
-        FlushableEncodingChannel channel = new FlushableEncodingChannel(target, targetCloser, encoder);
-        return target instanceof InterruptibleChannel
-                ? new InterruptibleFlushableEncodingChannel(target, channel)
-                : channel;
+        return (CompressingWritableByteChannel.Flushable) newWritableByteChannel(target, ownership, factory);
     }
 
     /// Creates an encoding channel that can finish independently terminated frames.
@@ -124,22 +134,7 @@ public final class CodecChannelAdapters {
             ResourceOwnership ownership,
             EncoderFactory<? extends CompressionEncoder.Framed> factory
     ) throws IOException {
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(ownership, "ownership");
-        Objects.requireNonNull(factory, "factory");
-        OwnedChannelCloser targetCloser = new OwnedChannelCloser(target, ownership);
-        CompressionEncoder.Framed encoder = createEncoder(factory, targetCloser);
-        if (encoder instanceof CompressionEncoder.FlushableFramed flushableFramedEncoder) {
-            FlushableFramedEncodingChannel channel =
-                    new FlushableFramedEncodingChannel(target, targetCloser, flushableFramedEncoder);
-            return target instanceof InterruptibleChannel
-                    ? new InterruptibleFlushableFramedEncodingChannel(target, channel)
-                    : channel;
-        }
-        FramedEncodingChannel channel = new FramedEncodingChannel(target, targetCloser, encoder);
-        return target instanceof InterruptibleChannel
-                ? new InterruptibleFramedEncodingChannel(target, channel)
-                : channel;
+        return (CompressingWritableByteChannel.Framed) newWritableByteChannel(target, ownership, factory);
     }
 
     /// Creates an encoding channel with both frame-boundary and nonterminal-flush support.
@@ -154,16 +149,7 @@ public final class CodecChannelAdapters {
             ResourceOwnership ownership,
             EncoderFactory<? extends CompressionEncoder.FlushableFramed> factory
     ) throws IOException {
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(ownership, "ownership");
-        Objects.requireNonNull(factory, "factory");
-        OwnedChannelCloser targetCloser = new OwnedChannelCloser(target, ownership);
-        CompressionEncoder.FlushableFramed encoder = createEncoder(factory, targetCloser);
-        FlushableFramedEncodingChannel channel =
-                new FlushableFramedEncodingChannel(target, targetCloser, encoder);
-        return target instanceof InterruptibleChannel
-                ? new InterruptibleFlushableFramedEncodingChannel(target, channel)
-                : channel;
+        return (CompressingWritableByteChannel.FlushableFramed) newWritableByteChannel(target, ownership, factory);
     }
 
     /// Creates a decoding channel whose runtime frame capability matches the created engine.
@@ -307,7 +293,7 @@ public final class CodecChannelAdapters {
         private final CompressionEncoder encoder;
 
         /// Encoded output staging buffer.
-        private final ByteBuffer output = ByteBuffer.allocateDirect(BUFFER_SIZE);
+        private final ByteBuffer output;
 
         /// Number of uncompressed bytes accepted from callers.
         private long inputBytes;
@@ -334,11 +320,14 @@ public final class CodecChannelAdapters {
         protected EncodingChannel(
                 WritableByteChannel target,
                 OwnedChannelCloser targetCloser,
-                CompressionEncoder encoder
+                CompressionEncoder encoder,
+                ByteBuffer output
         ) {
             this.target = target;
             this.targetCloser = targetCloser;
             this.encoder = encoder;
+            this.output = output;
+            output.clear();
         }
 
         /// Drives source bytes through the encoder and writes all immediately produced output.
@@ -611,9 +600,10 @@ public final class CodecChannelAdapters {
         private FlushableEncodingChannel(
                 WritableByteChannel target,
                 OwnedChannelCloser targetCloser,
-                CompressionEncoder.Flushable encoder
+                CompressionEncoder.Flushable encoder,
+                ByteBuffer output
         ) {
-            super(target, targetCloser, encoder);
+            super(target, targetCloser, encoder, output);
             this.flushableEncoder = encoder;
         }
 
@@ -637,9 +627,10 @@ public final class CodecChannelAdapters {
         protected FramedEncodingChannel(
                 WritableByteChannel target,
                 OwnedChannelCloser targetCloser,
-                CompressionEncoder.Framed encoder
+                CompressionEncoder.Framed encoder,
+                ByteBuffer output
         ) {
-            super(target, targetCloser, encoder);
+            super(target, targetCloser, encoder, output);
             this.framedEncoder = encoder;
         }
 
@@ -684,9 +675,10 @@ public final class CodecChannelAdapters {
         private FlushableFramedEncodingChannel(
                 WritableByteChannel target,
                 OwnedChannelCloser targetCloser,
-                CompressionEncoder.FlushableFramed encoder
+                CompressionEncoder.FlushableFramed encoder,
+                ByteBuffer output
         ) {
-            super(target, targetCloser, encoder);
+            super(target, targetCloser, encoder, output);
             this.flushableEncoder = encoder;
         }
 

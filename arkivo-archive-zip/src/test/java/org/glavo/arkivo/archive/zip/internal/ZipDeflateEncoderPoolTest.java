@@ -22,11 +22,15 @@ final class ZipDeflateEncoderPoolTest {
     void reusesFinishedEngineWithoutLeakingHistory() throws Exception {
         try (var pool = new ZipDeflateEncoderPool()) {
             @Nullable Object expectedEngine = null;
+            byte @Nullable [] expectedStorage = null;
             for (int size : new int[]{0, 1, 4096, 100000, 0, 37}) {
                 byte[] body = new byte[size];
                 new Random(size).nextBytes(body);
-                var output = new ByteArrayOutputStream();
+                var output = new RecordingOutput();
                 try (var channel = pool.open(output)) { channel.write(ByteBuffer.wrap(body)); }
+                assertNotNull(output.storage);
+                if (expectedStorage != null) assertSame(expectedStorage, output.storage);
+                expectedStorage = output.storage;
                 @Nullable Object engine = idle(pool);
                 assertNotNull(engine);
                 if (expectedEngine != null) assertSame(expectedEngine, engine);
@@ -74,6 +78,21 @@ final class ZipDeflateEncoderPoolTest {
         Field field = ZipDeflateEncoderPool.class.getDeclaredField("idle");
         field.setAccessible(true);
         return field.get(pool);
+    }
+
+    /// Records the array passed to stream writes to detect intermediate copies or per-entry allocations.
+    @NotNullByDefault
+    private static final class RecordingOutput extends ByteArrayOutputStream {
+        /// The staging array used by every write to this entry.
+        private byte @Nullable [] storage;
+
+        /// Copies output while checking that the leased staging array remains stable.
+        @Override
+        public void write(byte[] bytes, int offset, int length) {
+            if (storage != null) assertSame(storage, bytes);
+            storage = bytes;
+            super.write(bytes, offset, length);
+        }
     }
 
     /// Fails every physical write with one stable exception object.

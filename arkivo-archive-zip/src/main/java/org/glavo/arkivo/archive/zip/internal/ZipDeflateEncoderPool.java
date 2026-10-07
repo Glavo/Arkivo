@@ -25,12 +25,16 @@ final class ZipDeflateEncoderPool implements AutoCloseable {
     private @Nullable CompressionEncoder.Flushable idle;
     /// The sole active entry lease, or null.
     private @Nullable Lease active;
+    /// Heap storage shared by successive entry adapters, allocated on the first lease.
+    private @Nullable ByteBuffer outputBuffer;
     /// Whether this writing session has released its engine resources.
     private boolean closed;
 
     /// Creates a channel that borrows the entry target and exclusively leases the reusable engine.
     CompressingWritableByteChannel open(OutputStream output) throws IOException {
         if (closed || active != null) throw new IllegalStateException("Deflate workspace is unavailable");
+        @Nullable ByteBuffer buffer = outputBuffer;
+        if (buffer == null) outputBuffer = buffer = ByteBuffer.allocate(8192);
         @Nullable CompressionEncoder.Flushable engine = idle;
         idle = null;
         if (engine == null) {
@@ -45,14 +49,16 @@ final class ZipDeflateEncoderPool implements AutoCloseable {
         }
         Lease lease = new Lease(engine);
         active = lease;
-        return CodecChannelAdapters.newFlushableWritableByteChannel(
-                new Target(StreamChannelAdapters.writableChannel(output), lease), ResourceOwnership.BORROWED, () -> lease);
+        return CodecChannelAdapters.newWritableByteChannel(
+                new Target(StreamChannelAdapters.writableChannel(output), lease), ResourceOwnership.BORROWED,
+                () -> lease, buffer);
     }
 
     /// Releases cached or unfinished engines without producing output.
     @Override
     public void close() {
         closed = true;
+        outputBuffer = null;
         @Nullable Lease lease = active;
         if (lease != null) lease.close();
         @Nullable CompressionEncoder.Flushable engine = idle;

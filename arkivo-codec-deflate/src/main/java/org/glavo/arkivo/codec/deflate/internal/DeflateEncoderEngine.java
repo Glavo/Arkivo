@@ -678,7 +678,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
     /// Initializes hash chains from the dictionary's trailing window.
     private void restoreDictionary() {
         Arrays.fill(hashHeads, 0);
-        Arrays.fill(previous, 0);
+        // Clearing the heads makes old links unreachable; insertion overwrites each link before publishing its head.
         Arrays.fill(literalLengthFrequencies, 0);
         Arrays.fill(distanceFrequencies, 0);
         literalLengthFrequencies[END_OF_BLOCK_SYMBOL] = 1;
