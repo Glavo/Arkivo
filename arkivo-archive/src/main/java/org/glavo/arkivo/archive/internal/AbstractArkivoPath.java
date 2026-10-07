@@ -226,6 +226,9 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// Returns this path with `.` and resolvable `..` elements removed.
     @Override
     public final Path normalize() {
+        if (!names.contains(".") && !names.contains("..")) {
+            return this;
+        }
         ArrayList<String> normalizedNames = new ArrayList<>();
         for (String name : names) {
             if (".".equals(name)) {
@@ -320,7 +323,7 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// Returns this path as an absolute path.
     @Override
     public final Path toAbsolutePath() {
-        return absolute ? this : createPath(true, List.of()).resolve(this);
+        return absolute ? this : createPath(true, names);
     }
 
     /// Resolves this path to a checked normalized absolute path.
@@ -335,7 +338,7 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             }
         }
 
-        Path unresolved = toAbsolutePath().normalize();
+        AbstractArkivoPath<F> unresolved = requireCompatiblePath(toAbsolutePath().normalize());
         if (noFollowLinks) {
             fileSystem.provider().readAttributes(
                     unresolved,
@@ -347,15 +350,28 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
 
         int symbolicLinkCount = 0;
         while (true) {
-            Path resolved = Objects.requireNonNull(unresolved.getRoot(), "absolute path root");
             boolean restart = false;
             for (int index = 0; index < unresolved.getNameCount(); index++) {
-                Path candidate = resolved.resolve(unresolved.getName(index));
+                Path candidate = index + 1 == unresolved.names.size()
+                        ? unresolved : createPath(true, unresolved.names.subList(0, index + 1));
+                BasicFileAttributes attributes = fileSystem.provider().readAttributes(
+                        candidate,
+                        BasicFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
+                if (!attributes.isSymbolicLink()) {
+                    continue;
+                }
                 final Path target;
                 try {
                     target = fileSystem.provider().readSymbolicLink(candidate);
                 } catch (NotLinkException exception) {
-                    resolved = candidate;
+                    // A writable file system may replace the link after the attribute lookup.
+                    fileSystem.provider().readAttributes(
+                            candidate,
+                            BasicFileAttributes.class,
+                            LinkOption.NOFOLLOW_LINKS
+                    );
                     continue;
                 }
 
@@ -370,18 +386,20 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
                 if (index + 1 < unresolved.getNameCount()) {
                     replacement = replacement.resolve(unresolved.subpath(index + 1, unresolved.getNameCount()));
                 }
-                unresolved = replacement.toAbsolutePath().normalize();
+                unresolved = requireCompatiblePath(replacement.toAbsolutePath().normalize());
                 restart = true;
                 break;
             }
 
             if (!restart) {
-                fileSystem.provider().readAttributes(
-                        resolved,
-                        BasicFileAttributes.class,
-                        LinkOption.NOFOLLOW_LINKS
-                );
-                return resolved;
+                if (unresolved.names.isEmpty()) {
+                    fileSystem.provider().readAttributes(
+                            unresolved,
+                            BasicFileAttributes.class,
+                            LinkOption.NOFOLLOW_LINKS
+                    );
+                }
+                return unresolved;
             }
         }
     }

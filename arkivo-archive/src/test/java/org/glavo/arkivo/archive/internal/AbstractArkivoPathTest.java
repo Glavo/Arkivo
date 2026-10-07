@@ -230,6 +230,56 @@ final class AbstractArkivoPathTest {
         assertThrows(UnsupportedOperationException.class, () -> new TestFileSystem(null).getPath("entry").toUri());
     }
 
+    /// Resolving ordinary paths checks each component once without attempting symbolic-link reads.
+    @Test
+    void resolvesRegularPathsWithoutExceptionDrivenLinkProbes() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(null);
+        fileSystem.addFile("/parent/child/value");
+        TestPath path = fileSystem.getPath("/parent/child/value");
+        assertSame(path, path.normalize());
+        assertSame(path, path.toRealPath());
+        assertEquals(3, fileSystem.provider.attributeReads);
+        assertEquals(0, fileSystem.provider.linkReads);
+
+        fileSystem.addSymbolicLink("/parent/child/value", "/replacement");
+        fileSystem.addFile("/replacement");
+        assertEquals(fileSystem.getPath("/replacement"), path.toRealPath());
+        assertEquals(7, fileSystem.provider.attributeReads);
+        assertEquals(1, fileSystem.provider.linkReads);
+    }
+
+    /// Root and no-follow lookups still verify existence without reading a link target.
+    @Test
+    void checksRootAndNoFollowPathsOnce() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(null);
+        TestPath root = fileSystem.getPath("/");
+        assertSame(root, root.toRealPath());
+        assertEquals(1, fileSystem.provider.attributeReads);
+        fileSystem.addSymbolicLink("/link", "/missing");
+        TestPath link = fileSystem.getPath("/link");
+        assertSame(link, link.toRealPath(LinkOption.NOFOLLOW_LINKS));
+        assertEquals(2, fileSystem.provider.attributeReads);
+        assertEquals(0, fileSystem.provider.linkReads);
+    }
+
+    /// A link replaced between metadata and target reads is rechecked for existence.
+    @Test
+    void rechecksLinksReplacedDuringResolution() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(null);
+        TestPath link = fileSystem.getPath("/link");
+        fileSystem.addSymbolicLink("/link", "/target");
+        fileSystem.provider.beforeLinkRead = () -> fileSystem.provider.symbolicLinks.remove("/link");
+        assertSame(link, link.toRealPath());
+        assertEquals(2, fileSystem.provider.attributeReads);
+
+        fileSystem.addSymbolicLink("/link", "/target");
+        fileSystem.provider.beforeLinkRead = () -> {
+            fileSystem.provider.symbolicLinks.remove("/link");
+            fileSystem.provider.existingPaths.remove("/link");
+        };
+        assertThrows(NoSuchFileException.class, link::toRealPath);
+    }
+
     /// Verifies real paths expand relative, absolute, and chained symbolic-link targets with remaining names.
     @Test
     void resolvesRealPathsThroughSymbolicLinks() throws IOException {
@@ -412,20 +462,35 @@ final class AbstractArkivoPathTest {
         /// Symbolic-link targets keyed by normalized absolute link path.
         private final Map<String, TestPath> symbolicLinks = new HashMap<>();
 
+        /// Number of basic attribute reads requested by path resolution.
+        private int attributeReads;
+
+        /// Number of symbolic-link target reads requested by path resolution.
+        private int linkReads;
+
+        /// Optional mutation performed between the attribute lookup and target read.
+        private @Nullable Runnable beforeLinkRead;
+
         /// Creates a provider for one test file system.
         private TestProvider(TestFileSystem fileSystem) {
             this.fileSystem = fileSystem;
+            existingPaths.add("/");
         }
 
         /// Adds one existing regular file.
         private void addFile(String path) {
-            existingPaths.add(normalizedPath(fileSystem.getPath(path)));
+            String normalized = normalizedPath(fileSystem.getPath(path));
+            existingPaths.add(normalized);
+            for (int index = normalized.indexOf('/', 1); index >= 0;
+                 index = normalized.indexOf('/', index + 1)) {
+                existingPaths.add(normalized.substring(0, index));
+            }
         }
 
         /// Adds one existing symbolic link.
         private void addSymbolicLink(String path, String target) {
             String normalizedPath = normalizedPath(fileSystem.getPath(path));
-            existingPaths.add(normalizedPath);
+            addFile(path);
             symbolicLinks.put(normalizedPath, fileSystem.getPath(target));
         }
 
@@ -542,6 +607,7 @@ final class AbstractArkivoPathTest {
                 Class<A> type,
                 LinkOption... options
         ) throws IOException {
+            attributeReads++;
             if (type != BasicFileAttributes.class) {
                 throw unsupported();
             }
@@ -549,7 +615,8 @@ final class AbstractArkivoPathTest {
             if (!existingPaths.contains(normalizedPath)) {
                 throw new NoSuchFileException(normalizedPath);
             }
-            return type.cast(TestBasicFileAttributes.INSTANCE);
+            return type.cast(symbolicLinks.containsKey(normalizedPath)
+                    ? TestBasicFileAttributes.SYMBOLIC_LINK : TestBasicFileAttributes.INSTANCE);
         }
 
         /// Rejects string-based attribute lookup.
@@ -567,6 +634,10 @@ final class AbstractArkivoPathTest {
         /// Returns the configured target for a symbolic link.
         @Override
         public Path readSymbolicLink(Path link) throws IOException {
+            linkReads++;
+            if (beforeLinkRead != null) {
+                beforeLinkRead.run();
+            }
             String normalizedPath = normalizedPath(link);
             TestPath target = symbolicLinks.get(normalizedPath);
             if (target == null) {
@@ -585,7 +656,9 @@ final class AbstractArkivoPathTest {
     @NotNullByDefault
     private enum TestBasicFileAttributes implements BasicFileAttributes {
         /// Shared immutable attribute instance.
-        INSTANCE;
+        INSTANCE,
+        /// Immutable attributes identifying a symbolic link.
+        SYMBOLIC_LINK;
 
         /// Epoch timestamp returned by every time accessor.
         private static final FileTime EPOCH = FileTime.fromMillis(0L);
@@ -608,10 +681,10 @@ final class AbstractArkivoPathTest {
             return EPOCH;
         }
 
-        /// Returns that the synthetic path is a regular file.
+        /// Returns whether the synthetic path is a regular file.
         @Override
         public boolean isRegularFile() {
-            return true;
+            return this == INSTANCE;
         }
 
         /// Returns that the synthetic path is not a directory.
@@ -620,10 +693,10 @@ final class AbstractArkivoPathTest {
             return false;
         }
 
-        /// Returns that the synthetic attributes do not classify the path as a symbolic link.
+        /// Returns whether these attributes identify a symbolic link.
         @Override
         public boolean isSymbolicLink() {
-            return false;
+            return this == SYMBOLIC_LINK;
         }
 
         /// Returns that the synthetic path has no other file type.
