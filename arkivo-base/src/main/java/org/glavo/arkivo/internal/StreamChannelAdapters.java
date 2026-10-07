@@ -303,8 +303,8 @@ public final class StreamChannelAdapters {
         /// The backing writable channel.
         private final WritableByteChannel target;
 
-        /// The reusable single-byte source.
-        private final byte[] singleByte = new byte[1];
+        /// Single-byte storage allocated on the first scalar write.
+        private @Nullable ByteBuffer singleByte;
 
         /// Whether this adapter remains open.
         private boolean open = true;
@@ -317,8 +317,11 @@ public final class StreamChannelAdapters {
         /// Writes one byte to the channel.
         @Override
         public void write(int value) throws IOException {
-            singleByte[0] = (byte) value;
-            write(singleByte, 0, 1);
+            ensureOpen();
+            @Nullable ByteBuffer source = singleByte;
+            if (source == null) singleByte = source = ByteBuffer.allocate(1);
+            source.clear().put((byte) value).flip();
+            writeFully(source);
         }
 
         /// Writes all requested bytes and rejects a zero-progress channel.
@@ -326,7 +329,11 @@ public final class StreamChannelAdapters {
         public void write(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
             ensureOpen();
-            ByteBuffer source = ByteBuffer.wrap(bytes, offset, length);
+            writeFully(ByteBuffer.wrap(bytes, offset, length));
+        }
+
+        /// Drains one call's source without retaining it and rejects a stalled channel.
+        private void writeFully(ByteBuffer source) throws IOException {
             while (source.hasRemaining()) {
                 if (target.write(source) == 0) {
                     throw new IOException("Writable channel made no progress");

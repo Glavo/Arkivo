@@ -239,7 +239,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// The root path for this ZIP file system.
     private final ZipArkivoPath rootPath;
 
-    /// The entry names already written in this output session.
+    /// The entry names already written in this output session, without trailing directory separators.
     private final HashSet<String> writtenEntries = new HashSet<>();
 
     /// The central directory entries to write when the file system closes.
@@ -481,7 +481,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             this.existingCentralDirectoryEntries = existingEntries(appendSnapshot.entries());
             this.existingEntryNames = new HashSet<>(appendSnapshot.entryNames());
             if (!replaceExistingEntries) {
-                this.writtenEntries.addAll(appendSnapshot.entryNames());
+                for (String entryName : appendSnapshot.entryNames()) this.writtenEntries.add(entryNameKey(entryName));
             }
         } else {
             this.existingCentralDirectoryEntries = new ArrayList<>();
@@ -2762,13 +2762,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     private void remapWrittenEntries(Map<String, String> movedPaths) {
         HashSet<String> remapped = new HashSet<>(writtenEntries.size());
         for (String entryName : writtenEntries) {
-            String key = entryNameKey(entryName);
-            @Nullable String movedName = movedPaths.get(key);
-            if (movedName == null) {
-                remapped.add(entryName);
-            } else {
-                remapped.add(entryName.endsWith("/") ? movedName + "/" : movedName);
-            }
+            remapped.add(movedPaths.getOrDefault(entryName, entryName));
         }
         writtenEntries.clear();
         writtenEntries.addAll(remapped);
@@ -3047,7 +3041,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Checks that the entry name has not already been written.
     private void checkNewEntry(String entryName) throws IOException {
-        if (visibleWrittenEntry(entryName) || visibleExistingEntry(entryName)) {
+        String key = entryNameKey(entryName);
+        if (visibleWrittenEntry(key) || visibleExistingEntry(key)) {
             throw new java.nio.file.FileAlreadyExistsException(entryName);
         }
     }
@@ -3085,7 +3080,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Registers a writable file entry after its local header has been accepted.
     private void registerWritableFileEntry(String entryName, boolean replacingExistingEntry) {
-        writtenEntries.add(entryName);
+        writtenEntries.add(entryNameKey(entryName));
         if (replacingExistingEntry) {
             replacedEntries.add(entryName);
         }
@@ -3094,7 +3089,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// Requires the entry name to be new.
     private void requireNewEntry(String entryName) throws IOException {
         checkNewEntry(entryName);
-        writtenEntries.add(entryName);
+        writtenEntries.add(entryNameKey(entryName));
     }
 
     /// Returns whether an existing entry remains visible in this output session.
@@ -3111,12 +3106,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Returns whether a written entry remains visible in this output session.
     private boolean visibleWrittenEntry(String entryName) {
-        for (String writtenEntry : writtenEntries) {
-            if (entryNameKey(writtenEntry).equals(entryName)) {
-                return true;
-            }
-        }
-        return false;
+        return writtenEntries.contains(entryName);
     }
 
     /// Returns whether a directory exists explicitly or implicitly in the current output session.
@@ -3159,7 +3149,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Removes a written entry and its staged readable body from the final archive state.
     private void removeWrittenEntry(String entryName) throws IOException {
-        writtenEntries.removeIf(writtenEntry -> entryNameKey(writtenEntry).equals(entryName));
+        writtenEntries.remove(entryName);
         centralEntries.removeIf(entry -> entryNameKey(entry.entryName).equals(entryName));
         writtenSymbolicLinkTargets.remove(entryName);
         ArkivoStoredContent content = stagedEntryContents.remove(entryName);

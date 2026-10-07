@@ -489,11 +489,15 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
 
     /// Parses non-empty slash-separated path names.
     private static @Unmodifiable List<String> pathNames(String value) {
+        if (value.indexOf('/') < 0) {
+            return value.isEmpty() ? List.of() : List.of(value);
+        }
         ArrayList<String> names = new ArrayList<>();
-        for (String name : value.split("/+")) {
-            if (!name.isEmpty()) {
-                names.add(name);
-            }
+        for (int start = 0; start < value.length();) {
+            int end = value.indexOf('/', start);
+            if (end < 0) end = value.length();
+            if (end > start) names.add(value.substring(start, end));
+            start = end + 1;
         }
         return List.copyOf(names);
     }

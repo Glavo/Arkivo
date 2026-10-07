@@ -26,13 +26,14 @@ import java.util.zip.*;
 public class ZipStreamBenchmark {
     /// The streaming implementation.
     @Param({"arkivo", "jdk", "commons"}) public String api = "arkivo";
-    /// One MiB of uncompressed data is stored in each archive.
-    private static final int COUNT = 256;
+    /// The number of entries per archive.
+    @Param({"256"}) public int entryCount = 256;
+    /// The uncompressed bytes in each entry.
+    @Param({"4096"}) public int entrySize = 4096;
     /// The entry payload, half repeated and half random.
-    private final byte[] body = new byte[4096];
+    private byte[] body = new byte[0];
     /// Precomputed entry names.
-    private final String @Unmodifiable [] names = IntStream.range(0, COUNT)
-            .mapToObj(index -> "entry-" + index + ".bin").toArray(String[]::new);
+    private String @Unmodifiable [] names = new String[0];
     /// The common JDK-produced archive used by all readers.
     private byte[] archive = new byte[0];
     /// The reusable buffer used by each reader.
@@ -40,8 +41,11 @@ public class ZipStreamBenchmark {
     /// Prepares the common input and checks the selected writer with the JDK reader.
     @Setup
     public void setup() throws IOException {
+        if (entryCount < 1 || entrySize < 0) throw new IllegalArgumentException("Invalid entry dimensions");
+        body = new byte[entrySize];
+        names = IntStream.range(0, entryCount).mapToObj(index -> "entry-" + index + ".bin").toArray(String[]::new);
         new Random(42).nextBytes(body);
-        System.arraycopy(body, 0, body, 2048, 2048);
+        System.arraycopy(body, 0, body, body.length / 2, body.length / 2);
         String selected = api;
         api = "jdk"; archive = encoded(); api = selected;
         byte[] output = encoded();
@@ -51,9 +55,9 @@ public class ZipStreamBenchmark {
                 if (!Arrays.equals(body, in.readAllBytes())) throw new AssertionError("Writer mismatch");
                 count++;
             }
-            if (count != COUNT) throw new AssertionError(count);
+            if (count != entryCount) throw new AssertionError(count);
         }
-        if (read() != (long) COUNT * body.length) throw new AssertionError("Reader mismatch");
+        if (read() != (long) entryCount * body.length) throw new AssertionError("Reader mismatch");
         System.out.println("SURVEY_OUTPUT_BYTES " + api + " " + output.length);
     }
     /// Reads every entry from the same in-memory ZIP.

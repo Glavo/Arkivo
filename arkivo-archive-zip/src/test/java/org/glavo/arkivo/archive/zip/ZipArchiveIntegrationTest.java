@@ -1545,6 +1545,20 @@ public final class ZipArchiveIntegrationTest {
                 Files.move(written, movedWritten);
                 assertEquals("written", Files.readString(movedWritten, StandardCharsets.UTF_8));
 
+                Path writtenDirectory = fileSystem.getPath("/written-dir");
+                Path renamedDirectory = fileSystem.getPath("/moved-written-dir");
+                assertThrows(FileAlreadyExistsException.class, () -> Files.createDirectory(movedDirectory));
+                assertThrows(FileAlreadyExistsException.class, () -> Files.createDirectory(movedWritten));
+                Files.createDirectory(writtenDirectory);
+                assertThrows(FileAlreadyExistsException.class, () -> Files.createDirectory(writtenDirectory));
+                Files.move(writtenDirectory, renamedDirectory);
+                assertThrows(FileAlreadyExistsException.class, () -> Files.createDirectory(renamedDirectory));
+                Files.createDirectory(writtenDirectory);
+                Files.delete(renamedDirectory);
+                Files.createDirectory(renamedDirectory);
+                Files.delete(writtenDirectory);
+                Files.delete(renamedDirectory);
+
                 assertThrows(
                         FileSystemException.class,
                         () -> Files.move(movedDirectory, movedDirectory.resolve("nested"))

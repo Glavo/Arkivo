@@ -51,6 +51,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared archive path parsing, composition, comparison, and URI behavior.
 @NotNullByDefault
 final class AbstractArkivoPathTest {
+    /// Separator runs preserve literal names, dot elements and non-ASCII text before explicit normalization.
+    @Test
+    void parsesRepeatedSeparatorsWithoutChangingNames() {
+        TestFileSystem fileSystem = new TestFileSystem(null);
+        List<String> names = List.of("alpha", ".", "..", "\u03b4\ud83d\ude42", "back\\slash");
+        for (int prefix = 0; prefix <= 3; prefix++) {
+            for (int separator = 1; separator <= 4; separator++) {
+                for (int suffix = 0; suffix <= 3; suffix++) {
+                    String text = "/".repeat(prefix) + String.join("/".repeat(separator), names) + "/".repeat(suffix);
+                    TestPath path = fileSystem.getPath(text);
+                    assertEquals(prefix != 0, path.isAbsolute());
+                    assertEquals(names.size(), path.getNameCount());
+                    for (int index = 0; index < names.size(); index++) {
+                        assertEquals(names.get(index), path.getName(index).toString());
+                    }
+                    assertEquals((prefix == 0 ? "" : "/") + String.join("/", names), path.toString());
+                }
+            }
+        }
+    }
+
     /// Verifies separators, component access, parents, roots, subpaths, and iteration.
     @Test
     void parsesAndExposesPathComponents() {

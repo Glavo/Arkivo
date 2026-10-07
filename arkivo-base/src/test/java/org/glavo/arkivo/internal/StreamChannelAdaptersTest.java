@@ -152,12 +152,14 @@ final class StreamChannelAdaptersTest {
         try (OutputStream output = StreamChannelAdapters.outputStream(new ZeroProgressWritableChannel())) {
             IOException failure = assertThrows(IOException.class, () -> output.write(new byte[]{1}));
             assertEquals("Writable channel made no progress", failure.getMessage());
+            assertEquals("Writable channel made no progress",
+                    assertThrows(IOException.class, () -> output.write(1)).getMessage());
         }
     }
 
     /// Verifies channel-backed streams implement single-byte, empty-request, and closed-state behavior.
     @Test
-    void adaptsSingleByteStreamOperations() throws IOException {
+    void adaptsSingleByteStreamOperations() throws Exception {
         ReadableByteChannel source = StreamChannelAdapters.readableChannel(
                 new ByteArrayInputStream(new byte[]{(byte) 0xfe})
         );
@@ -177,11 +179,20 @@ final class StreamChannelAdaptersTest {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         WritableByteChannel target = StreamChannelAdapters.writableChannel(bytes);
         OutputStream output = StreamChannelAdapters.outputStream(target);
-        output.write(0x101);
+        var field = output.getClass().getDeclaredField("singleByte");
+        field.setAccessible(true);
+        assertNull(field.get(output));
         output.write(new byte[0]);
+        assertNull(field.get(output));
+        output.write(0x101);
+        @Nullable Object storage = field.get(output);
+        assertNotNull(storage);
+        output.write(new byte[]{2});
+        output.write(0x103);
+        assertSame(storage, field.get(output));
         output.close();
         assertFalse(target.isOpen());
-        assertArrayEquals(new byte[]{1}, bytes.toByteArray());
+        assertArrayEquals(new byte[]{1, 2, 3}, bytes.toByteArray());
         assertEquals("Stream closed", assertThrows(IOException.class, () -> output.write(2)).getMessage());
         assertEquals(
                 "Stream closed",
