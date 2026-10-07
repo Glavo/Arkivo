@@ -18,6 +18,8 @@ import org.glavo.arkivo.archive.cpio.CPIOBinaryByteOrder;
 import org.glavo.arkivo.archive.cpio.CPIODialect;
 import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
+import org.glavo.arkivo.archive.rar.RarArchiveOptions;
+import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
@@ -849,6 +851,134 @@ public final class LibarchiveArchiveCorpusTest {
             Path link = fileSystem.getPath("/testlink");
             assertTrue(Files.isSymbolicLink(link));
             assertEquals("test.txt", Files.readSymbolicLink(link).toString());
+        }
+    }
+
+    /// Supplies RAR4 and RAR5 combinations of solid compression and encrypted file names.
+    private static Stream<Arguments> encryptedRarFixtures() {
+        return Stream.of(4, 5).flatMap(version -> Stream.of(
+                Arguments.of(version, false, false), Arguments.of(version, false, true),
+                Arguments.of(version, true, false), Arguments.of(version, true, true)));
+    }
+
+    /// Returns the upstream fixture name for one encryption and solid-compression combination.
+    private static String encryptedRarFixture(int version, boolean solid, boolean encryptedNames) {
+        return "test_read_format_rar" + version + (solid ? "_solid" : "")
+                + "_encrypted" + (encryptedNames ? "_filenames" : "") + ".rar.uu";
+    }
+
+    /// Selects the independently documented passwords, including the distinct password for the fourth plain-header file.
+    private static RarArchiveOptions encryptedRarOptions(int version, boolean solid, boolean encryptedNames) {
+        Charset charset = version == 4 ? StandardCharsets.UTF_16LE : StandardCharsets.UTF_8;
+        return RarArchiveOptions.DEFAULT.withPasswordProvider(request -> {
+            String password = !solid && !encryptedNames && "/d.txt".equals(request.entryPath())
+                    ? "password2" : "password";
+            return password.getBytes(charset);
+        });
+    }
+
+    /// Returns the complete original bytes documented by libarchive's test_read_format_rar_encryption.c.
+    private static byte[] encryptedRarContent(char name) {
+        return ("This is from " + name + ".txt").getBytes(StandardCharsets.US_ASCII);
+    }
+
+    /// Checks every decrypted byte and encryption flag, then reads solid entries in reverse order through the file system.
+    @ParameterizedTest(name = "RAR{0}, solid={1}, encryptedNames={2}")
+    @MethodSource("encryptedRarFixtures")
+    void readsCompleteEncryptedRarContents(int version, boolean solid, boolean encryptedNames,
+                                          @TempDir Path directory) throws IOException {
+        Path archive = decodeFixture(encryptedRarFixture(version, solid, encryptedNames), "encrypted.rar", directory);
+        var options = encryptedRarOptions(version, solid, encryptedNames);
+        try (var reader = RarArkivoStreamingReader.open(archive, options)) {
+            for (char name = 'a'; name <= 'd'; name++) {
+                assertTrue(reader.next());
+                var attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+                assertEquals(name + ".txt", attributes.path());
+                assertTrue(attributes.isRegularFile());
+                assertEquals(18, attributes.size());
+                assertEquals(solid || encryptedNames || name == 'b' || name == 'd', attributes.isEncrypted());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(encryptedRarContent(name), input.readAllBytes(), attributes.path());
+                    assertEquals(-1, input.read());
+                }
+            }
+            assertFalse(reader.next());
+        }
+        try (var fileSystem = RarArkivoFileSystem.open(archive, options)) {
+            try (var entries = Files.list(fileSystem.getPath("/"))) {
+                assertEquals(Set.of("a.txt", "b.txt", "c.txt", "d.txt"),
+                        entries.map(path -> path.getFileName().toString()).collect(java.util.stream.Collectors.toSet()));
+            }
+            for (char name = 'd'; name >= 'a'; name--) {
+                Path path = fileSystem.getPath("/" + name + ".txt");
+                assertArrayEquals(encryptedRarContent(name), Files.readAllBytes(path), path.toString());
+                try (var input = Files.newInputStream(path)) {
+                    assertEquals('T', input.read());
+                }
+                assertArrayEquals(encryptedRarContent(name), Files.readAllBytes(path), path.toString());
+            }
+        }
+    }
+
+    /// Preserves decryption and solid history across unopened and partially consumed predecessors.
+    @ParameterizedTest(name = "RAR{0}, solid={1}, encryptedNames={2}")
+    @MethodSource("encryptedRarFixtures")
+    void skipsEncryptedRarPredecessors(int version, boolean solid, boolean encryptedNames,
+                                      @TempDir Path directory) throws IOException {
+        Path archive = decodeFixture(encryptedRarFixture(version, solid, encryptedNames), "skip.rar", directory);
+        try (var reader = RarArkivoStreamingReader.open(archive,
+                encryptedRarOptions(version, solid, encryptedNames))) {
+            assertTrue(reader.next());
+            assertEquals("a.txt", reader.readAttributes().path());
+            assertTrue(reader.next());
+            assertEquals("b.txt", reader.readAttributes().path());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(Arrays.copyOf(encryptedRarContent('b'), 5), input.readNBytes(5));
+            }
+            assertTrue(reader.next());
+            assertEquals("c.txt", reader.readAttributes().path());
+            assertTrue(reader.next());
+            assertEquals("d.txt", reader.readAttributes().path());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(encryptedRarContent('d'), input.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Rejects missing and incorrect credentials through both public reading paths without poisoning a fresh session.
+    @ParameterizedTest(name = "RAR{0}, solid={1}, encryptedNames={2}")
+    @MethodSource("encryptedRarFixtures")
+    void rejectsInvalidEncryptedRarCredentials(int version, boolean solid, boolean encryptedNames,
+                                              @TempDir Path directory) throws IOException {
+        Path archive = decodeFixture(encryptedRarFixture(version, solid, encryptedNames), "password.rar", directory);
+        Charset charset = version == 4 ? StandardCharsets.UTF_16LE : StandardCharsets.UTF_8;
+        for (var provider : List.of(ArkivoPasswordProvider.none(),
+                ArkivoPasswordProvider.fixed("incorrect".getBytes(charset)))) {
+            var options = RarArchiveOptions.DEFAULT.withPasswordProvider(provider);
+            assertThrows(IOException.class, () -> {
+                try (var reader = RarArkivoStreamingReader.open(archive, options)) {
+                    assertTrue(reader.next());
+                    if (!solid && !encryptedNames) {
+                        try (var input = reader.openInputStream()) {
+                            assertArrayEquals(encryptedRarContent('a'), input.readAllBytes());
+                        }
+                        assertTrue(reader.next());
+                    }
+                    try (var input = reader.openInputStream()) {
+                        input.readAllBytes();
+                    }
+                }
+            });
+            assertThrows(IOException.class, () -> {
+                try (var fileSystem = RarArkivoFileSystem.open(archive, options)) {
+                    Files.readAllBytes(fileSystem.getPath("/b.txt"));
+                }
+            });
+        }
+        try (var fileSystem = RarArkivoFileSystem.open(archive,
+                encryptedRarOptions(version, solid, encryptedNames))) {
+            assertArrayEquals(encryptedRarContent('d'), Files.readAllBytes(fileSystem.getPath("/d.txt")));
         }
     }
 
