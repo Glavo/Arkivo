@@ -951,10 +951,10 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         /// Packed symbols and lengths, continuation nodes, or invalid prefixes.
         private final int[] fastLookup = new int[1 << FAST_LOOKUP_BITS];
 
-        /// Offsets of secondary tables for root prefixes containing longer codes.
+        /// Secondary-table offsets; temporarily links long-code prefixes while a tree is being built.
         private final int[] secondaryOffsets = new int[1 << FAST_LOOKUP_BITS];
 
-        /// Suffix widths required by secondary tables, or zero for direct root entries.
+        /// Suffix widths for active long-code root prefixes; other slots are not read.
         private final byte[] secondaryWidths = new byte[1 << FAST_LOOKUP_BITS];
 
         /// Reused packed long-code entries, grown only when a block requires a larger table.
@@ -1007,7 +1007,6 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 }
             }
             Arrays.fill(fastLookup, INVALID_LOOKUP);
-            Arrays.fill(secondaryWidths, (byte) 0);
             if (nonZeroCount == 0) {
                 minimumLength = 0;
                 if (!allowEmpty) throw new IOException(description + " tree is empty");
@@ -1027,6 +1026,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 nextCodes[length] = code;
             }
             int nodeCount = 1;
+            int longPrefixHead = -1;
             for (int symbol = 0; symbol < lengths.length; symbol++) {
                 int length = lengths[symbol];
                 if (length == 0) continue;
@@ -1040,13 +1040,16 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                     continue;
                 }
                 int prefix = reversedCode & FAST_LOOKUP_MASK;
-                secondaryWidths[prefix] = (byte) Math.max(secondaryWidths[prefix], length - FAST_LOOKUP_BITS);
                 int node;
                 if (fastLookup[prefix] == INVALID_LOOKUP) {
+                    secondaryWidths[prefix] = (byte) (length - FAST_LOOKUP_BITS);
+                    secondaryOffsets[prefix] = longPrefixHead;
+                    longPrefixHead = prefix;
                     node = nodeCount++;
                     initializeNode(node);
                     fastLookup[prefix] = -node - 1;
                 } else {
+                    secondaryWidths[prefix] = (byte) Math.max(secondaryWidths[prefix], length - FAST_LOOKUP_BITS);
                     node = -fastLookup[prefix] - 1;
                 }
                 for (int depth = FAST_LOOKUP_BITS; depth < length; depth++) {
@@ -1062,31 +1065,35 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 }
                 symbols[node] = symbol;
             }
-            rebuildSecondaryLookup();
+            if (longPrefixHead >= 0) rebuildSecondaryLookup(lengths, longPrefixHead);
         }
 
-        /// Expands only long-code root prefixes into bounded suffix tables for the bulk decoder.
-        private void rebuildSecondaryLookup() {
+        /// Replicates canonical long codes into the suffix tables used by the bulk decoder.
+        private void rebuildSecondaryLookup(int[] lengths, int longPrefixHead) {
             int required = 0;
-            for (int prefix = 0; prefix < secondaryWidths.length; prefix++) {
-                int width = secondaryWidths[prefix];
-                if (width == 0) continue;
+            for (int prefix = longPrefixHead; prefix >= 0;) {
+                int next = secondaryOffsets[prefix];
                 secondaryOffsets[prefix] = required;
-                required += 1 << width;
+                required += 1 << secondaryWidths[prefix];
+                prefix = next;
             }
             if (secondaryLookup.length < required) secondaryLookup = new int[required];
-            for (int prefix = 0; prefix < secondaryWidths.length; prefix++) {
-                int width = secondaryWidths[prefix];
-                if (width == 0) continue;
+
+            // Rewind canonical counters; every suffix slot belongs to one code in the validated complete tree.
+            for (int length = 1; length <= maximumLength; length++) nextCodes[length] -= counts[length];
+            for (int symbol = 0; symbol < lengths.length; symbol++) {
+                int length = lengths[symbol];
+                if (length == 0) continue;
+                int code = nextCodes[length]++;
+                if (length <= FAST_LOOKUP_BITS) continue;
+                int reversedCode = Integer.reverse(code) >>> (32 - length);
+                int prefix = reversedCode & FAST_LOOKUP_MASK;
                 int offset = secondaryOffsets[prefix];
-                int root = -fastLookup[prefix] - 1;
-                for (int suffix = 0; suffix < 1 << width; suffix++) {
-                    int node = root;
-                    int depth = 0;
-                    while (symbols[node] < 0) {
-                        node = (suffix >>> depth++ & 1) == 0 ? zeroChildren[node] : oneChildren[node];
-                    }
-                    secondaryLookup[offset + suffix] = symbols[node] << 4 | FAST_LOOKUP_BITS + depth;
+                int limit = 1 << secondaryWidths[prefix];
+                int step = 1 << (length - FAST_LOOKUP_BITS);
+                int entry = symbol << 4 | length;
+                for (int suffix = reversedCode >>> FAST_LOOKUP_BITS; suffix < limit; suffix += step) {
+                    secondaryLookup[offset + suffix] = entry;
                 }
             }
         }

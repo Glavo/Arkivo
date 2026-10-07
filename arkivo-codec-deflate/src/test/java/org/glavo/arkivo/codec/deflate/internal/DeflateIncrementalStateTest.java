@@ -339,6 +339,63 @@ final class DeflateIncrementalStateTest {
         }
     }
 
+    /// Replaces secondary-table layouts within one stream, including intervening root-only alphabets.
+    @Test
+    void replacesLongCodeTablesAcrossDynamicBlocks() throws Exception {
+        BitWriter writer = new BitWriter();
+        var expected = new ByteArrayOutputStream();
+        for (int block = 0; block < 8; block++) {
+            int[] lengths = new int[257];
+            if ((block & 1) != 0) {
+                lengths['a'] = lengths[256] = 1;
+            } else {
+                int groups = block % 4 == 0 ? 4 : 8;
+                int baseDepth = groups == 4 ? 2 : 3;
+                int symbol = 0;
+                for (int group = 0; group < groups; group++) {
+                    for (int depth = baseDepth + 1; depth < 15; depth++) lengths[symbol++] = depth;
+                    lengths[symbol++] = 15;
+                    lengths[symbol++] = 15;
+                }
+                lengths[--symbol] = 0;
+                lengths[256] = 15;
+            }
+            var body = new ByteArrayOutputStream();
+            for (int repeat = 0; repeat < 16; repeat++) {
+                for (int symbol = 0; symbol < 256; symbol++) {
+                    if (lengths[symbol] != 0) body.write(symbol);
+                }
+            }
+            byte[] bytes = body.toByteArray();
+            expected.writeBytes(bytes);
+            writeLiteralBlock(writer, bytes, lengths, block == 7);
+        }
+        byte[] compressed = writer.finish();
+        byte[] body = expected.toByteArray();
+        Inflater reference = new Inflater(true);
+        try {
+            reference.setInput(compressed);
+            byte[] actual = new byte[body.length + 1];
+            assertEquals(body.length, reference.inflate(actual));
+            assertTrue(reference.finished());
+            assertArrayEquals(body, Arrays.copyOf(actual, body.length));
+        } finally {
+            reference.end();
+        }
+        for (DeflateDecoderEngine.Format format : DeflateDecoderEngine.Format.values()) {
+            try (var decoder = new DeflateDecoderEngine(format, null)) {
+                for (int chunk : new int[]{1, 7, compressed.length}) {
+                    for (int shape = 0; shape < 3; shape++) {
+                        for (int outputSize : new int[]{7, 8192}) {
+                            decoder.reset();
+                            assertArrayEquals(body, decode(decoder, compressed, chunk, shape, outputSize));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Verifies maximum-width length/distance tokens at every byte alignment and an exact trailing-input boundary.
     @Test
     void decodesMaximumWidthTokensWithLargeCallerBuffers() throws Exception {
@@ -532,7 +589,13 @@ final class DeflateIncrementalStateTest {
     /// Encodes a literal-only final block using independently assigned canonical codes.
     private static byte[] literalCodes(byte[] body, int[] lengths) {
         BitWriter writer = new BitWriter();
-        writer.write(5, 3);
+        writeLiteralBlock(writer, body, lengths, true);
+        return writer.finish();
+    }
+
+    /// Appends one independently coded dynamic block without padding its final byte.
+    private static void writeLiteralBlock(BitWriter writer, byte[] body, int[] lengths, boolean finalBlock) {
+        writer.write(finalBlock ? 5 : 4, 3);
         writer.write(0, 5);
         writer.write(0, 5);
         writer.write(15, 4);
@@ -546,7 +609,6 @@ final class DeflateIncrementalStateTest {
             writer.write(Integer.reverse(codes[symbol]) >>> (32 - lengths[symbol]), lengths[symbol]);
         }
         writer.write(Integer.reverse(codes[256]) >>> (32 - lengths[256]), lengths[256]);
-        return writer.finish();
     }
 
     /// Packs independent test fields in Deflate's least-significant-bit-first byte order.
