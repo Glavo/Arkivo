@@ -4,9 +4,10 @@
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.deflate.ZlibDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.DeflateStrategy;
+import org.glavo.arkivo.codec.deflate.ZlibDictionary;
+import org.glavo.arkivo.codec.internal.CodecBuffers;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -80,7 +81,7 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
         Objects.requireNonNull(target, "target");
         requireState(State.ACTIVE, "encode");
 
-        copyPending(pendingHeader, target);
+        CodecBuffers.transfer(pendingHeader, target);
         if (pendingHeader.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -105,7 +106,7 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
             state = State.FLUSHING;
         }
 
-        copyPending(pendingHeader, target);
+        CodecBuffers.transfer(pendingHeader, target);
         if (pendingHeader.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -132,7 +133,7 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
             state = State.FINISHING;
         }
 
-        copyPending(pendingHeader, target);
+        CodecBuffers.transfer(pendingHeader, target);
         if (pendingHeader.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -149,7 +150,7 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
             state = State.TRAILER;
         }
 
-        copyPending(pendingTrailer, target);
+        CodecBuffers.transfer(pendingTrailer, target);
         if (pendingTrailer.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -218,21 +219,6 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
         consumed.position(start);
         consumed.limit(end);
         checksum.update(consumed);
-    }
-
-    /// Copies as many staged bytes as fit in the caller-owned target.
-    private static void copyPending(ByteBuffer pending, ByteBuffer target) {
-        int length = Math.min(pending.remaining(), target.remaining());
-        if (length == 0) {
-            return;
-        }
-        int originalLimit = pending.limit();
-        pending.limit(pending.position() + length);
-        try {
-            target.put(pending);
-        } finally {
-            pending.limit(originalLimit);
-        }
     }
 
     /// Requires the exact active state for an operation that accepts source bytes.

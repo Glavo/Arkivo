@@ -8,6 +8,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.DeflateStrategy;
+import org.glavo.arkivo.codec.internal.CodecBuffers;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -163,7 +164,7 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
         requireState(State.ACTIVE, "encode");
 
         while (true) {
-            copyPendingOutput(target);
+            CodecBuffers.transfer(pendingOutput, target);
             if (pendingOutput.hasRemaining()) {
                 return CodecOutcome.NEEDS_OUTPUT;
             }
@@ -195,7 +196,7 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
             flushPrepared = false;
         }
 
-        copyPendingOutput(target);
+        CodecBuffers.transfer(pendingOutput, target);
         if (pendingOutput.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -209,7 +210,7 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
             pendingOutput = bits.takeOutput();
             flushPrepared = true;
         }
-        copyPendingOutput(target);
+        CodecBuffers.transfer(pendingOutput, target);
         if (pendingOutput.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -234,7 +235,7 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
             return CodecOutcome.FINISHED;
         }
         if (state == State.ACTIVE) {
-            copyPendingOutput(target);
+            CodecBuffers.transfer(pendingOutput, target);
             if (pendingOutput.hasRemaining()) {
                 return CodecOutcome.NEEDS_OUTPUT;
             }
@@ -246,7 +247,7 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
             state = State.FINISHING;
         }
 
-        copyPendingOutput(target);
+        CodecBuffers.transfer(pendingOutput, target);
         if (pendingOutput.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -666,21 +667,6 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
             System.arraycopy(block, start - historySize, history, 0, retained);
         }
         historySize = retained;
-    }
-
-    /// Copies as many staged compressed bytes as fit in the caller-owned target.
-    private void copyPendingOutput(ByteBuffer target) {
-        int count = Math.min(pendingOutput.remaining(), target.remaining());
-        if (count == 0) {
-            return;
-        }
-        int originalLimit = pendingOutput.limit();
-        pendingOutput.limit(pendingOutput.position() + count);
-        try {
-            target.put(pendingOutput);
-        } finally {
-            pendingOutput.limit(originalLimit);
-        }
     }
 
     /// Returns the final nonzero array position, or zero when every value is zero.

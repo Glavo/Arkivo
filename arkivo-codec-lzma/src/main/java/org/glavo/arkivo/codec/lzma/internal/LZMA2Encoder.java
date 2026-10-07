@@ -3,11 +3,11 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
-import org.glavo.arkivo.codec.lzma.LZMAProperties;
-
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.internal.BufferedChannelOutput;
+import org.glavo.arkivo.codec.internal.CodecBuffers;
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -59,7 +59,7 @@ public final class LZMA2Encoder implements CompressionEncoder {
         requireState(State.ACTIVE, "encode");
 
         while (true) {
-            copyPending(target);
+            CodecBuffers.transfer(pendingOutput, target);
             if (pendingOutput.hasRemaining()) {
                 return CodecOutcome.NEEDS_OUTPUT;
             }
@@ -94,7 +94,7 @@ public final class LZMA2Encoder implements CompressionEncoder {
             state = State.FLUSHING;
         }
 
-        copyPending(target);
+        CodecBuffers.transfer(pendingOutput, target);
         if (pendingOutput.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -102,7 +102,7 @@ public final class LZMA2Encoder implements CompressionEncoder {
 
         if (blockSize > 0) {
             pendingOutput = encodeBlock();
-            copyPending(target);
+            CodecBuffers.transfer(pendingOutput, target);
             if (pendingOutput.hasRemaining()) {
                 return CodecOutcome.NEEDS_OUTPUT;
             }
@@ -128,7 +128,7 @@ public final class LZMA2Encoder implements CompressionEncoder {
             state = State.FINISHING;
         }
 
-        copyPending(target);
+        CodecBuffers.transfer(pendingOutput, target);
         if (pendingOutput.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -137,7 +137,7 @@ public final class LZMA2Encoder implements CompressionEncoder {
         if (state == State.FINISHING) {
             if (blockSize > 0) {
                 pendingOutput = encodeBlock();
-                copyPending(target);
+                CodecBuffers.transfer(pendingOutput, target);
                 if (pendingOutput.hasRemaining()) {
                     return CodecOutcome.NEEDS_OUTPUT;
                 }
@@ -147,7 +147,7 @@ public final class LZMA2Encoder implements CompressionEncoder {
             state = State.TRAILER;
         }
 
-        copyPending(target);
+        CodecBuffers.transfer(pendingOutput, target);
         if (pendingOutput.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -216,21 +216,6 @@ public final class LZMA2Encoder implements CompressionEncoder {
     private static void putUnsignedShort(ByteBuffer output, int value) {
         output.put((byte) (value >>> 8));
         output.put((byte) value);
-    }
-
-    /// Copies as many staged bytes as fit in the caller-owned target.
-    private void copyPending(ByteBuffer target) {
-        int length = Math.min(pendingOutput.remaining(), target.remaining());
-        if (length == 0) {
-            return;
-        }
-        int originalLimit = pendingOutput.limit();
-        pendingOutput.limit(pendingOutput.position() + length);
-        try {
-            target.put(pendingOutput);
-        } finally {
-            pendingOutput.limit(originalLimit);
-        }
     }
 
     /// Requires the exact active state for an operation that accepts source bytes.

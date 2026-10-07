@@ -50,7 +50,9 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
 
     /// Opens an owning decoder lease with a fresh output limiter and independent counters.
     synchronized Lease open(InputStream source, long decodedSize, ArchiveReadLimits limits) throws IOException {
-        if (closed) throw new IllegalStateException("ZIP decoder workspace owner is closed");
+        if (closed) {
+            throw new IllegalStateException("ZIP decoder workspace owner is closed");
+        }
         CompressionCodec<?> configured = ZipCompressionFormats.withDecodingLimits(
                 DeflateCodec.DEFAULT, decodedSize, limits);
         try {
@@ -61,12 +63,16 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
             try {
                 source.close();
             } catch (IOException | RuntimeException | Error cleanup) {
-                if (cleanup != failure) failure.addSuppressed(cleanup);
+                if (cleanup != failure) {
+                    failure.addSuppressed(cleanup);
+                }
             }
             throw failure;
         }
         @Nullable Workspace workspace = idle.pollFirst();
-        if (workspace == null) workspace = new Workspace();
+        if (workspace == null) {
+            workspace = new Workspace();
+        }
         try {
             workspace.engine.reset();
             Lease lease = new Lease(workspace, source, configured.maximumOutputSize());
@@ -80,7 +86,9 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
 
     /// Releases a successfully closed lease, caching it only after explicit ZIP integrity confirmation.
     private synchronized void release(Lease lease) {
-        if (lease.released) return;
+        if (lease.released) {
+            return;
+        }
         lease.released = true;
         active.remove(lease);
         if (!closed && lease.finished && lease.verified && !lease.failed && idle.size() < maximumIdle) {
@@ -97,7 +105,9 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         synchronized (this) {
             closed = true;
             leases = new ArrayList<>(active);
-            while (!idle.isEmpty()) idle.removeFirst().close();
+            while (!idle.isEmpty()) {
+                idle.removeFirst().close();
+            }
         }
         @Nullable Throwable failure = null;
         for (Lease lease : leases) {
@@ -105,13 +115,22 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
             try {
                 lease.close();
             } catch (IOException | RuntimeException | Error exception) {
-                if (failure == null) failure = exception;
-                else if (exception != failure) failure.addSuppressed(exception);
+                if (failure == null) {
+                    failure = exception;
+                } else if (exception != failure) {
+                    failure.addSuppressed(exception);
+                }
             }
         }
-        if (failure instanceof IOException exception) throw exception;
-        if (failure instanceof RuntimeException exception) throw exception;
-        if (failure instanceof Error exception) throw exception;
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error exception) {
+            throw exception;
+        }
     }
 
     /// Owns reusable algorithm state and compressed-input storage, but no entry metadata or endpoint.
@@ -208,29 +227,43 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
 
         /// Returns compressed bytes consumed by this entry's engine.
         @Override
-        public long inputBytes() { return channel.inputBytes(); }
+        public long inputBytes() {
+            return channel.inputBytes();
+        }
 
         /// Returns compressed bytes fetched for this entry.
         @Override
-        public long sourceBytes() { return channel.sourceBytes(); }
+        public long sourceBytes() {
+            return channel.sourceBytes();
+        }
 
         /// Returns the adapter's view, valid until the next operation or closure.
         @Override
-        public @UnmodifiableView ByteBuffer unconsumedInput() { return channel.unconsumedInput(); }
+        public @UnmodifiableView ByteBuffer unconsumedInput() {
+            return channel.unconsumedInput();
+        }
 
         /// Returns decoded bytes delivered by this entry.
         @Override
-        public long outputBytes() { return channel.outputBytes(); }
+        public long outputBytes() {
+            return channel.outputBytes();
+        }
 
         /// Returns whether this entry adapter is open.
         @Override
-        public boolean isOpen() { return channel.isOpen(); }
+        public boolean isOpen() {
+            return channel.isOpen();
+        }
 
         /// Releases the engine only after owning-source cleanup succeeds; source closure remains retryable.
         @Override
         public void close() throws IOException {
-            if (released) return;
-            if (reading || Thread.currentThread().isInterrupted()) failed = true;
+            if (released) {
+                return;
+            }
+            if (reading || Thread.currentThread().isInterrupted()) {
+                failed = true;
+            }
             try {
                 channel.close();
             } catch (IOException | RuntimeException | Error exception) {
@@ -249,27 +282,35 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         private final ZipDeflateDecoderPool.Lease owner;
 
         /// Creates the entry's logical engine view.
-        private EngineLease(ZipDeflateDecoderPool.Lease owner) { this.owner = owner; }
+        private EngineLease(ZipDeflateDecoderPool.Lease owner) {
+            this.owner = owner;
+        }
 
-        /// Decodes bytes and records a verified compression boundary.
+        /// Decodes bytes and records a completed compression boundary, before ZIP integrity checks.
         @Override
         public CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
             CodecOutcome result = owner.workspace.engine.decode(source, target);
-            if (result == CodecOutcome.FINISHED) owner.finished = true;
+            if (result == CodecOutcome.FINISHED) {
+                owner.finished = true;
+            }
             return result;
         }
 
-        /// Decodes final input and records a verified compression boundary.
+        /// Decodes final input and records a completed compression boundary, before ZIP integrity checks.
         @Override
         public CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException {
             CodecOutcome result = owner.workspace.engine.finish(source, target);
-            if (result == CodecOutcome.FINISHED) owner.finished = true;
+            if (result == CodecOutcome.FINISHED) {
+                owner.finished = true;
+            }
             return result;
         }
 
         /// Rejects resetting the engine while its owning entry remains active.
         @Override
-        public void reset() { throw new UnsupportedOperationException("Reset requires a new ZIP entry"); }
+        public void reset() {
+            throw new UnsupportedOperationException("Reset requires a new ZIP entry");
+        }
 
         /// Leaves disposal to the owner after ZIP validation and source cleanup.
         @Override
@@ -297,7 +338,9 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         public int read(ByteBuffer target) throws IOException {
             try {
                 int count = source.read(target);
-                if (count == 0 && target.hasRemaining()) owner.failed = true;
+                if (count == 0 && target.hasRemaining()) {
+                    owner.failed = true;
+                }
                 return count;
             } catch (IOException | RuntimeException | Error exception) {
                 owner.failed = true;
@@ -307,7 +350,9 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
 
         /// Returns the entry source state.
         @Override
-        public boolean isOpen() { return source.isOpen(); }
+        public boolean isOpen() {
+            return source.isOpen();
+        }
 
         /// Closes the source while preserving failed closure for another attempt.
         @Override

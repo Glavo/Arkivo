@@ -149,6 +149,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// The comment length field offset inside the end of central directory record.
     private static final int ZIP_END_OF_CENTRAL_DIRECTORY_COMMENT_LENGTH_OFFSET = 20;
 
+    /// Maximum idle physical channels retained across all cached path-backed volume sets.
+    private static final int MAXIMUM_IDLE_PHYSICAL_CHANNELS = 4;
+
     /// The provider that created this ZIP file system.
     private final ZipArkivoFileSystemProvider provider;
 
@@ -2198,7 +2201,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     private ArchiveChannel openArchiveChannel() throws IOException {
         if (archivePath != null) {
             synchronized (pathChannelLock) {
-                if (pathChannelsClosed) throw new ClosedChannelException();
+                if (pathChannelsClosed) {
+                    throw new ClosedChannelException();
+                }
                 if (pathVolumes == null) {
                     @Nullable @Unmodifiable List<Path> discovered = ZipSplitVolumePaths.discover(archivePath);
                     pathVolumes = discovered != null ? discovered : List.of(archivePath);
@@ -2227,17 +2232,30 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             pathChannelsClosed = true;
             @Nullable Throwable failure = null;
             for (PathChannelLease lease : new ArrayList<>(activePathChannels)) {
-                try { lease.close(); }
-                catch (IOException | RuntimeException | Error exception) { failure = mergeFailure(failure, exception); }
+                try {
+                    lease.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = mergeFailure(failure, exception);
+                }
             }
             Iterator<ArchiveChannel> iterator = idlePathChannels.iterator();
             while (iterator.hasNext()) {
-                try { iterator.next().close(); iterator.remove(); }
-                catch (IOException | RuntimeException | Error exception) { failure = mergeFailure(failure, exception); }
+                try {
+                    iterator.next().close();
+                    iterator.remove();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = mergeFailure(failure, exception);
+                }
             }
-            if (failure instanceof IOException exception) throw exception;
-            if (failure instanceof RuntimeException exception) throw exception;
-            if (failure instanceof Error exception) throw exception;
+            if (failure instanceof IOException exception) {
+                throw exception;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (failure instanceof Error exception) {
+                throw exception;
+            }
         }
     }
 
@@ -2251,85 +2269,133 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// Whether a physical operation failed or was closed concurrently.
         private volatile boolean failed;
         /// Operations that have entered the physical channel.
-        private int operations;
+        private int activeOperations;
         /// Whether the resource has been returned or physically closed.
         private boolean released;
 
         /// Takes exclusive ownership of a channel already removed from the idle queue.
-        private PathChannelLease(ArchiveChannel channel) { this.channel = channel; }
+        private PathChannelLease(ArchiveChannel channel) {
+            this.channel = channel;
+        }
 
         /// Starts one physical operation without holding the lease monitor while blocking.
-        private synchronized void begin() throws ClosedChannelException {
-            if (!leaseOpen) throw new ClosedChannelException();
-            operations++;
+        private synchronized void beginOperation() throws ClosedChannelException {
+            if (!leaseOpen) {
+                throw new ClosedChannelException();
+            }
+            activeOperations++;
         }
 
         /// Completes one physical operation.
-        private synchronized void end() { operations--; }
+        private synchronized void endOperation() {
+            activeOperations--;
+        }
 
         /// Reads bytes at this lease's physical position.
         @Override
         public int read(ByteBuffer target) throws IOException {
-            begin();
-            try { return channel.read(target); }
-            catch (IOException | RuntimeException | Error exception) { failed = true; throw exception; }
-            finally { end(); }
+            beginOperation();
+            try {
+                return channel.read(target);
+            } catch (IOException | RuntimeException | Error exception) {
+                failed = true;
+                throw exception;
+            } finally {
+                endOperation();
+            }
         }
 
         /// Returns the current independent position.
         @Override
         public long position() throws IOException {
-            begin();
-            try { return channel.position(); }
-            catch (IOException | RuntimeException | Error exception) { failed = true; throw exception; }
-            finally { end(); }
+            beginOperation();
+            try {
+                return channel.position();
+            } catch (IOException | RuntimeException | Error exception) {
+                failed = true;
+                throw exception;
+            } finally {
+                endOperation();
+            }
         }
 
         /// Changes this lease's independent position.
         @Override
         public SeekableByteChannel position(long position) throws IOException {
-            begin();
-            try { channel.position(position); return this; }
-            catch (IOException | RuntimeException | Error exception) { failed = true; throw exception; }
-            finally { end(); }
+            beginOperation();
+            try {
+                channel.position(position);
+                return this;
+            } catch (IOException | RuntimeException | Error exception) {
+                failed = true;
+                throw exception;
+            } finally {
+                endOperation();
+            }
         }
 
         /// Returns the fixed storage extent.
         @Override
         public long size() throws IOException {
-            begin();
-            try { return channel.size(); }
-            catch (IOException | RuntimeException | Error exception) { failed = true; throw exception; }
-            finally { end(); }
+            beginOperation();
+            try {
+                return channel.size();
+            } catch (IOException | RuntimeException | Error exception) {
+                failed = true;
+                throw exception;
+            } finally {
+                endOperation();
+            }
         }
 
         /// Returns a physical volume's logical starting offset.
         @Override
         public long volumeStartOffset(long volumeIndex) throws IOException {
-            begin();
-            try { return channel.volumeStartOffset(volumeIndex); }
-            catch (IOException | RuntimeException | Error exception) { failed = true; throw exception; }
-            finally { end(); }
+            beginOperation();
+            try {
+                return channel.volumeStartOffset(volumeIndex);
+            } catch (IOException | RuntimeException | Error exception) {
+                failed = true;
+                throw exception;
+            } finally {
+                endOperation();
+            }
         }
 
         /// Rejects writes to a read-only archive source.
-        @Override public int write(ByteBuffer source) throws IOException { throw new NonWritableChannelException(); }
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            throw new NonWritableChannelException();
+        }
+
         /// Rejects truncation of a read-only archive source.
-        @Override public SeekableByteChannel truncate(long size) throws IOException { throw new NonWritableChannelException(); }
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            throw new NonWritableChannelException();
+        }
+
         /// Returns whether this lease and its physical channel remain open.
-        @Override public boolean isOpen() { return leaseOpen && channel.isOpen(); }
+        @Override
+        public boolean isOpen() {
+            return leaseOpen && channel.isOpen();
+        }
 
         /// Returns a healthy idle channel, or closes an unusable or excess channel.
-        @Override public void close() throws IOException {
+        @Override
+        public void close() throws IOException {
             synchronized (this) {
                 leaseOpen = false;
-                if (operations != 0) failed = true;
+                if (activeOperations != 0) {
+                    failed = true;
+                }
             }
             synchronized (pathChannelLock) {
-                if (released) return;
+                if (released) {
+                    return;
+                }
                 int physicalCount = Objects.requireNonNull(pathVolumes).size();
                 if (!pathChannelsClosed && !failed && channel.isOpen()
-                        && (idlePathChannels.size() + 1) * (long) physicalCount <= 4L) {
+                        && (idlePathChannels.size() + 1) * (long) physicalCount <= MAXIMUM_IDLE_PHYSICAL_CHANNELS) {
                     idlePathChannels.addFirst(channel);
                 } else {
                     channel.close();

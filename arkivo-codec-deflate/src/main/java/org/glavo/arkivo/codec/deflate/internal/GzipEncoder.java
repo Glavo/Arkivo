@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.deflate.DeflateStrategy;
+import org.glavo.arkivo.codec.internal.CodecBuffers;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -82,7 +83,7 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
         }
         requireState(State.ACTIVE, "encode");
 
-        copyPending(pendingHeader, target);
+        CodecBuffers.transfer(pendingHeader, target);
         if (pendingHeader.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -114,7 +115,7 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
             state = State.FLUSHING;
         }
 
-        copyPending(pendingHeader, target);
+        CodecBuffers.transfer(pendingHeader, target);
         if (pendingHeader.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -182,7 +183,7 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
             State trailerState,
             CodecOutcome completedOutcome
     ) throws IOException {
-        copyPending(pendingHeader, target);
+        CodecBuffers.transfer(pendingHeader, target);
         if (pendingHeader.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -199,7 +200,7 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
             state = trailerState;
         }
 
-        copyPending(pendingTrailer, target);
+        CodecBuffers.transfer(pendingTrailer, target);
         if (pendingTrailer.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -268,21 +269,6 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
         consumed.limit(end);
         checksum.update(consumed);
         memberSize = (memberSize + end - start) & 0xffff_ffffL;
-    }
-
-    /// Copies as many staged bytes as fit in the caller-owned target.
-    private static void copyPending(ByteBuffer pending, ByteBuffer target) {
-        int length = Math.min(pending.remaining(), target.remaining());
-        if (length == 0) {
-            return;
-        }
-        int originalLimit = pending.limit();
-        pending.limit(pending.position() + length);
-        try {
-            target.put(pending);
-        } finally {
-            pending.limit(originalLimit);
-        }
     }
 
     /// Requires the exact active state for an operation that accepts source bytes.

@@ -32,18 +32,29 @@ final class ZipDeflateEncoderPool implements AutoCloseable {
 
     /// Creates a channel that borrows the entry target and exclusively leases the reusable engine.
     CompressingWritableByteChannel open(OutputStream output) throws IOException {
-        if (closed || active != null) throw new IllegalStateException("Deflate workspace is unavailable");
+        if (closed || active != null) {
+            throw new IllegalStateException("Deflate workspace is unavailable");
+        }
         @Nullable ByteBuffer buffer = outputBuffer;
-        if (buffer == null) outputBuffer = buffer = ByteBuffer.allocate(8192);
+        if (buffer == null) {
+            buffer = ByteBuffer.allocate(8192);
+            outputBuffer = buffer;
+        }
         @Nullable CompressionEncoder.Flushable engine = idle;
         idle = null;
         if (engine == null) {
             engine = DeflateCodec.DEFAULT.newEncoder();
         } else {
-            try { engine.reset(); }
-            catch (RuntimeException | Error exception) {
-                try { engine.close(); }
-                catch (RuntimeException | Error cleanup) { if (cleanup != exception) exception.addSuppressed(cleanup); }
+            try {
+                engine.reset();
+            } catch (RuntimeException | Error exception) {
+                try {
+                    engine.close();
+                } catch (RuntimeException | Error cleanup) {
+                    if (cleanup != exception) {
+                        exception.addSuppressed(cleanup);
+                    }
+                }
                 throw exception;
             }
         }
@@ -60,10 +71,14 @@ final class ZipDeflateEncoderPool implements AutoCloseable {
         closed = true;
         outputBuffer = null;
         @Nullable Lease lease = active;
-        if (lease != null) lease.close();
+        if (lease != null) {
+            lease.close();
+        }
         @Nullable CompressionEncoder.Flushable engine = idle;
         idle = null;
-        if (engine != null) engine.close();
+        if (engine != null) {
+            engine.close();
+        }
     }
 
     /// Separates an entry lifecycle from the physical encoder lifecycle.
@@ -79,23 +94,41 @@ final class ZipDeflateEncoderPool implements AutoCloseable {
         private boolean released;
 
         /// Takes ownership of a fresh or successfully reset engine.
-        private Lease(CompressionEncoder.Flushable engine) { this.engine = engine; }
+        private Lease(CompressionEncoder.Flushable engine) {
+            this.engine = engine;
+        }
+
         /// Rejects use of a lease already returned to its owner.
-        private void ensureOpen() { if (released) throw new IllegalStateException("ZIP encoder lease is closed"); }
+        private void ensureOpen() {
+            if (released) {
+                throw new IllegalStateException("ZIP encoder lease is closed");
+            }
+        }
+
         /// Encodes entry input and records engine failures.
         @Override
         public CodecOutcome encode(ByteBuffer source, ByteBuffer target) throws IOException {
             ensureOpen();
-            try { return engine.encode(source, target); }
-            catch (IOException | RuntimeException | Error exception) { failed = true; throw exception; }
+            try {
+                return engine.encode(source, target);
+            } catch (IOException | RuntimeException | Error exception) {
+                failed = true;
+                throw exception;
+            }
         }
+
         /// Flushes the entry without releasing its engine.
         @Override
         public CodecOutcome flush(ByteBuffer target) throws IOException {
             ensureOpen();
-            try { return engine.flush(target); }
-            catch (IOException | RuntimeException | Error exception) { failed = true; throw exception; }
+            try {
+                return engine.flush(target);
+            } catch (IOException | RuntimeException | Error exception) {
+                failed = true;
+                throw exception;
+            }
         }
+
         /// Marks the engine reusable only after its final bytes have been produced.
         @Override
         public CodecOutcome finish(ByteBuffer target) throws IOException {
@@ -104,19 +137,31 @@ final class ZipDeflateEncoderPool implements AutoCloseable {
                 CodecOutcome outcome = engine.finish(target);
                 finished = outcome == CodecOutcome.FINISHED;
                 return outcome;
-            } catch (IOException | RuntimeException | Error exception) { failed = true; throw exception; }
+            } catch (IOException | RuntimeException | Error exception) {
+                failed = true;
+                throw exception;
+            }
         }
+
         /// Rejects resetting an engine while its entry channel remains active.
         @Override
-        public void reset() { throw new UnsupportedOperationException("Reset requires a new ZIP entry"); }
+        public void reset() {
+            throw new UnsupportedOperationException("Reset requires a new ZIP entry");
+        }
+
         /// Returns a successfully completed engine or destroys an incomplete or failed engine.
         @Override
         public void close() {
-            if (released) return;
+            if (released) {
+                return;
+            }
             released = true;
             active = null;
-            if (finished && !failed && !closed) idle = engine;
-            else engine.close();
+            if (finished && !failed && !closed) {
+                idle = engine;
+            } else {
+                engine.close();
+            }
         }
     }
 
@@ -138,15 +183,26 @@ final class ZipDeflateEncoderPool implements AutoCloseable {
             boolean nonempty = source.hasRemaining();
             try {
                 int written = target.write(source);
-                if (nonempty && written == 0) lease.failed = true;
+                if (nonempty && written == 0) {
+                    lease.failed = true;
+                }
                 return written;
-            } catch (IOException | RuntimeException | Error exception) { lease.failed = true; throw exception; }
+            } catch (IOException | RuntimeException | Error exception) {
+                lease.failed = true;
+                throw exception;
+            }
         }
+
         /// Reports the entry transport state.
         @Override
-        public boolean isOpen() { return target.isOpen(); }
+        public boolean isOpen() {
+            return target.isOpen();
+        }
+
         /// Closes the delegated transport when explicitly requested.
         @Override
-        public void close() throws IOException { target.close(); }
+        public void close() throws IOException {
+            target.close();
+        }
     }
 }

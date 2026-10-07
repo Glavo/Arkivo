@@ -3,17 +3,18 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
-import org.glavo.arkivo.codec.lzma.LZMAProperties;
-
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.internal.CodecBuffers;
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Objects;
 
 /// Incrementally encodes an LZMA-alone stream over the shared raw buffer engine.
@@ -54,7 +55,7 @@ public final class LZMAEncoder implements CompressionEncoder {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         requireOpen();
-        copyHeader(target);
+        CodecBuffers.transfer(header, target);
         if (header.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -71,7 +72,7 @@ public final class LZMAEncoder implements CompressionEncoder {
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
-        copyHeader(target);
+        CodecBuffers.transfer(header, target);
         if (header.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -83,7 +84,7 @@ public final class LZMAEncoder implements CompressionEncoder {
     public CodecOutcome finish(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
-        copyHeader(target);
+        CodecBuffers.transfer(header, target);
         if (header.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
@@ -106,35 +107,13 @@ public final class LZMAEncoder implements CompressionEncoder {
         header.position(header.limit());
     }
 
-    /// Copies as many pending header bytes as fit in the caller target.
-    private void copyHeader(ByteBuffer target) {
-        int length = Math.min(header.remaining(), target.remaining());
-        if (length == 0) {
-            return;
-        }
-        int originalLimit = header.limit();
-        header.limit(header.position() + length);
-        try {
-            target.put(header);
-        } finally {
-            header.limit(originalLimit);
-        }
-    }
-
     /// Creates the property, dictionary-size, and uncompressed-size header.
     private static byte @Unmodifiable [] createHeader(LZMAProperties properties, long uncompressedSize) {
-        ByteBuffer result = ByteBuffer.allocate(HEADER_SIZE);
+        ByteBuffer result = ByteBuffer.allocate(HEADER_SIZE).order(ByteOrder.LITTLE_ENDIAN);
         result.put((byte) properties.propertyByte());
-        putLittleEndian(result, Integer.toUnsignedLong(properties.dictionarySize()), Integer.BYTES);
-        putLittleEndian(result, uncompressedSize, Long.BYTES);
+        result.putInt(properties.dictionarySize());
+        result.putLong(uncompressedSize);
         return result.array();
-    }
-
-    /// Writes one fixed-width little-endian integer into a header.
-    private static void putLittleEndian(ByteBuffer target, long value, int length) {
-        for (int index = 0; index < length; index++) {
-            target.put((byte) (value >>> (index * 8)));
-        }
     }
 
     /// Requires this wrapper to remain open.
