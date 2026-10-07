@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.all.commonscompress;
 
+import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
@@ -95,7 +96,7 @@ final class SevenZipCommonsCompressCorpusTest {
             "times.7z"
     );
 
-    /// Opens every supported regular-size 7z fixture and consumes all declared entry bodies.
+    /// Compares complete regular-size 7z contents with an independent decoder.
     @ParameterizedTest(name = "{0}")
     @MethodSource("readableArchives")
     void readsArchiveThroughSeekableFileSystem(String resource) throws IOException {
@@ -108,11 +109,18 @@ final class SevenZipCommonsCompressCorpusTest {
             if (!resource.equals("COMPRESS-492.7z")) {
                 assertFalse(entries.isEmpty(), "7z fixture must expose at least one entry");
             }
+            @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> reference = ArchiveCorpusAssertions.readSevenZipReference(
+                    CommonsCompressTestResources.resource(resource), null);
+            if (reference.isEmpty()) {
+                assertEquals(reference, entries);
+            } else {
+                ArchiveCorpusAssertions.assertEquivalentEntries(entries, reference);
+            }
             assertStoredCrcValues(fileSystem);
         }
     }
 
-    /// Verifies the non-default encoded-header dictionary and one representative body from COMPRESS-256.
+    /// Verifies the non-default encoded-header dictionary and every body from COMPRESS-256.
     @Test
     void readsCompressedHeaderWithNonDefaultDictionarySize() throws IOException {
         String path = "/commons-compress-1.7-src/src/test/resources/test.txt";
@@ -124,6 +132,9 @@ final class SevenZipCommonsCompressCorpusTest {
         ); var paths = Files.walk(fileSystem.getPath("/"))) {
             assertEquals(446L, paths.filter(candidate -> !candidate.equals(fileSystem.getPath("/"))).count());
             assertEquals(expected, Files.readString(fileSystem.getPath(path), StandardCharsets.UTF_8));
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem),
+                    ArchiveCorpusAssertions.readSevenZipReference(
+                            CommonsCompressTestResources.resource("COMPRESS-256.7z"), null));
         }
     }
 
@@ -150,11 +161,13 @@ final class SevenZipCommonsCompressCorpusTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("compress320Variants")
     void codecAndSolidVariantsPreserveContent(String fileName) throws IOException {
-        @Unmodifiable Map<String, ArchiveCorpusAssertions.EntryDigest> reference =
-                entryMap("COMPRESS-320/Copy.7z");
-        @Unmodifiable Map<String, ArchiveCorpusAssertions.EntryDigest> actual =
-                entryMap("COMPRESS-320/" + fileName);
-        assertEquals(reference, actual);
+        @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> reference =
+                ArchiveCorpusAssertions.readSevenZipReference(
+                        CommonsCompressTestResources.resource("COMPRESS-320/Copy.7z"), null);
+        try (var fileSystem = SevenZipArkivoFileSystem.open(
+                CommonsCompressTestResources.resource("COMPRESS-320/" + fileName))) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), reference);
+        }
 
         boolean expectedSolid = fileName.contains("-solid") && !fileName.startsWith("Copy");
         try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
@@ -186,6 +199,9 @@ final class SevenZipCommonsCompressCorpusTest {
                     ArchiveCorpusAssertions.readFileSystem(plain),
                     ArchiveCorpusAssertions.readFileSystem(encrypted)
             );
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(encrypted),
+                    ArchiveCorpusAssertions.readSevenZipReference(
+                            CommonsCompressTestResources.resource("bla.encrypted.7z"), "foo".toCharArray()));
         }
     }
 
@@ -204,6 +220,9 @@ final class SevenZipCommonsCompressCorpusTest {
                     ArchiveCorpusAssertions.readFileSystem(plain),
                     ArchiveCorpusAssertions.readFileSystem(split)
             );
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(split),
+                    ArchiveCorpusAssertions.readSevenZipReference(
+                            CommonsCompressTestResources.resource("bla.7z"), null));
         }
     }
 
@@ -226,12 +245,8 @@ final class SevenZipCommonsCompressCorpusTest {
         Path archive = CommonsCompressTestResources.resource(
                 "org/apache/commons/compress/COMPRESS-679/file.7z"
         );
-        long expectedCrc32;
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive)) {
-            expectedCrc32 = ArchiveCorpusAssertions.crc32(
-                    Files.newInputStream(fileSystem.getPath("/file4.txt"))
-            );
-        }
+        long expectedCrc32 = java.util.Objects.requireNonNull(entryMap(
+                "org/apache/commons/compress/COMPRESS-679/file.7z").get("file4.txt")).crc32();
 
         ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_WORKER_COUNT);
         try {
@@ -286,8 +301,8 @@ final class SevenZipCommonsCompressCorpusTest {
 
             Path first = regularFiles.get(0);
             Path last = regularFiles.get(regularFiles.size() - 1);
-            byte @Unmodifiable [] expectedFirst = Files.readAllBytes(first);
-            byte @Unmodifiable [] expectedLast = Files.readAllBytes(last);
+            byte @Unmodifiable [] expectedFirst = readReferenceBody(resource, root.relativize(first).toString());
+            byte @Unmodifiable [] expectedLast = readReferenceBody(resource, root.relativize(last).toString());
             ByteArrayOutputStream actualFirst = new ByteArrayOutputStream(expectedFirst.length);
             ByteArrayOutputStream actualLast = new ByteArrayOutputStream(expectedLast.length);
             try (InputStream firstInput = Files.newInputStream(first);
@@ -390,18 +405,26 @@ final class SevenZipCommonsCompressCorpusTest {
         assertTrue(exception.getMessage().toLowerCase(Locale.ROOT).contains("name"), exception.getMessage());
     }
 
-    /// Reads one archive and indexes its deterministic entry digests by normalized path.
+    /// Indexes independently decoded entry digests by normalized path.
     private static @Unmodifiable Map<String, ArchiveCorpusAssertions.EntryDigest> entryMap(
             String resource
     ) throws IOException {
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
-                CommonsCompressTestResources.resource(resource)
-        )) {
-            return ArchiveCorpusAssertions.readFileSystem(fileSystem).stream().collect(Collectors.toUnmodifiableMap(
-                    ArchiveCorpusAssertions.EntryDigest::path,
-                    Function.identity()
-            ));
+        return ArchiveCorpusAssertions.readSevenZipReference(CommonsCompressTestResources.resource(resource), null)
+                .stream().collect(Collectors.toUnmodifiableMap(ArchiveCorpusAssertions.EntryDigest::path, Function.identity()));
+    }
+
+    /// Reads the original bytes of one small entry through the independent decoder.
+    private static byte[] readReferenceBody(String resource, String name) throws IOException {
+        try (var reference = SevenZFile.builder().setPath(CommonsCompressTestResources.resource(resource)).get()) {
+            for (var entry : reference.getEntries()) {
+                if (entry.getName().equals(name)) {
+                    try (var input = reference.getInputStream(entry)) {
+                        return input.readAllBytes();
+                    }
+                }
+            }
         }
+        throw new AssertionError("Missing reference entry: " + name);
     }
 
     /// Checks decoded content against every available per-entry CRC-32.

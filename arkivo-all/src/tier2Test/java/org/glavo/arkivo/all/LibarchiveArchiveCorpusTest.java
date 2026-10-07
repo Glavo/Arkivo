@@ -9,12 +9,15 @@ import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
+import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributes;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoStreamingReader;
 import org.glavo.arkivo.archive.cpio.CPIOBinaryByteOrder;
 import org.glavo.arkivo.archive.cpio.CPIODialect;
+import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
+import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
@@ -50,6 +53,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Map;
@@ -169,6 +173,63 @@ public final class LibarchiveArchiveCorpusTest {
             }
         });
         assertEquals("ZIP local header name does not match central directory", failure.getMessage());
+    }
+
+    /// Compares complete 7z bodies, including solid folders and filter chains, with an independent decoder.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {
+            "copy", "copy_2", "lzma1", "lzma1_2", "lzma2", "lzma1_lzma2", "bzip2", "deflate",
+            "bcj_copy", "bcj_bzip2", "bcj_deflate", "bcj_lzma1", "bcj_lzma2",
+            "delta_lzma1", "delta_lzma2", "delta4_lzma1", "delta4_lzma2",
+            "lzma2_arm", "lzma2_powerpc", "lzma2_sparc", "deflate_powerpc",
+            "extract_second", "empty_file", "packinfo_digests", "win_attrib"
+    })
+    void comparesSevenZipCompleteContents(String variant, @TempDir Path directory) throws IOException {
+        Path archive = decodeFixture("test_read_format_7zip_" + variant + ".7z.uu", "reference.7z", directory);
+        @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> expected =
+                ArchiveCorpusAssertions.readSevenZipReference(archive, null);
+        try (var fileSystem = SevenZipArkivoFileSystem.open(archive)) {
+            @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> actual = ArchiveCorpusAssertions.readFileSystem(fileSystem);
+            if (expected.isEmpty()) {
+                assertEquals(expected, actual);
+            } else {
+                ArchiveCorpusAssertions.assertEquivalentEntries(actual, expected);
+            }
+        }
+    }
+
+    /// Accepts libarchive's empty 7z archive without synthesizing any file entries.
+    @Test
+    void readsEmptySevenZipArchive(@TempDir Path directory) throws IOException {
+        Path archive = decodeFixture("test_read_format_7zip_empty_archive.7z.uu", "empty.7z", directory);
+        try (var fileSystem = SevenZipArkivoFileSystem.open(archive)) {
+            assertEquals(List.of(), ArchiveCorpusAssertions.readFileSystem(fileSystem));
+        }
+    }
+
+    /// Compares all BCJ2 layouts with the same upstream executable independently decoded from its BCJ variant.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"copy_1", "copy_2", "copy_lzma", "bzip2", "deflate",
+            "lzma1_1", "lzma1_2", "lzma2_1", "lzma2_2"})
+    void comparesBcj2CompleteContents(String variant, @TempDir Path directory) throws IOException {
+        Path reference = decodeFixture("test_read_format_7zip_bcj_copy.7z.uu", "reference.7z", directory);
+        Path archive = decodeFixture("test_read_format_7zip_bcj2_" + variant + ".7z.uu", "actual.7z", directory);
+        try (var fileSystem = SevenZipArkivoFileSystem.open(archive)) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem),
+                    ArchiveCorpusAssertions.readSevenZipReference(reference, null));
+        }
+    }
+
+    /// Compares every encrypted and unencrypted entry with an independent decoder.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"encryption", "encryption_header", "encryption_partially"})
+    void comparesEncryptedSevenZipCompleteContents(String variant, @TempDir Path directory) throws IOException {
+        Path archive = decodeFixture("test_read_format_7zip_" + variant + ".7z.uu", "encrypted.7z", directory);
+        var options = SevenZipArchiveOptions.READ_DEFAULTS.withPasswordProvider(SEVEN_ZIP_PASSWORD);
+        try (var fileSystem = SevenZipArkivoFileSystem.open(archive, options)) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem),
+                    ArchiveCorpusAssertions.readSevenZipReference(archive, "12345678".toCharArray()));
+        }
     }
 
     /// Verifies GNU and BSD AR long-name handling, metadata, and payload boundaries.
@@ -606,6 +667,7 @@ public final class LibarchiveArchiveCorpusTest {
                 temporaryDirectory
         );
         try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(ordinary)) {
+            assertSevenZipTextContents(fileSystem);
             Path entry = fileSystem.getPath("/file4");
             assertArrayEquals(expected, Files.readAllBytes(entry));
             SevenZipArkivoEntryAttributes attributes = Files.readAttributes(
@@ -621,6 +683,7 @@ public final class LibarchiveArchiveCorpusTest {
                 temporaryDirectory
         );
         try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(solid)) {
+            assertSevenZipTextContents(fileSystem);
             Path first = fileSystem.getPath("/dir1/file1");
             Path fourth = fileSystem.getPath("/file4");
             assertArrayEquals(expected, Files.readAllBytes(fourth));
@@ -812,21 +875,109 @@ public final class LibarchiveArchiveCorpusTest {
         }
     }
 
-    /// Verifies that a RAR5 solid archive preserves the shared dictionary across independently opened entries.
-    @Test
-    public void readsRar5SolidHistoryAcrossEntries(@TempDir Path temporaryDirectory) throws IOException {
+    /// Compares ordinary and solid RAR5 files with the upstream data generator under nonsequential entry reads.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"multiple_files", "multiple_files_solid"})
+    public void readsRar5HistoryAcrossEntries(String variant, @TempDir Path temporaryDirectory) throws IOException {
         Path archive = decodeFixture(
-                "test_read_format_rar5_multiple_files_solid.rar.uu",
+                "test_read_format_rar5_" + variant + ".rar.uu",
                 "solid.rar",
                 temporaryDirectory
         );
 
         try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive)) {
             for (int magic = 4; magic >= 1; magic--) {
-                assertArrayEquals(
-                        generatedRar5Content(magic, 4096),
-                        Files.readAllBytes(fileSystem.getPath("/test" + magic + ".bin"))
-                );
+                byte[] expected = generatedRar5Content(magic, 4096);
+                Path path = fileSystem.getPath("/test" + magic + ".bin");
+                assertArrayEquals(expected, Files.readAllBytes(path));
+                try (var first = Files.newByteChannel(path); var second = Files.newByteChannel(path)) {
+                    for (int position : new int[]{4095, 0, 1023, 2047, 3}) {
+                        long secondPosition = second.position();
+                        ByteBuffer buffer = ByteBuffer.allocateDirect(Math.min(173, expected.length - position));
+                        first.position(position);
+                        while (buffer.hasRemaining()) {
+                            assertTrue(first.read(buffer) > 0);
+                        }
+                        byte[] actual = new byte[buffer.position()];
+                        buffer.flip().get(actual);
+                        assertArrayEquals(Arrays.copyOfRange(expected, position, position + actual.length), actual);
+                        assertEquals(secondPosition, second.position());
+                        long firstPosition = first.position();
+                        int otherPosition = (expected.length - position) / 2;
+                        ByteBuffer other = ByteBuffer.allocate(7);
+                        second.position(otherPosition);
+                        while (other.hasRemaining()) {
+                            assertTrue(second.read(other) > 0);
+                        }
+                        assertArrayEquals(Arrays.copyOfRange(expected, otherPosition, otherPosition + 7), other.array());
+                        assertEquals(firstPosition, first.position());
+                    }
+                    second.position(expected.length);
+                    assertEquals(-1, second.read(ByteBuffer.allocate(1)));
+                }
+                assertArrayEquals(expected, Files.readAllBytes(path));
+            }
+        }
+        for (int target = 1; target <= 4; target++) {
+            try (var reader = RarArkivoStreamingReader.open(archive)) {
+                for (int magic = 1; magic <= 4; magic++) {
+                    assertTrue(reader.next());
+                    assertEquals("test" + magic + ".bin", reader.readAttributes().path());
+                    try (var input = reader.openInputStream()) {
+                        byte[] expected = generatedRar5Content(magic, 4096);
+                        if (magic == target) {
+                            for (int offset = 0; offset < expected.length; offset += 173) {
+                                assertArrayEquals(Arrays.copyOfRange(expected, offset,
+                                        Math.min(offset + 173, expected.length)), input.readNBytes(173));
+                            }
+                            assertEquals(-1, input.read());
+                        } else {
+                            assertArrayEquals(Arrays.copyOf(expected, 7), input.readNBytes(7));
+                        }
+                    }
+                }
+                assertFalse(reader.next());
+            }
+        }
+    }
+
+    /// Verifies every solid and split-solid RAR5 body against CRC values in libarchive's extraction tests.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"solid", "multiarchive_solid"})
+    void readsCompleteRar5SolidCorpus(String variant, @TempDir Path directory) throws IOException {
+        List<Path> volumes = new ArrayList<>();
+        if (variant.equals("solid")) {
+            volumes.add(decodeFixture("test_read_format_rar5_solid.rar.uu", "solid.rar", directory));
+        } else {
+            for (int part = 1; part <= 4; part++) {
+                String name = "test_read_format_rar5_multiarchive_solid.part0" + part + ".rar";
+                volumes.add(decodeFixture(name + ".uu", name, directory));
+            }
+        }
+        @Unmodifiable List<String> names = List.of("cebula.txt", "test.bin", "test1.bin", "test2.bin",
+                "test3.bin", "test4.bin", "test5.bin", "test6.bin", "elf-Linux-ARMv7-ls");
+        long @Unmodifiable [] expected = {0x7e5ec49eL, 0x7cca70cdL, 0x7e13b2c6L, 0xf166afcbL,
+                0x9fb123d9L, 0x10c43ed4L, 0xb9d155f2L, 0x36a448ffL, 0x886f91ebL};
+        int start = variant.equals("solid") ? 1 : 0;
+        int end = variant.equals("solid") ? 8 : 9;
+        try (var reader = RarArkivoStreamingReader.open(ArkivoVolumeSource.of(volumes))) {
+            for (int index = start; index < end; index++) {
+                assertTrue(reader.next());
+                assertEquals(names.get(index), reader.readAttributes().path());
+                try (var input = reader.openInputStream()) {
+                    assertEquals(expected[index], crc32(input.readAllBytes()), names.get(index));
+                }
+            }
+            assertFalse(reader.next());
+        }
+        try (var fileSystem = RarArkivoFileSystem.open(ArkivoVolumeSource.of(volumes))) {
+            @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> entries = ArchiveCorpusAssertions.readFileSystem(fileSystem);
+            assertEquals(Set.copyOf(names.subList(start, end)),
+                    entries.stream().map(ArchiveCorpusAssertions.EntryDigest::path)
+                            .collect(java.util.stream.Collectors.toSet()));
+            for (int index = end - 1; index >= start; index--) {
+                assertEquals(expected[index], crc32(Files.readAllBytes(fileSystem.getPath(names.get(index)))),
+                        names.get(index));
             }
         }
     }
@@ -1113,6 +1264,26 @@ public final class LibarchiveArchiveCorpusTest {
         CRC32 crc = new CRC32();
         crc.update(content);
         return crc.getValue();
+    }
+
+    /// Verifies all five entries using the literal bodies and metadata in libarchive's Zstandard 7z test.
+    private static void assertSevenZipTextContents(ArkivoFileSystem fileSystem) throws IOException {
+        @Unmodifiable Map<String, String> expected = Map.of(
+                "dir1/file1", "aaaaaaaaaaaa\n",
+                "file2", "aaaaaaaaaaaa\nbbbbbbbbbbbb\n",
+                "file3", "aaaaaaaaaaaa\nbbbbbbbbbbbb\ncccccccccccc\n",
+                "file4", "aaaaaaaaaaaa\nbbbbbbbbbbbb\ncccccccccccc\ndddddddddddd\n");
+        @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> entries = ArchiveCorpusAssertions.readFileSystem(fileSystem);
+        assertEquals(5, entries.size());
+        assertEquals(expected.keySet(), entries.stream().filter(entry -> !entry.directory())
+                .map(ArchiveCorpusAssertions.EntryDigest::path).collect(java.util.stream.Collectors.toSet()));
+        assertTrue(Files.isDirectory(fileSystem.getPath("/dir1")));
+        assertEquals(2764801L, Files.getLastModifiedTime(fileSystem.getPath("/dir1")).toInstant().getEpochSecond());
+        for (var entry : expected.entrySet()) {
+            Path path = fileSystem.getPath(entry.getKey());
+            assertEquals(entry.getValue(), Files.readString(path, StandardCharsets.US_ASCII));
+            assertEquals(86401L, Files.getLastModifiedTime(path).toInstant().getEpochSecond(), entry.getKey());
+        }
     }
 
     /// Recreates the deterministic little-endian word sequence used by libarchive's RAR5 fixtures.

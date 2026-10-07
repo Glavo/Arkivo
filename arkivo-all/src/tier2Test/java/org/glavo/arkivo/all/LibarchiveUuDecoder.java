@@ -16,13 +16,13 @@ import java.util.List;
 
 /// Decodes the traditional and base64 uuencode representations used for libarchive test fixtures.
 @NotNullByDefault
-final class LibarchiveUuDecoder {
+public final class LibarchiveUuDecoder {
     /// Prevents instantiation of this utility class.
     private LibarchiveUuDecoder() {
     }
 
     /// Decodes one complete uuencoded file and returns its binary payload.
-    static byte @Unmodifiable [] decode(Path source) throws IOException {
+    public static byte @Unmodifiable [] decode(Path source) throws IOException {
         List<String> lines = Files.readAllLines(source, StandardCharsets.US_ASCII);
         for (int index = 0; index < lines.size(); index++) {
             String line = lines.get(index);

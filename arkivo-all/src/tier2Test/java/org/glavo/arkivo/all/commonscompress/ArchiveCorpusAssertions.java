@@ -4,6 +4,7 @@
 package org.glavo.arkivo.all.commonscompress;
 
 import org.apache.commons.compress.archivers.ar.ArArchiveInputStream;
+import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
 import org.apache.commons.compress.archivers.zip.ZipFile;
@@ -132,6 +133,24 @@ public final class ArchiveCorpusAssertions {
             for (@Nullable var entry = input.getNextEntry(); entry != null; entry = input.getNextEntry()) {
                 BodyDigest body = entry.isDirectory() ? new BodyDigest(0, 0, "") : digestBody(input);
                 entries.add(new EntryDigest(normalizePath(entry.getName()), entry.isDirectory(), false,
+                        body.size(), body.crc32(), body.sha256()));
+            }
+        }
+        return List.copyOf(entries);
+    }
+
+    /// Reads 7z entry types and complete regular-file bodies with Commons Compress and an optional password.
+    public static @Unmodifiable List<EntryDigest> readSevenZipReference(Path archive, char @Nullable [] password)
+            throws IOException {
+        List<EntryDigest> entries = new ArrayList<>();
+        try (var reference = SevenZFile.builder().setPath(archive).setPassword(password)
+                .setMaxMemoryLimitKiB(256 * 1024).get()) {
+            for (var entry : reference.getEntries()) {
+                boolean symbolicLink = entry.getHasWindowsAttributes()
+                        && (entry.getWindowsAttributes() >>> 16 & 0170000) == 0120000;
+                BodyDigest body = entry.isDirectory() || symbolicLink
+                        ? new BodyDigest(entry.getSize(), 0L, "") : digest(reference.getInputStream(entry));
+                entries.add(new EntryDigest(normalizePath(entry.getName()), entry.isDirectory(), symbolicLink,
                         body.size(), body.crc32(), body.sha256()));
             }
         }
