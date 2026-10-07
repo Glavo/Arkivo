@@ -18,6 +18,14 @@ import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Objects;
 
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.CODE_LENGTH_ORDER;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.END_OF_BLOCK_SYMBOL;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.FIRST_LENGTH_SYMBOL;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LAST_LENGTH_SYMBOL;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_BASES;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_EXTRA_BITS;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.MAXIMUM_DATA_CODE_LENGTH;
+
 /// Incrementally decodes the shared Deflate bitstream grammar without retaining caller-owned buffers.
 ///
 /// Format parameters select either RFC 1951 Deflate or Deflate64 window, length, and distance semantics. A configured
@@ -33,44 +41,8 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
     /// The Huffman-compressed block state.
     private static final int BLOCK_HUFFMAN = 2;
 
-    /// The end-of-block literal/length symbol.
-    private static final int END_OF_BLOCK_SYMBOL = 256;
-
-    /// The first length symbol.
-    private static final int FIRST_LENGTH_SYMBOL = 257;
-
-    /// The final defined literal/length symbol.
-    private static final int LAST_LENGTH_SYMBOL = 285;
-
     /// A parsed match waiting for output copying rather than a literal byte.
     private static final int MATCH_READY = -2;
-
-    /// The ordered code-length alphabet used by dynamic block headers.
-    private static final int @Unmodifiable [] CODE_LENGTH_ORDER = {
-            16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
-    };
-
-    /// The RFC 1951 base lengths for symbols 257 through 285.
-    private static final int @Unmodifiable [] LENGTH_BASES = {
-            3, 4, 5, 6, 7, 8, 9, 10,
-            11, 13, 15, 17,
-            19, 23, 27, 31,
-            35, 43, 51, 59,
-            67, 83, 99, 115,
-            131, 163, 195, 227,
-            258
-    };
-
-    /// The RFC 1951 extra-bit counts for symbols 257 through 285.
-    private static final int @Unmodifiable [] LENGTH_EXTRA_BITS = {
-            0, 0, 0, 0, 0, 0, 0, 0,
-            1, 1, 1, 1,
-            2, 2, 2, 2,
-            3, 3, 3, 3,
-            4, 4, 4, 4,
-            5, 5, 5, 5,
-            0
-    };
 
     /// The fixed literal/length tree shared by both formats.
     private static final HuffmanTree FIXED_LITERAL_LENGTH_TREE = fixedLiteralLengthTree();
@@ -420,8 +392,8 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 hold >>>= codeLength;
                 bitCount -= codeLength;
                 if (symbol > format.maximumDistanceSymbol()) throw malformed("distance symbol " + symbol + " is invalid");
-                extra = symbol < 4 ? 0 : (symbol >>> 1) - 1;
-                int distance = (symbol < 4 ? symbol + 1 : ((2 + (symbol & 1)) << extra) + 1)
+                extra = DeflateFormatConstants.distanceExtraBits(symbol);
+                int distance = DeflateFormatConstants.distanceBase(symbol)
                         + ((int) hold & ((1 << extra) - 1));
                 hold >>>= extra;
                 bitCount -= extra;
@@ -657,7 +629,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                     int total = literalCount + distanceCount;
                     while (lengthPosition < total && parseState == ParseState.DYNAMIC_SYMBOL) {
                         int symbol = dynamicCodeLengths.decode(bits, source, endOfInput, format);
-                        if (symbol <= 15) {
+                        if (symbol <= MAXIMUM_DATA_CODE_LENGTH) {
                             combinedLengths[lengthPosition++] = symbol;
                             previousLength = symbol;
                         } else if (symbol <= 18) {
@@ -706,8 +678,8 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                     if (symbol > format.maximumDistanceSymbol()) {
                         throw malformed("distance symbol " + symbol + " is invalid");
                     }
-                    distanceExtraBits = symbol < 4 ? 0 : (symbol >>> 1) - 1;
-                    distanceBase = symbol < 4 ? symbol + 1 : ((2 + (symbol & 1)) << distanceExtraBits) + 1;
+                    distanceExtraBits = DeflateFormatConstants.distanceExtraBits(symbol);
+                    distanceBase = DeflateFormatConstants.distanceBase(symbol);
                     parseState = ParseState.DISTANCE_EXTRA;
                 }
                 case DISTANCE_EXTRA -> {
@@ -961,10 +933,10 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
         private int[] secondaryLookup = new int[0];
 
         /// Reused counts of codes at each depth.
-        private final int[] counts = new int[16];
+        private final int[] counts = new int[MAXIMUM_DATA_CODE_LENGTH + 1];
 
         /// Reused next canonical codes at each depth.
-        private final int[] nextCodes = new int[16];
+        private final int[] nextCodes = new int[MAXIMUM_DATA_CODE_LENGTH + 1];
 
         /// Error description fixed for this alphabet.
         private final String description;
@@ -996,9 +968,11 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
             Arrays.fill(counts, 0);
             int nonZeroCount = 0;
             maximumLength = 0;
-            minimumLength = 15;
+            minimumLength = MAXIMUM_DATA_CODE_LENGTH;
             for (int length : lengths) {
-                if (length < 0 || length > 15) throw new IOException(description + " code length is out of range");
+                if (length < 0 || length > MAXIMUM_DATA_CODE_LENGTH) {
+                    throw new IOException(description + " code length is out of range");
+                }
                 if (length != 0) {
                     counts[length]++;
                     nonZeroCount++;
@@ -1013,7 +987,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 return;
             }
             int remainingCodes = 1;
-            for (int length = 1; length <= 15; length++) {
+            for (int length = 1; length <= MAXIMUM_DATA_CODE_LENGTH; length++) {
                 remainingCodes = (remainingCodes << 1) - counts[length];
                 if (remainingCodes < 0) throw new IOException(description + " tree is oversubscribed");
             }
@@ -1021,7 +995,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 throw new IOException(description + " tree is incomplete");
             }
             int code = 0;
-            for (int length = 1; length <= 15; length++) {
+            for (int length = 1; length <= MAXIMUM_DATA_CODE_LENGTH; length++) {
                 code = (code + counts[length - 1]) << 1;
                 nextCodes[length] = code;
             }

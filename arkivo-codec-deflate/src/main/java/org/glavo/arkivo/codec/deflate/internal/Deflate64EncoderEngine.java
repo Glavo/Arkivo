@@ -16,6 +16,20 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Objects;
 
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.CODE_LENGTH_ORDER;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.END_OF_BLOCK_SYMBOL;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.FIRST_LENGTH_SYMBOL;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LAST_LENGTH_SYMBOL;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_BASES;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_EXTRA_BITS;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_SYMBOLS;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.MAXIMUM_CODE_LENGTH;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.MAXIMUM_DATA_CODE_LENGTH;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.MINIMUM_MATCH_LENGTH;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.distanceExtraBits;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.distanceExtraValue;
+import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.distanceSymbol;
+
 /// Incrementally encodes Deflate64 without retaining caller-owned buffers.
 ///
 /// The encoder chooses stored, fixed-Huffman, or dynamic-Huffman blocks from their exact encoded bit costs and retains
@@ -37,59 +51,11 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
     /// The polynomial multiplier retained by scalar and batched three-byte hashes.
     private static final int HASH_MULTIPLIER = 251;
 
-    /// The minimum Deflate64 match length.
-    private static final int MINIMUM_MATCH_LENGTH = 3;
-
-    /// The end-of-block literal/length symbol.
-    private static final int END_OF_BLOCK_SYMBOL = 256;
-
-    /// The first length symbol.
-    private static final int FIRST_LENGTH_SYMBOL = 257;
-
-    /// The final length symbol.
-    private static final int LAST_LENGTH_SYMBOL = 285;
-
-    /// The maximum literal/length Huffman code length.
-    private static final int MAXIMUM_DATA_CODE_LENGTH = 15;
-
-    /// The maximum code-length Huffman code length.
-    private static final int MAXIMUM_CODE_LENGTH = 7;
-
     /// Minimum dynamic-block header cost before encoded code-length symbols.
     private static final int MINIMUM_DYNAMIC_HEADER_BIT_COST = 29;
 
     /// Shared empty output marker.
     private static final @Unmodifiable ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0);
-
-    /// The base lengths for symbols 257 through 285.
-    private static final int @Unmodifiable [] LENGTH_BASES = {
-            3, 4, 5, 6, 7, 8, 9, 10,
-            11, 13, 15, 17,
-            19, 23, 27, 31,
-            35, 43, 51, 59,
-            67, 83, 99, 115,
-            131, 163, 195, 227,
-            258
-    };
-
-    /// The extra-bit counts for symbols 257 through 285 in RFC 1951 Deflate.
-    private static final int @Unmodifiable [] LENGTH_EXTRA_BITS = {
-            0, 0, 0, 0, 0, 0, 0, 0,
-            1, 1, 1, 1,
-            2, 2, 2, 2,
-            3, 3, 3, 3,
-            4, 4, 4, 4,
-            5, 5, 5, 5,
-            0
-    };
-
-    /// Literal/length symbols for every ordinary Deflate match length.
-    private static final int @Unmodifiable [] LENGTH_SYMBOLS = lengthSymbols();
-
-    /// The ordered code-length alphabet used by dynamic block headers.
-    private static final int @Unmodifiable [] CODE_LENGTH_ORDER = {
-            16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
-    };
 
     /// Configured compression level restored by reset.
     private final int compressionLevel;
@@ -663,24 +629,6 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
         throw new AssertionError(length);
     }
 
-    /// Creates the bounded lookup shared by ordinary and extended Deflate match lengths.
-    private static int[] lengthSymbols() {
-        int[] result = new int[259];
-        for (int length = MINIMUM_MATCH_LENGTH; length <= 258; length++) {
-            result[length] = LAST_LENGTH_SYMBOL;
-            for (int index = 0; index < LENGTH_BASES.length - 1; index++) {
-                int maximum = index == LENGTH_BASES.length - 2
-                        ? 257
-                        : LENGTH_BASES[index] + (1 << LENGTH_EXTRA_BITS[index]) - 1;
-                if (length <= maximum) {
-                    result[length] = FIRST_LENGTH_SYMBOL + index;
-                    break;
-                }
-            }
-        }
-        return result;
-    }
-
     /// Returns the extra-bit count for one Deflate64 length symbol.
     private int lengthExtraBits(int symbol) {
         if (symbol == LAST_LENGTH_SYMBOL) {
@@ -695,29 +643,6 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
             return length - MINIMUM_MATCH_LENGTH;
         }
         return length - LENGTH_BASES[symbol - FIRST_LENGTH_SYMBOL];
-    }
-
-    /// Resolves the distance symbol for one backward distance.
-    private int distanceSymbol(int distance) {
-        if (distance <= 4) return distance - 1;
-        int logarithm = Integer.SIZE - 1 - Integer.numberOfLeadingZeros(distance - 1);
-        return (logarithm << 1) + ((distance - 1) >>> (logarithm - 1) & 1);
-    }
-
-    /// Returns the number of extra bits for one distance symbol.
-    private static int distanceExtraBits(int symbol) {
-        return symbol < 4 ? 0 : (symbol >>> 1) - 1;
-    }
-
-    /// Returns the base distance for one distance symbol.
-    private static int distanceBase(int symbol) {
-        int extraBits = distanceExtraBits(symbol);
-        return symbol < 4 ? symbol + 1 : ((2 + (symbol & 1)) << extraBits) + 1;
-    }
-
-    /// Returns the extra-bit value for one encoded distance.
-    private static int distanceExtraValue(int distance, int symbol) {
-        return distance - distanceBase(symbol);
     }
 
     /// Writes the empty stored block used as a synchronization boundary.
@@ -883,9 +808,9 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
         /// Symbols ordered by weight and symbol index.
         private final int[] orderedSymbols = new int[286];
         /// Number of codes at each permitted length.
-        private final int[] lengthCounts = new int[16];
+        private final int[] lengthCounts = new int[MAXIMUM_DATA_CODE_LENGTH + 1];
         /// Next canonical code for each length.
-        private final int[] nextCodes = new int[16];
+        private final int[] nextCodes = new int[MAXIMUM_DATA_CODE_LENGTH + 1];
 
         /// Builds a length-limited canonical tree from symbol frequencies.
         void build(int[] frequencies, int maximumLength, HuffmanCode result) {
