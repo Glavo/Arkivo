@@ -25,7 +25,7 @@ final class DeflateFormatConstantsTest {
             assertEquals(lowerBound, DeflateFormatConstants.LENGTH_BASES[index]);
             int width = upperBounds[index] - lowerBound + 1;
             int extraBits = Integer.SIZE - Integer.numberOfLeadingZeros(width - 1);
-            assertEquals(extraBits, DeflateFormatConstants.LENGTH_EXTRA_BITS[index]);
+            assertEquals(extraBits, DeflateFormatConstants.lengthExtraBits(index));
             for (int length = lowerBound; length <= upperBounds[index]; length++) {
                 assertEquals(257 + index, DeflateFormatConstants.LENGTH_SYMBOLS[length]);
             }

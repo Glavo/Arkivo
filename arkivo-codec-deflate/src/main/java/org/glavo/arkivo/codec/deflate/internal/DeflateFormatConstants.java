@@ -33,7 +33,7 @@ final class DeflateFormatConstants {
     static final int MAXIMUM_CODE_LENGTH = 7;
 
     /// RFC 1951 base lengths for symbols 257 through 285; Deflate64 overrides symbol 285.
-    static final int @Unmodifiable [] LENGTH_BASES = {
+    static final short @Unmodifiable [] LENGTH_BASES = {
             3, 4, 5, 6, 7, 8, 9, 10,
             11, 13, 15, 17,
             19, 23, 27, 31,
@@ -43,36 +43,34 @@ final class DeflateFormatConstants {
             258
     };
 
-    /// The extra-bit counts for symbols 257 through 285 in RFC 1951 Deflate.
-    static final int @Unmodifiable [] LENGTH_EXTRA_BITS = {
-            0, 0, 0, 0, 0, 0, 0, 0,
-            1, 1, 1, 1,
-            2, 2, 2, 2,
-            3, 3, 3, 3,
-            4, 4, 4, 4,
-            5, 5, 5, 5,
-            0
-    };
+    /// Extra-bit counts for groups of four length indices, packed into successive low-to-high nibbles.
+    /// Groups 0 through 7 contain 0, 0, 1, 2, 3, 4, 5, and 0; the last group contains symbol 285.
+    private static final int PACKED_LENGTH_EXTRA_BITS = 0x05432100;
 
     /// Encoding symbols for lengths 3 through 258, choosing symbol 285 for length 258.
-    static final int @Unmodifiable [] LENGTH_SYMBOLS = lengthSymbols();
+    static final short @Unmodifiable [] LENGTH_SYMBOLS = lengthSymbols();
 
     /// The ordered code-length alphabet used by dynamic block headers.
-    static final int @Unmodifiable [] CODE_LENGTH_ORDER = {
+    static final byte @Unmodifiable [] CODE_LENGTH_ORDER = {
             16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
     };
 
+    /// Returns the RFC 1951 extra-bit count for a length-table index from 0 through 28.
+    static int lengthExtraBits(int index) {
+        return (PACKED_LENGTH_EXTRA_BITS >>> (index & ~3)) & 0xf;
+    }
+
     /// Creates the symbol lookup for match lengths from three through 258.
-    private static int[] lengthSymbols() {
-        int[] result = new int[259];
+    private static short[] lengthSymbols() {
+        short[] result = new short[259];
         for (int length = MINIMUM_MATCH_LENGTH; length <= 258; length++) {
             result[length] = LAST_LENGTH_SYMBOL;
             for (int index = 0; index < LENGTH_BASES.length - 1; index++) {
                 int maximum = index == LENGTH_BASES.length - 2
                         ? 257
-                        : LENGTH_BASES[index] + (1 << LENGTH_EXTRA_BITS[index]) - 1;
+                        : LENGTH_BASES[index] + (1 << lengthExtraBits(index)) - 1;
                 if (length <= maximum) {
-                    result[length] = FIRST_LENGTH_SYMBOL + index;
+                    result[length] = (short) (FIRST_LENGTH_SYMBOL + index);
                     break;
                 }
             }

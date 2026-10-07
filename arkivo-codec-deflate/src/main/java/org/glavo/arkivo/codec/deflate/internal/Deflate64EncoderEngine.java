@@ -21,7 +21,6 @@ import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.END
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.FIRST_LENGTH_SYMBOL;
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LAST_LENGTH_SYMBOL;
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_BASES;
-import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_EXTRA_BITS;
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_SYMBOLS;
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.MAXIMUM_CODE_LENGTH;
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.MAXIMUM_DATA_CODE_LENGTH;
@@ -634,7 +633,7 @@ public final class Deflate64EncoderEngine implements CompressionEncoder.Flushabl
         if (symbol == LAST_LENGTH_SYMBOL) {
             return 16;
         }
-        return LENGTH_EXTRA_BITS[symbol - FIRST_LENGTH_SYMBOL];
+        return DeflateFormatConstants.lengthExtraBits(symbol - FIRST_LENGTH_SYMBOL);
     }
 
     /// Returns the extra-bit value for one encoded match length.

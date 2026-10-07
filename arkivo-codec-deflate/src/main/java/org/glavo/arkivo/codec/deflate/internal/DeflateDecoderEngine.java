@@ -23,7 +23,6 @@ import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.END
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.FIRST_LENGTH_SYMBOL;
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LAST_LENGTH_SYMBOL;
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_BASES;
-import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.LENGTH_EXTRA_BITS;
 import static org.glavo.arkivo.codec.deflate.internal.DeflateFormatConstants.MAXIMUM_DATA_CODE_LENGTH;
 
 /// Incrementally decodes the shared Deflate bitstream grammar without retaining caller-owned buffers.
@@ -382,7 +381,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                     parseState = ParseState.LENGTH_EXTRA;
                     break;
                 }
-                int extra = LENGTH_EXTRA_BITS[index];
+                int extra = DeflateFormatConstants.lengthExtraBits(index);
                 int length = LENGTH_BASES[index] + ((int) hold & ((1 << extra) - 1));
                 hold >>>= extra;
                 bitCount -= extra;
@@ -669,7 +668,8 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                         pendingLength = 3 + bits.readBits(16, source, endOfInput, format);
                     } else {
                         pendingLength = LENGTH_BASES[lengthIndex]
-                                + bits.readBits(LENGTH_EXTRA_BITS[lengthIndex], source, endOfInput, format);
+                                + bits.readBits(DeflateFormatConstants.lengthExtraBits(lengthIndex),
+                                        source, endOfInput, format);
                     }
                     parseState = ParseState.DISTANCE_SYMBOL;
                 }
