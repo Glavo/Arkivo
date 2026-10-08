@@ -44,7 +44,8 @@ final class ZstdEntropy {
         while (remaining > 1 && symbol <= maximumSymbol) {
             if (previousZero) {
                 int zeroEnd = symbol;
-                while (bits.peekBits(16) == 0xffff) {
+                // A short terminal zero run need not leave sixteen bits for the bulk lookahead.
+                while (bits.canReadBits(16) && bits.peekBits(16) == 0xffff) {
                     zeroEnd += 24;
                     bits.skipBits(16);
                 }
@@ -343,7 +344,7 @@ final class ZstdEntropy {
 
         /// Peeks at the requested number of bits.
         private int peekBits(int count) throws IOException {
-            if (count < 0 || count > 24 || bitPosition + count > (limit - offset) * 8) {
+            if (count < 0 || count > 24 || !canReadBits(count)) {
                 throw new IOException("Truncated Zstandard FSE table");
             }
             int byteIndex = offset + (bitPosition >>> 3);
@@ -354,6 +355,11 @@ final class ZstdEntropy {
                 value |= (long) Byte.toUnsignedInt(source[byteIndex + index]) << (index * 8);
             }
             return (int) ((value >>> shift) & ((1L << count) - 1L));
+        }
+
+        /// Returns whether the requested lookahead stays within the supplied byte limit.
+        private boolean canReadBits(int count) {
+            return (long) bitPosition + count <= ((long) limit - offset) * 8;
         }
     }
 

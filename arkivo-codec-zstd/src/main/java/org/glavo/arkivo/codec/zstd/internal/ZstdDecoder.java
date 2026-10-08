@@ -193,6 +193,29 @@ public final class ZstdDecoder
                         return CodecOutcome.FINISHED;
                     }
                 }
+                case RAW_PAYLOAD -> {
+                    byte[] currentPayload = Objects.requireNonNull(payload);
+                    int copied = Math.min(Math.min(source.remaining(), target.remaining()),
+                            currentPayload.length - payloadSize);
+                    source.get(currentPayload, payloadSize, copied);
+                    target.put(currentPayload, payloadSize, copied);
+                    if (checksum != null) {
+                        checksum.update(currentPayload, payloadSize, copied);
+                    }
+                    payloadSize += copied;
+                    if (payloadSize != currentPayload.length) {
+                        return target.hasRemaining() ? requireMoreInput(endOfInput) : CodecOutcome.NEEDS_OUTPUT;
+                    }
+                    // History is needed only when the next block begins. Keep the completed raw block until then,
+                    // but expose each available portion immediately instead of waiting for its remaining input.
+                    Objects.requireNonNull(blockDecoder).appendRaw(currentPayload);
+                    payload = null;
+                    payloadSize = 0;
+                    completeBlock();
+                    if (state == State.FINISHED) {
+                        return CodecOutcome.FINISHED;
+                    }
+                }
                 case CHECKSUM -> {
                     if (!copyInto(source, checksumBytes)) {
                         return requireMoreInput(endOfInput);
@@ -342,14 +365,13 @@ public final class ZstdDecoder
         int compressedSize = blockType == 1 ? 1 : blockSize;
         payload = new byte[compressedSize];
         payloadSize = 0;
-        state = State.BLOCK_PAYLOAD;
+        state = blockType == 0 ? State.RAW_PAYLOAD : State.BLOCK_PAYLOAD;
     }
 
     /// Decodes one complete physical block payload.
     private void decodeBlock(byte[] compressed) throws IOException {
         ZstdBlockDecoder decoder = Objects.requireNonNull(blockDecoder);
         byte[] decoded = switch (blockType) {
-            case 0 -> decoder.decodeRaw(compressed);
             case 1 -> decoder.decodeRle(Byte.toUnsignedInt(compressed[0]), blockSize);
             case 2 -> decoder.decodeCompressed(compressed);
             default -> throw new AssertionError(blockType);
@@ -484,6 +506,9 @@ public final class ZstdDecoder
 
         /// A standard block payload is being collected.
         BLOCK_PAYLOAD,
+
+        /// Raw block bytes are being delivered incrementally and collected for subsequent block history.
+        RAW_PAYLOAD,
 
         /// A standard frame checksum is being collected.
         CHECKSUM,

@@ -114,13 +114,12 @@ final class ZstdBlockDecoder {
         return frameSize;
     }
 
-    /// Decodes one raw block payload.
-    byte[] decodeRaw(byte[] payload) throws IOException {
+    /// Adds one completely delivered raw block to history for subsequent compressed blocks.
+    void appendRaw(byte[] payload) throws IOException {
         if (payload.length > MAX_BLOCK_SIZE) {
             throw new IOException("Zstandard raw block exceeds 128 KiB");
         }
         appendHistory(payload);
-        return payload;
     }
 
     /// Decodes one run-length block.

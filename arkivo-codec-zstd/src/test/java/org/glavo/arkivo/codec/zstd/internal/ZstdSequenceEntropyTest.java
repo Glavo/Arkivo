@@ -10,10 +10,37 @@ import java.io.IOException;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies adaptive sequence-code table selection.
 @NotNullByDefault
 public final class ZstdSequenceEntropyTest {
+    /// Accepts a terminal zero-frequency run without requiring unrelated bytes after the complete table.
+    @Test
+    public void readsShortTerminalZeroRun() throws IOException {
+        int[] counts = new int[33];
+        Arrays.fill(counts, 0, 31, -1);
+        counts[32] = 1;
+        byte[] description = ZstdEntropy.encodeFseTableDescription(counts, counts.length, 5);
+        for (int suffix : new int[]{0, 1, 2, 16}) {
+            byte[] source = Arrays.copyOf(description, description.length + suffix);
+            Arrays.fill(source, description.length, source.length, (byte) 0xff);
+            var parsed = ZstdEntropy.readFseTable(source, 0, source.length, 32, 5);
+            assertEquals(description.length, parsed.bytesRead());
+            assertEquals(5, parsed.table().tableLog());
+            assertEquals(32, parsed.table().symbol(0));
+            for (int state = 1; state < 32; state++) {
+                assertEquals(31 - state, parsed.table().symbol(state));
+                assertEquals(5, parsed.table().numberOfBits(state));
+                assertEquals(0, parsed.table().baseline(state));
+            }
+        }
+        for (int size = 0; size < description.length; size++) {
+            int limit = size;
+            assertThrows(IOException.class, () -> ZstdEntropy.readFseTable(description, 0, limit, 32, 5));
+        }
+    }
+
     /// Verifies a skewed stream establishes a compressed table and then repeats it.
     @Test
     public void selectsDynamicThenRepeatTable() {
@@ -87,4 +114,3 @@ public final class ZstdSequenceEntropyTest {
         assertEquals(1, ZstdSequenceEntropy.selectMatchLengths(symbols, null).mode());
     }
 }
-

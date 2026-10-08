@@ -104,6 +104,31 @@ public final class ZstdPureJavaDecoderTest {
         assertThrows(IOException.class, () -> decompress(corrupt, verified));
     }
 
+    /// Delivers partial raw payload immediately, preserves checksum state, and discards partial state on reset.
+    @Test
+    public void streamsRawPayloadBeforeBlockCompletion() throws IOException {
+        try (var decoder = ZstdCodec.DEFAULT.newDecoder()) {
+            ByteBuffer source = ByteBuffer.wrap(CHECKSUM_FRAME);
+            source.limit(10);
+            ByteBuffer output = ByteBuffer.allocate(4);
+            assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(source, output));
+            assertEquals(1, output.position());
+            assertEquals('a', output.get(0));
+            assertThrows(IOException.class, () -> decoder.finish(source, output));
+            assertEquals(1, output.position());
+
+            decoder.reset();
+            output.clear();
+            source.clear().limit(10);
+            assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(source, output));
+            source.limit(CHECKSUM_FRAME.length);
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(source, output));
+            assertArrayEquals("abc".getBytes(StandardCharsets.US_ASCII),
+                    java.util.Arrays.copyOf(output.array(), output.position()));
+            assertEquals(CHECKSUM_FRAME.length, source.position());
+        }
+    }
+
     /// Verifies every proper prefix of each fixed frame is rejected as incomplete by the buffer decoder.
     @Test
     public void rejectsEveryTruncatedFixedFramePrefix() {

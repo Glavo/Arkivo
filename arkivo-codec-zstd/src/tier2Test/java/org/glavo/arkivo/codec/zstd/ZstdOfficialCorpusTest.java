@@ -6,17 +6,22 @@ package org.glavo.arkivo.codec.zstd;
 import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdCompressCtx;
 import com.github.luben.zstd.ZstdDecompressCtx;
+import org.glavo.arkivo.checksum.xxhash.XXHash32;
+import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.channels.Channels;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -26,10 +31,12 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies Arkivo against the pinned official Zstandard 1.5.7 golden corpus.
 @NotNullByDefault
@@ -76,6 +83,64 @@ public final class ZstdOfficialCorpusTest {
         assertThrows(IOException.class, () -> decompress(frame), name);
     }
 
+    /// Rejects the official invalid repeat-offset dictionary when creating or supplying engine state.
+    @ParameterizedTest(name = "invalid repeat offsets, buffer shape={0}")
+    @ValueSource(ints = {0, 1, 2})
+    void rejectsOfficialInvalidDictionary(int shape) throws IOException {
+        Path root = Path.of(java.util.Objects.requireNonNull(System.getProperty("arkivo.zstd.referenceDirectory")));
+        String source = Files.readString(root.resolve("tests/invalidDictionaries.c"));
+        var declaration = Pattern.compile("static const char invalidRepCode\\[\\] = \\{([^}]+)};",
+                Pattern.DOTALL).matcher(source);
+        assertTrue(declaration.find());
+        String body = declaration.group(1);
+        assertTrue(body.matches("(?:\\s*0x[0-9a-fA-F]{2}\\s*,?)+\\s*"));
+        byte[] bytes = HexFormat.of().parseHex(body.replace("0x", "").replaceAll("[\\s,]", ""));
+        assertEquals(160, bytes.length);
+        assertEquals("20124d802410a3dc8f2aa79e9233849bae5b596a2f3040dbd2baa9e88bd3d5fd", sha256(bytes));
+        ByteBuffer storage = shape == 1 ? ByteBuffer.allocateDirect(bytes.length + 2)
+                : ByteBuffer.allocate(bytes.length + 2);
+        storage.position(1).put(bytes).flip().position(1);
+        ByteBuffer view = shape == 2 ? storage.asReadOnlyBuffer() : storage;
+        for (boolean automatic : new boolean[]{false, true}) {
+            ZstdDictionary dictionary = automatic ? ZstdDictionary.of(view) : ZstdDictionary.fullDictionary(view);
+            assertEquals(42, dictionary.dictionaryId());
+            assertEquals(1, view.position());
+            assertEquals(bytes.length + 1, view.limit());
+            ZstdCodec codec = new ZstdCodec().withDictionary(dictionary);
+            assertThrows(IOException.class, () -> {
+                try (var encoder = codec.newEncoder()) {
+                    encoder.finish(ByteBuffer.allocate(128));
+                }
+            });
+            assertThrows(IOException.class, () -> {
+                try (var decoder = codec.newDecoder()) {
+                    decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(0));
+                }
+            });
+            // The dictionary envelope is valid; its repeat offsets are invalid when entropy state is loaded.
+            byte[] emptyFrame = new byte[16];
+            ByteArrayAccess.writeIntLittleEndian(emptyFrame, 0, 0xfd2fb528);
+            emptyFrame[4] = (byte) 0xa3;
+            ByteArrayAccess.writeIntLittleEndian(emptyFrame, 5, 42);
+            emptyFrame[13] = 1;
+            try (var decoder = new ZstdCodec().newDecoder()) {
+                ByteBuffer frame = ByteBuffer.wrap(emptyFrame);
+                ByteBuffer output = ByteBuffer.allocate(1);
+                assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.decode(frame, output));
+                assertThrows(IOException.class, () -> decoder.provideDictionary(dictionary));
+                assertEquals(0, output.position());
+                decoder.reset();
+                byte[] plain = {1, 2, 3};
+                ByteBuffer decoded = ByteBuffer.allocate(plain.length);
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(Zstd.compress(plain)), decoded));
+                assertArrayEquals(plain, decoded.array());
+            }
+        }
+        byte[] unchanged = new byte[bytes.length];
+        view.duplicate().get(unchanged);
+        assertArrayEquals(bytes, unchanged);
+    }
+
     /// Verifies official compression regression inputs round-trip with default and historically sensitive parameters.
     @ParameterizedTest
     @MethodSource("compressionRegressionInputNames")
@@ -94,6 +159,26 @@ public final class ZstdOfficialCorpusTest {
         byte @Unmodifiable [] sensitiveCompressed = compress(sensitiveCodec, input);
         assertArrayEquals(input, decompress(codec, sensitiveCompressed), name + " level 19");
         assertArrayEquals(input, Zstd.decompress(sensitiveCompressed, input.length), name + " native level 19");
+    }
+
+    /// Ports roundTripCrash.c's unsigned hash-selected level and its two-worker parameter variant.
+    @ParameterizedTest
+    @MethodSource("compressionRegressionInputNames")
+    void roundTripCrashParameters(String name) throws IOException {
+        byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression").resolve(name));
+        int level = (int) (XXHash32.DEFAULT.computeLong(input, 0, Math.min(128, input.length)) % 19);
+        for (int workers : new int[]{0, 2}) {
+            ZstdCodec codec = ZstdCodec.builder().compressionLevel(level).workerCount(workers).overlapLog(5).build();
+            ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
+            byte[] frame = new byte[compressed.remaining()];
+            compressed.get(frame);
+            assertArrayEquals(input, Zstd.decompress(frame, input.length), name + ", workers=" + workers);
+            assertArrayEquals(input, decompress(codec, frame));
+            try (var nativeEncoder = new ZstdCompressCtx()) {
+                byte[] nativeFrame = nativeEncoder.setLevel(level).setWorkers(workers).setOverlapLog(5).compress(input);
+                assertArrayEquals(input, decompress(codec, nativeFrame));
+            }
+        }
     }
 
     /// Verifies the official dictionary missing literal symbols can encode and decode its matching HTTP sample.

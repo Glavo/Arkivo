@@ -73,6 +73,52 @@ jobs:
       - name: Run Tier 2 tests
         run: ./gradlew -g .gradle-user-home tier2Test --no-daemon --stacktrace
 
+  zstd-reference:
+    name: Required official Zstandard references
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Build references and verify Zstandard interoperability
+        env:
+          ARKIVO_ZSTD_C_COMPILER: gcc
+          ARKIVO_ZSTD_DECODECORPUS_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/decodecorpus
+          ARKIVO_REQUIRE_ZSTD_DECODECORPUS: "true"
+          ARKIVO_ZSTD_FSE_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-fse-reference
+          ARKIVO_REQUIRE_ZSTD_FSE: "true"
+          ARKIVO_ZSTD_HUFFMAN_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-huffman-reference
+          ARKIVO_REQUIRE_ZSTD_HUFFMAN: "true"
+          ARKIVO_ZSTD_BLOCK_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-block-reference
+          ARKIVO_REQUIRE_ZSTD_BLOCK: "true"
+          ARKIVO_ZSTD_PREFIX_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-prefix-reference
+          ARKIVO_REQUIRE_ZSTD_PREFIX: "true"
+          ARKIVO_ZSTD_ROUND_TRIP_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-round-trip-reference
+          ARKIVO_REQUIRE_ZSTD_ROUND_TRIP: "true"
+          ARKIVO_ZSTD_STREAM_ROUND_TRIP_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-stream-round-trip-reference
+          ARKIVO_REQUIRE_ZSTD_STREAM_ROUND_TRIP: "true"
+          ARKIVO_ZSTD_DICTIONARY_LOADER_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-dictionary-loader-reference
+          ARKIVO_REQUIRE_ZSTD_DICTIONARY_LOADER: "true"
+          ARKIVO_ZSTD_RAW_DICTIONARY_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-raw-dictionary-reference
+          ARKIVO_REQUIRE_ZSTD_RAW_DICTIONARY: "true"
+          ARKIVO_ZSTD_DICTIONARY_ROUND_TRIP_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-dictionary-round-trip-reference
+          ARKIVO_REQUIRE_ZSTD_DICTIONARY_ROUND_TRIP: "true"
+          ARKIVO_ZSTD_DICTIONARY_DECOMPRESS_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-dictionary-decompress-reference
+          ARKIVO_REQUIRE_ZSTD_DICTIONARY_DECOMPRESS: "true"
+        run: ./gradlew -g .gradle-user-home :arkivo-codec-zstd:buildZstdDecodeCorpus :arkivo-codec-zstd:buildZstdFseReference :arkivo-codec-zstd:buildZstdHuffmanReference :arkivo-codec-zstd:buildZstdBlockReference :arkivo-codec-zstd:buildZstdPrefixReference :arkivo-codec-zstd:buildZstdRoundTripReference :arkivo-codec-zstd:buildZstdStreamRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryLoaderReference :arkivo-codec-zstd:buildZstdRawDictionaryReference :arkivo-codec-zstd:buildZstdDictionaryRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryDecompressReference :arkivo-codec-zstd:tier2Test --no-daemon --stacktrace
+
   sevenzip-interop:
     name: Required official 7-Zip interoperability
     runs-on: ubuntu-24.04

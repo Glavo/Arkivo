@@ -1,6 +1,72 @@
 Arkivo
 Copyright (c) 2026 Glavo
 
+The Zstandard generated-frame tests invoke the unmodified decodecorpus tool
+from Zstandard 1.5.7 and compare its paired frame and plaintext outputs with
+Arkivo and the native reference decoder. Copyright (c) Meta Platforms, Inc.
+and affiliates. The verified source download retains LICENSE and COPYING;
+these tests use the BSD license option. Native code is used only for testing.
+The dictionary regression reads the invalidRepCode byte array directly from
+the verified tests/invalidDictionaries.c source; it does not execute that file.
+The seekable tests adapt the five scenarios in contrib/seekable_format/tests/
+seekable_tests.c and finite parameter cases from tests/fuzz/seekable_roundtrip.c
+under the same BSD license option, retaining the reference sources and notices.
+Streaming regressions adapt zstreamtest.c's raw-block progress, source-size,
+context-reuse, empty-buffer, dictionary lifecycle and parameter matrices,
+repeated-table cases, and embedded historical sequence cases. Hash-selected
+round trips adapt roundTripCrash.c, including its worker configuration.
+Finite fuzz regressions adapt tests/fuzz/decompress_cross_format.c,
+decompress_dstSize_tooSmall.c, simple_decompress.c, stream_decompress.c,
+zstd_frame_info.c and fuzz_data_producer.c's input interpretation. Basic tests
+adapt fuzzer.c's input-extent, skippable-size and checksum regressions.
+These tests use the same BSD license option.
+Compression-capacity tests adapt tests/fuzz/simple_compress.c's input
+partition and parameter order, retaining native destination-too-small
+checks and adding Java buffer guards, incremental completion and reset.
+Round-trip tests invoke the unmodified tests/fuzz/simple_round_trip.c
+assertions with a test-only adapter under the same BSD license option.
+The adapter exports frames and parameters for Java interoperability tests,
+retaining native determinism, parameter rollback and overlapping decoding.
+Reused inputs clear a stale decoder maximum-block restriction; a separate
+native/Java regression checks that restriction and subsequent recovery.
+Streaming round-trip tests observe tests/fuzz/stream_round_trip.c's original
+operation loop, parameter selection and overlapping-decompression assertions
+under the same BSD license option. Its accepted chunks and completed actions
+are replayed through Java encoders; both decoders verify plaintext visibility
+at every completed flush and frame end without reading later encoded bytes.
+Dictionary-loading tests invoke tests/fuzz/dictionary_loader.c's original
+assertions under the same BSD license option, retaining its tail parameters,
+same-bytes dictionary/source inputs and native loading modes. Java tests
+verify copied dictionary ownership, reset and bidirectional interoperability,
+distinguishing Java's short-dictionary and zero-identifier preconditions.
+Raw-history tests observe tests/fuzz/raw_dictionary_round_trip.c under the
+same BSD license option, retaining independent source/dictionary partitioning,
+reduced output capacity, loading modes and the original round-trip assertions.
+Fresh and retained native contexts provide frames for Java interoperability.
+Trained-dictionary tests observe tests/fuzz/dictionary_round_trip.c under
+the same BSD license option, preserving FUZZ_train's sample selection,
+training failures, parameter rollback and repeated-compression assertions.
+Exported dictionaries and frames are checked in both interoperability directions.
+Dictionary-decoding tests observe tests/fuzz/dictionary_decompress.c under
+the same BSD license option, retaining original training, prepared/loaded/prefix
+branches and output capacities. Java checks native successful output, bounded
+rejection, unchanged input, output guards and decoder recovery after reset.
+FSE tests adapt tests/fuzz/fse_read_ncount.c's signed normalized frequencies
+and trailing-byte generation. A separately built test-only adapter invokes
+the verified native FSE reader, writer and table builder to check signed
+counts, descriptions and decoding states independently of the Java code.
+Huffman tests adapt tests/fuzz/huf_round_trip.c and huf_decompress.c. The
+test-only native Huffman generator preserves the upstream parameter layout,
+capacity handling and round-trip assertions, and exports tables and streams
+for independent Java decoding. See LICENSES/Zstd-BSD-3-Clause.txt.
+Block tests adapt tests/fuzz/block_round_trip.c and block_decompress.c under
+the same BSD license option. Their test-only native adapter retains the
+prefix partition, compression levels, source-size cap, output capacities
+and context reset rules, and exchanges raw compressed blocks with Java.
+Prefix tests adapt zstreamtest.c's full and raw prefix lifetimes under the
+same BSD license option. The native adapter checks prefix consumption and
+subsequent independent frames, including decoding frames produced by Java.
+
 The HTSlib BGZF tests read original boundary fixtures and a block index from
 HTSlib 1.22. Copyright (C) 2012-2025 Genome Research Ltd.; MIT/Expat license.
 The verified download retains LICENSE and test_bgzf.c. The Java driver
