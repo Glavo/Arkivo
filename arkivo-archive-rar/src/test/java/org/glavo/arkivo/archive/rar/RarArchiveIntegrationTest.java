@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
@@ -2934,19 +2936,19 @@ public final class RarArchiveIntegrationTest {
         Charset gb18030 = Charset.forName("GB18030");
         String path = "旧目录.txt";
         byte[] archive = RarTestArchiveFixtures.rar4StoredArchive(path.getBytes(gb18030), false);
-        RarLegacyCharsetDetector detector = context -> {
-            assertEquals(RarLegacyCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+        RarLegacyMetadataDecoder metadataDecoder = context -> {
+            assertEquals(RarLegacyMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             assertEquals(3, context.hostOperatingSystem());
             assertEquals(29, context.extractionVersion());
             assertEquals(0x8000, context.headerFlags());
             assertEquals(0100644L, context.fileAttributes());
             assertEquals(true, context.bytes().isReadOnly());
-            return gb18030;
+            return ArchiveMetadataDecoder.forCharset(gb18030).decode(context.bytes());
         };
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                RarArchiveOptions.DEFAULT.withLegacyCharsetDetector(detector)
+                RarArchiveOptions.DEFAULT.withLegacyMetadataDecoder(metadataDecoder)
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());
@@ -2954,18 +2956,18 @@ public final class RarArchiveIntegrationTest {
         }
     }
 
-    /// Verifies that authoritative RAR5 UTF-8 names bypass the RAR4 legacy detector.
+    /// Verifies that authoritative RAR5 UTF-8 names bypass the RAR4 legacy decoder.
     @Test
-    public void rar5Utf8NameBypassesLegacyDetector() throws IOException {
+    public void rar5Utf8NameBypassesLegacyDecoder() throws IOException {
         String path = "现代目录.txt";
         byte[] archive = archive(storedFile(path, 0, 0100644, new byte[0], null));
-        RarLegacyCharsetDetector detector = context -> {
-            throw new AssertionError("RAR5 entry names must not use the RAR4 legacy detector");
+        RarLegacyMetadataDecoder metadataDecoder = context -> {
+            throw new AssertionError("RAR5 entry names must not use the RAR4 legacy metadataDecoder");
         };
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                RarArchiveOptions.DEFAULT.withLegacyCharsetDetector(detector)
+                RarArchiveOptions.DEFAULT.withLegacyMetadataDecoder(metadataDecoder)
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());

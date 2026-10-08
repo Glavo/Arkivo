@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
@@ -70,10 +70,10 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     private static final ArchiveOption<TarCompression> SOURCE_COMPRESSION =
             ArchiveOption.of("arkivo.tar.sourceCompression", TarCompression.class);
 
-    /// The option for the detector used to select charsets for TAR metadata without an authoritative encoding.
-    private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
-            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.tar.metadataCharsetDetector"
+    /// The option for the decoder used for TAR metadata without an authoritative encoding.
+    private static final ArchiveOption<ArchiveMetadataDecoder> METADATA_DECODER =
+            ArchiveEnvironmentOptions.metadataDecoderOption(
+                    "arkivo.tar.metadataDecoder"
             );
 
     /// Creates a TAR archive file system base instance.
@@ -257,7 +257,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     /// Converts strongly typed TAR read settings for internal indexed readers.
     static ArchiveOptions toInternalOptions(TarArchiveOptions.Read options) {
         return ArchiveOptions.fromReadOptions(options.common())
-                .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector())
+                .with(METADATA_DECODER, options.metadataDecoder())
                 .with(COMPRESSION, options.compression());
     }
 
@@ -278,7 +278,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
                         StandardOpenOption.READ,
                         StandardOpenOption.WRITE
                 ))
-                .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector())
+                .with(METADATA_DECODER, options.metadataDecoder())
                 .with(SOURCE_COMPRESSION, options.sourceCompression())
                 .with(COMPRESSION, options.targetCompression());
     }

@@ -13,27 +13,27 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies TAR-specific metadata charset detection contexts.
+/// Verifies TAR-specific metadata decoding contexts.
 @NotNullByDefault
-public final class TarMetadataCharsetDetectorTest {
-    /// Verifies basic detector calls receive unknown TAR metadata without aliasing buffer state.
+public final class TarMetadataDecoderTest {
+    /// Verifies basic decoder calls receive unknown TAR metadata without aliasing buffer state.
     @Test
     public void basicInvocationSuppliesUnknownContext() throws Exception {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{0, 1, 2});
         source.position(1);
         source.mark();
-        TarMetadataCharsetDetector detector = context -> {
+        TarMetadataDecoder metadataDecoder = context -> {
             assertTrue(context.bytes().isReadOnly());
-            assertEquals(TarMetadataCharsetDetector.MetadataKind.UNKNOWN, context.metadataKind());
-            assertEquals(TarMetadataCharsetDetector.Source.UNKNOWN, context.source());
-            assertEquals(TarMetadataCharsetDetector.HeaderDialect.UNKNOWN, context.headerDialect());
-            assertEquals(TarMetadataCharsetDetector.UNKNOWN_TYPE_FLAG, context.typeFlag());
+            assertEquals(TarMetadataDecoder.MetadataKind.UNKNOWN, context.metadataKind());
+            assertEquals(TarMetadataDecoder.Source.UNKNOWN, context.source());
+            assertEquals(TarMetadataDecoder.HeaderDialect.UNKNOWN, context.headerDialect());
+            assertEquals(TarMetadataDecoder.UNKNOWN_TYPE_FLAG, context.typeFlag());
             assertNull(context.paxKey());
             context.bytes().position(context.bytes().limit());
-            return null;
+            return "decoded";
         };
 
-        assertNull(detector.detect(source));
+        assertEquals("decoded", metadataDecoder.decode(source));
         assertEquals(1, source.position());
         source.reset();
         assertEquals(1, source.position());
@@ -43,11 +43,11 @@ public final class TarMetadataCharsetDetectorTest {
     @Test
     public void contextValidatesTypeFlag() {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{3, 4});
-        TarMetadataCharsetDetector.Context context = new TarMetadataCharsetDetector.Context(
+        TarMetadataDecoder.Context context = new TarMetadataDecoder.Context(
                 source,
-                TarMetadataCharsetDetector.MetadataKind.LINK_NAME,
-                TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER,
-                TarMetadataCharsetDetector.HeaderDialect.USTAR,
+                TarMetadataDecoder.MetadataKind.LINK_NAME,
+                TarMetadataDecoder.Source.PAX_EXTENDED_HEADER,
+                TarMetadataDecoder.HeaderDialect.USTAR,
                 0xff,
                 "linkpath"
         );
@@ -55,13 +55,13 @@ public final class TarMetadataCharsetDetectorTest {
         assertTrue(context.bytes().isReadOnly());
         context.bytes().position(1);
         assertEquals(0, source.position());
-        assertEquals(TarMetadataCharsetDetector.MetadataKind.LINK_NAME, context.metadataKind());
-        assertEquals(TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER, context.source());
-        assertEquals(TarMetadataCharsetDetector.HeaderDialect.USTAR, context.headerDialect());
+        assertEquals(TarMetadataDecoder.MetadataKind.LINK_NAME, context.metadataKind());
+        assertEquals(TarMetadataDecoder.Source.PAX_EXTENDED_HEADER, context.source());
+        assertEquals(TarMetadataDecoder.HeaderDialect.USTAR, context.headerDialect());
         assertEquals(0xff, context.typeFlag());
         assertEquals("linkpath", context.paxKey());
 
-        assertInvalidTypeFlag(TarMetadataCharsetDetector.UNKNOWN_TYPE_FLAG - 1);
+        assertInvalidTypeFlag(TarMetadataDecoder.UNKNOWN_TYPE_FLAG - 1);
         assertInvalidTypeFlag(0x100);
     }
 
@@ -69,11 +69,11 @@ public final class TarMetadataCharsetDetectorTest {
     private static void assertInvalidTypeFlag(int typeFlag) {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new TarMetadataCharsetDetector.Context(
+                () -> new TarMetadataDecoder.Context(
                         ByteBuffer.allocate(0),
-                        TarMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
-                        TarMetadataCharsetDetector.Source.HEADER,
-                        TarMetadataCharsetDetector.HeaderDialect.USTAR,
+                        TarMetadataDecoder.MetadataKind.ENTRY_NAME,
+                        TarMetadataDecoder.Source.HEADER,
+                        TarMetadataDecoder.HeaderDialect.USTAR,
                         typeFlag,
                         null
                 )

@@ -30,7 +30,7 @@ import org.glavo.arkivo.archive.internal.StoredContentPool;
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
-import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
+import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.archive.zip.ZipMethod;
@@ -4887,7 +4887,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         private static EntryAttributes written(CentralEntry entry, ZipArkivoFileSystemConfig config) throws IOException {
             byte[] centralDirectoryExtraData = entry.centralDirectoryExtraData();
             byte @Nullable [] rawComment = entry.rawComment.length > 0 ? entry.rawComment : null;
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyCharsetDetector());
+            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyMetadataDecoder());
             return new EntryAttributes(
                     entryNameKey(entry.entryName),
                     entry.rawName,
@@ -4896,7 +4896,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                             rawComment,
                             entry.flags,
                             centralDirectoryExtraData,
-                            ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                            ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                             entry.versionNeeded,
                             entry.versionMadeBy
                     ),
@@ -4964,12 +4964,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     nextOffset
             );
             Zip64Values zip64 = Zip64Values.read(extraData, uncompressedSize, compressedSize, localHeaderOffset, 0L);
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyCharsetDetector());
+            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyMetadataDecoder());
             String decodedPath = decoder.decodePath(
                     rawPath,
                     flags,
                     extraData,
-                    ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                    ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                     versionNeeded,
                     versionMadeBy
             );
@@ -4982,7 +4982,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                             rawComment,
                             flags,
                             extraData,
-                            ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                            ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                             versionNeeded,
                             versionMadeBy
                     ),

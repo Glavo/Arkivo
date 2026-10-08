@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
@@ -55,10 +55,10 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArchiveOption.of("arkivo.rar.passwordProvider", ArkivoPasswordProvider.class);
 
-    /// The option for the detector used to select charsets for legacy non-Unicode RAR4 entry names.
-    private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
-            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.rar.legacyCharsetDetector"
+    /// The option for the decoder used for legacy non-Unicode RAR4 entry names.
+    private static final ArchiveOption<ArchiveMetadataDecoder> LEGACY_METADATA_DECODER =
+            ArchiveEnvironmentOptions.metadataDecoderOption(
+                    "arkivo.rar.legacyMetadataDecoder"
             );
 
     /// Creates a RAR archive file system base instance.
@@ -173,7 +173,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// Converts strongly typed RAR read settings for the internal parser.
     static ArchiveOptions toInternalOptions(RarArchiveOptions options) {
         ArchiveOptions result = ArchiveOptions.fromReadOptions(options.common())
-                .with(LEGACY_CHARSET_DETECTOR, options.legacyCharsetDetector());
+                .with(LEGACY_METADATA_DECODER, options.legacyMetadataDecoder());
         return options.passwordProvider() == null
                 ? result
                 : result.with(PASSWORD_PROVIDER, options.passwordProvider());

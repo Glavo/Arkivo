@@ -3,8 +3,8 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
-import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -31,20 +31,17 @@ public final class ZipEntryNameDecoder {
     /// The Info-ZIP Unicode Comment Extra Field identifier.
     public static final int UNICODE_COMMENT_EXTRA_FIELD_ID = 0x6375;
 
-    /// The CP437 charset required by the original ZIP entry metadata encoding rules.
-    private static final Charset CP437 = Charset.forName("IBM437");
-
-    /// The detector used when no authoritative Unicode charset is available.
-    private final ArchiveMetadataCharsetDetector legacyCharsetDetector;
+    /// The decoder used when no authoritative Unicode charset is available.
+    private final ArchiveMetadataDecoder legacyMetadataDecoder;
 
     /// Creates an entry name decoder.
     ///
-    /// @param legacyCharsetDetector the detector consulted when no authoritative Unicode metadata is available
-    /// @throws NullPointerException if `legacyCharsetDetector` is `null`
-    public ZipEntryNameDecoder(ArchiveMetadataCharsetDetector legacyCharsetDetector) {
-        this.legacyCharsetDetector = Objects.requireNonNull(
-                legacyCharsetDetector,
-                "legacyCharsetDetector"
+    /// @param legacyMetadataDecoder the decoder consulted when no authoritative Unicode metadata is available
+    /// @throws NullPointerException if `legacyMetadataDecoder` is `null`
+    public ZipEntryNameDecoder(ArchiveMetadataDecoder legacyMetadataDecoder) {
+        this.legacyMetadataDecoder = Objects.requireNonNull(
+                legacyMetadataDecoder,
+                "legacyMetadataDecoder"
         );
     }
 
@@ -57,15 +54,15 @@ public final class ZipEntryNameDecoder {
     /// @param extraData the encoded extra field records
     /// @return the decoded entry path
     /// @throws NullPointerException if `rawPath` or `extraData` is `null`
-    /// @throws IOException if recognized Unicode metadata is malformed or the selected charset cannot decode the path
+    /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the path
     public String decodePath(byte[] rawPath, int generalPurposeFlags, byte[] extraData) throws IOException {
         return decodePath(
                 rawPath,
                 generalPurposeFlags,
                 extraData,
-                ZipLegacyCharsetDetector.HeaderSource.UNKNOWN,
-                ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE,
-                ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
         );
     }
 
@@ -75,16 +72,16 @@ public final class ZipEntryNameDecoder {
     /// @param generalPurposeFlags the unsigned 16-bit general purpose flags
     /// @param extraData the encoded extra field records
     /// @param headerSource the header that supplied the metadata
-    /// @param versionNeededToExtract the unsigned 16-bit extraction version, or the detector's unknown sentinel
-    /// @param versionMadeBy the unsigned 16-bit creator version, or the detector's unknown sentinel
+    /// @param versionNeededToExtract the unsigned 16-bit extraction version, or the decoder's unknown sentinel
+    /// @param versionMadeBy the unsigned 16-bit creator version, or the decoder's unknown sentinel
     /// @return the decoded entry path
     /// @throws NullPointerException if an array or `headerSource` is `null`
-    /// @throws IOException if recognized Unicode metadata is malformed or the selected charset cannot decode the path
+    /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the path
     public String decodePath(
             byte[] rawPath,
             int generalPurposeFlags,
             byte[] extraData,
-            ZipLegacyCharsetDetector.HeaderSource headerSource,
+            ZipLegacyMetadataDecoder.HeaderSource headerSource,
             int versionNeededToExtract,
             int versionMadeBy
     ) throws IOException {
@@ -96,7 +93,7 @@ public final class ZipEntryNameDecoder {
                 rawPath,
                 generalPurposeFlags,
                 extraData,
-                ZipLegacyCharsetDetector.MetadataKind.ENTRY_NAME,
+                ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                 headerSource,
                 versionNeededToExtract,
                 versionMadeBy
@@ -110,7 +107,7 @@ public final class ZipEntryNameDecoder {
     /// @param extraData the encoded extra field records
     /// @return the decoded comment, or `null` when absent
     /// @throws NullPointerException if `extraData` is `null`
-    /// @throws IOException if recognized Unicode metadata is malformed or the selected charset cannot decode the comment
+    /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the comment
     public @Nullable String decodeComment(
             byte @Nullable [] rawComment,
             int generalPurposeFlags,
@@ -120,9 +117,9 @@ public final class ZipEntryNameDecoder {
                 rawComment,
                 generalPurposeFlags,
                 extraData,
-                ZipLegacyCharsetDetector.HeaderSource.UNKNOWN,
-                ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE,
-                ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
         );
     }
 
@@ -132,16 +129,16 @@ public final class ZipEntryNameDecoder {
     /// @param generalPurposeFlags the unsigned 16-bit general purpose flags
     /// @param extraData the encoded extra field records
     /// @param headerSource the header that supplied the metadata
-    /// @param versionNeededToExtract the unsigned 16-bit extraction version, or the detector's unknown sentinel
-    /// @param versionMadeBy the unsigned 16-bit creator version, or the detector's unknown sentinel
+    /// @param versionNeededToExtract the unsigned 16-bit extraction version, or the decoder's unknown sentinel
+    /// @param versionMadeBy the unsigned 16-bit creator version, or the decoder's unknown sentinel
     /// @return the decoded comment, or `null` when absent
     /// @throws NullPointerException if `extraData` or `headerSource` is `null`
-    /// @throws IOException if recognized Unicode metadata is malformed or the selected charset cannot decode the comment
+    /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the comment
     public @Nullable String decodeComment(
             byte @Nullable [] rawComment,
             int generalPurposeFlags,
             byte[] extraData,
-            ZipLegacyCharsetDetector.HeaderSource headerSource,
+            ZipLegacyMetadataDecoder.HeaderSource headerSource,
             int versionNeededToExtract,
             int versionMadeBy
     ) throws IOException {
@@ -159,7 +156,7 @@ public final class ZipEntryNameDecoder {
                     rawComment,
                     generalPurposeFlags,
                     extraData,
-                    ZipLegacyCharsetDetector.MetadataKind.ENTRY_COMMENT,
+                    ZipLegacyMetadataDecoder.MetadataKind.ENTRY_COMMENT,
                     headerSource,
                     versionNeededToExtract,
                     versionMadeBy
@@ -227,8 +224,8 @@ public final class ZipEntryNameDecoder {
             byte[] rawValue,
             int generalPurposeFlags,
             byte[] extraData,
-            ZipLegacyCharsetDetector.MetadataKind metadataKind,
-            ZipLegacyCharsetDetector.HeaderSource headerSource,
+            ZipLegacyMetadataDecoder.MetadataKind metadataKind,
+            ZipLegacyMetadataDecoder.HeaderSource headerSource,
             int versionNeededToExtract,
             int versionMadeBy
     ) throws IOException {
@@ -236,9 +233,9 @@ public final class ZipEntryNameDecoder {
             return strictDecode(rawValue, StandardCharsets.UTF_8);
         }
 
-        @Nullable Charset detectedCharset;
-        if (legacyCharsetDetector instanceof ZipLegacyCharsetDetector zipDetector) {
-            detectedCharset = zipDetector.detect(new ZipLegacyCharsetDetector.Context(
+        String decoded;
+        if (legacyMetadataDecoder instanceof ZipLegacyMetadataDecoder zipDecoder) {
+            decoded = zipDecoder.decode(new ZipLegacyMetadataDecoder.Context(
                     ByteBuffer.wrap(rawValue),
                     metadataKind,
                     headerSource,
@@ -248,9 +245,9 @@ public final class ZipEntryNameDecoder {
                     ByteBuffer.wrap(extraData)
             ));
         } else {
-            detectedCharset = legacyCharsetDetector.detect(rawValue);
+            decoded = legacyMetadataDecoder.decode(rawValue);
         }
-        return strictDecode(rawValue, detectedCharset != null ? detectedCharset : CP437);
+        return Objects.requireNonNull(decoded, "decoded ZIP metadata");
     }
 
     /// Strictly decodes a complete byte array with the given charset.
@@ -268,7 +265,7 @@ public final class ZipEntryNameDecoder {
         if (charset == StandardCharsets.ISO_8859_1) {
             return new String(value, offset, length, StandardCharsets.ISO_8859_1);
         }
-        if (charset == StandardCharsets.UTF_8 || charset == StandardCharsets.US_ASCII || charset == CP437) {
+        if (charset == StandardCharsets.UTF_8 || charset == StandardCharsets.US_ASCII) {
             int end = offset + length;
             int index = offset;
             while (index < end && value[index] >= 0) index++;

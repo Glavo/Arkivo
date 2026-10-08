@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.ar;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -20,11 +20,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies immutable AR operation-option derivation and validation.
 @NotNullByDefault
 final class ArArchiveOptionsTest {
-    /// Verifies every operation role preserves common options and exposes its effective metadata detector.
+    /// Verifies every operation role preserves common options and exposes its effective metadata decoder.
     @Test
     void derivesCommonAndMetadataConfiguration() {
-        ArchiveMetadataCharsetDetector detector =
-                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_16LE);
+        ArchiveMetadataDecoder metadataDecoder =
+                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_16LE);
         ArchiveReadOptions readCommon = ArchiveReadOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
         ArchiveCreateOptions createCommon = ArchiveCreateOptions.DEFAULT
@@ -34,27 +34,27 @@ final class ArArchiveOptionsTest {
 
         ArArchiveOptions.Read read = ArArchiveOptions.READ_DEFAULTS
                 .withCommon(readCommon)
-                .withMetadataCharsetDetector(detector);
+                .withMetadataDecoder(metadataDecoder);
         ArArchiveOptions.Create create = ArArchiveOptions.CREATE_DEFAULTS
                 .withCommon(createCommon)
-                .withMetadataCharsetDetector(detector);
+                .withMetadataDecoder(metadataDecoder);
         ArArchiveOptions.Update update = ArArchiveOptions.UPDATE_DEFAULTS
                 .withCommon(updateCommon)
-                .withMetadataCharsetDetector(detector);
+                .withMetadataDecoder(metadataDecoder);
 
-        assertEquals(readCommon, read.common().withMetadataCharsetDetector(null));
-        assertSame(detector, read.metadataCharsetDetector());
-        assertEquals(createCommon, create.common().withMetadataCharsetDetector(null));
-        assertSame(detector, create.metadataCharsetDetector());
-        assertEquals(updateCommon, update.common().withMetadataCharsetDetector(null));
-        assertSame(detector, update.metadataCharsetDetector());
+        assertEquals(readCommon, read.common().withMetadataDecoder(null));
+        assertSame(metadataDecoder, read.metadataDecoder());
+        assertEquals(createCommon, create.common().withMetadataDecoder(null));
+        assertSame(metadataDecoder, create.metadataDecoder());
+        assertEquals(updateCommon, update.common().withMetadataDecoder(null));
+        assertSame(metadataDecoder, update.metadataDecoder());
         assertSame(
-                ArArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR,
-                ArArchiveOptions.CREATE_DEFAULTS.metadataCharsetDetector()
+                ArArchiveOptions.DEFAULT_METADATA_DECODER,
+                ArArchiveOptions.CREATE_DEFAULTS.metadataDecoder()
         );
         assertSame(
-                ArArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR,
-                ArArchiveOptions.UPDATE_DEFAULTS.metadataCharsetDetector()
+                ArArchiveOptions.DEFAULT_METADATA_DECODER,
+                ArArchiveOptions.UPDATE_DEFAULTS.metadataDecoder()
         );
     }
 
@@ -68,17 +68,17 @@ final class ArArchiveOptionsTest {
         assertThrows(NullPointerException.class, () -> ArArchiveOptions.READ_DEFAULTS.withCommon(null));
         assertThrows(
                 NullPointerException.class,
-                () -> ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(null)
+                () -> ArArchiveOptions.READ_DEFAULTS.withMetadataDecoder(null)
         );
         assertThrows(NullPointerException.class, () -> ArArchiveOptions.CREATE_DEFAULTS.withCommon(null));
         assertThrows(
                 NullPointerException.class,
-                () -> ArArchiveOptions.CREATE_DEFAULTS.withMetadataCharsetDetector(null)
+                () -> ArArchiveOptions.CREATE_DEFAULTS.withMetadataDecoder(null)
         );
         assertThrows(NullPointerException.class, () -> ArArchiveOptions.UPDATE_DEFAULTS.withCommon(null));
         assertThrows(
                 NullPointerException.class,
-                () -> ArArchiveOptions.UPDATE_DEFAULTS.withMetadataCharsetDetector(null)
+                () -> ArArchiveOptions.UPDATE_DEFAULTS.withMetadataDecoder(null)
         );
     }
 }

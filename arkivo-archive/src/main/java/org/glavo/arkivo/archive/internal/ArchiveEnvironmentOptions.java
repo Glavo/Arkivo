@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.internal;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
@@ -52,18 +52,18 @@ public final class ArchiveEnvironmentOptions {
     private ArchiveEnvironmentOptions() {
     }
 
-    /// Returns a format-specific option that normalizes metadata charset detectors, charsets, and charset names.
+    /// Returns a format-specific option that normalizes metadata decoders, charsets, and charset names.
     ///
     /// @param key the dot-separated environment key
-    /// @return an option whose raw values may be an [ArchiveMetadataCharsetDetector], [Charset], or charset-name string
+    /// @return an option whose raw values may be an [ArchiveMetadataDecoder], [Charset], or charset-name string
     /// @throws IllegalArgumentException if `key` contains empty segments or whitespace
-    public static ArchiveOption<ArchiveMetadataCharsetDetector> metadataCharsetDetectorOption(
+    public static ArchiveOption<ArchiveMetadataDecoder> metadataDecoderOption(
             String key
     ) {
         return ArchiveOption.of(
                 key,
-                ArchiveMetadataCharsetDetector.class,
-                value -> metadataCharsetDetectorValue(value, key)
+                ArchiveMetadataDecoder.class,
+                value -> metadataDecoderValue(value, key)
         );
     }
 
@@ -78,19 +78,19 @@ public final class ArchiveEnvironmentOptions {
         throw new IllegalArgumentException("Expected ArkivoFileSystemThreadSafety or String for key: arkivo.threadSafety");
     }
 
-    /// Converts a raw metadata charset-detector value.
-    private static ArchiveMetadataCharsetDetector metadataCharsetDetectorValue(Object value, String key) {
-        if (value instanceof ArchiveMetadataCharsetDetector detector) {
-            return detector;
+    /// Converts a raw metadata decoder value.
+    private static ArchiveMetadataDecoder metadataDecoderValue(Object value, String key) {
+        if (value instanceof ArchiveMetadataDecoder metadataDecoder) {
+            return metadataDecoder;
         }
         if (value instanceof Charset charset) {
-            return ArchiveMetadataCharsetDetector.fixed(charset);
+            return ArchiveMetadataDecoder.forCharset(charset);
         }
         if (value instanceof String charsetName) {
-            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(charsetName));
+            return ArchiveMetadataDecoder.forCharset(Charset.forName(charsetName));
         }
         throw new IllegalArgumentException(
-                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: " + key
+                "Expected ArchiveMetadataDecoder, Charset, or String for key: " + key
         );
     }
 

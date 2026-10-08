@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
@@ -1363,7 +1365,7 @@ public final class TarArchiveIntegrationTest {
         }
     }
 
-    /// Verifies that a TAR-specific detector receives fixed-header context for an ambiguous entry path.
+    /// Verifies that a TAR-specific decoder receives fixed-header context for an ambiguous entry path.
     @Test
     public void detectsFixedHeaderMetadataCharset() throws IOException {
         Charset gb18030 = Charset.forName("GB18030");
@@ -1371,19 +1373,19 @@ public final class TarArchiveIntegrationTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         writeRawPathHeader(output, path.getBytes(gb18030));
         output.write(new byte[1024]);
-        TarMetadataCharsetDetector detector = context -> {
-            assertEquals(TarMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
-            assertEquals(TarMetadataCharsetDetector.Source.HEADER, context.source());
-            assertEquals(TarMetadataCharsetDetector.HeaderDialect.USTAR, context.headerDialect());
+        TarMetadataDecoder metadataDecoder = context -> {
+            assertEquals(TarMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
+            assertEquals(TarMetadataDecoder.Source.HEADER, context.source());
+            assertEquals(TarMetadataDecoder.HeaderDialect.USTAR, context.headerDialect());
             assertEquals((int) '0', context.typeFlag());
             assertNull(context.paxKey());
             assertEquals(true, context.bytes().isReadOnly());
-            return gb18030;
+            return ArchiveMetadataDecoder.forCharset(gb18030).decode(context.bytes());
         };
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(output.toByteArray()),
-                TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
+                TarArchiveOptions.READ_DEFAULTS.withMetadataDecoder(metadataDecoder)
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
@@ -1403,51 +1405,51 @@ public final class TarArchiveIntegrationTest {
         writeMetadataEntry(output, "PaxHeaders/entry", 'x', paxBody.toByteArray());
         writeRawPathHeader(output, "short-name".getBytes(StandardCharsets.UTF_8));
         output.write(new byte[1024]);
-        int[] paxDetectorCalls = new int[1];
-        TarMetadataCharsetDetector detector = context -> {
-            if (context.source() == TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER) {
-                paxDetectorCalls[0]++;
-                assertEquals(TarMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+        int[] paxDecoderCalls = new int[1];
+        TarMetadataDecoder metadataDecoder = context -> {
+            if (context.source() == TarMetadataDecoder.Source.PAX_EXTENDED_HEADER) {
+                paxDecoderCalls[0]++;
+                assertEquals(TarMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
                 assertEquals("path", context.paxKey());
                 assertEquals((int) 'x', context.typeFlag());
-                return gb18030;
+                return ArchiveMetadataDecoder.forCharset(gb18030).decode(context.bytes());
             }
-            return StandardCharsets.UTF_8;
+            return TarArchiveOptions.DEFAULT_METADATA_DECODER.decode(context.bytes());
         };
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(output.toByteArray()),
-                TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
+                TarArchiveOptions.READ_DEFAULTS.withMetadataDecoder(metadataDecoder)
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
-            assertEquals(1, paxDetectorCalls[0]);
+            assertEquals(1, paxDecoderCalls[0]);
         }
     }
 
-    /// Verifies that ordinary PAX UTF-8 values bypass the metadata charset detector.
+    /// Verifies that ordinary PAX UTF-8 values bypass the metadata decoder.
     @Test
-    public void ordinaryPaxUtf8BypassesDetector() throws IOException {
+    public void ordinaryPaxUtf8BypassesDecoder() throws IOException {
         String path = "标准目录.txt";
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         writePaxHeader(output, Map.of("path", path));
         writeRawPathHeader(output, "short-name".getBytes(StandardCharsets.UTF_8));
         output.write(new byte[1024]);
-        int[] paxDetectorCalls = new int[1];
-        TarMetadataCharsetDetector detector = context -> {
-            if (context.source() == TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER) {
-                paxDetectorCalls[0]++;
+        int[] paxDecoderCalls = new int[1];
+        TarMetadataDecoder metadataDecoder = context -> {
+            if (context.source() == TarMetadataDecoder.Source.PAX_EXTENDED_HEADER) {
+                paxDecoderCalls[0]++;
             }
-            return StandardCharsets.UTF_8;
+            return TarArchiveOptions.DEFAULT_METADATA_DECODER.decode(context.bytes());
         };
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(output.toByteArray()),
-                TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
+                TarArchiveOptions.READ_DEFAULTS.withMetadataDecoder(metadataDecoder)
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
-            assertEquals(0, paxDetectorCalls[0]);
+            assertEquals(0, paxDecoderCalls[0]);
         }
     }
 
@@ -1822,14 +1824,14 @@ public final class TarArchiveIntegrationTest {
         writePaxHeader(output, Map.of("path", "\u00e9.txt"));
         writeEntry(output, "file", new byte[0]);
         output.write(new byte[1024]);
-        TarMetadataCharsetDetector detector = context -> {
-            if (context.source() == TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER) {
+        TarMetadataDecoder metadataDecoder = context -> {
+            if (context.source() == TarMetadataDecoder.Source.PAX_EXTENDED_HEADER) {
                 throw new AssertionError("Replaced local charset must not affect the next PAX header");
             }
-            return StandardCharsets.UTF_8;
+            return TarArchiveOptions.DEFAULT_METADATA_DECODER.decode(context.bytes());
         };
         try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()),
-                TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector))) {
+                TarArchiveOptions.READ_DEFAULTS.withMetadataDecoder(metadataDecoder))) {
             assertTrue(reader.next());
             assertEquals("\u00e9.txt", reader.readAttributes().path());
             assertFalse(reader.next());

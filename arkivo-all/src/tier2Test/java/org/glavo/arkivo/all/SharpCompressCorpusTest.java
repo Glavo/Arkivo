@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
@@ -181,8 +181,8 @@ final class SharpCompressCorpusTest {
                     ArkivoPasswordProvider.fixed("test".getBytes(encoding)));
         }
         return name.startsWith("Tar.") && !name.equals("Tar.oldgnu.tar.gz") && !name.equals("Tar.tar.Z")
-                ? ArchiveReadOptions.DEFAULT.withMetadataCharsetDetector(
-                        ArchiveMetadataCharsetDetector.fixed(Charset.forName("IBM866")))
+                ? ArchiveReadOptions.DEFAULT.withMetadataDecoder(
+                        ArchiveMetadataDecoder.forCharset(Charset.forName("IBM866")))
                 : ArchiveReadOptions.DEFAULT;
     }
 

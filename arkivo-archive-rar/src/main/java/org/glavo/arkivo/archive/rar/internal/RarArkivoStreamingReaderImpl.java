@@ -6,7 +6,7 @@ package org.glavo.arkivo.archive.rar.internal;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
@@ -16,7 +16,7 @@ import org.glavo.arkivo.archive.PasswordPurpose;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
-import org.glavo.arkivo.archive.rar.RarLegacyCharsetDetector;
+import org.glavo.arkivo.archive.rar.RarLegacyMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -29,9 +29,6 @@ import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.Charset;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
@@ -49,9 +46,9 @@ import java.util.zip.CRC32;
 @NotNullByDefault
 public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader {
     /// The internal NIO environment key for legacy name detection.
-    private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
-            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.rar.legacyCharsetDetector"
+    private static final ArchiveOption<ArchiveMetadataDecoder> LEGACY_METADATA_DECODER =
+            ArchiveEnvironmentOptions.metadataDecoderOption(
+                    "arkivo.rar.legacyMetadataDecoder"
             );
     /// The maximum self-extracting stub size searched before the RAR signature.
     private static final int MAX_SFX_SIZE = 1024 * 1024;
@@ -311,9 +308,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The fallback timestamp used when a RAR entry omits all time metadata.
     private static final FileTime MISSING_TIME = FileTime.fromMillis(0L);
 
-    /// The UTF-8 detector used when no legacy RAR4 charset detector is configured.
-    private static final ArchiveMetadataCharsetDetector DEFAULT_LEGACY_CHARSET_DETECTOR =
-            ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+    /// The UTF-8 decoder used when no legacy RAR4 decoder is configured.
+    private static final ArchiveMetadataDecoder DEFAULT_LEGACY_METADATA_DECODER =
+            ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
 
     /// The backing archive input stream.
     private final InputStream source;
@@ -324,8 +321,8 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The common archive read-limit tracker.
     private final ArkivoReadLimitTracker readLimits;
 
-    /// The detector used for RAR4 metadata without an encoded Unicode value.
-    private final ArchiveMetadataCharsetDetector legacyCharsetDetector;
+    /// The decoder used for RAR4 metadata without an encoded Unicode value.
+    private final ArchiveMetadataDecoder legacyMetadataDecoder;
 
     /// Whether bodies skipped during entry iteration must be integrity-checked.
     private final boolean validateSkippedBodies;
@@ -496,9 +493,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         this.source = Objects.requireNonNull(source, "source");
         this.passwordProvider = passwordProvider;
         this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
-        this.legacyCharsetDetector = checkedOptions.getOrDefault(
-                LEGACY_CHARSET_DETECTOR,
-                DEFAULT_LEGACY_CHARSET_DETECTOR
+        this.legacyMetadataDecoder = checkedOptions.getOrDefault(
+                LEGACY_METADATA_DECODER,
+                DEFAULT_LEGACY_METADATA_DECODER
         );
         this.validateSkippedBodies = validateSkippedBodies;
     }
@@ -2033,7 +2030,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         return builder.toString();
     }
 
-    /// Decodes raw RAR4 entry-name bytes through the configured legacy charset detector.
+    /// Decodes raw RAR4 entry-name bytes through the configured legacy decoder.
     private String decodeLegacyRar4Name(
             byte[] nameBytes,
             int rawHostOs,
@@ -2041,36 +2038,20 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             int headerFlags,
             long fileAttributes
     ) throws IOException {
-        @Nullable Charset detectedCharset;
-        if (legacyCharsetDetector instanceof RarLegacyCharsetDetector rarDetector) {
-            detectedCharset = rarDetector.detect(new RarLegacyCharsetDetector.Context(
+        String decoded;
+        if (legacyMetadataDecoder instanceof RarLegacyMetadataDecoder rarDecoder) {
+            decoded = rarDecoder.decode(new RarLegacyMetadataDecoder.Context(
                     ByteBuffer.wrap(nameBytes),
-                    RarLegacyCharsetDetector.MetadataKind.ENTRY_NAME,
+                    RarLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                     rawHostOs,
                     extractionVersion,
                     headerFlags,
                     fileAttributes
             ));
         } else {
-            detectedCharset = legacyCharsetDetector.detect(nameBytes);
+            decoded = legacyMetadataDecoder.decode(nameBytes);
         }
-        return strictDecodeRar4Name(
-                nameBytes,
-                detectedCharset != null ? detectedCharset : StandardCharsets.UTF_8
-        );
-    }
-
-    /// Strictly decodes a complete RAR4 legacy name with the selected charset.
-    private static String strictDecodeRar4Name(byte[] nameBytes, Charset charset) throws IOException {
-        try {
-            return charset.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(nameBytes))
-                    .toString();
-        } catch (CharacterCodingException exception) {
-            throw new IOException("Failed to decode RAR4 legacy entry name", exception);
-        }
+        return Objects.requireNonNull(decoded, "decoded RAR4 metadata");
     }
 
     /// Normalizes a raw RAR4 host OS value to the public host OS value set.

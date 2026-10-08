@@ -12,7 +12,7 @@ import net.lingala.zip4j.model.enums.AesVersion;
 import net.lingala.zip4j.model.enums.CompressionMethod;
 import net.lingala.zip4j.model.enums.EncryptionMethod;
 import org.glavo.arkivo.all.commonscompress.ArchiveCorpusAssertions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
@@ -585,7 +585,7 @@ final class Zip4jInteropTest {
 
     /// Selects credentials by logical entry name and configures the explicit legacy name charset.
     private static ZipArchiveOptions.Read readOptions(Charset charset, Map<String, String> passwords) {
-        return ZipArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(ArchiveMetadataCharsetDetector.fixed(charset))
+        return ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(ArchiveMetadataDecoder.forCharset(charset))
                 .withPasswordProvider(request -> passwords.getOrDefault(
                         Objects.requireNonNull(request.entryPath()).substring(1), passwords.getOrDefault("*", ""))
                         .getBytes(StandardCharsets.UTF_8));

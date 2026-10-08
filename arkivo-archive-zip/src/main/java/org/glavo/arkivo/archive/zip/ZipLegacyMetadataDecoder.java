@@ -3,47 +3,44 @@
 
 package org.glavo.arkivo.archive.zip;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 import java.util.Objects;
 
-/// Selects a charset for legacy ZIP entry metadata using ZIP-specific header context.
+/// Decodes legacy ZIP entry metadata using ZIP-specific header context.
 ///
-/// ZIP readers invoke this detector only after a valid Info-ZIP Unicode extra field and the UTF-8 general-purpose
-/// flag have been considered. The option that configures ZIP decoding accepts the basic
-/// `ArchiveMetadataCharsetDetector`; a reader creates a `Context` only when that detector also implements this
-/// interface.
+/// ZIP readers invoke this decoder only when no usable Info-ZIP Unicode extra field or UTF-8 general-purpose flag
+/// supplies the encoding. Structural extra-field validation remains the reader's responsibility.
 ///
-/// Returning `null` reports that the charset could not be determined; the reader then falls back to CP437 as required
-/// by the original ZIP format rules. Implementations may be reused by multiple archive readers and therefore should
-/// be thread-safe.
+/// The default ZIP decoder uses CP437. A custom decoder supplies the final text; there is no implicit CP437 fallback
+/// if it throws an exception or returns `null`.
 @FunctionalInterface
 @NotNullByDefault
-public interface ZipLegacyCharsetDetector extends ArchiveMetadataCharsetDetector {
-    /// The sentinel used when a ZIP header value is unavailable to a detector.
+public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
+    /// The sentinel used when a ZIP header value is unavailable to a decoder.
     int UNKNOWN_HEADER_VALUE = -1;
 
-    /// Detects the charset of one raw legacy ZIP entry name or comment, or returns `null` when it is unknown.
+    /// Decodes one complete legacy ZIP entry name or comment.
     ///
     /// The context buffers are independent read-only views valid only for this call. An implementation may advance their
     /// positions while inspecting them but must not retain either buffer.
     ///
     /// @param context the raw metadata and available ZIP header context
-    /// @return the detected charset, or `null` to request the CP437 fallback
+    /// @return the decoded text, never `null`
     /// @throws NullPointerException if `context` is `null`
-    /// @throws IOException if charset detection cannot be completed
-    @Nullable Charset detect(Context context) throws IOException;
+    /// @throws IOException if the value cannot be decoded according to this decoder's policy
+    String decode(Context context) throws IOException;
 
-    /// Detects bytes without explicit ZIP context by supplying an unknown context.
+    /// Decodes bytes without explicit ZIP context.
+    ///
+    /// @implSpec Supplies an unknown context with independent read-only buffer state and rejects a null result.
     @Override
-    default @Nullable Charset detect(@UnmodifiableView ByteBuffer bytes) throws IOException {
-        return detect(Context.unknown(bytes));
+    default String decode(@UnmodifiableView ByteBuffer bytes) throws IOException {
+        return Objects.requireNonNull(decode(Context.unknown(bytes)), "decoded metadata");
     }
 
     /// Identifies the logical ZIP metadata field being decoded.
@@ -72,9 +69,9 @@ public interface ZipLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
         CENTRAL_DIRECTORY
     }
 
-    /// Provides raw bytes and available ZIP header metadata to a legacy charset detector.
+    /// Provides raw bytes and available ZIP header metadata to a legacy decoder.
     ///
-    /// Both buffers are independent read-only views. Their contents are valid only for the duration of the detector
+    /// Both buffers are independent read-only views. Their contents are valid only for the duration of the decoder
     /// call and must not be retained.
     ///
     /// @param bytes the complete raw name or comment bytes
@@ -113,7 +110,7 @@ public interface ZipLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
 
         /// Returns the ZIP creator-system identifier, or `UNKNOWN_HEADER_VALUE` when version-made-by is unavailable.
         ///
-        /// @return the unsigned 8-bit creator-system identifier, or [ZipLegacyCharsetDetector#UNKNOWN_HEADER_VALUE]
+        /// @return the unsigned 8-bit creator-system identifier, or [ZipLegacyMetadataDecoder#UNKNOWN_HEADER_VALUE]
         public int creatorSystem() {
             return versionMadeBy == UNKNOWN_HEADER_VALUE
                     ? UNKNOWN_HEADER_VALUE
@@ -122,14 +119,14 @@ public interface ZipLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
 
         /// Returns the ZIP creator version, or `UNKNOWN_HEADER_VALUE` when version-made-by is unavailable.
         ///
-        /// @return the unsigned 8-bit creator version, or [ZipLegacyCharsetDetector#UNKNOWN_HEADER_VALUE]
+        /// @return the unsigned 8-bit creator version, or [ZipLegacyMetadataDecoder#UNKNOWN_HEADER_VALUE]
         public int creatorVersion() {
             return versionMadeBy == UNKNOWN_HEADER_VALUE
                     ? UNKNOWN_HEADER_VALUE
                     : versionMadeBy & 0xff;
         }
 
-        /// Creates a context for a basic detector invocation without available ZIP header metadata.
+        /// Creates a context for a basic decoder invocation without available ZIP header metadata.
         private static Context unknown(ByteBuffer bytes) {
             return new Context(
                     bytes,

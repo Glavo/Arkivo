@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.ar;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -15,14 +15,14 @@ import java.util.Objects;
 
 /// Defines immutable AR configuration for each archive operation lifecycle.
 ///
-/// The detector is invoked for member names without an authoritative charset and may throw `IOException` to reject
-/// decoding. Returning `null` selects the AR UTF-8 fallback. The common read and update options supply archive-wide
+/// The decoder is invoked for member names without an authoritative charset and may throw `IOException` to reject
+/// decoding. The default decoder strictly decodes UTF-8. The common read and update options supply archive-wide
 /// resource limits; the common create and update options select staging storage owned by the returned file system.
 @NotNullByDefault
 public final class ArArchiveOptions {
-    /// The default detector for AR member names.
-    public static final ArchiveMetadataCharsetDetector DEFAULT_METADATA_CHARSET_DETECTOR =
-            ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+    /// The default decoder for AR member names.
+    public static final ArchiveMetadataDecoder DEFAULT_METADATA_DECODER =
+            ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
 
     /// The default read configuration.
     public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT);
@@ -55,20 +55,20 @@ public final class ArArchiveOptions {
             return new Read(value);
         }
 
-        /// Returns the configured metadata charset detector or the AR default.
+        /// Returns the configured metadata decoder or the AR default.
         ///
-        /// @return the effective detector for member names
-        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
-            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
-            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
+        /// @return the effective decoder for member names
+        public ArchiveMetadataDecoder metadataDecoder() {
+            @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
+            return metadataDecoder != null ? metadataDecoder : DEFAULT_METADATA_DECODER;
         }
 
-        /// Returns a copy with the metadata charset detector.
+        /// Returns a copy with the metadata decoder.
         ///
-        /// @param value the replacement detector for member names
+        /// @param value the replacement decoder for member names
         /// @return an immutable read configuration containing `value`
-        public Read withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Read(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")));
+        public Read withMetadataDecoder(ArchiveMetadataDecoder value) {
+            return new Read(common.withMetadataDecoder(Objects.requireNonNull(value, "value")));
         }
     }
 
@@ -90,20 +90,20 @@ public final class ArArchiveOptions {
             return new Create(value);
         }
 
-        /// Returns the configured metadata charset detector or the AR default.
+        /// Returns the configured metadata decoder or the AR default.
         ///
-        /// @return the effective detector used by file-system metadata views
-        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
-            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
-            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
+        /// @return the effective decoder used by file-system metadata views
+        public ArchiveMetadataDecoder metadataDecoder() {
+            @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
+            return metadataDecoder != null ? metadataDecoder : DEFAULT_METADATA_DECODER;
         }
 
-        /// Returns a copy with the metadata charset detector.
+        /// Returns a copy with the metadata decoder.
         ///
-        /// @param value the replacement detector used by file-system metadata views
+        /// @param value the replacement decoder used by file-system metadata views
         /// @return an immutable creation configuration containing `value`
-        public Create withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Create(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")));
+        public Create withMetadataDecoder(ArchiveMetadataDecoder value) {
+            return new Create(common.withMetadataDecoder(Objects.requireNonNull(value, "value")));
         }
     }
 
@@ -125,20 +125,20 @@ public final class ArArchiveOptions {
             return new Update(value);
         }
 
-        /// Returns the configured metadata charset detector or the AR default.
+        /// Returns the configured metadata decoder or the AR default.
         ///
-        /// @return the effective detector for source member names
-        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
-            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
-            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
+        /// @return the effective decoder for source member names
+        public ArchiveMetadataDecoder metadataDecoder() {
+            @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
+            return metadataDecoder != null ? metadataDecoder : DEFAULT_METADATA_DECODER;
         }
 
-        /// Returns a copy with the metadata charset detector.
+        /// Returns a copy with the metadata decoder.
         ///
-        /// @param value the replacement detector for source member names
+        /// @param value the replacement decoder for source member names
         /// @return an immutable update configuration containing `value`
-        public Update withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Update(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")));
+        public Update withMetadataDecoder(ArchiveMetadataDecoder value) {
+            return new Update(common.withMetadataDecoder(Objects.requireNonNull(value, "value")));
         }
     }
 }

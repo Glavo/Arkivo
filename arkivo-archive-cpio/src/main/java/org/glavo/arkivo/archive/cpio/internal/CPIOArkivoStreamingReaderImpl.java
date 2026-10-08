@@ -3,13 +3,13 @@
 
 package org.glavo.arkivo.archive.cpio.internal;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributes;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoStreamingReader;
 import org.glavo.arkivo.archive.cpio.CPIOBinaryByteOrder;
 import org.glavo.arkivo.archive.cpio.CPIODialect;
-import org.glavo.arkivo.archive.cpio.CPIOMetadataCharsetDetector;
+import org.glavo.arkivo.archive.cpio.CPIOMetadataDecoder;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
@@ -22,9 +22,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.Charset;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
@@ -58,8 +55,8 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
     /// The common archive read-limit tracker.
     private final ArkivoReadLimitTracker readLimits;
 
-    /// The detector used to decode CPIO entry names.
-    private final ArchiveMetadataCharsetDetector metadataCharsetDetector;
+    /// The decoder used to decode CPIO entry names.
+    private final ArchiveMetadataDecoder metadataDecoder;
 
     /// Whether this reader accepts archive operations.
     private boolean open = true;
@@ -96,7 +93,7 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
         this.source = Objects.requireNonNull(source, "source");
         CPIOArchiveOptions.Read checkedOptions = Objects.requireNonNull(options, "options");
         this.readLimits = ArkivoReadLimitTracker.fromLimits(checkedOptions.common().limits());
-        this.metadataCharsetDetector = checkedOptions.metadataCharsetDetector();
+        this.metadataDecoder = checkedOptions.metadataDecoder();
     }
 
     /// Advances to the next logical CPIO entry.
@@ -407,13 +404,13 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
         return (int) ((alignment - size % alignment) % alignment);
     }
 
-    /// Decodes one complete entry name through the configured basic or CPIO-specific detector.
+    /// Decodes one complete entry name through the configured basic or CPIO-specific decoder.
     private String decodeName(byte[] nameBytes, Header header) throws IOException {
-        @Nullable Charset detected;
-        if (metadataCharsetDetector instanceof CPIOMetadataCharsetDetector cpioDetector) {
-            detected = cpioDetector.detect(new CPIOMetadataCharsetDetector.Context(
+        String decoded;
+        if (metadataDecoder instanceof CPIOMetadataDecoder cpioDecoder) {
+            decoded = cpioDecoder.decode(new CPIOMetadataDecoder.Context(
                     ByteBuffer.wrap(nameBytes),
-                    CPIOMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
+                    CPIOMetadataDecoder.MetadataKind.ENTRY_NAME,
                     header.dialect(),
                     header.binaryByteOrder(),
                     header.inode(),
@@ -421,18 +418,9 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
                     header.size()
             ));
         } else {
-            detected = metadataCharsetDetector.detect(nameBytes);
+            decoded = metadataDecoder.decode(nameBytes);
         }
-        Charset charset = detected != null ? detected : StandardCharsets.UTF_8;
-        try {
-            return charset.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(nameBytes))
-                    .toString();
-        } catch (CharacterCodingException exception) {
-            throw new IOException("Failed to decode CPIO entry name", exception);
-        }
+        return Objects.requireNonNull(decoded, "decoded CPIO metadata");
     }
 
     /// Normalizes a decoded path, returning `null` for the conventional root entry.

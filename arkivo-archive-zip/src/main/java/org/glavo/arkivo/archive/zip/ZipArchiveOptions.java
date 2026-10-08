@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -22,13 +22,13 @@ import java.util.Objects;
 /// fails the write with `IOException`. The update default applies to new and replaced entries, while unchanged local
 /// records retain their existing bytes.
 ///
-/// The legacy detector is consulted only after the UTF-8 flag and valid Info-ZIP Unicode extra fields. Returning `null`
-/// selects CP437.
+/// The legacy decoder is used only when neither a valid Info-ZIP Unicode extra field nor the UTF-8 flag supplies the
+/// text encoding. The default decoder uses CP437; custom decoders determine their own conversion and failure policy.
 @NotNullByDefault
 public final class ZipArchiveOptions {
     /// The ZIP default for legacy names without an explicit Unicode representation.
-    public static final ArchiveMetadataCharsetDetector DEFAULT_LEGACY_CHARSET_DETECTOR =
-            ArchiveMetadataCharsetDetector.fixed(Charset.forName("IBM437"));
+    public static final ArchiveMetadataDecoder DEFAULT_LEGACY_METADATA_DECODER =
+            ArchiveMetadataDecoder.forCharset(Charset.forName("IBM437"));
 
     /// The default read configuration.
     public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT);
@@ -51,8 +51,8 @@ public final class ZipArchiveOptions {
 
     /// Configures reading ZIP archives.
     ///
-    /// Password and metadata-charset services are obtained from `common`. A missing detector selects
-    /// [#DEFAULT_LEGACY_CHARSET_DETECTOR].
+    /// Password and metadata-decoding services are obtained from `common`. A missing decoder selects
+    /// [#DEFAULT_LEGACY_METADATA_DECODER].
     ///
     /// @param common the format-independent read configuration
     @NotNullByDefault
@@ -78,12 +78,12 @@ public final class ZipArchiveOptions {
             return common.passwordProvider();
         }
 
-        /// Returns the configured legacy charset detector or the ZIP default.
+        /// Returns the configured legacy decoder or the ZIP default.
         ///
-        /// @return the effective detector for non-Unicode names and comments
-        public ArchiveMetadataCharsetDetector legacyCharsetDetector() {
-            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
-            return detector != null ? detector : DEFAULT_LEGACY_CHARSET_DETECTOR;
+        /// @return the effective decoder for non-Unicode names and comments
+        public ArchiveMetadataDecoder legacyMetadataDecoder() {
+            @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
+            return metadataDecoder != null ? metadataDecoder : DEFAULT_LEGACY_METADATA_DECODER;
         }
 
         /// Returns a copy with the password provider.
@@ -94,13 +94,13 @@ public final class ZipArchiveOptions {
             return new Read(common.withPasswordProvider(value));
         }
 
-        /// Returns a copy with the legacy charset detector.
+        /// Returns a copy with the legacy decoder.
         ///
-        /// @param value the replacement detector for non-Unicode names and comments
-        /// @return a new configuration with the replacement detector and all other values unchanged
+        /// @param value the replacement decoder for non-Unicode names and comments
+        /// @return a new configuration with the replacement decoder and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
-        public Read withLegacyCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Read(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")));
+        public Read withLegacyMetadataDecoder(ArchiveMetadataDecoder value) {
+            return new Read(common.withMetadataDecoder(Objects.requireNonNull(value, "value")));
         }
     }
 
@@ -184,12 +184,12 @@ public final class ZipArchiveOptions {
             return common.passwordProvider();
         }
 
-        /// Returns the configured legacy charset detector or the ZIP default.
+        /// Returns the configured legacy decoder or the ZIP default.
         ///
-        /// @return the effective detector for non-Unicode names and comments
-        public ArchiveMetadataCharsetDetector legacyCharsetDetector() {
-            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
-            return detector != null ? detector : DEFAULT_LEGACY_CHARSET_DETECTOR;
+        /// @return the effective decoder for non-Unicode names and comments
+        public ArchiveMetadataDecoder legacyMetadataDecoder() {
+            @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
+            return metadataDecoder != null ? metadataDecoder : DEFAULT_LEGACY_METADATA_DECODER;
         }
 
         /// Returns a copy with the password provider.
@@ -209,14 +209,14 @@ public final class ZipArchiveOptions {
             return new Update(common, value);
         }
 
-        /// Returns a copy with the legacy charset detector.
+        /// Returns a copy with the legacy decoder.
         ///
-        /// @param value the replacement detector for non-Unicode names and comments
-        /// @return a new configuration with the replacement detector and all other values unchanged
+        /// @param value the replacement decoder for non-Unicode names and comments
+        /// @return a new configuration with the replacement decoder and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
-        public Update withLegacyCharsetDetector(ArchiveMetadataCharsetDetector value) {
+        public Update withLegacyMetadataDecoder(ArchiveMetadataDecoder value) {
             return new Update(
-                    common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")), defaultEncryption
+                    common.withMetadataDecoder(Objects.requireNonNull(value, "value")), defaultEncryption
             );
         }
     }

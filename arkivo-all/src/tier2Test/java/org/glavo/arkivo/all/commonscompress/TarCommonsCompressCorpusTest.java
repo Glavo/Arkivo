@@ -4,7 +4,7 @@
 package org.glavo.arkivo.all.commonscompress;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.tar.TarArchiveOptions;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
@@ -272,8 +272,8 @@ final class TarCommonsCompressCorpusTest {
     /// Reads the ISO-8859-1 COMPRESS-114 member names through explicit metadata charset selection.
     @Test
     void readsLegacyNamesWithExplicitCharset() throws IOException {
-        TarArchiveOptions.Read options = TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(
-                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.ISO_8859_1)
+        TarArchiveOptions.Read options = TarArchiveOptions.READ_DEFAULTS.withMetadataDecoder(
+                ArchiveMetadataDecoder.forCharset(StandardCharsets.ISO_8859_1)
         );
         try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(
                 CommonsCompressTestResources.resource("COMPRESS-114.tar"),

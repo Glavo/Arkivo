@@ -6,7 +6,7 @@ package org.glavo.arkivo.archive.ar;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
@@ -1016,18 +1016,18 @@ public final class ArArchiveIntegrationTest {
         String path = "短名称.txt";
         byte[] identifier = (path + "/").getBytes(gb18030);
         byte[] archive = archiveWithRawIdentifier(identifier, new byte[0]);
-        ArMetadataCharsetDetector detector = context -> {
-            assertEquals(ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
-            assertEquals(ArMetadataCharsetDetector.Source.HEADER_IDENTIFIER, context.source());
+        ArMetadataDecoder metadataDecoder = context -> {
+            assertEquals(ArMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
+            assertEquals(ArMetadataDecoder.Source.HEADER_IDENTIFIER, context.source());
             assertNull(context.headerIdentifier());
             assertEquals(0L, context.memberSize());
             assertEquals(true, context.bytes().isReadOnly());
-            return gb18030;
+            return ArchiveMetadataDecoder.forCharset(gb18030).decode(context.bytes());
         };
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
+                ArArchiveOptions.READ_DEFAULTS.withMetadataDecoder(metadataDecoder)
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
@@ -1147,7 +1147,7 @@ public final class ArArchiveIntegrationTest {
         }
     }
 
-    /// Verifies that BSD and GNU long names expose their structural header identifiers to a rich detector.
+    /// Verifies that BSD and GNU long names expose their structural header identifiers to a rich decoder.
     @Test
     public void detectsExtendedNameCharsets() throws IOException {
         Charset gb18030 = Charset.forName("GB18030");
@@ -1169,25 +1169,25 @@ public final class ArArchiveIntegrationTest {
                 member("/0", 21, 12, 13, 0100644, new byte[0])
         );
         int[] calls = new int[2];
-        ArMetadataCharsetDetector detector = context -> {
-            assertEquals(ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
-            if (context.source() == ArMetadataCharsetDetector.Source.BSD_LONG_NAME) {
+        ArMetadataDecoder metadataDecoder = context -> {
+            assertEquals(ArMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
+            if (context.source() == ArMetadataDecoder.Source.BSD_LONG_NAME) {
                 calls[0]++;
                 assertEquals("#1/" + bsdPathBytes.length, context.headerIdentifier());
                 assertEquals((long) bsdBody.length, context.memberSize());
-            } else if (context.source() == ArMetadataCharsetDetector.Source.GNU_NAME_TABLE) {
+            } else if (context.source() == ArMetadataDecoder.Source.GNU_NAME_TABLE) {
                 calls[1]++;
                 assertEquals("/0", context.headerIdentifier());
                 assertEquals(0L, context.memberSize());
             } else {
                 throw new AssertionError("Unexpected AR name source: " + context.source());
             }
-            return gb18030;
+            return ArchiveMetadataDecoder.forCharset(gb18030).decode(context.bytes());
         };
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
+                ArArchiveOptions.READ_DEFAULTS.withMetadataDecoder(metadataDecoder)
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(bsdPath, reader.readAttributes(ArArkivoEntryAttributes.class).path());
@@ -1364,14 +1364,13 @@ public final class ArArchiveIntegrationTest {
         );
     }
 
-    /// Verifies decoder fallback and strict name decoding for ordinary and BSD identifiers.
+    /// Verifies the default decoder and strict name decoding for ordinary and BSD identifiers.
     @Test
-    public void appliesNameDecodingFallbackAndRejectsMalformedInput() throws IOException {
-        ArchiveMetadataCharsetDetector unknownDetector = bytes -> null;
+    public void appliesDefaultNameDecodingAndRejectsMalformedInput() throws IOException {
         byte[] fallbackArchive = archive(member("fallback.txt/", 0, 0, 0, 0100644, new byte[0]));
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
                 new ByteArrayInputStream(fallbackArchive),
-                ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(unknownDetector)
+                ArArchiveOptions.READ_DEFAULTS
         )) {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals("fallback.txt", reader.readAttributes().path());

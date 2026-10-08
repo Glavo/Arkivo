@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
@@ -15,7 +15,6 @@ import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
-import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.OpenOption;
@@ -46,36 +45,36 @@ public final class ZipArkivoFileSystemConfigTest {
         environment.put("arkivo.threadSafety", "strict");
         environment.put("arkivo.zip.defaultEncryption", "zipcrypto");
         environment.put("arkivo.zip.splitSize", "65536");
-        environment.put("arkivo.zip.legacyCharsetDetector", "gb18030");
+        environment.put("arkivo.zip.legacyMetadataDecoder", "gb18030");
 
         ZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
         assertEquals(ZipEncryption.ZIP_CRYPTO, config.defaultEncryption());
         assertEquals(65536L, config.splitSize());
         assertEquals(
-                Charset.forName("GB18030"),
-                config.legacyCharsetDetector().detect(ByteBuffer.allocate(0))
+                "\u00e9",
+                config.legacyMetadataDecoder().decode("\u00e9".getBytes(Charset.forName("GB18030")))
         );
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
     }
 
-    /// Verifies every supported legacy metadata-charset representation reaches the effective ZIP detector.
+    /// Verifies every supported legacy metadata-decoding representation reaches the effective ZIP decoder.
     @Test
-    public void legacyCharsetDetectorRepresentations() throws Exception {
-        ArchiveMetadataCharsetDetector direct = ArchiveMetadataCharsetDetector.fixed(StandardCharsets.US_ASCII);
+    public void legacyMetadataDecoderRepresentations() throws Exception {
+        ArchiveMetadataDecoder direct = ArchiveMetadataDecoder.forCharset(StandardCharsets.US_ASCII);
         assertSame(
                 direct,
-                fromEnvironment(Map.of("arkivo.zip.legacyCharsetDetector", direct)).legacyCharsetDetector()
+                fromEnvironment(Map.of("arkivo.zip.legacyMetadataDecoder", direct)).legacyMetadataDecoder()
         );
         assertEquals(
-                StandardCharsets.UTF_16LE,
-                fromEnvironment(Map.of("arkivo.zip.legacyCharsetDetector", StandardCharsets.UTF_16LE))
-                        .legacyCharsetDetector()
-                        .detect(ByteBuffer.allocate(0))
+                "AB",
+                fromEnvironment(Map.of("arkivo.zip.legacyMetadataDecoder", StandardCharsets.UTF_16LE))
+                        .legacyMetadataDecoder()
+                        .decode(new byte[]{65, 0, 66, 0})
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> fromEnvironment(Map.of("arkivo.zip.legacyCharsetDetector", 1))
+                () -> fromEnvironment(Map.of("arkivo.zip.legacyMetadataDecoder", 1))
         );
     }
 

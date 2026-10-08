@@ -6,7 +6,7 @@ package org.glavo.arkivo.all;
 import org.glavo.arkivo.all.commonscompress.ArchiveCorpusAssertions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
@@ -320,8 +320,8 @@ public final class LibarchiveArchiveCorpusTest {
             @Unmodifiable List<String> expectedNames,
             @Unmodifiable List<Long> expectedSizes
     ) throws IOException {
-        CPIOArchiveOptions.Read options = CPIOArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(
-                ArchiveMetadataCharsetDetector.fixed(metadataCharset)
+        CPIOArchiveOptions.Read options = CPIOArchiveOptions.READ_DEFAULTS.withMetadataDecoder(
+                ArchiveMetadataDecoder.forCharset(metadataCharset)
         );
         int entryIndex = 0;
         try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(

@@ -52,13 +52,13 @@ public final class ArchiveOperationOptionsTest {
         ArchiveReadLimits limits = ArchiveReadLimits.builder().maximumEntryCount(3L).build();
         ArkivoEditStorageFactory storageFactory = ArkivoEditStorageFactory.memory();
         ArkivoPasswordProvider passwordProvider = ArkivoPasswordProvider.none();
-        ArchiveMetadataCharsetDetector charsetDetector = ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+        ArchiveMetadataDecoder charsetDecoder = ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
         ArchiveReadOptions defaults = ArchiveReadOptions.DEFAULT;
         ArchiveReadOptions configured = defaults
                 .withThreadSafety(ArkivoFileSystemThreadSafety.NONE)
                 .withEditStorageFactory(storageFactory)
                 .withPasswordProvider(passwordProvider)
-                .withMetadataCharsetDetector(charsetDetector)
+                .withMetadataDecoder(charsetDecoder)
                 .withLimits(limits);
 
         assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, defaults.threadSafety());
@@ -67,10 +67,10 @@ public final class ArchiveOperationOptionsTest {
         assertSame(limits, configured.limits());
         assertSame(storageFactory, configured.editStorageFactory());
         assertSame(passwordProvider, configured.passwordProvider());
-        assertSame(charsetDetector, configured.metadataCharsetDetector());
+        assertSame(charsetDecoder, configured.metadataDecoder());
         assertNull(defaults.editStorageFactory());
         assertNull(defaults.passwordProvider());
-        assertNull(defaults.metadataCharsetDetector());
+        assertNull(defaults.metadataDecoder());
     }
 
     /// Verifies creation options expose explicit common configuration.
@@ -78,21 +78,21 @@ public final class ArchiveOperationOptionsTest {
     public void createOptionsAreImmutable() {
         ArkivoEditStorageFactory storageFactory = ArkivoEditStorageFactory.memory();
         ArkivoPasswordProvider passwordProvider = ArkivoPasswordProvider.none();
-        ArchiveMetadataCharsetDetector charsetDetector = ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+        ArchiveMetadataDecoder charsetDecoder = ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
         ArchiveCreateOptions configured = ArchiveCreateOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.NONE)
                 .withEditStorageFactory(storageFactory)
                 .withPasswordProvider(passwordProvider)
-                .withMetadataCharsetDetector(charsetDetector);
+                .withMetadataDecoder(charsetDecoder);
 
         assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, ArchiveCreateOptions.DEFAULT.threadSafety());
         assertEquals(ArkivoFileSystemThreadSafety.NONE, configured.threadSafety());
         assertSame(storageFactory, configured.editStorageFactory());
         assertSame(passwordProvider, configured.passwordProvider());
-        assertSame(charsetDetector, configured.metadataCharsetDetector());
+        assertSame(charsetDecoder, configured.metadataDecoder());
         assertNull(ArchiveCreateOptions.DEFAULT.editStorageFactory());
         assertNull(ArchiveCreateOptions.DEFAULT.passwordProvider());
-        assertNull(ArchiveCreateOptions.DEFAULT.metadataCharsetDetector());
+        assertNull(ArchiveCreateOptions.DEFAULT.metadataDecoder());
     }
 
     /// Verifies update options carry publication and read-limit policy together.
@@ -102,13 +102,13 @@ public final class ArchiveOperationOptionsTest {
         ArchiveReadLimits limits = ArchiveReadLimits.builder().maximumMetadataSize(1024L).build();
         ArkivoEditStorageFactory storageFactory = ArkivoEditStorageFactory.memory();
         ArkivoPasswordProvider passwordProvider = ArkivoPasswordProvider.none();
-        ArchiveMetadataCharsetDetector charsetDetector = ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+        ArchiveMetadataDecoder charsetDecoder = ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
         ArchiveUpdateOptions configured = ArchiveUpdateOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT)
                 .withEditStorageFactory(storageFactory)
                 .withCommitTarget(commitTarget)
                 .withPasswordProvider(passwordProvider)
-                .withMetadataCharsetDetector(charsetDetector)
+                .withMetadataDecoder(charsetDecoder)
                 .withLimits(limits);
 
         assertNull(ArchiveUpdateOptions.DEFAULT.commitTarget());
@@ -116,14 +116,14 @@ public final class ArchiveOperationOptionsTest {
         assertSame(storageFactory, configured.editStorageFactory());
         assertSame(commitTarget, configured.commitTarget());
         assertSame(passwordProvider, configured.passwordProvider());
-        assertSame(charsetDetector, configured.metadataCharsetDetector());
+        assertSame(charsetDecoder, configured.metadataDecoder());
         assertSame(limits, configured.limits());
 
         ArchiveReadOptions readOptions = configured.readOptions();
         assertEquals(configured.threadSafety(), readOptions.threadSafety());
         assertSame(configured.editStorageFactory(), readOptions.editStorageFactory());
         assertSame(configured.passwordProvider(), readOptions.passwordProvider());
-        assertSame(configured.metadataCharsetDetector(), readOptions.metadataCharsetDetector());
+        assertSame(configured.metadataDecoder(), readOptions.metadataDecoder());
         assertSame(configured.limits(), readOptions.limits());
     }
 

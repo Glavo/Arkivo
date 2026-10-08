@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.ar;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -121,13 +121,13 @@ final class ArArkivoFileSystemContractTest {
         }
     }
 
-    /// Verifies raw NIO environments accept every documented metadata-charset representation.
+    /// Verifies raw NIO environments accept every documented metadata-decoding representation.
     @Test
     void acceptsMetadataCharsetEnvironmentRepresentations() throws IOException {
         Path archive = createArchive();
         ArArkivoFileSystemProvider provider = new ArArkivoFileSystemProvider();
         Object[] representations = {
-                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8),
+                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8),
                 StandardCharsets.UTF_8,
                 "UTF-8"
         };
@@ -135,7 +135,7 @@ final class ArArkivoFileSystemContractTest {
         for (Object representation : representations) {
             try (ArArkivoFileSystem fileSystem = provider.newFileSystem(
                     archive,
-                    Map.of("arkivo.ar.metadataCharsetDetector", representation)
+                    Map.of("arkivo.ar.metadataDecoder", representation)
             )) {
                 assertEquals(
                         "value",
@@ -148,7 +148,7 @@ final class ArArkivoFileSystemContractTest {
                 IllegalArgumentException.class,
                 () -> provider.newFileSystem(
                         archive,
-                        Map.of("arkivo.ar.metadataCharsetDetector", 1)
+                        Map.of("arkivo.ar.metadataDecoder", 1)
                 )
         );
     }

@@ -14,7 +14,7 @@ import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
-import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
+import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -904,14 +904,14 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             int versionNeededToExtract
     ) throws IOException {
         try {
-            String path = new ZipEntryNameDecoder(config.legacyCharsetDetector())
+            String path = new ZipEntryNameDecoder(config.legacyMetadataDecoder())
                     .decodePath(
                             rawName,
                             flags,
                             extraData,
-                            ZipLegacyCharsetDetector.HeaderSource.LOCAL_FILE_HEADER,
+                            ZipLegacyMetadataDecoder.HeaderSource.LOCAL_FILE_HEADER,
                             versionNeededToExtract,
-                            ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE
+                            ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
                     );
             requireValidEntryPath(path);
             return path.replace('\\', '/');

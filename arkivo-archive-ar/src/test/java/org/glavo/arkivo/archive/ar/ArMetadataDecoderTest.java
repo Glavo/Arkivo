@@ -13,28 +13,28 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies AR-specific metadata charset detection contexts.
+/// Verifies AR-specific metadata decoding contexts.
 @NotNullByDefault
-public final class ArMetadataCharsetDetectorTest {
-    /// Verifies basic detector calls receive an unknown context and an independent read-only view.
+public final class ArMetadataDecoderTest {
+    /// Verifies basic decoder calls receive an unknown context and an independent read-only view.
     @Test
     public void basicInvocationSuppliesUnknownContext() throws Exception {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{0, 1, 2, 3});
         source.position(1);
         source.mark();
         source.limit(3);
-        ArMetadataCharsetDetector detector = context -> {
+        ArMetadataDecoder metadataDecoder = context -> {
             assertTrue(context.bytes().isReadOnly());
             assertEquals(2, context.bytes().remaining());
-            assertEquals(ArMetadataCharsetDetector.MetadataKind.UNKNOWN, context.metadataKind());
-            assertEquals(ArMetadataCharsetDetector.Source.UNKNOWN, context.source());
+            assertEquals(ArMetadataDecoder.MetadataKind.UNKNOWN, context.metadataKind());
+            assertEquals(ArMetadataDecoder.Source.UNKNOWN, context.source());
             assertNull(context.headerIdentifier());
-            assertEquals(ArMetadataCharsetDetector.UNKNOWN_MEMBER_SIZE, context.memberSize());
+            assertEquals(ArMetadataDecoder.UNKNOWN_MEMBER_SIZE, context.memberSize());
             context.bytes().position(context.bytes().limit());
-            return null;
+            return "decoded";
         };
 
-        assertNull(detector.detect(source));
+        assertEquals("decoded", metadataDecoder.decode(source));
         assertEquals(1, source.position());
         assertEquals(3, source.limit());
         source.reset();
@@ -45,10 +45,10 @@ public final class ArMetadataCharsetDetectorTest {
     @Test
     public void contextValidatesMemberSize() {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{4, 5, 6});
-        ArMetadataCharsetDetector.Context context = new ArMetadataCharsetDetector.Context(
+        ArMetadataDecoder.Context context = new ArMetadataDecoder.Context(
                 source,
-                ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
-                ArMetadataCharsetDetector.Source.BSD_LONG_NAME,
+                ArMetadataDecoder.MetadataKind.ENTRY_NAME,
+                ArMetadataDecoder.Source.BSD_LONG_NAME,
                 "#1/3",
                 6L
         );
@@ -56,19 +56,19 @@ public final class ArMetadataCharsetDetectorTest {
         assertTrue(context.bytes().isReadOnly());
         context.bytes().position(1);
         assertEquals(0, source.position());
-        assertEquals(ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
-        assertEquals(ArMetadataCharsetDetector.Source.BSD_LONG_NAME, context.source());
+        assertEquals(ArMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
+        assertEquals(ArMetadataDecoder.Source.BSD_LONG_NAME, context.source());
         assertEquals("#1/3", context.headerIdentifier());
         assertEquals(6L, context.memberSize());
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new ArMetadataCharsetDetector.Context(
+                () -> new ArMetadataDecoder.Context(
                         ByteBuffer.allocate(0),
-                        ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
-                        ArMetadataCharsetDetector.Source.HEADER_IDENTIFIER,
+                        ArMetadataDecoder.MetadataKind.ENTRY_NAME,
+                        ArMetadataDecoder.Source.HEADER_IDENTIFIER,
                         null,
-                        ArMetadataCharsetDetector.UNKNOWN_MEMBER_SIZE - 1L
+                        ArMetadataDecoder.UNKNOWN_MEMBER_SIZE - 1L
                 )
         );
     }

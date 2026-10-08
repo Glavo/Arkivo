@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.internal;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
@@ -179,28 +179,28 @@ final class ArchiveOptionsTest {
         );
     }
 
-    /// Verifies format-specific metadata detector options normalize detector, charset, and charset-name values.
+    /// Verifies format-specific metadata decoder options normalize decoder, charset, and charset-name values.
     @Test
-    void normalizesMetadataCharsetDetectorShapes() throws IOException {
-        ArchiveOption<ArchiveMetadataCharsetDetector> option =
-                ArchiveEnvironmentOptions.metadataCharsetDetectorOption("format.test.metadataCharsetDetector");
-        ArchiveMetadataCharsetDetector direct = ArchiveMetadataCharsetDetector.fixed(StandardCharsets.US_ASCII);
+    void normalizesMetadataDecoderShapes() throws IOException {
+        ArchiveOption<ArchiveMetadataDecoder> option =
+                ArchiveEnvironmentOptions.metadataDecoderOption("format.test.metadataDecoder");
+        ArchiveMetadataDecoder direct = ArchiveMetadataDecoder.forCharset(StandardCharsets.US_ASCII);
 
         assertSame(
                 direct,
                 ArchiveOptions.fromEnvironment(Map.of(option.key(), direct)).get(option)
         );
         assertEquals(
-                StandardCharsets.UTF_16LE,
+                "AB",
                 ArchiveOptions.fromEnvironment(Map.of(option.key(), StandardCharsets.UTF_16LE))
                         .get(option)
-                        .detect(new byte[0])
+                        .decode(new byte[]{65, 0, 66, 0})
         );
         assertEquals(
-                StandardCharsets.ISO_8859_1,
+                "\u00e9",
                 ArchiveOptions.fromEnvironment(Map.of(option.key(), "ISO-8859-1"))
                         .get(option)
-                        .detect(new byte[0])
+                        .decode(new byte[]{(byte) 0xe9})
         );
         assertThrows(
                 IllegalArgumentException.class,

@@ -4,7 +4,7 @@
 package org.glavo.arkivo.all.commonscompress;
 
 import org.apache.commons.compress.archivers.zip.ZipFile;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
@@ -402,8 +402,8 @@ final class ZipCommonsCompressCorpusTest {
     /// Verifies central-directory Unix mode metadata and every COMPRESS-214 symbolic-link target.
     @Test
     void readsUnixSymbolicLinks() throws IOException {
-        ZipArchiveOptions.Read utf8 = ZipArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(
-                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8)
+        ZipArchiveOptions.Read utf8 = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
+                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8)
         );
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                 CommonsCompressTestResources.resource("COMPRESS-214_unix_symlinks.zip"),

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
@@ -12,7 +12,7 @@ import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
-import org.glavo.arkivo.archive.ar.ArMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ar.ArMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -23,8 +23,6 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.CharacterCodingException;
-import java.nio.charset.Charset;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
@@ -35,9 +33,9 @@ import java.util.Objects;
 @NotNullByDefault
 public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// The internal NIO environment key for name detection.
-    private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
-            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.ar.metadataCharsetDetector"
+    private static final ArchiveOption<ArchiveMetadataDecoder> METADATA_DECODER =
+            ArchiveEnvironmentOptions.metadataDecoderOption(
+                    "arkivo.ar.metadataDecoder"
             );
     /// The global AR archive signature.
     private static final byte @Unmodifiable [] GLOBAL_HEADER = "!<arch>\n".getBytes(StandardCharsets.US_ASCII);
@@ -48,9 +46,9 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// The AR member header trailer.
     private static final byte @Unmodifiable [] MEMBER_TRAILER = new byte[]{'`', '\n'};
 
-    /// The UTF-8 detector used when no AR metadata charset detector is configured.
-    private static final ArchiveMetadataCharsetDetector DEFAULT_METADATA_CHARSET_DETECTOR =
-            ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+    /// The UTF-8 decoder used when no AR metadata decoder is configured.
+    private static final ArchiveMetadataDecoder DEFAULT_METADATA_DECODER =
+            ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
 
     /// The backing archive input stream.
     private final InputStream source;
@@ -58,8 +56,8 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// The common archive read-limit tracker.
     private final ArkivoReadLimitTracker readLimits;
 
-    /// The detector used to select charsets for AR member names.
-    private final ArchiveMetadataCharsetDetector metadataCharsetDetector;
+    /// The decoder used for AR member names.
+    private final ArchiveMetadataDecoder metadataDecoder;
 
     /// Whether the global archive signature has been consumed.
     private boolean globalHeaderRead;
@@ -93,9 +91,9 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         this.source = Objects.requireNonNull(source, "source");
         ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
         this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
-        this.metadataCharsetDetector = checkedOptions.getOrDefault(
-                METADATA_CHARSET_DETECTOR,
-                DEFAULT_METADATA_CHARSET_DETECTOR
+        this.metadataDecoder = checkedOptions.getOrDefault(
+                METADATA_DECODER,
+                DEFAULT_METADATA_DECODER
         );
     }
 
@@ -293,7 +291,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             readLimits.acceptMetadata(nameLength, null);
             String path = decodeName(
                     readBytes(nameLength, "Unexpected end of AR BSD long name"),
-                    ArMetadataCharsetDetector.Source.BSD_LONG_NAME,
+                    ArMetadataDecoder.Source.BSD_LONG_NAME,
                     structuralIdentifier,
                     memberSize
             );
@@ -321,7 +319,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         }
         String identifier = decodeName(
                 identifierBytes,
-                ArMetadataCharsetDetector.Source.HEADER_IDENTIFIER,
+                ArMetadataDecoder.Source.HEADER_IDENTIFIER,
                 null,
                 memberSize
         );
@@ -353,7 +351,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         }
         return validatePath(decodeName(
                 Arrays.copyOfRange(table, offset, nameEnd),
-                ArMetadataCharsetDetector.Source.GNU_NAME_TABLE,
+                ArMetadataDecoder.Source.GNU_NAME_TABLE,
                 headerIdentifier,
                 memberSize
         ));
@@ -368,39 +366,27 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         }
     }
 
-    /// Decodes raw AR member-name bytes through the configured basic or AR-specific detector.
+    /// Decodes raw AR member-name bytes through the configured basic or AR-specific decoder.
     private String decodeName(
             byte[] nameBytes,
-            ArMetadataCharsetDetector.Source nameSource,
+            ArMetadataDecoder.Source nameSource,
             @Nullable String headerIdentifier,
             long memberSize
     ) throws IOException {
-        @Nullable Charset detectedCharset;
-        if (metadataCharsetDetector instanceof ArMetadataCharsetDetector arDetector) {
-            detectedCharset = arDetector.detect(new ArMetadataCharsetDetector.Context(
-                    ByteBuffer.wrap(nameBytes),
-                    ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
-                    nameSource,
-                    headerIdentifier,
-                    memberSize
-            ));
-        } else {
-            detectedCharset = metadataCharsetDetector.detect(nameBytes);
-        }
-        return strictDecodeName(
-                nameBytes,
-                detectedCharset != null ? detectedCharset : StandardCharsets.UTF_8
-        );
-    }
-
-    /// Strictly decodes a complete AR member name with the selected charset.
-    private static String strictDecodeName(byte[] nameBytes, Charset charset) throws IOException {
         try {
-            return charset.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(nameBytes))
-                    .toString();
+            String decoded;
+            if (metadataDecoder instanceof ArMetadataDecoder arDecoder) {
+                decoded = arDecoder.decode(new ArMetadataDecoder.Context(
+                        ByteBuffer.wrap(nameBytes),
+                        ArMetadataDecoder.MetadataKind.ENTRY_NAME,
+                        nameSource,
+                        headerIdentifier,
+                        memberSize
+                ));
+            } else {
+                decoded = metadataDecoder.decode(nameBytes);
+            }
+            return Objects.requireNonNull(decoded, "decoded AR metadata");
         } catch (CharacterCodingException exception) {
             throw new IOException("Failed to decode AR member name", exception);
         }

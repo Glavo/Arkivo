@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -235,10 +235,10 @@ final class ZipNamespaceInteropTest {
             }
             for (Path persisted : List.of(archive, referenceArchive)) {
                 // ZIPFS uses UTF-8 by default even for records without the language-encoding flag.
-                // Keep Arkivo's own output on the default detector to verify its serialized encoding metadata.
+                // Keep Arkivo's own output on the default decoder to verify its serialized encoding metadata.
                 var readOptions = persisted.equals(referenceArchive)
-                        ? ZipArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(
-                                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8))
+                        ? ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
+                                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8))
                         : ZipArchiveOptions.READ_DEFAULTS;
                 try (var reopened = ZipArkivoFileSystem.open(persisted, readOptions)) {
                     assertAll(persisted.toString(), () -> assertSnapshot(reopened, expected));

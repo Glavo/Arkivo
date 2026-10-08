@@ -242,7 +242,7 @@ final class CPIOEntryContractTest {
 
         CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive.toByteArray()),
-                CPIOArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(bytes -> null)
+                CPIOArchiveOptions.READ_DEFAULTS
         );
         assertThrows(IllegalStateException.class, reader::readAttributes);
         assertTrue(reader.next());

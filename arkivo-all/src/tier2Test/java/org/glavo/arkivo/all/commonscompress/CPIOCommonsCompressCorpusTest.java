@@ -7,7 +7,7 @@ import org.apache.commons.compress.archivers.cpio.CpioArchiveEntry;
 import org.apache.commons.compress.archivers.cpio.CpioArchiveInputStream;
 import org.apache.commons.compress.archivers.cpio.CpioConstants;
 import org.glavo.arkivo.all.LibarchiveUuDecoder;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributes;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoStreamingReader;
@@ -115,8 +115,8 @@ final class CPIOCommonsCompressCorpusTest {
     private static @Unmodifiable List<EntryDigest> readWithArkivo(Path archive, Charset charset, int chunk)
             throws IOException {
         List<EntryDigest> entries = new ArrayList<>();
-        var options = CPIOArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(
-                ArchiveMetadataCharsetDetector.fixed(charset));
+        var options = CPIOArchiveOptions.READ_DEFAULTS.withMetadataDecoder(
+                ArchiveMetadataDecoder.forCharset(charset));
         try (InputStream input = new FragmentedInputStream(Files.newInputStream(archive), chunk);
              CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(input, options)) {
             while (reader.next()) {

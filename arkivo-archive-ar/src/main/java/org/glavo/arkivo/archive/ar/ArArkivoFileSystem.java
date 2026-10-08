@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.ar;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
@@ -52,10 +52,10 @@ import java.util.Objects;
 /// selected thread-safety strategy.
 @NotNullByDefault
 public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits ArArkivoFileSystemImpl {
-    /// The option for the detector used to select charsets for AR member names.
-    private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
-            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.ar.metadataCharsetDetector"
+    /// The option for the decoder used for AR member names.
+    private static final ArchiveOption<ArchiveMetadataDecoder> METADATA_DECODER =
+            ArchiveEnvironmentOptions.metadataDecoderOption(
+                    "arkivo.ar.metadataDecoder"
             );
 
     /// Creates an AR archive file system base instance.
@@ -225,7 +225,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     /// Converts strongly typed AR read settings for the internal parser.
     static ArchiveOptions toInternalOptions(ArArchiveOptions.Read options) {
         return ArchiveOptions.fromReadOptions(options.common())
-                .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector());
+                .with(METADATA_DECODER, options.metadataDecoder());
     }
 
     /// Converts strongly typed AR creation settings for the internal writer.
@@ -235,7 +235,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
                         StandardOpenOption.WRITE,
                         StandardOpenOption.CREATE_NEW
                 ))
-                .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector());
+                .with(METADATA_DECODER, options.metadataDecoder());
     }
 
     /// Converts strongly typed AR update settings for the internal complete-rewrite implementation.
@@ -245,7 +245,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
                         StandardOpenOption.READ,
                         StandardOpenOption.WRITE
                 ))
-                .with(METADATA_CHARSET_DETECTOR, options.metadataCharsetDetector());
+                .with(METADATA_DECODER, options.metadataDecoder());
     }
 
 }

@@ -5,7 +5,7 @@
 package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.all.commonscompress.ArchiveCorpusAssertions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
@@ -148,8 +148,8 @@ final class GoZipCorpusTest {
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {"utf8-7zip.zip", "utf8-infozip.zip", "utf8-osx.zip", "utf8-winrar.zip", "utf8-winzip.zip"})
     void readsUnicodeNames(String name) throws IOException {
-        var options = ZipArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(
-                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8));
+        var options = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
+                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8));
         try (var fileSystem = ZipArkivoFileSystem.open(fixture(name), options)) {
             assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/\u4e16\u754c")));
         }

@@ -15,7 +15,7 @@ import java.util.Objects;
 ///                           select the format default
 /// @param commitTarget the publication target, or `null` when the source path is replaced transactionally
 /// @param passwordProvider the provider used to decrypt input or encrypt output, or `null` to disable password lookup
-/// @param metadataCharsetDetector the detector for metadata without an authoritative encoding, or `null` to select the
+/// @param metadataDecoder the decoder for metadata without an authoritative encoding, or `null` to select the
 ///                                format default
 /// @param limits the resource limits enforced while reading the source archive
 @NotNullByDefault
@@ -24,7 +24,7 @@ public record ArchiveUpdateOptions(
         @Nullable ArkivoEditStorageFactory editStorageFactory,
         @Nullable ArkivoCommitTarget commitTarget,
         @Nullable ArkivoPasswordProvider passwordProvider,
-        @Nullable ArchiveMetadataCharsetDetector metadataCharsetDetector,
+        @Nullable ArchiveMetadataDecoder metadataDecoder,
         ArchiveReadLimits limits
 ) {
     /// The default update configuration.
@@ -49,7 +49,7 @@ public record ArchiveUpdateOptions(
     /// @return a copy with {@code threadSafety} set to {@code value}
     public ArchiveUpdateOptions withThreadSafety(ArkivoFileSystemThreadSafety value) {
         return new ArchiveUpdateOptions(
-                value, editStorageFactory, commitTarget, passwordProvider, metadataCharsetDetector, limits
+                value, editStorageFactory, commitTarget, passwordProvider, metadataDecoder, limits
         );
     }
 
@@ -59,7 +59,7 @@ public record ArchiveUpdateOptions(
     /// @return a copy with {@code editStorageFactory} set to {@code value}
     public ArchiveUpdateOptions withEditStorageFactory(@Nullable ArkivoEditStorageFactory value) {
         return new ArchiveUpdateOptions(
-                threadSafety, value, commitTarget, passwordProvider, metadataCharsetDetector, limits
+                threadSafety, value, commitTarget, passwordProvider, metadataDecoder, limits
         );
     }
 
@@ -69,7 +69,7 @@ public record ArchiveUpdateOptions(
     /// @return a copy with {@code commitTarget} set to {@code value}
     public ArchiveUpdateOptions withCommitTarget(@Nullable ArkivoCommitTarget value) {
         return new ArchiveUpdateOptions(
-                threadSafety, editStorageFactory, value, passwordProvider, metadataCharsetDetector, limits
+                threadSafety, editStorageFactory, value, passwordProvider, metadataDecoder, limits
         );
     }
 
@@ -79,15 +79,15 @@ public record ArchiveUpdateOptions(
     /// @return a copy with {@code passwordProvider} set to {@code value}
     public ArchiveUpdateOptions withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
         return new ArchiveUpdateOptions(
-                threadSafety, editStorageFactory, commitTarget, value, metadataCharsetDetector, limits
+                threadSafety, editStorageFactory, commitTarget, value, metadataDecoder, limits
         );
     }
 
-    /// Returns a copy with the requested metadata charset detector.
+    /// Returns a copy with the requested metadata decoder.
     ///
-    /// @param value the detector for the returned options, or {@code null} to select the format default
-    /// @return a copy with {@code metadataCharsetDetector} set to {@code value}
-    public ArchiveUpdateOptions withMetadataCharsetDetector(@Nullable ArchiveMetadataCharsetDetector value) {
+    /// @param value the decoder for the returned options, or {@code null} to select the format default
+    /// @return a copy with {@code metadataDecoder} set to {@code value}
+    public ArchiveUpdateOptions withMetadataDecoder(@Nullable ArchiveMetadataDecoder value) {
         return new ArchiveUpdateOptions(
                 threadSafety, editStorageFactory, commitTarget, passwordProvider, value, limits
         );
@@ -99,13 +99,13 @@ public record ArchiveUpdateOptions(
     /// @return a copy with {@code limits} set to {@code value}
     public ArchiveUpdateOptions withLimits(ArchiveReadLimits value) {
         return new ArchiveUpdateOptions(
-                threadSafety, editStorageFactory, commitTarget, passwordProvider, metadataCharsetDetector, value
+                threadSafety, editStorageFactory, commitTarget, passwordProvider, metadataDecoder, value
         );
     }
 
     /// Returns the read-only view used to probe and decode the source archive.
     ///
-    /// The returned options preserve synchronization, storage, password, metadata-charset, and limit policies. Update
+    /// The returned options preserve synchronization, storage, password, metadata-decoding, and limit policies. Update
     /// publication is intentionally omitted.
     ///
     /// @return immutable read options equivalent to the source-reading portion of this configuration
@@ -114,7 +114,7 @@ public record ArchiveUpdateOptions(
                 threadSafety,
                 editStorageFactory,
                 passwordProvider,
-                metadataCharsetDetector,
+                metadataDecoder,
                 limits
         );
     }

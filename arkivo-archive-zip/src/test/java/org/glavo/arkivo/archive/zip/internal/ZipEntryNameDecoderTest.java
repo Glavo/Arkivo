@@ -3,7 +3,9 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
+import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -25,7 +27,7 @@ public final class ZipEntryNameDecoderTest {
     /// Verifies that the UTF-8 general purpose bit flag selects strict UTF-8 decoding.
     @Test
     public void utf8Flag() throws Exception {
-        ZipEntryNameDecoder decoder = decoderWithUnusedDetector();
+        ZipEntryNameDecoder decoder = decoderWithUnusedDecoder();
         byte[] rawPath = "目录/文件.txt".getBytes(StandardCharsets.UTF_8);
 
         String path = decoder.decodePath(rawPath, ZipEntryNameDecoder.UTF_8_FLAG, new byte[0]);
@@ -36,7 +38,7 @@ public final class ZipEntryNameDecoderTest {
     /// Verifies that a valid Info-ZIP Unicode Path Extra Field overrides fallback decoding.
     @Test
     public void unicodePathExtraField() throws Exception {
-        ZipEntryNameDecoder decoder = decoderWithUnusedDetector();
+        ZipEntryNameDecoder decoder = decoderWithUnusedDecoder();
         byte[] rawPath = "目录/文件.txt".getBytes(Charset.forName("GB18030"));
         byte[] extraData = unicodeExtraField(
                 ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID,
@@ -52,7 +54,7 @@ public final class ZipEntryNameDecoderTest {
     /// Verifies that invalid Unicode extra fields do not hide later valid Unicode metadata.
     @Test
     public void unicodePathExtraFieldUsesLaterValidRecord() throws Exception {
-        ZipEntryNameDecoder decoder = decoderWithUnusedDetector();
+        ZipEntryNameDecoder decoder = decoderWithUnusedDecoder();
         byte[] rawPath = "fallback.txt".getBytes(StandardCharsets.US_ASCII);
         byte[] invalidExtraData = unicodeExtraField(
                 ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID,
@@ -74,7 +76,7 @@ public final class ZipEntryNameDecoderTest {
     /// Verifies that malformed extra field lengths are rejected before fallback decoding.
     @Test
     public void malformedExtraFieldLength() {
-        ZipEntryNameDecoder decoder = decoderWithUnusedDetector();
+        ZipEntryNameDecoder decoder = decoderWithUnusedDecoder();
         byte[] rawPath = "fallback.txt".getBytes(StandardCharsets.UTF_8);
 
         IOException exception = assertThrows(
@@ -85,13 +87,13 @@ public final class ZipEntryNameDecoderTest {
         assertEquals(true, exception.getMessage().contains("Invalid ZIP extra field length"));
     }
 
-    /// Verifies that a custom detector can select GB18030 for legacy entry metadata.
+    /// Verifies that a custom decoder can select GB18030 for legacy entry metadata.
     @Test
-    public void customDetectorSelectsGb18030() throws Exception {
+    public void customDecoderSelectsGb18030() throws Exception {
         Charset gb18030 = Charset.forName("GB18030");
         ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(bytes -> {
             assertEquals(true, bytes.isReadOnly());
-            return gb18030;
+            return ArchiveMetadataDecoder.forCharset(gb18030).decode(bytes);
         });
         byte[] rawPath = "目录/文件.txt".getBytes(gb18030);
 
@@ -100,14 +102,14 @@ public final class ZipEntryNameDecoderTest {
         assertEquals("目录/文件.txt", path);
     }
 
-    /// Verifies that ZIP-specific detectors receive central-directory metadata only on the legacy decoding path.
+    /// Verifies that ZIP-specific decoders receive central-directory metadata only on the legacy decoding path.
     @Test
-    public void zipDetectorReceivesCentralDirectoryContext() throws Exception {
+    public void zipDecoderReceivesCentralDirectoryContext() throws Exception {
         Charset gb18030 = Charset.forName("GB18030");
-        ZipLegacyCharsetDetector detector = context -> {
-            assertEquals(ZipLegacyCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+        ZipLegacyMetadataDecoder metadataDecoder = context -> {
+            assertEquals(ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             assertEquals(
-                    ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                    ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                     context.headerSource()
             );
             assertEquals(0x0002, context.generalPurposeFlags());
@@ -115,16 +117,16 @@ public final class ZipEntryNameDecoderTest {
             assertEquals(3, context.creatorSystem());
             assertEquals(63, context.creatorVersion());
             assertEquals(0, context.extraData().remaining());
-            return gb18030;
+            return ArchiveMetadataDecoder.forCharset(gb18030).decode(context.bytes());
         };
-        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(detector);
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(metadataDecoder);
         byte[] rawPath = "目录/文件.txt".getBytes(gb18030);
 
         String path = decoder.decodePath(
                 rawPath,
                 0x0002,
                 new byte[0],
-                ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                 20,
                 3 << Byte.SIZE | 63
         );
@@ -132,23 +134,23 @@ public final class ZipEntryNameDecoderTest {
         assertEquals("目录/文件.txt", path);
     }
 
-    /// Verifies that an inconclusive detector falls back to ZIP-standard CP437 decoding.
+    /// Verifies that the default policy decodes legacy names as CP437.
     @Test
-    public void inconclusiveDetectorFallsBackToCp437() throws Exception {
+    public void defaultDecoderUsesCp437() throws Exception {
         Charset cp437 = Charset.forName("IBM437");
         byte[] rawPath = "München.txt".getBytes(cp437);
-        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(bytes -> null);
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER);
 
         assertEquals("München.txt", decoder.decodePath(rawPath, 0, new byte[0]));
     }
 
-    /// ASCII metadata still consults the detector and obeys non-ASCII-compatible charsets.
+    /// ASCII metadata still consults the decoder and obeys non-ASCII-compatible charsets.
     @Test
     public void asciiBytesRespectSelectedCharset() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(bytes -> {
             calls.incrementAndGet();
-            return StandardCharsets.UTF_16BE;
+            return ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_16BE).decode(bytes);
         });
         byte[] raw = {0, 'A', 0, 'B'};
         assertEquals("AB", decoder.decodePath(raw, 0, new byte[0]));
@@ -156,7 +158,7 @@ public final class ZipEntryNameDecoderTest {
         assertEquals(2, calls.get());
         decoder = new ZipEntryNameDecoder(bytes -> {
             calls.incrementAndGet();
-            return null;
+            return ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(bytes);
         });
         assertEquals("entry.txt", decoder.decodePath("entry.txt".getBytes(StandardCharsets.US_ASCII), 0, new byte[0]));
         assertEquals(3, calls.get());
@@ -167,7 +169,7 @@ public final class ZipEntryNameDecoderTest {
     public void byteValuesMatchStrictDecoding() throws Exception {
         for (Charset charset : new Charset[]{StandardCharsets.UTF_8, StandardCharsets.US_ASCII,
                 StandardCharsets.ISO_8859_1, Charset.forName("IBM437")}) {
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(bytes -> charset);
+            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(ArchiveMetadataDecoder.forCharset(charset));
             for (int value = 0; value < 256; value++) {
                 byte[] raw = {'a', (byte) value, 'z'};
                 String expected;
@@ -187,7 +189,7 @@ public final class ZipEntryNameDecoderTest {
     /// An ASCII prefix does not hide overlong sequences, surrogate encodings, or truncated UTF-8 tails.
     @Test
     public void malformedUtf8AfterAsciiPrefix() {
-        ZipEntryNameDecoder decoder = decoderWithUnusedDetector();
+        ZipEntryNameDecoder decoder = decoderWithUnusedDecoder();
         byte[] prefix = new byte[257];
         Arrays.fill(prefix, (byte) 'a');
         for (byte[] suffix : new byte[][]{{(byte) 0xc0, (byte) 0x80}, {(byte) 0xed, (byte) 0xa0, (byte) 0x80},
@@ -205,13 +207,23 @@ public final class ZipEntryNameDecoderTest {
         byte[] extra = concatenate(
                 unicodeExtraField(ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID, raw, "ascii.txt"),
                 new byte[]{(byte) 0xff, (byte) 0xff, 1, 0, (byte) 0xff});
-        assertEquals("ascii.txt", decoderWithUnusedDetector().decodePath(raw, ZipEntryNameDecoder.UTF_8_FLAG, extra));
+        assertEquals("ascii.txt", decoderWithUnusedDecoder().decodePath(raw, ZipEntryNameDecoder.UTF_8_FLAG, extra));
     }
 
-    /// Returns a decoder whose detector fails if authoritative Unicode handling delegates to it.
-    private static ZipEntryNameDecoder decoderWithUnusedDetector() {
+    /// A matching Unicode field cannot be repaired by the legacy decoder when its UTF-8 payload is malformed.
+    @Test
+    public void malformedUnicodeExtraFieldBypassesLegacyPolicy() {
+        byte[] raw = {(byte) 0xe9};
+        byte[] extra = unicodeExtraField(ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID, raw, "x");
+        extra[9] = (byte) 0xff;
+        assertThrows(CharacterCodingException.class,
+                () -> decoderWithUnusedDecoder().decodePath(raw, 0, extra));
+    }
+
+    /// Returns a name decoder that rejects calls to its legacy metadata policy.
+    private static ZipEntryNameDecoder decoderWithUnusedDecoder() {
         return new ZipEntryNameDecoder(bytes -> {
-            throw new AssertionError("Legacy charset detector must not be invoked");
+            throw new AssertionError("Legacy decoder must not be invoked");
         });
     }
 

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
@@ -46,10 +46,10 @@ public final class ZipArkivoFileSystemConfig {
     private static final ArchiveOption<Long> SPLIT_SIZE =
             ArchiveOption.of("arkivo.zip.splitSize", Long.class, ZipArkivoFileSystemConfig::longValue);
 
-    /// The NIO environment key for legacy metadata charset detection.
-    private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
-            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.zip.legacyCharsetDetector"
+    /// The NIO environment key for legacy metadata decoding.
+    private static final ArchiveOption<ArchiveMetadataDecoder> LEGACY_METADATA_DECODER =
+            ArchiveEnvironmentOptions.metadataDecoderOption(
+                    "arkivo.zip.legacyMetadataDecoder"
             );
 
     /// The split size value used when split output is disabled.
@@ -70,9 +70,9 @@ public final class ZipArkivoFileSystemConfig {
     private static final @Unmodifiable Set<OpenOption> DEFAULT_UPDATE_OPEN_OPTIONS =
             Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE);
 
-    /// The ZIP-standard detector used when no legacy charset detector is configured.
-    private static final ArchiveMetadataCharsetDetector DEFAULT_LEGACY_CHARSET_DETECTOR =
-            ArchiveMetadataCharsetDetector.fixed(Charset.forName("IBM437"));
+    /// The ZIP-standard decoder used when no legacy decoder is configured.
+    private static final ArchiveMetadataDecoder DEFAULT_LEGACY_METADATA_DECODER =
+            ArchiveMetadataDecoder.forCharset(Charset.forName("IBM437"));
 
     /// The default parsed ZIP file system configuration.
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(
@@ -80,7 +80,7 @@ public final class ZipArkivoFileSystemConfig {
             null,
             ZipEncryption.NONE,
             NO_SPLIT_SIZE,
-            DEFAULT_LEGACY_CHARSET_DETECTOR,
+            DEFAULT_LEGACY_METADATA_DECODER,
             ArkivoFileSystemThreadSafety.CONCURRENT_READ,
             null,
             null,
@@ -99,8 +99,8 @@ public final class ZipArkivoFileSystemConfig {
     /// The maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
     private final long splitSize;
 
-    /// The detector used to select charsets for legacy ZIP entry names and comments.
-    private final ArchiveMetadataCharsetDetector legacyCharsetDetector;
+    /// The decoder used for legacy ZIP entry names and comments.
+    private final ArchiveMetadataDecoder legacyMetadataDecoder;
 
     /// The requested ZIP file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
@@ -120,19 +120,19 @@ public final class ZipArkivoFileSystemConfig {
     /// @param passwordProvider the entry password provider, or `null` when unavailable
     /// @param defaultEncryption the encryption for new entries without an explicit override
     /// @param splitSize the maximum output volume size, or [#NO_SPLIT_SIZE]
-    /// @param legacyCharsetDetector the detector for names and comments without Unicode metadata
+    /// @param legacyMetadataDecoder the decoder for names and comments without Unicode metadata
     /// @param threadSafety the synchronization strategy
     /// @param editStorageFactory the edit-storage factory, or `null` to select a default
     /// @param commitTarget the publication target override, or `null` to select a default
     /// @throws NullPointerException if `openOptions`, an option element, `defaultEncryption`,
-    /// `legacyCharsetDetector`, or `threadSafety` is `null`
+    /// `legacyMetadataDecoder`, or `threadSafety` is `null`
     /// @throws IllegalArgumentException if the open options conflict or `splitSize` is outside the ZIP limits
     public ZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
             long splitSize,
-            ArchiveMetadataCharsetDetector legacyCharsetDetector,
+            ArchiveMetadataDecoder legacyMetadataDecoder,
             ArkivoFileSystemThreadSafety threadSafety,
             @Nullable ArkivoEditStorageFactory editStorageFactory,
             @Nullable ArkivoCommitTarget commitTarget
@@ -142,7 +142,7 @@ public final class ZipArkivoFileSystemConfig {
                 passwordProvider,
                 defaultEncryption,
                 splitSize,
-                legacyCharsetDetector,
+                legacyMetadataDecoder,
                 threadSafety,
                 editStorageFactory,
                 commitTarget,
@@ -156,7 +156,7 @@ public final class ZipArkivoFileSystemConfig {
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
             long splitSize,
-            ArchiveMetadataCharsetDetector legacyCharsetDetector,
+            ArchiveMetadataDecoder legacyMetadataDecoder,
             ArkivoFileSystemThreadSafety threadSafety,
             @Nullable ArkivoEditStorageFactory editStorageFactory,
             @Nullable ArkivoCommitTarget commitTarget,
@@ -176,9 +176,9 @@ public final class ZipArkivoFileSystemConfig {
         this.passwordProvider = passwordProvider;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
-        this.legacyCharsetDetector = Objects.requireNonNull(
-                legacyCharsetDetector,
-                "legacyCharsetDetector"
+        this.legacyMetadataDecoder = Objects.requireNonNull(
+                legacyMetadataDecoder,
+                "legacyMetadataDecoder"
         );
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
         this.editStorageFactory = editStorageFactory;
@@ -233,10 +233,10 @@ public final class ZipArkivoFileSystemConfig {
         ZipEncryption defaultEncryption =
                 options.getOrDefault(DEFAULT_ENCRYPTION, ZipEncryption.NONE);
         long splitSize = splitSize(options);
-        ArchiveMetadataCharsetDetector legacyCharsetDetector =
+        ArchiveMetadataDecoder legacyMetadataDecoder =
                 options.getOrDefault(
-                        LEGACY_CHARSET_DETECTOR,
-                        DEFAULT_LEGACY_CHARSET_DETECTOR
+                        LEGACY_METADATA_DECODER,
+                        DEFAULT_LEGACY_METADATA_DECODER
                 );
         ArkivoFileSystemThreadSafety threadSafety =
                 options.getOrDefault(
@@ -254,7 +254,7 @@ public final class ZipArkivoFileSystemConfig {
                 passwordProvider,
                 defaultEncryption,
                 splitSize,
-                legacyCharsetDetector,
+                legacyMetadataDecoder,
                 threadSafety,
                 editStorageFactory,
                 commitTarget,
@@ -274,7 +274,7 @@ public final class ZipArkivoFileSystemConfig {
                 options.passwordProvider(),
                 ZipEncryption.NONE,
                 NO_SPLIT_SIZE,
-                options.legacyCharsetDetector(),
+                options.legacyMetadataDecoder(),
                 options.common().threadSafety(),
                 options.common().editStorageFactory(),
                 null,
@@ -294,7 +294,7 @@ public final class ZipArkivoFileSystemConfig {
                 options.passwordProvider(),
                 options.defaultEncryption(),
                 NO_SPLIT_SIZE,
-                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR,
+                ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER,
                 options.common().threadSafety(),
                 options.common().editStorageFactory(),
                 null,
@@ -314,7 +314,7 @@ public final class ZipArkivoFileSystemConfig {
                 options.passwordProvider(),
                 options.defaultEncryption(),
                 NO_SPLIT_SIZE,
-                options.legacyCharsetDetector(),
+                options.legacyMetadataDecoder(),
                 options.common().threadSafety(),
                 options.common().editStorageFactory(),
                 options.common().commitTarget(),
@@ -357,11 +357,11 @@ public final class ZipArkivoFileSystemConfig {
         return splitSize;
     }
 
-    /// Returns the detector used to select charsets for legacy ZIP entry names and comments.
+    /// Returns the decoder used for legacy ZIP entry names and comments.
     ///
-    /// @return the legacy metadata charset detector
-    public ArchiveMetadataCharsetDetector legacyCharsetDetector() {
-        return legacyCharsetDetector;
+    /// @return the legacy metadata decoder
+    public ArchiveMetadataDecoder legacyMetadataDecoder() {
+        return legacyMetadataDecoder;
     }
 
     /// Returns the requested ZIP file system thread-safety strategy.

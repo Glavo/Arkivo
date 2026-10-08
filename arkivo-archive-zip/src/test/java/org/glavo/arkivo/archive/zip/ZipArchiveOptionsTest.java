@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -25,16 +25,16 @@ final class ZipArchiveOptionsTest {
     @Test
     void derivesOperationConfiguration() {
         ArkivoPasswordProvider passwordProvider = ArkivoPasswordProvider.none();
-        ArchiveMetadataCharsetDetector detector =
-                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_16LE);
+        ArchiveMetadataDecoder metadataDecoder =
+                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_16LE);
         ArchiveReadOptions readCommon = ArchiveReadOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
         ZipArchiveOptions.Read read = ZipArchiveOptions.READ_DEFAULTS
                 .withCommon(readCommon)
                 .withPasswordProvider(passwordProvider)
-                .withLegacyCharsetDetector(detector);
+                .withLegacyMetadataDecoder(metadataDecoder);
         assertSame(passwordProvider, read.passwordProvider());
-        assertSame(detector, read.legacyCharsetDetector());
+        assertSame(metadataDecoder, read.legacyMetadataDecoder());
         assertNull(read.withPasswordProvider(null).passwordProvider());
 
         ArchiveCreateOptions createCommon = ArchiveCreateOptions.DEFAULT
@@ -53,10 +53,10 @@ final class ZipArchiveOptionsTest {
                 .withCommon(updateCommon)
                 .withPasswordProvider(passwordProvider)
                 .withDefaultEncryption(ZipEncryption.ZIP_CRYPTO)
-                .withLegacyCharsetDetector(detector);
+                .withLegacyMetadataDecoder(metadataDecoder);
         assertSame(passwordProvider, update.passwordProvider());
         assertSame(ZipEncryption.ZIP_CRYPTO, update.defaultEncryption());
-        assertSame(detector, update.legacyCharsetDetector());
+        assertSame(metadataDecoder, update.legacyMetadataDecoder());
         assertSame(ArkivoFileSystemThreadSafety.STRICT, update.common().threadSafety());
     }
 
@@ -75,7 +75,7 @@ final class ZipArchiveOptionsTest {
         );
         assertThrows(
                 NullPointerException.class,
-                () -> ZipArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(null)
+                () -> ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(null)
         );
         assertThrows(NullPointerException.class, () -> ZipArchiveOptions.CREATE_DEFAULTS.withCommon(null));
         assertThrows(
@@ -88,7 +88,7 @@ final class ZipArchiveOptionsTest {
         );
         assertThrows(
                 NullPointerException.class,
-                () -> ZipArchiveOptions.UPDATE_DEFAULTS.withLegacyCharsetDetector(null)
+                () -> ZipArchiveOptions.UPDATE_DEFAULTS.withLegacyMetadataDecoder(null)
         );
     }
 }

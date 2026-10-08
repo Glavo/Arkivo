@@ -15,7 +15,7 @@ import java.util.Objects;
 ///                           default
 /// @param passwordProvider the password provider used by formats that support encryption, or `null` to disable password
 ///                         lookup
-/// @param metadataCharsetDetector the detector for metadata without an authoritative encoding, or `null` to select the
+/// @param metadataDecoder the decoder for metadata without an authoritative encoding, or `null` to select the
 ///                                format default
 /// @param limits the resource limits enforced for the whole archive operation
 @NotNullByDefault
@@ -23,7 +23,7 @@ public record ArchiveReadOptions(
         ArkivoFileSystemThreadSafety threadSafety,
         @Nullable ArkivoEditStorageFactory editStorageFactory,
         @Nullable ArkivoPasswordProvider passwordProvider,
-        @Nullable ArchiveMetadataCharsetDetector metadataCharsetDetector,
+        @Nullable ArchiveMetadataDecoder metadataDecoder,
         ArchiveReadLimits limits
 ) {
     /// The default read configuration.
@@ -46,7 +46,7 @@ public record ArchiveReadOptions(
     /// @param value the strategy for the returned options
     /// @return a copy with {@code threadSafety} set to {@code value}
     public ArchiveReadOptions withThreadSafety(ArkivoFileSystemThreadSafety value) {
-        return new ArchiveReadOptions(value, editStorageFactory, passwordProvider, metadataCharsetDetector, limits);
+        return new ArchiveReadOptions(value, editStorageFactory, passwordProvider, metadataDecoder, limits);
     }
 
     /// Returns a copy with the requested edit-storage factory.
@@ -54,7 +54,7 @@ public record ArchiveReadOptions(
     /// @param value the factory for the returned options, or {@code null} to select the format default
     /// @return a copy with {@code editStorageFactory} set to {@code value}
     public ArchiveReadOptions withEditStorageFactory(@Nullable ArkivoEditStorageFactory value) {
-        return new ArchiveReadOptions(threadSafety, value, passwordProvider, metadataCharsetDetector, limits);
+        return new ArchiveReadOptions(threadSafety, value, passwordProvider, metadataDecoder, limits);
     }
 
     /// Returns a copy with the requested password provider.
@@ -62,14 +62,14 @@ public record ArchiveReadOptions(
     /// @param value the provider for the returned options, or {@code null} to disable password lookup
     /// @return a copy with {@code passwordProvider} set to {@code value}
     public ArchiveReadOptions withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
-        return new ArchiveReadOptions(threadSafety, editStorageFactory, value, metadataCharsetDetector, limits);
+        return new ArchiveReadOptions(threadSafety, editStorageFactory, value, metadataDecoder, limits);
     }
 
-    /// Returns a copy with the requested metadata charset detector.
+    /// Returns a copy with the requested metadata decoder.
     ///
-    /// @param value the detector for the returned options, or {@code null} to select the format default
-    /// @return a copy with {@code metadataCharsetDetector} set to {@code value}
-    public ArchiveReadOptions withMetadataCharsetDetector(@Nullable ArchiveMetadataCharsetDetector value) {
+    /// @param value the decoder for the returned options, or {@code null} to select the format default
+    /// @return a copy with {@code metadataDecoder} set to {@code value}
+    public ArchiveReadOptions withMetadataDecoder(@Nullable ArchiveMetadataDecoder value) {
         return new ArchiveReadOptions(threadSafety, editStorageFactory, passwordProvider, value, limits);
     }
 
@@ -78,6 +78,6 @@ public record ArchiveReadOptions(
     /// @param value the operation-wide limits for the returned options
     /// @return a copy with {@code limits} set to {@code value}
     public ArchiveReadOptions withLimits(ArchiveReadLimits value) {
-        return new ArchiveReadOptions(threadSafety, editStorageFactory, passwordProvider, metadataCharsetDetector, value);
+        return new ArchiveReadOptions(threadSafety, editStorageFactory, passwordProvider, metadataDecoder, value);
     }
 }

@@ -14,14 +14,14 @@ import java.util.Objects;
 /// @param editStorageFactory the factory for operation-owned new-entry storage, or `null` to select the format default
 /// @param passwordProvider the password provider used by formats configured to encrypt output, or `null` to disable
 ///                         password lookup
-/// @param metadataCharsetDetector the detector for metadata without an authoritative encoding, or `null` to select the
+/// @param metadataDecoder the decoder for metadata without an authoritative encoding, or `null` to select the
 ///                                format default
 @NotNullByDefault
 public record ArchiveCreateOptions(
         ArkivoFileSystemThreadSafety threadSafety,
         @Nullable ArkivoEditStorageFactory editStorageFactory,
         @Nullable ArkivoPasswordProvider passwordProvider,
-        @Nullable ArchiveMetadataCharsetDetector metadataCharsetDetector
+        @Nullable ArchiveMetadataDecoder metadataDecoder
 ) {
     /// The default creation configuration.
     public static final ArchiveCreateOptions DEFAULT = new ArchiveCreateOptions(
@@ -41,7 +41,7 @@ public record ArchiveCreateOptions(
     /// @param value the strategy for the returned options
     /// @return a copy with {@code threadSafety} set to {@code value}
     public ArchiveCreateOptions withThreadSafety(ArkivoFileSystemThreadSafety value) {
-        return new ArchiveCreateOptions(value, editStorageFactory, passwordProvider, metadataCharsetDetector);
+        return new ArchiveCreateOptions(value, editStorageFactory, passwordProvider, metadataDecoder);
     }
 
     /// Returns a copy with the requested edit-storage factory.
@@ -49,7 +49,7 @@ public record ArchiveCreateOptions(
     /// @param value the factory for the returned options, or {@code null} to select the format default
     /// @return a copy with {@code editStorageFactory} set to {@code value}
     public ArchiveCreateOptions withEditStorageFactory(@Nullable ArkivoEditStorageFactory value) {
-        return new ArchiveCreateOptions(threadSafety, value, passwordProvider, metadataCharsetDetector);
+        return new ArchiveCreateOptions(threadSafety, value, passwordProvider, metadataDecoder);
     }
 
     /// Returns a copy with the requested password provider.
@@ -57,14 +57,14 @@ public record ArchiveCreateOptions(
     /// @param value the provider for the returned options, or {@code null} to disable password lookup
     /// @return a copy with {@code passwordProvider} set to {@code value}
     public ArchiveCreateOptions withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
-        return new ArchiveCreateOptions(threadSafety, editStorageFactory, value, metadataCharsetDetector);
+        return new ArchiveCreateOptions(threadSafety, editStorageFactory, value, metadataDecoder);
     }
 
-    /// Returns a copy with the requested metadata charset detector.
+    /// Returns a copy with the requested metadata decoder.
     ///
-    /// @param value the detector for the returned options, or {@code null} to select the format default
-    /// @return a copy with {@code metadataCharsetDetector} set to {@code value}
-    public ArchiveCreateOptions withMetadataCharsetDetector(@Nullable ArchiveMetadataCharsetDetector value) {
+    /// @param value the decoder for the returned options, or {@code null} to select the format default
+    /// @return a copy with {@code metadataDecoder} set to {@code value}
+    public ArchiveCreateOptions withMetadataDecoder(@Nullable ArchiveMetadataDecoder value) {
         return new ArchiveCreateOptions(threadSafety, editStorageFactory, passwordProvider, value);
     }
 }

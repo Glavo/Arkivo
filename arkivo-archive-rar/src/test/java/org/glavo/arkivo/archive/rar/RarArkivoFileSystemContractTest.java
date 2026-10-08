@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider;
@@ -252,40 +252,40 @@ final class RarArkivoFileSystemContractTest {
         }
     }
 
-    /// Verifies typed and NIO configurations apply a legacy-name charset detector.
+    /// Verifies typed and NIO configurations apply a legacy-name decoder.
     @Test
-    void appliesLegacyCharsetDetectorConfigurations() throws IOException {
+    void appliesLegacyMetadataDecoderConfigurations() throws IOException {
         byte[] content = {1, 2, 3};
         Path archive = Files.write(
                 temporaryDirectory.resolve("legacy-name.rar"),
                 RarTestArchiveFixtures.rar4StoredArchive(new byte[]{(byte) 0xe4}, false, content)
         );
-        ArchiveMetadataCharsetDetector detector = ArchiveMetadataCharsetDetector.fixed(
+        ArchiveMetadataDecoder metadataDecoder = ArchiveMetadataDecoder.forCharset(
                 StandardCharsets.ISO_8859_1
         );
         RarArkivoFileSystemProvider provider = new RarArkivoFileSystemProvider();
 
         try (RarArkivoFileSystem fileSystem = provider.newFileSystem(
                 archive,
-                Map.of("arkivo.rar.legacyCharsetDetector", detector)
+                Map.of("arkivo.rar.legacyMetadataDecoder", metadataDecoder)
         )) {
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/ä")));
         }
         try (RarArkivoFileSystem fileSystem = provider.newFileSystem(
                 archive,
-                Map.of("arkivo.rar.legacyCharsetDetector", StandardCharsets.ISO_8859_1)
+                Map.of("arkivo.rar.legacyMetadataDecoder", StandardCharsets.ISO_8859_1)
         )) {
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/ä")));
         }
         try (RarArkivoFileSystem fileSystem = provider.newFileSystem(
                 archive,
-                Map.of("arkivo.rar.legacyCharsetDetector", "ISO-8859-1")
+                Map.of("arkivo.rar.legacyMetadataDecoder", "ISO-8859-1")
         )) {
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/ä")));
         }
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archive,
-                RarArchiveOptions.DEFAULT.withLegacyCharsetDetector(detector)
+                RarArchiveOptions.DEFAULT.withLegacyMetadataDecoder(metadataDecoder)
         )) {
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/ä")));
         }
@@ -294,7 +294,7 @@ final class RarArkivoFileSystemContractTest {
                 IllegalArgumentException.class,
                 () -> provider.newFileSystem(
                         archive,
-                        Map.of("arkivo.rar.legacyCharsetDetector", 1)
+                        Map.of("arkivo.rar.legacyMetadataDecoder", 1)
                 )
         );
     }

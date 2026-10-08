@@ -3,43 +3,43 @@
 
 package org.glavo.arkivo.archive.rar;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 import java.util.Objects;
 
-/// Selects a charset for legacy RAR4 metadata that does not carry an encoded Unicode value.
+/// Decodes legacy RAR4 metadata that does not carry an encoded Unicode value.
 ///
-/// RAR5 metadata has an authoritative UTF-8 encoding and bypasses this detector.
-/// Returning `null` asks the reader to use UTF-8 as the fallback for the ambiguous RAR4 value.
+/// RAR5 metadata has an authoritative UTF-8 encoding and bypasses this decoder.
+/// The default RAR4 legacy decoder uses UTF-8. Custom decoders supply the final text without an implicit charset fallback.
 @FunctionalInterface
 @NotNullByDefault
-public interface RarLegacyCharsetDetector extends ArchiveMetadataCharsetDetector {
+public interface RarLegacyMetadataDecoder extends ArchiveMetadataDecoder {
     /// The sentinel used when an integer RAR4 header value is unavailable.
     int UNKNOWN_HEADER_VALUE = -1;
 
     /// The sentinel used when RAR4 file attributes are unavailable.
     long UNKNOWN_FILE_ATTRIBUTES = -1L;
 
-    /// Detects the charset of one RAR4 legacy metadata value, or returns `null` when it is unknown.
+    /// Decodes one complete RAR4 legacy metadata value.
     ///
     /// The supplied context and its byte-buffer view are valid only for this invocation and must not be retained.
     /// Changing the buffer position does not affect archive parsing.
     ///
     /// @param context the raw value and available file-header context
-    /// @return the charset to use, or `null` to request the UTF-8 fallback
-    /// @throws IOException if contextual charset detection cannot be completed
-    @Nullable Charset detect(Context context) throws IOException;
+    /// @return the decoded text, never `null`
+    /// @throws IOException if the value cannot be decoded according to this decoder's policy
+    String decode(Context context) throws IOException;
 
-    /// Detects bytes without explicit RAR4 context by supplying an unknown context.
+    /// Decodes bytes without explicit RAR4 context.
+    ///
+    /// @implSpec Supplies an unknown context with independent read-only buffer state and rejects a null result.
     @Override
-    default @Nullable Charset detect(@UnmodifiableView ByteBuffer bytes) throws IOException {
-        return detect(Context.unknown(bytes));
+    default String decode(@UnmodifiableView ByteBuffer bytes) throws IOException {
+        return Objects.requireNonNull(decode(Context.unknown(bytes)), "decoded metadata");
     }
 
     /// Identifies the logical RAR4 metadata field being decoded.
@@ -52,9 +52,9 @@ public interface RarLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
         ENTRY_NAME
     }
 
-    /// Provides raw bytes and available RAR4 file-header metadata to a charset detector.
+    /// Provides raw bytes and available RAR4 file-header metadata to a decoder.
     ///
-    /// The byte buffer is an independent read-only view valid only for the duration of the detector call and must not
+    /// The byte buffer is an independent read-only view valid only for the duration of the decoder call and must not
     /// be retained.
     ///
     /// @param bytes the complete raw legacy metadata bytes
@@ -88,7 +88,7 @@ public interface RarLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
             }
         }
 
-        /// Creates a context for a basic detector invocation without available RAR4 metadata.
+        /// Creates a context for a basic decoder invocation without available RAR4 metadata.
         private static Context unknown(ByteBuffer bytes) {
             return new Context(
                     bytes,

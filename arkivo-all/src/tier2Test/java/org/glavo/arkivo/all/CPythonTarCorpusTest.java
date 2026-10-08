@@ -4,7 +4,7 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.tar.TarArchiveOptions;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
@@ -59,7 +59,7 @@ final class CPythonTarCorpusTest {
 
     /// Decodes legacy fixed-width fields and explicitly binary PAX names as Latin-1.
     private static final TarArchiveOptions.Read OPTIONS = TarArchiveOptions.READ_DEFAULTS
-            .withMetadataCharsetDetector(ArchiveMetadataCharsetDetector.fixed(StandardCharsets.ISO_8859_1));
+            .withMetadataDecoder(ArchiveMetadataDecoder.forCharset(StandardCharsets.ISO_8859_1));
 
     /// Stores derived archives without modifying the downloaded fixtures.
     @TempDir

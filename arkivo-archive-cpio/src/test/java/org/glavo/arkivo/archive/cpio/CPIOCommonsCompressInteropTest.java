@@ -7,7 +7,7 @@ import org.apache.commons.compress.archivers.cpio.CpioArchiveEntry;
 import org.apache.commons.compress.archivers.cpio.CpioArchiveInputStream;
 import org.apache.commons.compress.archivers.cpio.CpioArchiveOutputStream;
 import org.apache.commons.compress.archivers.cpio.CpioConstants;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -115,8 +115,8 @@ public final class CPIOCommonsCompressInteropTest {
         }
         try (var arkivo = CPIOArkivoStreamingReader.open(
                 new ChunkedInput(referenceBytes, chunk),
-                CPIOArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(
-                        ArchiveMetadataCharsetDetector.fixed(charset)))) {
+                CPIOArchiveOptions.READ_DEFAULTS.withMetadataDecoder(
+                        ArchiveMetadataDecoder.forCharset(charset)))) {
             for (AlignmentEntry expected : entries) {
                 assertTrue(arkivo.next());
                 var actual = arkivo.readAttributes(CPIOArkivoEntryAttributes.class);

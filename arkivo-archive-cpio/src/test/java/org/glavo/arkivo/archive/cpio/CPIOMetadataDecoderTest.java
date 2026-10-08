@@ -22,17 +22,17 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies CPIO-specific metadata charset detection contexts.
+/// Verifies CPIO-specific metadata decoding contexts.
 @NotNullByDefault
-public final class CPIOMetadataCharsetDetectorTest {
-    /// Verifies archive reads supply parsed CPIO header context to the detector.
+public final class CPIOMetadataDecoderTest {
+    /// Verifies archive reads supply parsed CPIO header context to the decoder.
     @Test
     public void archiveReadSuppliesHeaderContext() throws IOException {
         byte[] content = {4, 5, 6};
         byte[] archive = writeArchive(content);
         AtomicBoolean observed = new AtomicBoolean();
-        CPIOMetadataCharsetDetector detector = context -> {
-            assertEquals(CPIOMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+        CPIOMetadataDecoder metadataDecoder = context -> {
+            assertEquals(CPIOMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             assertEquals(CPIODialect.NEW_ASCII_CRC, context.dialect());
             assertNull(context.binaryByteOrder());
             assertEquals(1L, context.inode());
@@ -43,38 +43,42 @@ public final class CPIOMetadataCharsetDetectorTest {
             context.bytes().get(name);
             assertArrayEquals("payload.bin".getBytes(StandardCharsets.UTF_8), name);
             observed.set(true);
-            return StandardCharsets.UTF_8;
+            return "restored.bin";
         };
 
         try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                CPIOArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
+                CPIOArchiveOptions.READ_DEFAULTS.withMetadataDecoder(metadataDecoder)
         )) {
             assertTrue(reader.next());
+            assertEquals("restored.bin", reader.readAttributes().path());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
         }
 
         assertTrue(observed.get());
     }
 
-    /// Verifies basic detector calls receive unknown CPIO metadata in an independent read-only view.
+    /// Verifies basic decoder calls receive unknown CPIO metadata in an independent read-only view.
     @Test
     public void basicInvocationSuppliesUnknownContext() throws Exception {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{0, 1, 2});
         source.position(1);
         source.mark();
-        CPIOMetadataCharsetDetector detector = context -> {
+        CPIOMetadataDecoder metadataDecoder = context -> {
             assertTrue(context.bytes().isReadOnly());
-            assertEquals(CPIOMetadataCharsetDetector.MetadataKind.UNKNOWN, context.metadataKind());
+            assertEquals(CPIOMetadataDecoder.MetadataKind.UNKNOWN, context.metadataKind());
             assertNull(context.dialect());
             assertNull(context.binaryByteOrder());
-            assertEquals(CPIOMetadataCharsetDetector.UNKNOWN_INODE, context.inode());
-            assertEquals(CPIOMetadataCharsetDetector.UNKNOWN_MODE, context.mode());
-            assertEquals(CPIOMetadataCharsetDetector.UNKNOWN_ENTRY_SIZE, context.entrySize());
+            assertEquals(CPIOMetadataDecoder.UNKNOWN_INODE, context.inode());
+            assertEquals(CPIOMetadataDecoder.UNKNOWN_MODE, context.mode());
+            assertEquals(CPIOMetadataDecoder.UNKNOWN_ENTRY_SIZE, context.entrySize());
             context.bytes().position(context.bytes().limit());
-            return null;
+            return "decoded";
         };
 
-        assertNull(detector.detect(source));
+        assertEquals("decoded", metadataDecoder.decode(source));
         assertEquals(1, source.position());
         source.reset();
         assertEquals(1, source.position());
@@ -84,9 +88,9 @@ public final class CPIOMetadataCharsetDetectorTest {
     @Test
     public void contextValidatesDialectAndByteOrder() {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{3, 4});
-        CPIOMetadataCharsetDetector.Context context = new CPIOMetadataCharsetDetector.Context(
+        CPIOMetadataDecoder.Context context = new CPIOMetadataDecoder.Context(
                 source,
-                CPIOMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
+                CPIOMetadataDecoder.MetadataKind.ENTRY_NAME,
                 CPIODialect.OLD_BINARY,
                 CPIOBinaryByteOrder.LITTLE_ENDIAN,
                 7L,
@@ -125,7 +129,7 @@ public final class CPIOMetadataCharsetDetectorTest {
         assertThrows(IllegalArgumentException.class, () -> context(null, null, -1L, -1, -2L));
     }
 
-    /// Writes one CRC-protected regular file for detector integration checks.
+    /// Writes one CRC-protected regular file for decoder integration checks.
     private static byte[] writeArchive(byte @Unmodifiable [] content) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(
@@ -140,16 +144,16 @@ public final class CPIOMetadataCharsetDetectorTest {
     }
 
     /// Creates a CPIO context with the supplied structural fields.
-    private static CPIOMetadataCharsetDetector.Context context(
+    private static CPIOMetadataDecoder.Context context(
             @Nullable CPIODialect dialect,
             @Nullable CPIOBinaryByteOrder binaryByteOrder,
             long inode,
             int mode,
             long entrySize
     ) {
-        return new CPIOMetadataCharsetDetector.Context(
+        return new CPIOMetadataDecoder.Context(
                 ByteBuffer.allocate(0),
-                CPIOMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
+                CPIOMetadataDecoder.MetadataKind.ENTRY_NAME,
                 dialect,
                 binaryByteOrder,
                 inode,

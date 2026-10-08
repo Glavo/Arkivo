@@ -9,31 +9,30 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies RAR4-specific legacy metadata charset detection contexts.
+/// Verifies RAR4-specific legacy metadata decoding contexts.
 @NotNullByDefault
-public final class RarLegacyCharsetDetectorTest {
-    /// Verifies basic detector calls receive unknown RAR4 metadata without aliasing buffer state.
+public final class RarLegacyMetadataDecoderTest {
+    /// Verifies basic decoder calls receive unknown RAR4 metadata without aliasing buffer state.
     @Test
     public void basicInvocationSuppliesUnknownContext() throws Exception {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{0, 1, 2});
         source.position(1);
         source.mark();
-        RarLegacyCharsetDetector detector = context -> {
+        RarLegacyMetadataDecoder metadataDecoder = context -> {
             assertTrue(context.bytes().isReadOnly());
-            assertEquals(RarLegacyCharsetDetector.MetadataKind.UNKNOWN, context.metadataKind());
-            assertEquals(RarLegacyCharsetDetector.UNKNOWN_HEADER_VALUE, context.hostOperatingSystem());
-            assertEquals(RarLegacyCharsetDetector.UNKNOWN_HEADER_VALUE, context.extractionVersion());
-            assertEquals(RarLegacyCharsetDetector.UNKNOWN_HEADER_VALUE, context.headerFlags());
-            assertEquals(RarLegacyCharsetDetector.UNKNOWN_FILE_ATTRIBUTES, context.fileAttributes());
+            assertEquals(RarLegacyMetadataDecoder.MetadataKind.UNKNOWN, context.metadataKind());
+            assertEquals(RarLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, context.hostOperatingSystem());
+            assertEquals(RarLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, context.extractionVersion());
+            assertEquals(RarLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, context.headerFlags());
+            assertEquals(RarLegacyMetadataDecoder.UNKNOWN_FILE_ATTRIBUTES, context.fileAttributes());
             context.bytes().position(context.bytes().limit());
-            return null;
+            return "decoded";
         };
 
-        assertNull(detector.detect(source));
+        assertEquals("decoded", metadataDecoder.decode(source));
         assertEquals(1, source.position());
         source.reset();
         assertEquals(1, source.position());
@@ -43,9 +42,9 @@ public final class RarLegacyCharsetDetectorTest {
     @Test
     public void contextAcceptsUnsignedMaximums() {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{3, 4});
-        RarLegacyCharsetDetector.Context context = new RarLegacyCharsetDetector.Context(
+        RarLegacyMetadataDecoder.Context context = new RarLegacyMetadataDecoder.Context(
                 source,
-                RarLegacyCharsetDetector.MetadataKind.ENTRY_NAME,
+                RarLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                 0xff,
                 0xff,
                 0xffff,
@@ -83,9 +82,9 @@ public final class RarLegacyCharsetDetectorTest {
     ) {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new RarLegacyCharsetDetector.Context(
+                () -> new RarLegacyMetadataDecoder.Context(
                         ByteBuffer.allocate(0),
-                        RarLegacyCharsetDetector.MetadataKind.ENTRY_NAME,
+                        RarLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                         hostOperatingSystem,
                         extractionVersion,
                         headerFlags,

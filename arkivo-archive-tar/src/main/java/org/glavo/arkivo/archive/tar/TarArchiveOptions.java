@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -17,15 +17,15 @@ import java.util.Objects;
 /// Defines immutable TAR configuration for each archive operation lifecycle.
 ///
 /// Compression policy is explicit: reads detect by default, creation writes an uncompressed TAR by default, and
-/// updates preserve the detected source wrapper by default. The metadata detector handles legacy header text and PAX
-/// binary values and falls back to UTF-8 when it returns `null`.
+/// updates preserve the detected source wrapper by default. The metadata decoder handles legacy header text and PAX
+/// binary values. The default decoder strictly decodes UTF-8; custom decoders determine their own conversion policy.
 /// A seekable-capable compression configuration writes its default indexed representation, allowing a later TAR file
 /// system to read contiguous entry bodies without expanding the complete compressed stream.
 @NotNullByDefault
 public final class TarArchiveOptions {
-    /// The default detector for TAR header text.
-    public static final ArchiveMetadataCharsetDetector DEFAULT_METADATA_CHARSET_DETECTOR =
-            ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+    /// The default decoder for TAR header text.
+    public static final ArchiveMetadataDecoder DEFAULT_METADATA_DECODER =
+            ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
 
     /// The default read configuration.
     public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT, TarCompression.DETECT);
@@ -65,7 +65,7 @@ public final class TarArchiveOptions {
         /// Returns a copy with common read settings.
         ///
         /// @param value the replacement format-independent read configuration
-        /// @return a new read configuration retaining this compression and metadata detector
+        /// @return a new read configuration retaining this compression and metadata decoder
         public Read withCommon(ArchiveReadOptions value) {
             return new Read(value, compression);
         }
@@ -73,7 +73,7 @@ public final class TarArchiveOptions {
         /// Returns a copy with an explicitly configured outer compression codec.
         ///
         /// @param value the immutable outer compression codec
-        /// @return a new read configuration retaining this common configuration and metadata detector
+        /// @return a new read configuration retaining this common configuration and metadata decoder
         public Read withCompression(CompressionCodec<?> value) {
             return new Read(common, TarCompression.using(value));
         }
@@ -92,20 +92,20 @@ public final class TarArchiveOptions {
             return new Read(common, TarCompression.UNCOMPRESSED);
         }
 
-        /// Returns the configured metadata charset detector or the TAR default.
+        /// Returns the configured metadata decoder or the TAR default.
         ///
-        /// @return the effective detector for legacy header text
-        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
-            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
-            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
+        /// @return the effective decoder for legacy header text
+        public ArchiveMetadataDecoder metadataDecoder() {
+            @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
+            return metadataDecoder != null ? metadataDecoder : DEFAULT_METADATA_DECODER;
         }
 
-        /// Returns a copy with the metadata charset detector.
+        /// Returns a copy with the metadata decoder.
         ///
-        /// @param value the detector used for ambiguous legacy TAR metadata bytes
+        /// @param value the decoder used for ambiguous legacy TAR metadata bytes
         /// @return a new read configuration retaining this common configuration and compression selection
-        public Read withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
-            return new Read(common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")), compression);
+        public Read withMetadataDecoder(ArchiveMetadataDecoder value) {
+            return new Read(common.withMetadataDecoder(Objects.requireNonNull(value, "value")), compression);
         }
     }
 
@@ -166,7 +166,7 @@ public final class TarArchiveOptions {
         /// Returns a copy with common update settings.
         ///
         /// @param value the replacement format-independent complete-rewrite configuration
-        /// @return a new update configuration retaining this compression choice and metadata detector
+        /// @return a new update configuration retaining this compression choice and metadata decoder
         public Update withCommon(ArchiveUpdateOptions value) {
             return new Update(value, sourceCompression, targetCompression);
         }
@@ -215,21 +215,21 @@ public final class TarArchiveOptions {
             return new Update(common, sourceCompression, TarCompression.UNCOMPRESSED);
         }
 
-        /// Returns the configured metadata charset detector or the TAR default.
+        /// Returns the configured metadata decoder or the TAR default.
         ///
-        /// @return the effective detector for legacy source header text
-        public ArchiveMetadataCharsetDetector metadataCharsetDetector() {
-            @Nullable ArchiveMetadataCharsetDetector detector = common.metadataCharsetDetector();
-            return detector != null ? detector : DEFAULT_METADATA_CHARSET_DETECTOR;
+        /// @return the effective decoder for legacy source header text
+        public ArchiveMetadataDecoder metadataDecoder() {
+            @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
+            return metadataDecoder != null ? metadataDecoder : DEFAULT_METADATA_DECODER;
         }
 
-        /// Returns a copy with the metadata charset detector.
+        /// Returns a copy with the metadata decoder.
         ///
-        /// @param value the detector used for ambiguous legacy source metadata bytes
+        /// @param value the decoder used for ambiguous legacy source metadata bytes
         /// @return a new update configuration retaining this common configuration and compression choice
-        public Update withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
+        public Update withMetadataDecoder(ArchiveMetadataDecoder value) {
             return new Update(
-                    common.withMetadataCharsetDetector(Objects.requireNonNull(value, "value")),
+                    common.withMetadataDecoder(Objects.requireNonNull(value, "value")),
                     sourceCompression,
                     targetCompression
             );

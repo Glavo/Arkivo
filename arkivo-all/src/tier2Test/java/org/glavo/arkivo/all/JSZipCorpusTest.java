@@ -4,7 +4,7 @@
 package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.all.commonscompress.ArchiveCorpusAssertions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
@@ -349,8 +349,8 @@ final class JSZipCorpusTest {
     @Test
     void readsLegacyRussianNames() throws IOException {
         Charset charset = Charset.forName("IBM866");
-        var options = ZipArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(
-                ArchiveMetadataCharsetDetector.fixed(charset));
+        var options = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
+                ArchiveMetadataDecoder.forCharset(charset));
         try (var reference = org.apache.commons.compress.archivers.zip.ZipFile.builder()
                      .setPath(fixture("local_encoding_in_name.zip")).setCharset(charset).get();
              var fileSystem = ZipArkivoFileSystem.open(fixture("local_encoding_in_name.zip"), options);

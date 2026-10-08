@@ -3,14 +3,14 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
-import org.glavo.arkivo.archive.tar.TarMetadataCharsetDetector;
+import org.glavo.arkivo.archive.tar.TarMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -40,10 +40,10 @@ import java.util.Objects;
 /// Implements the public forward-only TAR streaming reader API.
 @NotNullByDefault
 public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader {
-    /// The internal NIO environment key for metadata charset detection.
-    private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
-            ArchiveEnvironmentOptions.metadataCharsetDetectorOption(
-                    "arkivo.tar.metadataCharsetDetector"
+    /// The internal NIO environment key for metadata decoding.
+    private static final ArchiveOption<ArchiveMetadataDecoder> METADATA_DECODER =
+            ArchiveEnvironmentOptions.metadataDecoderOption(
+                    "arkivo.tar.metadataDecoder"
             );
     /// The TAR record size.
     private static final int RECORD_SIZE = 512;
@@ -96,9 +96,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// The byte offset of the explicit xstar magic value.
     private static final int XSTAR_MAGIC_OFFSET = 508;
 
-    /// The UTF-8 detector used for ambiguous TAR metadata when no detector is configured.
-    private static final ArchiveMetadataCharsetDetector DEFAULT_METADATA_CHARSET_DETECTOR =
-            ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+    /// The UTF-8 decoder used for ambiguous TAR metadata when no decoder is configured.
+    private static final ArchiveMetadataDecoder DEFAULT_METADATA_DECODER =
+            ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
 
     /// The backing archive input stream.
     private final CountingInputStream source;
@@ -106,8 +106,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// The common archive read-limit tracker.
     private final ArkivoReadLimitTracker readLimits;
 
-    /// The detector used for TAR metadata without an authoritative encoding.
-    private final ArchiveMetadataCharsetDetector metadataCharsetDetector;
+    /// The decoder used for TAR metadata without an authoritative encoding.
+    private final ArchiveMetadataDecoder metadataDecoder;
 
     /// The current entry attributes, or `null` when no entry is active.
     private @Nullable TarEntryAttributes currentAttributes;
@@ -151,14 +151,14 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// Creates a streaming TAR reader.
     ///
     /// @param source the owned decoded TAR stream positioned before the first header block
-    /// @param options the metadata detector and archive read-limit configuration
+    /// @param options the metadata decoder and archive read-limit configuration
     public TarArkivoStreamingReaderImpl(InputStream source, ArchiveOptions options) {
         this.source = new CountingInputStream(Objects.requireNonNull(source, "source"));
         ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
         this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
-        this.metadataCharsetDetector = checkedOptions.getOrDefault(
-                METADATA_CHARSET_DETECTOR,
-                DEFAULT_METADATA_CHARSET_DETECTOR
+        this.metadataDecoder = checkedOptions.getOrDefault(
+                METADATA_DECODER,
+                DEFAULT_METADATA_DECODER
         );
     }
 
@@ -207,8 +207,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 pendingLongPath = readCurrentEntryBodyString(
                         "GNU long path",
                         attributes.path(),
-                        TarMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
-                        TarMetadataCharsetDetector.Source.GNU_LONG_NAME,
+                        TarMetadataDecoder.MetadataKind.ENTRY_NAME,
+                        TarMetadataDecoder.Source.GNU_LONG_NAME,
                         Byte.toUnsignedInt(typeFlag)
                 );
                 skipCurrentEntryBody();
@@ -218,8 +218,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 pendingLongLink = readCurrentEntryBodyString(
                         "GNU long link",
                         attributes.path(),
-                        TarMetadataCharsetDetector.MetadataKind.LINK_NAME,
-                        TarMetadataCharsetDetector.Source.GNU_LONG_LINK,
+                        TarMetadataDecoder.MetadataKind.LINK_NAME,
+                        TarMetadataDecoder.Source.GNU_LONG_LINK,
                         Byte.toUnsignedInt(typeFlag)
                 );
                 skipCurrentEntryBody();
@@ -229,7 +229,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                     || typeFlag == TarEntryAttributes.SOLARIS_EXTENDED_HEADER_TYPE) {
                 setPendingPaxHeaders(parsePaxHeaders(
                         readCurrentEntryBodyBytes("PAX extended header", attributes.path()),
-                        TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER,
+                        TarMetadataDecoder.Source.PAX_EXTENDED_HEADER,
                         Byte.toUnsignedInt(typeFlag)
                 ));
                 skipCurrentEntryBody();
@@ -238,7 +238,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (typeFlag == TarEntryAttributes.PAX_GLOBAL_EXTENDED_HEADER_TYPE) {
                 mergeGlobalPaxHeaders(parsePaxHeaders(
                         readCurrentEntryBodyBytes("PAX global header", attributes.path()),
-                        TarMetadataCharsetDetector.Source.PAX_GLOBAL_HEADER,
+                        TarMetadataDecoder.Source.PAX_GLOBAL_HEADER,
                         Byte.toUnsignedInt(typeFlag)
                 ));
                 skipCurrentEntryBody();
@@ -379,7 +379,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     private TarEntryAttributes parseHeader(byte[] header) throws IOException {
         byte typeFlag = header[156];
         int unsignedTypeFlag = Byte.toUnsignedInt(typeFlag);
-        TarMetadataCharsetDetector.HeaderDialect dialect = headerDialect(header);
+        TarMetadataDecoder.HeaderDialect dialect = headerDialect(header);
         byte[] rawName = readFieldBytes(header, 0, 100);
         validateChecksum(header, typeFlag, rawName);
         int prefixLength = switch (dialect) {
@@ -396,8 +396,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         }
         String path = decodeMetadata(
                 rawPath,
-                TarMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
-                TarMetadataCharsetDetector.Source.HEADER,
+                TarMetadataDecoder.MetadataKind.ENTRY_NAME,
+                TarMetadataDecoder.Source.HEADER,
                 dialect,
                 unsignedTypeFlag,
                 null
@@ -410,7 +410,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         );
         @Nullable FileTime recordedLastAccessTime = null;
         @Nullable FileTime recordedStatusChangeTime = null;
-        if (dialect == TarMetadataCharsetDetector.HeaderDialect.GNU) {
+        if (dialect == TarMetadataDecoder.HeaderDialect.GNU) {
             recordedLastAccessTime = parseOptionalFixedTime(
                     header,
                     OLD_GNU_ACCESS_TIME_OFFSET,
@@ -421,7 +421,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                     OLD_GNU_STATUS_CHANGE_TIME_OFFSET,
                     "old GNU status change time"
             );
-        } else if (dialect == TarMetadataCharsetDetector.HeaderDialect.XSTAR) {
+        } else if (dialect == TarMetadataDecoder.HeaderDialect.XSTAR) {
             recordedLastAccessTime = parseOptionalFixedTime(
                     header,
                     XSTAR_ACCESS_TIME_OFFSET,
@@ -443,22 +443,22 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 parseNonNegativeNumeric(header, 116, 8, "group id"),
                 decodeOptionalMetadata(
                         readFieldBytes(header, 265, 32),
-                        TarMetadataCharsetDetector.MetadataKind.USER_NAME,
-                        TarMetadataCharsetDetector.Source.HEADER,
+                        TarMetadataDecoder.MetadataKind.USER_NAME,
+                        TarMetadataDecoder.Source.HEADER,
                         dialect,
                         unsignedTypeFlag
                 ),
                 decodeOptionalMetadata(
                         readFieldBytes(header, 297, 32),
-                        TarMetadataCharsetDetector.MetadataKind.GROUP_NAME,
-                        TarMetadataCharsetDetector.Source.HEADER,
+                        TarMetadataDecoder.MetadataKind.GROUP_NAME,
+                        TarMetadataDecoder.Source.HEADER,
                         dialect,
                         unsignedTypeFlag
                 ),
                 decodeOptionalMetadata(
                         readFieldBytes(header, 157, 100),
-                        TarMetadataCharsetDetector.MetadataKind.LINK_NAME,
-                        TarMetadataCharsetDetector.Source.HEADER,
+                        TarMetadataDecoder.MetadataKind.LINK_NAME,
+                        TarMetadataDecoder.Source.HEADER,
                         dialect,
                         unsignedTypeFlag
                 ),
@@ -606,23 +606,23 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Identifies the dialect of one TAR header from its magic and extended fields.
-    private TarMetadataCharsetDetector.HeaderDialect headerDialect(byte[] header) throws IOException {
+    private TarMetadataDecoder.HeaderDialect headerDialect(byte[] header) throws IOException {
         if (header[257] != 'u'
                 || header[258] != 's'
                 || header[259] != 't'
                 || header[260] != 'a'
                 || header[261] != 'r') {
-            return TarMetadataCharsetDetector.HeaderDialect.V7;
+            return TarMetadataDecoder.HeaderDialect.V7;
         }
         if (header[262] == 0) {
             return isXstarHeader(header)
-                    ? TarMetadataCharsetDetector.HeaderDialect.XSTAR
-                    : TarMetadataCharsetDetector.HeaderDialect.USTAR;
+                    ? TarMetadataDecoder.HeaderDialect.XSTAR
+                    : TarMetadataDecoder.HeaderDialect.USTAR;
         }
         if (header[262] == ' ') {
-            return TarMetadataCharsetDetector.HeaderDialect.GNU;
+            return TarMetadataDecoder.HeaderDialect.GNU;
         }
-        return TarMetadataCharsetDetector.HeaderDialect.UNKNOWN;
+        return TarMetadataDecoder.HeaderDialect.UNKNOWN;
     }
 
     /// Returns whether a POSIX-magic header uses the xstar, xustar, or exustar layout.
@@ -663,9 +663,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// Decodes an optional TAR metadata value, or returns `null` when its raw value is empty.
     private @Nullable String decodeOptionalMetadata(
             byte[] bytes,
-            TarMetadataCharsetDetector.MetadataKind metadataKind,
-            TarMetadataCharsetDetector.Source source,
-            TarMetadataCharsetDetector.HeaderDialect headerDialect,
+            TarMetadataDecoder.MetadataKind metadataKind,
+            TarMetadataDecoder.Source source,
+            TarMetadataDecoder.HeaderDialect headerDialect,
             int typeFlag
     ) throws IOException {
         return bytes.length == 0
@@ -673,18 +673,18 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 : decodeMetadata(bytes, metadataKind, source, headerDialect, typeFlag, null);
     }
 
-    /// Decodes TAR metadata through the configured basic or TAR-specific detector.
+    /// Decodes TAR metadata through the configured basic or TAR-specific decoder.
     private String decodeMetadata(
             byte[] bytes,
-            TarMetadataCharsetDetector.MetadataKind metadataKind,
-            TarMetadataCharsetDetector.Source source,
-            TarMetadataCharsetDetector.HeaderDialect headerDialect,
+            TarMetadataDecoder.MetadataKind metadataKind,
+            TarMetadataDecoder.Source source,
+            TarMetadataDecoder.HeaderDialect headerDialect,
             int typeFlag,
             @Nullable String paxKey
     ) throws IOException {
-        @Nullable Charset detectedCharset;
-        if (metadataCharsetDetector instanceof TarMetadataCharsetDetector tarDetector) {
-            detectedCharset = tarDetector.detect(new TarMetadataCharsetDetector.Context(
+        String decoded;
+        if (metadataDecoder instanceof TarMetadataDecoder tarDecoder) {
+            decoded = tarDecoder.decode(new TarMetadataDecoder.Context(
                     ByteBuffer.wrap(bytes),
                     metadataKind,
                     source,
@@ -693,13 +693,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                     paxKey
             ));
         } else {
-            detectedCharset = metadataCharsetDetector.detect(bytes);
+            decoded = metadataDecoder.decode(bytes);
         }
-        return strictDecode(
-                bytes,
-                detectedCharset != null ? detectedCharset : StandardCharsets.UTF_8,
-                "metadata"
-        );
+        return Objects.requireNonNull(decoded, "decoded TAR metadata");
     }
 
     /// Strictly decodes a complete byte array with the selected charset.
@@ -784,7 +780,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// Parses POSIX PAX key-value records.
     private ParsedPaxHeaders parsePaxHeaders(
             byte[] body,
-            TarMetadataCharsetDetector.Source source,
+            TarMetadataDecoder.Source source,
             int typeFlag
     ) throws IOException {
         ArrayList<RawPaxRecord> rawRecords = new ArrayList<>();
@@ -990,8 +986,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     private String readCurrentEntryBodyString(
             String description,
             String entryPath,
-            TarMetadataCharsetDetector.MetadataKind metadataKind,
-            TarMetadataCharsetDetector.Source metadataSource,
+            TarMetadataDecoder.MetadataKind metadataKind,
+            TarMetadataDecoder.Source metadataSource,
             int typeFlag
     ) throws IOException {
         byte[] body = readCurrentEntryBodyBytes(description, entryPath);
@@ -1003,7 +999,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 Arrays.copyOf(body, length),
                 metadataKind,
                 metadataSource,
-                TarMetadataCharsetDetector.HeaderDialect.UNKNOWN,
+                TarMetadataDecoder.HeaderDialect.UNKNOWN,
                 typeFlag,
                 null
         );
@@ -1395,13 +1391,13 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             return strictDecode(value.bytes(), StandardCharsets.US_ASCII, "PAX hdrcharset value");
         }
 
-        TarMetadataCharsetDetector.MetadataKind metadataKind = paxMetadataKind(key);
-        if (value.binary() && metadataKind != TarMetadataCharsetDetector.MetadataKind.UNKNOWN) {
+        TarMetadataDecoder.MetadataKind metadataKind = paxMetadataKind(key);
+        if (value.binary() && metadataKind != TarMetadataDecoder.MetadataKind.UNKNOWN) {
             return decodeMetadata(
                     value.bytes(),
                     metadataKind,
                     value.source(),
-                    TarMetadataCharsetDetector.HeaderDialect.UNKNOWN,
+                    TarMetadataDecoder.HeaderDialect.UNKNOWN,
                     value.typeFlag(),
                     key
             );
@@ -1410,13 +1406,13 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Maps PAX string keywords to their logical metadata fields.
-    private static TarMetadataCharsetDetector.MetadataKind paxMetadataKind(String key) {
+    private static TarMetadataDecoder.MetadataKind paxMetadataKind(String key) {
         return switch (key) {
-            case "path", "GNU.sparse.name" -> TarMetadataCharsetDetector.MetadataKind.ENTRY_NAME;
-            case "linkpath" -> TarMetadataCharsetDetector.MetadataKind.LINK_NAME;
-            case "uname" -> TarMetadataCharsetDetector.MetadataKind.USER_NAME;
-            case "gname" -> TarMetadataCharsetDetector.MetadataKind.GROUP_NAME;
-            default -> TarMetadataCharsetDetector.MetadataKind.UNKNOWN;
+            case "path", "GNU.sparse.name" -> TarMetadataDecoder.MetadataKind.ENTRY_NAME;
+            case "linkpath" -> TarMetadataDecoder.MetadataKind.LINK_NAME;
+            case "uname" -> TarMetadataDecoder.MetadataKind.USER_NAME;
+            case "gname" -> TarMetadataDecoder.MetadataKind.GROUP_NAME;
+            default -> TarMetadataDecoder.MetadataKind.UNKNOWN;
         };
     }
 
@@ -1511,7 +1507,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     @NotNullByDefault
     private record PaxValue(
             byte @Unmodifiable [] bytes,
-            TarMetadataCharsetDetector.Source source,
+            TarMetadataDecoder.Source source,
             int typeFlag,
             boolean binary
     ) {

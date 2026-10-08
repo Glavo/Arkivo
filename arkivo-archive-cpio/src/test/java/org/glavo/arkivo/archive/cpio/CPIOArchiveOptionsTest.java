@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.cpio;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -22,13 +22,13 @@ final class CPIOArchiveOptionsTest {
     /// Verifies read and creation derivation retains every independently configured value.
     @Test
     void derivesReadAndCreationConfiguration() {
-        ArchiveMetadataCharsetDetector detector =
-                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_16LE);
+        ArchiveMetadataDecoder metadataDecoder =
+                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_16LE);
         ArchiveReadOptions readCommon = ArchiveReadOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
         CPIOArchiveOptions.Read read = CPIOArchiveOptions.READ_DEFAULTS
                 .withCommon(readCommon)
-                .withMetadataCharsetDetector(detector);
+                .withMetadataDecoder(metadataDecoder);
 
         ArchiveCreateOptions createCommon = ArchiveCreateOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT);
@@ -39,8 +39,8 @@ final class CPIOArchiveOptionsTest {
                 .withMetadataCharset(StandardCharsets.UTF_16BE)
                 .withBlockSize(1024);
 
-        assertEquals(readCommon, read.common().withMetadataCharsetDetector(null));
-        assertSame(detector, read.metadataCharsetDetector());
+        assertEquals(readCommon, read.common().withMetadataDecoder(null));
+        assertSame(metadataDecoder, read.metadataDecoder());
         assertSame(createCommon, create.common());
         assertSame(CPIODialect.OLD_BINARY, create.dialect());
         assertSame(CPIOBinaryByteOrder.LITTLE_ENDIAN, create.binaryByteOrder());

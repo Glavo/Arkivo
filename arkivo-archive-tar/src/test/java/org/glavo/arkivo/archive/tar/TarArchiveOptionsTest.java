@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
-import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -27,17 +27,17 @@ final class TarArchiveOptionsTest {
     @Test
     void derivesReadAndCreationPolicies() {
         CompressionCodec<?> codec = DeflateCodec.DEFAULT;
-        ArchiveMetadataCharsetDetector detector =
-                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_16LE);
+        ArchiveMetadataDecoder metadataDecoder =
+                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_16LE);
         ArchiveReadOptions readCommon = ArchiveReadOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
 
         TarArchiveOptions.Read compressedRead = TarArchiveOptions.READ_DEFAULTS
                 .withCommon(readCommon)
                 .withCompression(codec)
-                .withMetadataCharsetDetector(detector);
+                .withMetadataDecoder(metadataDecoder);
         assertSame(codec, assertInstanceOf(TarCompression.Codec.class, compressedRead.compression()).codec());
-        assertSame(detector, compressedRead.metadataCharsetDetector());
+        assertSame(metadataDecoder, compressedRead.metadataDecoder());
         assertSame(TarCompression.DETECT, compressedRead.withCompressionDetection().compression());
         assertSame(TarCompression.UNCOMPRESSED, compressedRead.withoutCompression().compression());
 
@@ -55,8 +55,8 @@ final class TarArchiveOptionsTest {
     @Test
     void derivesUpdatePolicies() {
         CompressionCodec<?> codec = DeflateCodec.DEFAULT;
-        ArchiveMetadataCharsetDetector detector =
-                ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_16BE);
+        ArchiveMetadataDecoder metadataDecoder =
+                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_16BE);
         ArchiveUpdateOptions common = ArchiveUpdateOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT);
         TarArchiveOptions.Update base = TarArchiveOptions.UPDATE_DEFAULTS.withCommon(common);
@@ -71,9 +71,9 @@ final class TarArchiveOptionsTest {
         assertSame(TarCompression.PRESERVE, targetCodec.withPreservedSourceCompression().targetCompression());
         assertSame(TarCompression.UNCOMPRESSED, targetCodec.withUncompressedTarget().targetCompression());
 
-        TarArchiveOptions.Update named = base.withMetadataCharsetDetector(detector);
-        assertSame(detector, named.metadataCharsetDetector());
-        assertEquals(common, named.common().withMetadataCharsetDetector(null));
+        TarArchiveOptions.Update named = base.withMetadataDecoder(metadataDecoder);
+        assertSame(metadataDecoder, named.metadataDecoder());
+        assertEquals(common, named.common().withMetadataDecoder(null));
     }
 
     /// Verifies records and non-null policy helpers reject absent configuration values.
@@ -99,7 +99,7 @@ final class TarArchiveOptionsTest {
         assertThrows(NullPointerException.class, () -> TarArchiveOptions.READ_DEFAULTS.withCompression(null));
         assertThrows(
                 NullPointerException.class,
-                () -> TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(null)
+                () -> TarArchiveOptions.READ_DEFAULTS.withMetadataDecoder(null)
         );
         assertThrows(NullPointerException.class, () -> TarArchiveOptions.CREATE_DEFAULTS.withCommon(null));
         assertThrows(NullPointerException.class, () -> TarArchiveOptions.CREATE_DEFAULTS.withCompression(null));
@@ -107,7 +107,7 @@ final class TarArchiveOptionsTest {
         assertThrows(NullPointerException.class, () -> TarArchiveOptions.UPDATE_DEFAULTS.withTargetCompression(null));
         assertThrows(
                 NullPointerException.class,
-                () -> TarArchiveOptions.UPDATE_DEFAULTS.withMetadataCharsetDetector(null)
+                () -> TarArchiveOptions.UPDATE_DEFAULTS.withMetadataDecoder(null)
         );
     }
 }
