@@ -24,6 +24,7 @@ import java.util.Objects;
 ///
 /// The legacy decoder is used only when neither a valid Info-ZIP Unicode extra field nor the UTF-8 flag supplies the
 /// text encoding. The default decoder uses CP437; custom decoders determine their own conversion and failure policy.
+/// [ZipLegacyMetadataDecoder#forCodePages(Charset, Charset)] provides an opt-in creator-aware compatibility policy.
 @NotNullByDefault
 public final class ZipArchiveOptions {
     /// The ZIP default for legacy names without an explicit Unicode representation.

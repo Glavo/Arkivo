@@ -24,6 +24,26 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests raw ZIP entry name decoding.
 @NotNullByDefault
 public final class ZipEntryNameDecoderTest {
+    /// Explicit Unicode metadata bypasses compatibility rules, including when Unicode decoding fails.
+    @Test
+    public void codePageCompatibilityDoesNotOverrideUnicode() throws IOException {
+        var decoder = new ZipEntryNameDecoder(ZipLegacyMetadataDecoder.forCodePages(
+                StandardCharsets.US_ASCII, StandardCharsets.US_ASCII));
+        byte[] utf8 = "\u00e9.txt".getBytes(StandardCharsets.UTF_8);
+        assertEquals("\u00e9.txt", decoder.decodePath(utf8, ZipEntryNameDecoder.UTF_8_FLAG,
+                new byte[0], ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 25, 0x81a4_0000L));
+        byte[] legacy = {(byte) 0x82};
+        assertEquals("\u00e9.txt", decoder.decodePath(legacy, 0,
+                unicodeExtraField(ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID, legacy, "\u00e9.txt"),
+                ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 25, 0x81a4_0000L));
+        assertEquals("\u00e9.txt", decoder.decodeComment(legacy, 0,
+                unicodeExtraField(ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID, legacy, "\u00e9.txt"),
+                ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 25, 0x81a4_0000L));
+        assertThrows(CharacterCodingException.class, () -> decoder.decodePath(legacy,
+                ZipEntryNameDecoder.UTF_8_FLAG, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 25, 0x81a4_0000L));
+    }
+
     /// Verifies that the UTF-8 general purpose bit flag selects strict UTF-8 decoding.
     @Test
     public void utf8Flag() throws Exception {
@@ -116,6 +136,7 @@ public final class ZipEntryNameDecoderTest {
             assertEquals(20, context.versionNeededToExtract());
             assertEquals(3, context.creatorSystem());
             assertEquals(63, context.creatorVersion());
+            assertEquals(0x81a4_0000L, context.externalAttributes());
             assertEquals(0, context.extraData().remaining());
             return ArchiveMetadataDecoder.forCharset(gb18030).decode(context.bytes());
         };
@@ -128,7 +149,8 @@ public final class ZipEntryNameDecoderTest {
                 new byte[0],
                 ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                 20,
-                3 << Byte.SIZE | 63
+                3 << Byte.SIZE | 63,
+                0x81a4_0000L
         );
 
         assertEquals("目录/文件.txt", path);

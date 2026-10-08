@@ -20,7 +20,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.nio.charset.Charset;
 import java.nio.file.OpenOption;
 import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashSet;
@@ -72,7 +71,7 @@ public final class ZipArkivoFileSystemConfig {
 
     /// The ZIP-standard decoder used when no legacy decoder is configured.
     private static final ArchiveMetadataDecoder DEFAULT_LEGACY_METADATA_DECODER =
-            ArchiveMetadataDecoder.forCharset(Charset.forName("IBM437"));
+            ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER;
 
     /// The default parsed ZIP file system configuration.
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(

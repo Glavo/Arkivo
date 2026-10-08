@@ -4898,7 +4898,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                             centralDirectoryExtraData,
                             ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                             entry.versionNeeded,
-                            entry.versionMadeBy
+                            entry.versionMadeBy,
+                            entry.externalAttributes
                     ),
                     entry.compressedSize,
                     entry.uncompressedSize,
@@ -4971,7 +4972,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     extraData,
                     ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                     versionNeeded,
-                    versionMadeBy
+                    versionMadeBy,
+                    externalAttributes
             );
             byte @Nullable [] rawComment = rawCommentBytes.length > 0 ? rawCommentBytes : null;
             return new EntryAttributes(
@@ -4984,7 +4986,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                             extraData,
                             ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                             versionNeeded,
-                            versionMadeBy
+                            versionMadeBy,
+                            externalAttributes
                     ),
                     zip64.compressedSize(),
                     zip64.uncompressedSize(),

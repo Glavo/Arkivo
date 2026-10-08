@@ -911,6 +911,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                             extraData,
                             ZipLegacyMetadataDecoder.HeaderSource.LOCAL_FILE_HEADER,
                             versionNeededToExtract,
+                            ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
                             ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
                     );
             requireValidEntryPath(path);

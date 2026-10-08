@@ -967,7 +967,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                             extraData,
                             ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                             versionNeeded,
-                            versionMadeBy
+                            versionMadeBy,
+                            externalAttributes
                     );
                 } catch (java.nio.charset.CharacterCodingException exception) {
                     throw new IOException("Failed to decode ZIP entry name", exception);
@@ -978,7 +979,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         extraData,
                         ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                         versionNeeded,
-                        versionMadeBy
+                        versionMadeBy,
+                        externalAttributes
                 );
                 readLimits.acceptEntry(decodedPath, uncompressedSize);
 
@@ -1215,7 +1217,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         extraData,
                         ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                         versionNeeded,
-                        versionMadeBy
+                        versionMadeBy,
+                        Integer.toUnsignedLong(buffer.getInt(offset + 38))
                 );
             } catch (java.nio.charset.CharacterCodingException exception) {
                 throw new IOException("Failed to decode ZIP entry name", exception);

@@ -62,6 +62,7 @@ public final class ZipEntryNameDecoder {
                 extraData,
                 ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
                 ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
                 ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
         );
     }
@@ -74,6 +75,7 @@ public final class ZipEntryNameDecoder {
     /// @param headerSource the header that supplied the metadata
     /// @param versionNeededToExtract the unsigned 16-bit extraction version, or the decoder's unknown sentinel
     /// @param versionMadeBy the unsigned 16-bit creator version, or the decoder's unknown sentinel
+    /// @param externalAttributes the unsigned 32-bit external attributes, or the decoder's unknown sentinel
     /// @return the decoded entry path
     /// @throws NullPointerException if an array or `headerSource` is `null`
     /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the path
@@ -83,7 +85,8 @@ public final class ZipEntryNameDecoder {
             byte[] extraData,
             ZipLegacyMetadataDecoder.HeaderSource headerSource,
             int versionNeededToExtract,
-            int versionMadeBy
+            int versionMadeBy,
+            long externalAttributes
     ) throws IOException {
         String unicodePath = decodeUnicodeExtraField(rawPath, extraData, UNICODE_PATH_EXTRA_FIELD_ID);
         if (unicodePath != null) {
@@ -96,7 +99,8 @@ public final class ZipEntryNameDecoder {
                 ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                 headerSource,
                 versionNeededToExtract,
-                versionMadeBy
+                versionMadeBy,
+                externalAttributes
         );
     }
 
@@ -119,6 +123,7 @@ public final class ZipEntryNameDecoder {
                 extraData,
                 ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
                 ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
                 ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
         );
     }
@@ -131,6 +136,7 @@ public final class ZipEntryNameDecoder {
     /// @param headerSource the header that supplied the metadata
     /// @param versionNeededToExtract the unsigned 16-bit extraction version, or the decoder's unknown sentinel
     /// @param versionMadeBy the unsigned 16-bit creator version, or the decoder's unknown sentinel
+    /// @param externalAttributes the unsigned 32-bit external attributes, or the decoder's unknown sentinel
     /// @return the decoded comment, or `null` when absent
     /// @throws NullPointerException if `extraData` or `headerSource` is `null`
     /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the comment
@@ -140,7 +146,8 @@ public final class ZipEntryNameDecoder {
             byte[] extraData,
             ZipLegacyMetadataDecoder.HeaderSource headerSource,
             int versionNeededToExtract,
-            int versionMadeBy
+            int versionMadeBy,
+            long externalAttributes
     ) throws IOException {
         if (rawComment == null || rawComment.length == 0) {
             return null;
@@ -159,7 +166,8 @@ public final class ZipEntryNameDecoder {
                     ZipLegacyMetadataDecoder.MetadataKind.ENTRY_COMMENT,
                     headerSource,
                     versionNeededToExtract,
-                    versionMadeBy
+                    versionMadeBy,
+                    externalAttributes
             );
         } catch (CharacterCodingException exception) {
             throw new IOException("Failed to decode ZIP entry comment", exception);
@@ -227,7 +235,8 @@ public final class ZipEntryNameDecoder {
             ZipLegacyMetadataDecoder.MetadataKind metadataKind,
             ZipLegacyMetadataDecoder.HeaderSource headerSource,
             int versionNeededToExtract,
-            int versionMadeBy
+            int versionMadeBy,
+            long externalAttributes
     ) throws IOException {
         if ((generalPurposeFlags & UTF_8_FLAG) != 0) {
             return strictDecode(rawValue, StandardCharsets.UTF_8);
@@ -242,6 +251,7 @@ public final class ZipEntryNameDecoder {
                     generalPurposeFlags,
                     versionNeededToExtract,
                     versionMadeBy,
+                    externalAttributes,
                     ByteBuffer.wrap(extraData)
             ));
         } else {
