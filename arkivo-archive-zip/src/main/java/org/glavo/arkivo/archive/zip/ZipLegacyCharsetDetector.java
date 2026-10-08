@@ -97,17 +97,17 @@ public interface ZipLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
         /// Creates a ZIP legacy metadata context.
         public Context {
             bytes = readOnly(bytes, "bytes");
-            metadataKind = Objects.requireNonNull(metadataKind, "metadataKind");
-            headerSource = Objects.requireNonNull(headerSource, "headerSource");
-            generalPurposeFlags = requireUnsignedShortOrUnknown(
+            Objects.requireNonNull(metadataKind, "metadataKind");
+            Objects.requireNonNull(headerSource, "headerSource");
+            requireUnsignedShortOrUnknown(
                     generalPurposeFlags,
                     "generalPurposeFlags"
             );
-            versionNeededToExtract = requireUnsignedShortOrUnknown(
+            requireUnsignedShortOrUnknown(
                     versionNeededToExtract,
                     "versionNeededToExtract"
             );
-            versionMadeBy = requireUnsignedShortOrUnknown(versionMadeBy, "versionMadeBy");
+            requireUnsignedShortOrUnknown(versionMadeBy, "versionMadeBy");
             extraData = readOnly(extraData, "extraData");
         }
 
@@ -148,11 +148,10 @@ public interface ZipLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
         }
 
         /// Validates an unsigned ZIP header value or its unavailable sentinel.
-        private static int requireUnsignedShortOrUnknown(int value, String name) {
+        private static void requireUnsignedShortOrUnknown(int value, String name) {
             if (value < UNKNOWN_HEADER_VALUE || value > 0xffff) {
                 throw new IllegalArgumentException(name + " must be UNKNOWN_HEADER_VALUE or an unsigned short");
             }
-            return value;
         }
     }
 }
