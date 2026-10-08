@@ -8,6 +8,7 @@ import org.gradle.testing.base.TestingExtension
 
 plugins {
     base
+    id("org.glavo.gradle-wrapper-neo") version "0.2.0"
 }
 
 val testDataCacheDirectory = layout.dir(providers.provider {
