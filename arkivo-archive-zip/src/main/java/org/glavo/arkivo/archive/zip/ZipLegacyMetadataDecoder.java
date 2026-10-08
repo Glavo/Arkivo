@@ -17,7 +17,8 @@ import java.util.Objects;
 /// ZIP readers invoke this decoder only when no usable Info-ZIP Unicode extra field or UTF-8 general-purpose flag
 /// supplies the encoding. Structural extra-field validation remains the reader's responsibility.
 ///
-/// The default ZIP decoder uses CP437. A custom decoder supplies the final text; there is no implicit CP437 fallback
+/// The [default ZIP decoder][ZipArchiveOptions#DEFAULT_LEGACY_METADATA_DECODER] detects legacy encodings with CP437
+/// fallback. A custom decoder supplies the final text; there is no implicit CP437 fallback
 /// if it throws an exception or returns `null`.
 @FunctionalInterface
 @NotNullByDefault
@@ -43,7 +44,7 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
     /// Conversion is strict: malformed or unmappable input causes [java.nio.charset.CharacterCodingException],
     /// without trying the other charset. Neither buffer is modified or retained. The returned decoder
     /// supports concurrent invocations and does not consult the system locale. ZIP readers still process
-    /// explicit Unicode metadata before invoking it. The default ZIP decoder remains CP437.
+    /// explicit Unicode metadata before invoking it. This policy replaces automatic legacy-encoding detection.
     /// This policy does not relax archive validation: indexed readers still reject different raw names
     /// in the local header and central directory, even if different code pages could yield the same text.
     ///

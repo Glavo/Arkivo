@@ -1681,7 +1681,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         if (entry.modifiedTimeOverride() != null) {
             local = ZipExtraFieldMetadata.withLastModifiedTime(local, entry.modifiedTimeOverride());
         }
-        return EntryAttributes.existing(entry.attributesSnapshot(), local, config);
+        return EntryAttributes.existing(entry.attributesSnapshot(), local);
     }
 
     /// Returns the immutable source name backing one visible existing entry.
@@ -4922,8 +4922,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Returns attributes parsed from an append-mode central directory snapshot.
         private static EntryAttributes existing(
                 ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot snapshot,
-                byte[] localExtraData,
-                ZipArkivoFileSystemConfig config
+                byte[] localExtraData
         ) throws IOException {
             byte[] bytes = snapshot.bytes();
             if (bytes.length < ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE
@@ -4965,7 +4964,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     nextOffset
             );
             Zip64Values zip64 = Zip64Values.read(extraData, uncompressedSize, compressedSize, localHeaderOffset, 0L);
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyMetadataDecoder());
+            ZipEntryNameDecoder decoder = snapshot.nameDecoder();
             String decodedPath = decoder.decodePath(
                     rawPath,
                     flags,
@@ -6010,6 +6009,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             return new ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot(
                     entryName,
                     centralDirectoryBytes,
+                    source.nameDecoder(),
                     source.localHeaderOffset(),
                     source.localHeaderSize(),
                     source.localRecordSize()

@@ -895,7 +895,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     private ZipIndex readIndex() throws IOException {
         try (ArchiveChannel channel = openArchiveChannel()) {
             ZipEndRecord endRecord = readEndRecord(channel);
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyMetadataDecoder());
             ArkivoReadLimitTracker readLimits = ArkivoReadLimitTracker.fromLimits(
                     config.maximumEntryCount(),
                     config.maximumEntrySize(),
@@ -913,6 +912,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     .order(ByteOrder.LITTLE_ENDIAN);
             readFully(channel, endRecord.actualCentralDirectoryOffset, centralDirectory);
             centralDirectory.flip();
+
+            ZipEntryNameDecoder decoder = ZipEntryNameDecoder.forCentralDirectory(
+                    config.legacyMetadataDecoder(), centralDirectory);
 
             while (centralDirectory.hasRemaining()) {
                 int offset = centralDirectory.position();
@@ -1185,7 +1187,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             SeekableByteChannel channel
     ) throws IOException {
         ByteBuffer buffer = centralDirectory.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(legacyMetadataDecoder);
+        ZipEntryNameDecoder decoder = ZipEntryNameDecoder.forCentralDirectory(legacyMetadataDecoder, centralDirectory);
         ArrayList<CentralDirectoryEntrySnapshot> entries = new ArrayList<>();
         while (buffer.hasRemaining()) {
             int offset = buffer.position();
@@ -1237,6 +1239,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             entries.add(new CentralDirectoryEntrySnapshot(
                     key,
                     readBytes(buffer, offset, nextOffset - offset),
+                    decoder,
                     indexedEntry.localHeaderOffset,
                     localRecord.headerSize(),
                     localRecord.size()
@@ -2884,12 +2887,15 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     ///
     /// @param entryName         the normalized entry name
     /// @param bytes             the raw central directory entry bytes
+    /// @param nameDecoder       the decoder with the source archive's frozen metadata evidence
     /// @param localHeaderOffset the actual local header offset in physical storage
     /// @param localHeaderSize   the exact size of the local header before entry data
     /// @param localRecordSize   the exact size of the local header, data, and optional descriptor
+    @NotNullByDefault
     record CentralDirectoryEntrySnapshot(
             String entryName,
             byte @Unmodifiable [] bytes,
+            ZipEntryNameDecoder nameDecoder,
             long localHeaderOffset,
             long localHeaderSize,
             long localRecordSize
@@ -2900,6 +2906,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 throw new IllegalArgumentException("ZIP local record range is invalid");
             }
             Objects.requireNonNull(entryName, "entryName");
+            Objects.requireNonNull(nameDecoder, "nameDecoder");
             bytes = Objects.requireNonNull(bytes, "bytes").clone();
         }
 

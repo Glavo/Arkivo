@@ -144,19 +144,21 @@ final class GoZipCorpusTest {
         }
     }
 
-    /// Resolves UTF-8 names even when a producer omitted the language-encoding flag.
+    /// Resolves real producer UTF-8 names with automatic decoding and an explicit charset override.
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {"utf8-7zip.zip", "utf8-infozip.zip", "utf8-osx.zip", "utf8-winrar.zip", "utf8-winzip.zip"})
     void readsUnicodeNames(String name) throws IOException {
-        var options = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
-                ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8));
-        try (var fileSystem = ZipArkivoFileSystem.open(fixture(name), options)) {
-            assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/\u4e16\u754c")));
-        }
-        try (var reader = ZipArkivoStreamingReader.open(fixture(name), options)) {
-            assertTrue(reader.next());
-            assertEquals("\u4e16\u754c", reader.readAttributes().path());
-            assertFalse(reader.next());
+        for (var options : List.of(ZipArchiveOptions.READ_DEFAULTS,
+                ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
+                        ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8)))) {
+            try (var fileSystem = ZipArkivoFileSystem.open(fixture(name), options)) {
+                assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/\u4e16\u754c")));
+            }
+            try (var reader = ZipArkivoStreamingReader.open(fixture(name), options)) {
+                assertTrue(reader.next());
+                assertEquals("\u4e16\u754c", reader.readAttributes().path());
+                assertFalse(reader.next());
+            }
         }
     }
 

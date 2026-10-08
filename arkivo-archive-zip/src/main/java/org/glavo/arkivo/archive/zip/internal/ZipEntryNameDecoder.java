@@ -45,6 +45,13 @@ public final class ZipEntryNameDecoder {
         );
     }
 
+    /// Creates an indexed decoder with frozen archive evidence when automatic decoding is selected.
+    /// Custom decoders are neither sampled nor called during preparation. The buffer is not modified or retained.
+    static ZipEntryNameDecoder forCentralDirectory(ArchiveMetadataDecoder configured, ByteBuffer centralDirectory)
+            throws IOException {
+        return new ZipEntryNameDecoder(ZipAutoMetadataDecoder.prepare(configured, centralDirectory));
+    }
+
     /// Decodes a raw ZIP entry path without additional header context.
     ///
     /// The input arrays are read without changing their contents.
@@ -240,6 +247,10 @@ public final class ZipEntryNameDecoder {
     ) throws IOException {
         if ((generalPurposeFlags & UTF_8_FLAG) != 0) {
             return strictDecode(rawValue, StandardCharsets.UTF_8);
+        }
+
+        if (legacyMetadataDecoder instanceof ZipAutoMetadataDecoder automatic) {
+            return automatic.decode(rawValue, metadataKind, versionMadeBy);
         }
 
         String decoded;

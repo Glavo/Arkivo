@@ -8,6 +8,7 @@ import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.zip.internal.ZipAutoMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -23,13 +24,26 @@ import java.util.Objects;
 /// records retain their existing bytes.
 ///
 /// The legacy decoder is used only when neither a valid Info-ZIP Unicode extra field nor the UTF-8 flag supplies the
-/// text encoding. The default decoder uses CP437; custom decoders determine their own conversion and failure policy.
+/// text encoding. The default decoder recognizes unmarked UTF-8 and uses conservative legacy-encoding heuristics,
+/// falling back to CP437 when evidence is insufficient. Custom decoders determine their own conversion and failure policy.
 /// [ZipLegacyMetadataDecoder#forCodePages(Charset, Charset)] provides an opt-in creator-aware compatibility policy.
 @NotNullByDefault
 public final class ZipArchiveOptions {
-    /// The ZIP default for legacy names without an explicit Unicode representation.
+    /// The automatic decoder for names and comments without explicit Unicode metadata.
+    ///
+    /// Recognizes unmarked UTF-8 and uses bounded script and character heuristics for Chinese, Japanese,
+    /// and Korean legacy text. Indexed readers also collect evidence from a bounded central-directory prefix,
+    /// separately for names, comments, and creator systems. Matching Unicode extra fields can identify legacy
+    /// code pages for other entries. Decisive names also supply hints for matching raw directory prefixes.
+    /// Ambiguous or conflicting evidence falls back to per-value detection and CP437.
+    ///
+    /// Forward-only readers and direct decoder calls analyze individual values without looking ahead.
+    /// Their results can differ from indexed reading. Detection is heuristic, does not consult the system locale,
+    /// and cannot reliably distinguish all legacy encodings. Use [ArchiveMetadataDecoder#forCharset(Charset)]
+    /// to select a known encoding. Explicit Unicode metadata is still decoded strictly by the reader.
+    /// This decoder supports concurrent calls and does not retain caller buffers.
     public static final ArchiveMetadataDecoder DEFAULT_LEGACY_METADATA_DECODER =
-            ArchiveMetadataDecoder.forCharset(Charset.forName("IBM437"));
+            ZipAutoMetadataDecoder.DEFAULT;
 
     /// The default read configuration.
     public static final Read READ_DEFAULTS = new Read(ArchiveReadOptions.DEFAULT);
