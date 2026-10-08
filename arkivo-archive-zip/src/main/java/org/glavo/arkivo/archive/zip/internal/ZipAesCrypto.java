@@ -82,7 +82,7 @@ final class ZipAesCrypto {
                 aes.passwordVerifierSize(),
                 "Unexpected end of WinZip AES password verifier"
         );
-        return new Decryptor(createDecryptingState(aes, password, salt, passwordVerifier));
+        return new Decryptor(createDecryptingState(aes, password, salt, passwordVerifier), aes);
     }
 
     /// Returns the current failure with the given exception added as a suppressed failure when needed.
@@ -342,9 +342,18 @@ final class ZipAesCrypto {
         /// The mutable decryption state.
         private final State state;
 
+        /// The entry's AES version and encryption parameters.
+        private final ZipAesExtraField aes;
+
         /// Creates a decryptor with initialized key state.
-        private Decryptor(State state) {
+        private Decryptor(State state, ZipAesExtraField aes) {
             this.state = Objects.requireNonNull(state, "state");
+            this.aes = Objects.requireNonNull(aes, "aes");
+        }
+
+        /// Returns the plaintext CRC for AE-1, or the required zero descriptor CRC for AE-2.
+        long descriptorCrc32(long plaintextCrc32) {
+            return aes.usesCrc32() ? plaintextCrc32 : 0;
         }
 
         /// Decrypts bytes in place and authenticates the encrypted input bytes.

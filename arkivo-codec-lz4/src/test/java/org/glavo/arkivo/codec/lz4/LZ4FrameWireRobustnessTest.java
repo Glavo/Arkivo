@@ -4,9 +4,13 @@
 package org.glavo.arkivo.codec.lz4;
 
 import org.glavo.arkivo.checksum.xxhash.XXHash32;
+import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.UnmodifiableView;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -25,6 +29,61 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public final class LZ4FrameWireRobustnessTest {
     /// Standard descriptor flags for independent blocks without optional fields.
     private static final int BASIC_FLAGS = 0x60;
+
+    /// Resumes an empty frame after output exhaustion without emitting bytes or consuming trailing input.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7})
+    void resumesEmptyRawBlocksAfterOutputExhaustion(int flags) throws IOException {
+        LZ4Codec codec = new LZ4Codec().withIndependentBlocks((flags & 4) != 0)
+                .withBlockChecksum((flags & 1) != 0).withContentChecksum((flags & 2) != 0);
+        byte[] empty = bytes(codec.compress(ByteBuffer.allocate(0)));
+        int headerSize = (empty[4] & 8) != 0 ? 15 : 7;
+        byte[] block = new byte[(flags & 1) != 0 ? 8 : 4];
+        ByteArrayAccess.writeIntLittleEndian(block, 0, Integer.MIN_VALUE);
+        if ((flags & 1) != 0) {
+            ByteArrayAccess.writeIntLittleEndian(block, 4, XXHash32.DEFAULT.computeInt(new byte[0]));
+        }
+        ByteBuffer assembled = ByteBuffer.allocateDirect(empty.length + block.length + 1);
+        assembled.put(empty, 0, headerSize).put(block)
+                .put(empty, headerSize, empty.length - headerSize).put((byte) 0x5a).flip();
+        @UnmodifiableView ByteBuffer source = assembled.asReadOnlyBuffer();
+        try (var decoder = codec.newDecoder()) {
+            CodecOutcome outcome = decoder.finish(source, ByteBuffer.allocate(0));
+            if (outcome != CodecOutcome.FINISHED) {
+                assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome);
+                ByteBuffer target = ByteBuffer.allocateDirect(1);
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
+                assertEquals(0, target.position());
+            }
+            assertEquals(1, source.remaining());
+            assertEquals((byte) 0x5a, source.get());
+        }
+    }
+
+    /// Accepts empty raw blocks before and after payload while still requiring the distinct all-zero EndMark.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7})
+    void distinguishesEmptyRawBlocksFromEndMark(int flags) throws IOException {
+        byte[] expected = {1, 2, 3};
+        LZ4Codec codec = new LZ4Codec().withIndependentBlocks((flags & 4) != 0)
+                .withBlockChecksum((flags & 1) != 0).withContentChecksum((flags & 2) != 0);
+        byte[] frame = bytes(codec.compress(ByteBuffer.wrap(expected)));
+        int headerSize = (frame[4] & 8) != 0 ? 15 : 7;
+        int footerSize = (flags & 2) != 0 ? 8 : 4;
+        byte[] emptyBlock = new byte[(flags & 1) != 0 ? 8 : 4];
+        ByteArrayAccess.writeIntLittleEndian(emptyBlock, 0, Integer.MIN_VALUE);
+        if ((flags & 1) != 0) {
+            ByteArrayAccess.writeIntLittleEndian(emptyBlock, 4, XXHash32.DEFAULT.computeInt(new byte[0]));
+        }
+        ByteBuffer assembled = ByteBuffer.allocate(frame.length + 2 * emptyBlock.length);
+        assembled.put(frame, 0, headerSize).put(emptyBlock)
+                .put(frame, headerSize, frame.length - headerSize - footerSize).put(emptyBlock)
+                .put(frame, frame.length - footerSize, footerSize);
+        byte[] withEmptyBlocks = assembled.array();
+        assertArrayEquals(expected, decompress(codec, withEmptyBlocks));
+        byte[] missingEndMark = Arrays.copyOf(withEmptyBlocks, withEmptyBlocks.length - footerSize);
+        assertThrows(IOException.class, () -> decompress(codec, missingEndMark));
+    }
 
     /// Verifies every nonempty proper prefix of standard and skippable frames is rejected as truncated.
     @Test

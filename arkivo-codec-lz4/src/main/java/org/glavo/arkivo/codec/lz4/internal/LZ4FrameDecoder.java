@@ -460,7 +460,8 @@ public final class LZ4FrameDecoder
         int value = ByteArrayAccess.readIntLittleEndian(blockHeader.array(), 0);
         blockHeader.clear();
         int size = value & 0x7fff_ffff;
-        if (size == 0) {
+        // Only an all-zero header ends the frame; 0x80000000 is a valid empty raw block.
+        if (value == 0) {
             validateContentSize();
             if (contentChecksum) {
                 checksum.clear();

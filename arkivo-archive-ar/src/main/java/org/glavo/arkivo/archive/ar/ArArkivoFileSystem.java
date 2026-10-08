@@ -41,6 +41,10 @@ import java.util.Objects;
 /// remains unchanged, and a new member is not added. Argument and member-size validation failures do not discard a body.
 /// Channel-source update sessions require an explicit commit target because they have no source path to replace.
 ///
+/// Member creation accepts `posix:permissions` and `basic:lastModifiedTime` initial attributes. Modification times
+/// are [java.nio.file.attribute.FileTime] values; serialization discards fractional seconds. Creation attributes do
+/// not change an existing member opened for writing. When a supported attribute is repeated, its last value is used.
+///
 /// A successfully returned channel-backed file system owns its `SeekableByteChannel` or
 /// `ArkivoSeekableChannelSource` and closes it with the file system. Path factories own only the internal handles they
 /// open. Creation uses create-new semantics and fails when the archive path already exists. Closing a writable session

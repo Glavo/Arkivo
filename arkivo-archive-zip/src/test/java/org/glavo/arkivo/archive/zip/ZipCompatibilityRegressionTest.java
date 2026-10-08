@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -63,6 +64,145 @@ final class ZipCompatibilityRegressionTest {
     /// The caller-owned bytes following a complete streaming archive.
     private static final byte @Unmodifiable [] ARCHIVE_TRAILER =
             "caller trailer".getBytes(StandardCharsets.US_ASCII);
+
+    /// Does not confuse unsigned preamble words with the end-of-input sentinel.
+    @ParameterizedTest
+    @ValueSource(ints = {Integer.MIN_VALUE, -2, -1, 0})
+    void readsArchiveAfterUnsignedPreamble(int word) throws IOException {
+        byte[] original = classicArchiveWithEntryCount(1);
+        byte[] bytes = new byte[4 + original.length];
+        ByteArrayAccess.writeIntLittleEndian(bytes, 0, word);
+        System.arraycopy(original, 0, bytes, 4, original.length);
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
+                assertEquals(0, input.readAllBytes().length);
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Rejects a full-width invalid record after an entry instead of silently terminating the archive.
+    @ParameterizedTest
+    @ValueSource(ints = {Integer.MIN_VALUE, -2, -1})
+    void rejectsUnsignedInvalidRecord(int word) throws IOException {
+        byte[] bytes = classicArchiveWithEntryCount(1).clone();
+        int central = ByteArrayAccess.readIntLittleEndian(bytes, bytes.length - 6);
+        assertEquals((int) CENTRAL_DIRECTORY_HEADER_SIGNATURE, ByteArrayAccess.readIntLittleEndian(bytes, central));
+        ByteArrayAccess.writeIntLittleEndian(bytes, central, word);
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            assertTrue(reader.next());
+            assertThrows(IOException.class, reader::next);
+        }
+    }
+
+    /// Rejects a final-disk declaration for a missing volume even when the central directory is empty.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsUnavailableEndRecordVolume(boolean empty, @TempDir Path directory) throws IOException {
+        byte[] bytes = classicArchiveWithEntryCount(empty ? 0 : 1);
+        int end = bytes.length - 22;
+        ByteArrayAccess.writeIntLittleEndian(bytes, end, (int) END_SIGNATURE);
+        ByteArrayAccess.writeShortLittleEndian(bytes, end + 4, (short) 1);
+        assertUnavailableEndVolume(bytes, directory);
+    }
+
+    /// Rejects missing volumes declared by classic metadata, the ZIP64 record, or the ZIP64 locator.
+    @ParameterizedTest
+    @CsvSource({"18,2,1", "82,4,1", "26,4,2", "26,4,0"})
+    void rejectsUnavailableZip64EndVolume(int distance, int width, int value, @TempDir Path directory) throws IOException {
+        byte[] bytes = zip64Archive(new byte[0], true, false, false, false);
+        if (width == Short.BYTES) {
+            ByteArrayAccess.writeShortLittleEndian(bytes, bytes.length - distance, (short) value);
+        } else {
+            ByteArrayAccess.writeIntLittleEndian(bytes, bytes.length - distance, value);
+        }
+        assertUnavailableEndVolume(bytes, directory);
+    }
+
+    /// Forces indexing through Path and explicit Channel entry points and checks failed updates leave bytes unchanged.
+    private static void assertUnavailableEndVolume(byte[] bytes, Path directory) throws IOException {
+        Path archive = directory.resolve("missing-volume.zip");
+        Files.write(archive, bytes);
+        assertThrows(IOException.class, () -> {
+            try (var fileSystem = ZipArkivoFileSystem.open(archive);
+                 var entries = Files.list(fileSystem.getPath("/"))) {
+                entries.toList();
+            }
+        });
+        assertThrows(IOException.class, () -> {
+            try (var fileSystem = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(bytes));
+                 var entries = Files.list(fileSystem.getPath("/"))) {
+                entries.toList();
+            }
+        });
+        assertThrows(IOException.class, () -> {
+            try (var fileSystem = ZipArkivoFileSystem.update(archive);
+                 var entries = Files.list(fileSystem.getPath("/"))) {
+                entries.toList();
+            }
+        });
+        assertArrayEquals(bytes, Files.readAllBytes(archive));
+    }
+
+    /// Exposes known directory wire metadata without inventing values for synthetic directories or descriptors.
+    @ParameterizedTest
+    @CsvSource({"0, false", "8, false", "8, true"})
+    void retainsDirectoryCompressionMetadata(int method, boolean descriptor, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("directories.zip");
+        try (var output = new java.util.zip.ZipOutputStream(Files.newOutputStream(archive))) {
+            var entry = new java.util.zip.ZipEntry("explicit/");
+            entry.setMethod(method);
+            if (!descriptor) {
+                entry.setSize(0);
+                // JDK emits a two-byte empty fixed-Huffman block for raw Deflate.
+                entry.setCompressedSize(method == java.util.zip.ZipEntry.STORED ? 0 : 2);
+                entry.setCrc(0);
+            }
+            output.putNextEntry(entry);
+            output.closeEntry();
+            output.putNextEntry(new java.util.zip.ZipEntry("implicit/child"));
+            output.closeEntry();
+        }
+        long compressedSize;
+        try (var reference = new java.util.zip.ZipFile(archive.toFile())) {
+            compressedSize = reference.getEntry("explicit/").getCompressedSize();
+        }
+        ZipArkivoEntryAttributes snapshot;
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            snapshot = Files.readAttributes(fileSystem.getPath("/explicit"), ZipArkivoEntryAttributes.class);
+            assertEquals(compressedSize, snapshot.compressedSize());
+            assertEquals(0, snapshot.crc32());
+            var implicit = Files.readAttributes(fileSystem.getPath("/implicit"), ZipArkivoEntryAttributes.class);
+            assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, implicit.compressedSize());
+            assertEquals(ZipArkivoEntryAttributes.UNKNOWN_CRC32, implicit.crc32());
+        }
+        try (var reader = ZipArkivoStreamingReader.open(Files.newInputStream(archive))) {
+            assertTrue(reader.next());
+            var attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+            long expectedSize = descriptor ? ZipArkivoEntryAttributes.UNKNOWN_SIZE : compressedSize;
+            long expectedCrc = descriptor ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : 0;
+            assertEquals(expectedSize, attributes.compressedSize());
+            assertEquals(expectedCrc, attributes.crc32());
+            assertTrue(reader.next());
+            assertFalse(reader.next());
+            assertEquals(expectedSize, attributes.compressedSize());
+            assertEquals(expectedCrc, attributes.crc32());
+        }
+        try (var fileSystem = ZipArkivoFileSystem.update(archive)) {
+            var attributes = Files.readAttributes(fileSystem.getPath("/explicit"), ZipArkivoEntryAttributes.class);
+            assertEquals(compressedSize, attributes.compressedSize());
+            assertEquals(0, attributes.crc32());
+            Files.write(fileSystem.getPath("/added.bin"), new byte[]{1});
+        }
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            var attributes = Files.readAttributes(fileSystem.getPath("/explicit"), ZipArkivoEntryAttributes.class);
+            assertEquals(compressedSize, attributes.compressedSize());
+            assertEquals(0, attributes.crc32());
+        }
+        assertEquals(compressedSize, snapshot.compressedSize());
+        assertEquals(0, snapshot.crc32());
+    }
 
     /// Verifies excess ZIP64 extra-field values are tolerated for producer compatibility.
     @Test
@@ -162,6 +302,94 @@ final class ZipCompatibilityRegressionTest {
                 entries.toList();
             }
         });
+    }
+
+    /// Rejects ZIP64 end lengths that cannot describe the bytes preceding the locator.
+    @ParameterizedTest
+    @ValueSource(longs = {0, 43, 45, 65536, Long.MAX_VALUE, Long.MIN_VALUE, -1})
+    void rejectsInvalidZip64EndLength(long length) throws IOException {
+        byte[] archive = zip64Archive(new byte[0], true, false, false, false);
+        int end = archive.length - 98;
+        ByteArrayAccess.writeLongLittleEndian(archive, end + 4, length);
+        assertInvalidZip64Index(archive);
+
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
+                assertEquals(-1, input.read());
+            }
+            assertThrows(IOException.class, reader::next);
+        }
+    }
+
+    /// Rejects overflowing and out-of-range directory extents without changing an update source.
+    @ParameterizedTest
+    @CsvSource({
+            "40, 2147483647", "40, 4294967295", "40, 9223372036854775807",
+            "40, -9223372036854775808", "40, -1",
+            "48, 2147483647", "48, 4294967295", "48, 9223372036854775807",
+            "48, -9223372036854775808", "48, -1"
+    })
+    void rejectsInvalidZip64DirectoryExtent(int field, long value, @TempDir Path directory)
+            throws IOException {
+        byte[] archive = zip64Archive(new byte[0], true, false, false, false);
+        ByteArrayAccess.writeLongLittleEndian(archive, archive.length - 98 + field, value);
+        assertInvalidZip64Index(archive);
+        Path path = directory.resolve("invalid-extent.zip");
+        Files.write(path, archive);
+        assertThrows(IOException.class, () -> {
+            try (var fileSystem = ZipArkivoFileSystem.update(path)) {
+                Files.readAllBytes(fileSystem.getPath("/payload.bin"));
+            }
+        });
+        assertArrayEquals(archive, Files.readAllBytes(path));
+    }
+
+    /// Reads opaque ZIP64 extensible data, including false record signatures, with an unadjusted SFX prefix.
+    @ParameterizedTest
+    @CsvSource({"0, 0", "6, 0", "63, 0", "4096, 0", "0, 113", "6, 113", "63, 113", "4096, 113"})
+    void readsZip64ExtensibleData(int extensionSize, int prefixSize, @TempDir Path directory)
+            throws IOException {
+        byte[] content = "ZIP64 extensible data".getBytes(StandardCharsets.US_ASCII);
+        byte[] original = zip64Archive(content, true, false, false, false);
+        int end = original.length - 98;
+        int locator = end + 56;
+        byte[] archive = new byte[prefixSize + original.length + extensionSize];
+        Arrays.fill(archive, (byte) 0x5a);
+        System.arraycopy(original, 0, archive, prefixSize, locator);
+        System.arraycopy(original, locator, archive, prefixSize + locator + extensionSize,
+                original.length - locator);
+        ByteArrayAccess.writeLongLittleEndian(archive, prefixSize + end + 4, 44L + extensionSize);
+        if (extensionSize != 0) {
+            ByteArrayAccess.writeShortLittleEndian(archive, prefixSize + locator, (short) 0xffff);
+            ByteArrayAccess.writeIntLittleEndian(archive, prefixSize + locator + 2, extensionSize - 6);
+        }
+        if (extensionSize >= 62) {
+            // A signature inside the opaque extension is not another end record.
+            ByteArrayAccess.writeIntLittleEndian(archive, prefixSize + locator + 6, (int) ZIP64_END_SIGNATURE);
+        }
+        assertArrayEquals(content, readEntry(archive, "payload.bin"));
+        Path path = directory.resolve("extensible.zip");
+        Files.write(path, archive);
+        assertArrayEquals(content, readEntry(path, "payload.bin"));
+        if (prefixSize == 0) {
+            assertArrayEquals(content, readStreamingEntry(path));
+        }
+    }
+
+    /// Forces lazy index parsing twice and verifies that closing after failure releases the owned channel.
+    private static void assertInvalidZip64Index(byte[] archive) throws IOException {
+        var source = new ReadOnlyByteArrayChannel(archive);
+        try (var fileSystem = ZipArkivoFileSystem.open(source)) {
+            for (int attempt = 0; attempt < 2; attempt++) {
+                assertThrows(IOException.class, () -> {
+                    try (var entries = Files.list(fileSystem.getPath("/"))) {
+                        entries.toList();
+                    }
+                });
+            }
+        }
+        assertFalse(source.isOpen());
     }
 
     /// Verifies seekable and streaming reads of stored entries with signed and unsigned data descriptors.

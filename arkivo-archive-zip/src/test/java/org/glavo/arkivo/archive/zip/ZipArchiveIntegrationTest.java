@@ -5087,7 +5087,7 @@ public final class ZipArchiveIntegrationTest {
     /// Returns a minimal streaming ZIP archive containing one WinZip AES-256 stored entry with a data descriptor.
     private static byte[] winZipAesStoredDataDescriptorArchive(byte[] password, byte[] content) throws IOException {
         byte[] name = "aes-stored-descriptor.bin".getBytes(StandardCharsets.UTF_8);
-        byte[] aesExtra = winZipAesExtraData(2, ZipMethod.STORED.id());
+        byte[] aesExtra = winZipAesExtraData(1, ZipMethod.STORED.id());
         byte[] encryptedBody = winZipAesEncryptedBody(password, content);
         long crc32 = crc32(content);
         int localHeaderSize = 30 + name.length + aesExtra.length;
@@ -5123,7 +5123,7 @@ public final class ZipArchiveIntegrationTest {
     ) throws IOException {
         byte[] firstName = "aes-zip64-stored-descriptor-crc.bin".getBytes(StandardCharsets.UTF_8);
         byte[] secondName = "after.txt".getBytes(StandardCharsets.UTF_8);
-        byte[] aesExtra = winZipAesExtraData(2, ZipMethod.STORED.id());
+        byte[] aesExtra = winZipAesExtraData(1, ZipMethod.STORED.id());
         byte[] encryptedBody = winZipAesEncryptedBody(password, firstContent);
         byte[] zip64Extra = zip64ExtendedInformationExtra(encryptedBody.length, firstContent.length);
         long firstCrc32 = crc32(firstContent);
@@ -5178,7 +5178,7 @@ public final class ZipArchiveIntegrationTest {
     ) throws IOException {
         byte[] firstName = "aes-deflated-descriptor.txt".getBytes(StandardCharsets.UTF_8);
         byte[] secondName = "after.txt".getBytes(StandardCharsets.UTF_8);
-        byte[] aesExtra = winZipAesExtraData();
+        byte[] aesExtra = winZipAesExtraData(1);
         byte[] encryptedBody = winZipAesEncryptedBody(password, deflateRaw(firstContent));
         encryptedBody[encryptedBody.length - 1] ^= 1;
         long firstCrc32 = crc32(firstContent);

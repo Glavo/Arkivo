@@ -25,6 +25,47 @@ import static org.junit.jupiter.api.Assertions.*;
 /// Exercises suspended grammar fields, long Huffman codes, and reused history across input boundaries.
 @NotNullByDefault
 final class DeflateIncrementalStateTest {
+    /// Nine-bit literals and end markers require two bytes when the bit cache is empty.
+    ///
+    /// @param size the literal count, varying the alignment of the end marker
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 15, 16, 31})
+    void resumesNineBitCodesAtEveryByteAlignment(int size) throws Exception {
+        int[] lengths = new int[257];
+        Arrays.fill(lengths, 0, 255, 8);
+        lengths[255] = lengths[256] = 9;
+        byte[] body = new byte[size];
+        Arrays.fill(body, (byte) 255);
+        byte[] compressed = literalCodes(body, lengths);
+        Inflater reference = new Inflater(true);
+        try {
+            reference.setInput(compressed);
+            byte[] actual = new byte[size + 1];
+            assertEquals(size, reference.inflate(actual));
+            assertTrue(reference.finished());
+            assertArrayEquals(body, Arrays.copyOf(actual, size));
+        } finally {
+            reference.end();
+        }
+        for (DeflateDecoderEngine.Format format : DeflateDecoderEngine.Format.values()) {
+            try (var decoder = new DeflateDecoderEngine(format, null)) {
+                for (int chunk : new int[]{1, 2, 7, compressed.length}) {
+                    for (int shape = 0; shape < 3; shape++) {
+                        for (int outputSize : new int[]{1, 17, 258}) {
+                            decoder.reset();
+                            assertArrayEquals(body, decode(decoder, compressed, chunk, shape, outputSize));
+                        }
+                    }
+                }
+                byte[] truncated = Arrays.copyOf(compressed, compressed.length - 1);
+                decoder.reset();
+                assertThrows(IOException.class, () -> decode(decoder, truncated, 1, 0, 1));
+                decoder.reset();
+                assertArrayEquals(body, decode(decoder, compressed, 1, 0, 1));
+            }
+        }
+    }
+
     /// Matches spanning calls and windows preserve slice boundaries, byte order, and trailing input.
     ///
     /// @param direct whether input and output use direct storage

@@ -9,12 +9,15 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.IOException;
 import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 
 /// Implements a single-iterator directory stream over an immutable entry snapshot.
+///
+/// Filtering occurs during traversal. Iterator operations and close are serialized; closing preserves an accepted
+/// lookahead entry but prevents further filter calls.
 ///
 /// @param <T> directory entry type
 @NotNullByDefault
@@ -22,7 +25,7 @@ public final class FixedDirectoryStream<T> implements DirectoryStream<T> {
     /// The immutable entries exposed by this stream.
     private final @Unmodifiable List<T> entries;
 
-    /// The filter applied when the iterator is requested.
+    /// The filter applied as entries are traversed.
     private final Filter<? super T> filter;
 
     /// Whether this stream remains open.
@@ -41,7 +44,7 @@ public final class FixedDirectoryStream<T> implements DirectoryStream<T> {
     /// Creates a filtered directory stream over the given entry snapshot.
     ///
     /// @param entries the entries to copy in iteration order
-    /// @param filter the filter evaluated once when the iterator is requested
+    /// @param filter the filter evaluated at most once for each traversed entry
     public FixedDirectoryStream(List<T> entries, Filter<? super T> filter) {
         this.entries = List.copyOf(Objects.requireNonNull(entries, "entries"));
         this.filter = Objects.requireNonNull(filter, "filter");
@@ -49,7 +52,7 @@ public final class FixedDirectoryStream<T> implements DirectoryStream<T> {
 
     /// Returns the single filtered iterator permitted by the directory-stream contract.
     @Override
-    public Iterator<T> iterator() {
+    public synchronized Iterator<T> iterator() {
         if (!open) {
             throw new IllegalStateException("Directory stream is closed");
         }
@@ -58,22 +61,56 @@ public final class FixedDirectoryStream<T> implements DirectoryStream<T> {
         }
         iteratorReturned = true;
 
-        ArrayList<T> accepted = new ArrayList<>(entries.size());
-        for (T entry : entries) {
-            try {
-                if (filter.accept(entry)) {
-                    accepted.add(entry);
-                }
-            } catch (IOException exception) {
-                throw new DirectoryIteratorException(exception);
-            }
-        }
-        return List.copyOf(accepted).iterator();
+        return new SnapshotIterator();
     }
 
     /// Closes this directory stream.
     @Override
-    public void close() {
+    public synchronized void close() {
         open = false;
+    }
+
+    /// Filters the snapshot one accepted entry at a time under the stream monitor.
+    @NotNullByDefault
+    private final class SnapshotIterator implements Iterator<T> {
+        /// Indicates that no accepted entry is buffered.
+        private static final int NO_ENTRY = -1;
+
+        /// The next snapshot index whose filter has not been evaluated.
+        private int cursor;
+
+        /// The accepted lookahead index, or [#NO_ENTRY].
+        private int nextIndex = NO_ENTRY;
+
+        /// Finds and buffers the next accepted entry without consuming existing lookahead.
+        @Override
+        public boolean hasNext() {
+            synchronized (FixedDirectoryStream.this) {
+                if (nextIndex != NO_ENTRY) return true;
+                while (open && cursor < entries.size()) {
+                    int index = cursor++;
+                    try {
+                        if (filter.accept(entries.get(index))) {
+                            nextIndex = index;
+                            return true;
+                        }
+                    } catch (IOException exception) {
+                        throw new DirectoryIteratorException(exception);
+                    }
+                }
+                return false;
+            }
+        }
+
+        /// Consumes the accepted lookahead, even if the stream was closed after it was buffered.
+        @Override
+        public T next() {
+            synchronized (FixedDirectoryStream.this) {
+                if (!hasNext()) throw new NoSuchElementException();
+                T entry = entries.get(nextIndex);
+                nextIndex = NO_ENTRY;
+                return entry;
+            }
+        }
     }
 }

@@ -347,7 +347,7 @@ final class DMGArkivoFileSystemTest {
             })) {
                 DirectoryIteratorException exception = assertThrows(
                         DirectoryIteratorException.class,
-                        stream::iterator
+                        stream.iterator()::hasNext
                 );
                 assertSame(filterFailure, exception.getCause());
             }

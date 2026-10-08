@@ -163,19 +163,6 @@ public final class LZ4JavaBehaviorTest {
         }
     }
 
-    /// Verifies an incompressible-bit variant of the zero-length frame EndMark is accepted.
-    @Test
-    public void acceptsIncompressibleZeroLengthEndMark() throws IOException {
-        LZ4Codec codec = new LZ4Codec().withContentChecksum(false);
-        byte @Unmodifiable [] input = {(byte) 0xee};
-        byte[] compressed = compress(codec, input);
-        ByteBuffer.wrap(compressed)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .putInt(compressed.length - Integer.BYTES, 0x8000_0000);
-
-        assertArrayEquals(input, decompress(codec, compressed));
-    }
-
     /// Verifies skippable-only input and the parser's handling of absent, incomplete, or trailing frame magic.
     @Test
     public void handlesSkippableOnlyAndMalformedFrameTails() throws IOException {

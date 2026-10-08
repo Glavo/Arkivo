@@ -121,13 +121,13 @@ final class ZipWritableFileSystemContractTest {
             }
             assertEquals(List.of(directory), children);
             assertThrows(NoSuchFileException.class, () -> Files.newDirectoryStream(file).close());
-            DirectoryIteratorException filterFailure = assertThrows(
-                    DirectoryIteratorException.class,
-                    () -> Files.newDirectoryStream(root, path -> {
-                        throw new IOException("filter failure");
-                    })
-            );
-            assertEquals("filter failure", filterFailure.getCause().getMessage());
+            try (var failing = Files.newDirectoryStream(root, path -> {
+                throw new IOException("filter failure");
+            })) {
+                DirectoryIteratorException filterFailure = assertThrows(
+                        DirectoryIteratorException.class, failing.iterator()::hasNext);
+                assertEquals("filter failure", filterFailure.getCause().getMessage());
+            }
 
             assertNull(Files.getFileAttributeView(file, DosFileAttributeView.class));
             assertThrows(

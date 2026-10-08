@@ -32,7 +32,6 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
-import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystemException;
@@ -450,7 +449,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// Opens a directory stream for an entry.
     ///
     /// @param directory the directory entry to enumerate
-    /// @param filter the filter applied once to each direct child
+    /// @param filter the filter evaluated as direct children are traversed
     /// @return a lifecycle-managed stream over accepted child paths
     /// @throws IOException if the path is absent, is not a directory, or its children cannot be enumerated
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
@@ -462,18 +461,11 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                 throw new FileSystemException(directory.toString(), null, "RAR entry is not a directory");
             }
 
-            ArrayList<Path> accepted = new ArrayList<>();
+            ArrayList<Path> paths = new ArrayList<>();
             for (String childPath : node.children().values()) {
-                Path child = rootPath.resolve(childPath);
-                try {
-                    if (filter.accept(child)) {
-                        accepted.add(child);
-                    }
-                } catch (IOException exception) {
-                    throw new DirectoryIteratorException(exception);
-                }
+                paths.add(rootPath.resolve(childPath));
             }
-            return manageDirectoryStream(new FixedDirectoryStream<>(accepted));
+            return manageDirectoryStream(new FixedDirectoryStream<>(paths, filter));
         }
     }
 

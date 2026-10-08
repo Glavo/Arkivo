@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.CopyOption;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
@@ -231,18 +232,35 @@ final class ArkivoFileSystemProviderSupportTest {
         assertEquals(directoryModifiedTime, Files.getLastModifiedTime(targetDirectory));
     }
 
-    /// Verifies directory replacement remains non-recursive and preserves a compatible target directory.
+    /// Rejects existing directory targets without replacement and does not create missing host parents.
+    @Test
+    void copiesDirectoriesWithCreationSemantics() throws IOException {
+        Path source = Files.createDirectory(temporaryDirectory.resolve("source-directory"));
+        Path existing = Files.createDirectory(temporaryDirectory.resolve("existing-directory"));
+        FileTime modifiedTime = FileTime.from(Instant.parse("2020-02-03T04:05:06Z"));
+        Files.setLastModifiedTime(existing, modifiedTime);
+        assertThrows(FileAlreadyExistsException.class, () -> ArkivoFileSystemProviderSupport.copy(
+                source, existing, StandardCopyOption.COPY_ATTRIBUTES));
+        assertEquals(modifiedTime, Files.getLastModifiedTime(existing));
+
+        Path missingParent = temporaryDirectory.resolve("missing-parent");
+        assertThrows(IOException.class, () -> ArkivoFileSystemProviderSupport.copy(
+                source, missingParent.resolve("directory")));
+        assertFalse(Files.exists(missingParent));
+    }
+
+    /// Rejects nonempty directory replacement and creates an empty directory over a regular file.
     @Test
     void replacesCopyTargetsAccordingToTheirKinds() throws IOException {
         Path sourceDirectory = Files.createDirectory(temporaryDirectory.resolve("source-directory"));
 
         Path existingDirectory = Files.createDirectory(temporaryDirectory.resolve("existing-directory"));
         Path existingChild = Files.writeString(existingDirectory.resolve("existing.txt"), "existing");
-        ArkivoFileSystemProviderSupport.copy(
+        assertThrows(DirectoryNotEmptyException.class, () -> ArkivoFileSystemProviderSupport.copy(
                 sourceDirectory,
                 existingDirectory,
                 StandardCopyOption.REPLACE_EXISTING
-        );
+        ));
         assertTrue(Files.isDirectory(existingDirectory));
         assertEquals("existing", Files.readString(existingChild));
 

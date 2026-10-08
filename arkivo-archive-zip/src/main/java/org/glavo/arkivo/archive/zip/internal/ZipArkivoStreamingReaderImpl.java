@@ -260,7 +260,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
         LocalEntry descriptorCandidate = unexpectedDataDescriptorCandidate;
         unexpectedDataDescriptorCandidate = null;
-        int signature = readIntOrEnd(input);
+        long signature = readIntOrEnd(input);
         if (archiveStart) {
             archiveStart = false;
             signature = scanInitialSignature(signature);
@@ -291,7 +291,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             return false;
         }
         if (signature != LOCAL_FILE_HEADER_SIGNATURE) {
-            throw new IOException("Unexpected ZIP stream record signature: " + Integer.toHexString(signature));
+            throw new IOException("Unexpected ZIP stream record signature: " + Long.toHexString(signature));
         }
         readLimits.acceptMetadata(LOCAL_FILE_HEADER_SIZE, null);
 
@@ -353,8 +353,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     }
 
     /// Consumes central-directory and end records without reading bytes after the archive comment.
-    private void drainCentralDirectory(int initialSignature) throws IOException {
-        int signature = initialSignature;
+    private void drainCentralDirectory(long initialSignature) throws IOException {
+        long signature = initialSignature;
         while (true) {
             if (signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
                 readLimits.acceptMetadata(CENTRAL_DIRECTORY_HEADER_SIZE, null);
@@ -411,14 +411,14 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 return;
             }
             throw new IOException(
-                    "Unexpected ZIP central-directory record signature: " + Integer.toHexString(signature)
+                    "Unexpected ZIP central-directory record signature: " + Long.toHexString(signature)
             );
         }
     }
 
     /// Reads the next required central-directory record signature.
-    private int readDirectorySignature() throws IOException {
-        int signature = readIntOrEnd(input);
+    private long readDirectorySignature() throws IOException {
+        long signature = readIntOrEnd(input);
         if (signature < 0) {
             throw new EOFException("Unexpected end of ZIP central directory");
         }
@@ -439,7 +439,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     ///
     /// A forward-only source cannot distinguish an accidental local-header signature inside an executable stub from
     /// the first real header without central-directory offsets, so the first local-header signature is authoritative.
-    private int scanInitialSignature(int signature) throws IOException {
+    private long scanInitialSignature(long signature) throws IOException {
         if (signature < 0) {
             return signature;
         }
@@ -454,7 +454,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     readLimits.acceptMetadata(pendingMetadataSize + Integer.BYTES, null);
                     throw new IOException("ZIP stream does not contain a record signature");
                 }
-                signature = signature >>> Byte.SIZE | next << (Integer.SIZE - Byte.SIZE);
+                signature = signature >>> Byte.SIZE | (long) next << (Integer.SIZE - Byte.SIZE);
                 pendingMetadataSize++;
                 if (pendingMetadataSize == PUSHBACK_BUFFER_SIZE) {
                     readLimits.acceptMetadata(pendingMetadataSize, null);
@@ -1078,6 +1078,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
             }
 
+            long expectedCrc32 = aes.usesCrc32() ? entry.crc32 : ZipArkivoEntryAttributes.UNKNOWN_CRC32;
             InputStream encryptedData = new BoundedInputStream(input, entry.compressedSize);
             InputStream decryptedData;
             try {
@@ -1089,42 +1090,42 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             if (compressionMethod == STORED_METHOD) {
                 return new KnownSizeEntryInputStream(
                         decryptedData,
-                        ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                        expectedCrc32,
                         entry.uncompressedSize
                 );
             }
             if (compressionMethod == BZIP2_METHOD) {
                 return new KnownSizeEntryInputStream(
                         openBzip2InputStream(decryptedData, entry.uncompressedSize),
-                        ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                        expectedCrc32,
                         entry.uncompressedSize
                 );
             }
             if (compressionMethod == LZMA_METHOD) {
                 return new KnownSizeEntryInputStream(
                         openLzmaInputStream(decryptedData, entry.uncompressedSize, entry.flags),
-                        ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                        expectedCrc32,
                         entry.uncompressedSize
                 );
             }
             if (compressionMethod == XZ_METHOD) {
                 return new KnownSizeEntryInputStream(
                         openXzInputStream(decryptedData, entry.uncompressedSize),
-                        ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                        expectedCrc32,
                         entry.uncompressedSize
                 );
             }
             if (compressionMethod == DEFLATE64_METHOD) {
                 return new KnownSizeEntryInputStream(
                         openDeflate64InputStream(decryptedData, entry.uncompressedSize),
-                        ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                        expectedCrc32,
                         entry.uncompressedSize
                 );
             }
             if (isZstandardMethod(compressionMethod)) {
                 return new KnownSizeEntryInputStream(
                         openZstandardInputStream(decryptedData, entry.uncompressedSize),
-                        ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                        expectedCrc32,
                         entry.uncompressedSize
                 );
             }
@@ -1132,7 +1133,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     decryptedData,
                     aes.overheadSize(),
                     entry.compressedSize,
-                    ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                    expectedCrc32,
                     entry.uncompressedSize
             );
         }
@@ -2448,7 +2449,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 if (streamFinished && !readAndMatchesDataDescriptor(
                         input,
                         zip64DataDescriptor,
-                        crc32.getValue(),
+                        aesDecryptor != null ? aesDecryptor.descriptorCrc32(crc32.getValue()) : crc32.getValue(),
                         compressedSizeOffset + decoder.inputBytes(),
                         uncompressedSize
                 )) {
@@ -2935,7 +2936,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 if (!readStoredDataDescriptorAfterSignature(
                         input,
                         zip64DataDescriptor,
-                        crc32.getValue(),
+                        decryptor.descriptorCrc32(crc32.getValue()),
                         compressedSize,
                         uncompressedSize,
                         "WinZip AES data descriptor does not match entry data"

@@ -2024,6 +2024,132 @@ public final class TarArchiveIntegrationTest {
         }
     }
 
+    /// Retains contiguous data and V7 directory types through metadata edits, copies, moves, and commits.
+    @Test
+    public void preservesHistoricalEntryTypesDuringUpdates() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        // V7 directories are identified by their trailing slash, even without directory mode bits.
+        writeHeader(output, "old/", 0755, 0, 0, 255, 0, "", "user", "group");
+        writeHeader(output, "old/data", 0644, 0, 0, 3, '7', "", "user", "group");
+        writeBody(output, new byte[]{3, 1, 4});
+        writeHeader(output, "directory/", 0755, 0, 0, 255, '5', "", "user", "group");
+        output.write(new byte[1024]);
+        Path archive = createTemporaryArchivePath("tar-historical-");
+        try {
+            Files.write(archive, output.toByteArray());
+            try (var fileSystem = TarArkivoFileSystem.update(archive)) {
+                Path old = fileSystem.getPath("/old");
+                assertTrue(Files.isDirectory(old));
+                assertTrue(Files.isDirectory(fileSystem.getPath("/directory")));
+                var view = Objects.requireNonNull(Files.getFileAttributeView(old, TarArkivoEntryAttributeView.class));
+                FileTime time = FileTime.fromMillis(1000);
+                view.setTimes(time, time, time);
+                assertTrue(Files.isDirectory(old));
+                view.setUserId(123);
+                assertTrue(Files.isDirectory(old));
+                view.setGroupId(456);
+                assertTrue(Files.isDirectory(old));
+                view.setMode(0700);
+                assertTrue(Files.isDirectory(old));
+                view.setUserName("owner");
+                assertTrue(Files.isDirectory(old));
+                view.setGroupName("group");
+                assertTrue(Files.isDirectory(old));
+                Files.copy(old, fileSystem.getPath("/copy"));
+                assertTrue(Files.isDirectory(fileSystem.getPath("/copy")));
+                Files.move(old, fileSystem.getPath("/moved"));
+                assertTrue(Files.isDirectory(fileSystem.getPath("/moved")));
+                assertArrayEquals(new byte[]{3, 1, 4}, Files.readAllBytes(fileSystem.getPath("/moved/data")));
+            }
+            try (var fileSystem = TarArkivoFileSystem.open(archive)) {
+                assertTrue(Files.isDirectory(fileSystem.getPath("/copy")));
+                var attributes = Files.readAttributes(fileSystem.getPath("/moved"), TarArkivoEntryAttributes.class);
+                assertTrue(attributes.isDirectory());
+                assertFalse(attributes.isRegularFile());
+                assertEquals(0, attributes.typeFlag());
+                assertEquals(0700, attributes.mode());
+                assertEquals(123, attributes.userId());
+                assertEquals(456, attributes.groupId());
+                Path data = fileSystem.getPath("/moved/data");
+                assertEquals('7', Files.readAttributes(data, TarArkivoEntryAttributes.class).typeFlag());
+                assertArrayEquals(new byte[]{3, 1, 4}, Files.readAllBytes(data));
+            }
+        } finally {
+            deleteTemporaryArchive(archive);
+        }
+    }
+
+    /// Rejects complete local extension records that have no following member, with or without EOF padding.
+    @Test
+    public void rejectsOrphanedLocalExtensionHeaders() throws IOException {
+        for (char type : new char[]{'x', 'X', 'L', 'K'}) {
+            for (boolean endMarker : new boolean[]{false, true}) {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                byte[] body = type == 'L' || type == 'K'
+                        ? "name\0".getBytes(StandardCharsets.US_ASCII) : paxRecord("path", "name");
+                writeMetadataEntry(output, "extension", type, body);
+                if (endMarker) {
+                    output.write(new byte[1024]);
+                }
+                try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+                    IOException exception = assertThrows(IOException.class, reader::next);
+                    assertEquals("Missing TAR entry after extended header", exception.getMessage());
+                }
+            }
+        }
+    }
+
+    /// Allows global PAX metadata at EOF because it does not promise a following member.
+    @Test
+    public void acceptsGlobalExtensionWithoutFollowingMember() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of("uname", "owner"));
+        output.write(new byte[1024]);
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Applies Solaris extended metadata to the following member without publishing the metadata header.
+    @Test
+    public void readsSolarisExtendedHeader() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeMetadataEntry(output, "/tmp/extended", 'X', paxRecord("mtime", "123.125"));
+        writeEntry(output, "file", new byte[]{9});
+        output.write(new byte[1024]);
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            assertEquals("file", reader.readAttributes().path());
+            assertEquals(Instant.ofEpochSecond(123, 125000000), reader.readAttributes().lastModifiedTime().toInstant());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{9}, input.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Rejects absolute effective paths in both POSIX and Solaris local extension fields.
+    @Test
+    public void rejectsAbsolutePathsInLocalExtensions() throws IOException {
+        for (char type : new char[]{'x', 'X'}) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            writeMetadataEntry(output, "/tmp/extended", type, paxRecord("path", "/outside"));
+            writeEntry(output, "file", new byte[]{9});
+            output.write(new byte[1024]);
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+                assertEquals("TAR entry path must be relative", assertThrows(IOException.class, reader::next).getMessage());
+            }
+            Path archive = createTemporaryArchivePath("tar-absolute-extension-");
+            try {
+                Files.write(archive, output.toByteArray());
+                assertEquals("TAR entry path must be relative",
+                        assertThrows(IOException.class, () -> TarArkivoFileSystem.open(archive).close()).getMessage());
+            } finally {
+                deleteTemporaryArchive(archive);
+            }
+        }
+    }
+
     /// Returns a small TAR archive.
     private static byte[] tarArchive() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();

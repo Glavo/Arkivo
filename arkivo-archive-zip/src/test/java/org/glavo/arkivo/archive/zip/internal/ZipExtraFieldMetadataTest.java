@@ -16,6 +16,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -27,6 +28,89 @@ final class ZipExtraFieldMetadataTest {
 
     /// The Info-ZIP new Unix extra field identifier.
     private static final int NEW_UNIX_FIELD_ID = 0x7875;
+
+    /// Writes all unsigned FILETIME bits and truncates only the sub-100-nanosecond fraction.
+    @Test
+    void updatesNtfsModificationTimesAtRepresentationBoundaries() throws IOException {
+        for (long ticks : new long[]{1L, 116_444_736_000_000_000L, Long.MAX_VALUE, Long.MIN_VALUE, -1L}) {
+            long seconds = Long.divideUnsigned(ticks, 10_000_000L) - 11_644_473_600L;
+            int nanos = (int) (Long.remainderUnsigned(ticks, 10_000_000L) * 100L);
+            FileTime time = FileTime.from(Instant.ofEpochSecond(seconds, nanos + 99));
+            byte[] input = ntfsField(1, 2, 3);
+            byte[] updated = ZipExtraFieldMetadata.withLastModifiedTime(input, time);
+            assertArrayEquals(ntfsField(ticks, 2, 3), updated);
+            assertArrayEquals(ntfsField(1, 2, 3), input);
+        }
+        byte[] input = ntfsField(1, 2, 3);
+        for (Instant time : new Instant[]{Instant.MIN, Instant.MAX, Instant.parse("1601-01-01T00:00:00Z"),
+                Instant.ofEpochSecond(Long.divideUnsigned(-1L, 10_000_000L) - 11_644_473_600L,
+                        Long.remainderUnsigned(-1L, 10_000_000L) * 100L + 100L)}) {
+            assertThrows(IOException.class, () -> ZipExtraFieldMetadata.withLastModifiedTime(input, FileTime.from(time)));
+            assertArrayEquals(ntfsField(1, 2, 3), input);
+        }
+    }
+
+    /// Retains unknown NTFS attributes, duplicate timestamp records, and the original input buffer.
+    @Test
+    void updatesDuplicateTimesWithoutDroppingUnknownMetadata() throws IOException {
+        byte[] timestamp = ntfsField(1, 2, 3);
+        byte[] payload = concatenate(new byte[4], new byte[]{2, 0, 3, 0, 4, 5, 6},
+                java.util.Arrays.copyOfRange(timestamp, 8, timestamp.length));
+        byte[] unknown = extraField(0xcafe, new byte[]{8, 9});
+        byte[] input = concatenate(extraField(0x000a, payload), timestamp, unknown, new byte[3]);
+        byte[] original = input.clone();
+        byte[] expected = input.clone();
+        ByteArrayAccess.writeLongLittleEndian(expected, 19, 116_444_736_000_000_000L);
+        ByteArrayAccess.writeLongLittleEndian(expected, 4 + payload.length + 12, 116_444_736_000_000_000L);
+        assertArrayEquals(expected, ZipExtraFieldMetadata.withLastModifiedTime(input, FileTime.fromMillis(0)));
+        assertArrayEquals(original, input);
+    }
+
+    /// Checks the signed extended and unsigned legacy Unix boundaries without partially modifying the input.
+    @Test
+    void validatesUnixModificationTimeRanges() throws IOException {
+        for (int id : new int[]{EXTENDED_TIMESTAMP_FIELD_ID, ZipConstants.UNIX_EXTRA_FIELD_ID,
+                ZipConstants.INFO_ZIP_UNIX_EXTRA_FIELD_ID}) {
+            byte[] payload = new byte[id == EXTENDED_TIMESTAMP_FIELD_ID ? 5 : 8];
+            if (id == EXTENDED_TIMESTAMP_FIELD_ID) {
+                payload[0] = 1;
+            }
+            byte[] input = extraField(id, payload);
+            for (long seconds : new long[]{Integer.MIN_VALUE - 1L, Integer.MIN_VALUE, -1L, 0L,
+                    Integer.MAX_VALUE, Integer.MAX_VALUE + 1L, 0xffff_ffffL, 0x1_0000_0000L}) {
+                FileTime time = FileTime.from(Instant.ofEpochSecond(seconds, 999_999_999));
+                boolean supported = id == EXTENDED_TIMESTAMP_FIELD_ID
+                        ? seconds >= Integer.MIN_VALUE && seconds <= Integer.MAX_VALUE
+                        : seconds >= 0 && seconds <= 0xffff_ffffL;
+                if (supported) {
+                    byte[] updated = ZipExtraFieldMetadata.withLastModifiedTime(input, time);
+                    var metadata = ZipExtraFieldMetadata.resolve(updated, new byte[0], FileTime.fromMillis(0));
+                    assertEquals(Instant.ofEpochSecond(seconds), metadata.lastModifiedTime().toInstant());
+                } else {
+                    assertThrows(IOException.class, () -> ZipExtraFieldMetadata.withLastModifiedTime(input, time));
+                }
+                assertArrayEquals(extraField(id, payload), input);
+            }
+        }
+    }
+
+    /// Leaves absent modification fields untouched and rejects incomplete recognized timestamp structures.
+    @Test
+    void preservesAbsentTimesAndRejectsMalformedUpdates() throws IOException {
+        for (byte[] input : new byte[][]{new byte[0], new byte[3], extraField(EXTENDED_TIMESTAMP_FIELD_ID,
+                new byte[]{2, 42, 0, 0, 0}), extraField(0x000a, new byte[4]),
+                new byte[]{(byte) 0xfe, (byte) 0xca, 9, 0, 1}}) {
+            assertArrayEquals(input, ZipExtraFieldMetadata.withLastModifiedTime(input, FileTime.fromMillis(0)));
+        }
+        for (byte[] input : new byte[][]{extraField(EXTENDED_TIMESTAMP_FIELD_ID, new byte[0]),
+                extraField(0x000a, new byte[3]), extraField(0x000a, new byte[5]),
+                extraField(0x000a, new byte[]{0, 0, 0, 0, 1, 0, 1, 0, 0}),
+                extraField(ZipConstants.UNIX_EXTRA_FIELD_ID, new byte[7])}) {
+            byte[] original = input.clone();
+            assertThrows(IOException.class, () -> ZipExtraFieldMetadata.withLastModifiedTime(input, FileTime.fromMillis(0)));
+            assertArrayEquals(original, input);
+        }
+    }
 
     /// Uses the DOS time and unknown Unix identifiers when no recognized metadata is present.
     @Test

@@ -48,6 +48,10 @@ import java.util.Objects;
 /// with the configured output compression, filter chain, solid file-count policy, password, and header-encryption
 /// policy.
 ///
+/// Entry creation accepts `posix:permissions` and `basic:lastModifiedTime` initial attributes. Modification times
+/// are [java.nio.file.attribute.FileTime] values, serialized at 100-nanosecond resolution. Creation attributes do
+/// not change an existing entry opened for writing. When a supported attribute is repeated, its last value is used.
+///
 /// Single-volume channel-source updates require an explicit commit target because no source path is
 /// available for replacement. General volume sources remain read-only through `open`; use `update` with an explicit
 /// transactional volume target when preserving or changing a multi-volume layout.

@@ -176,6 +176,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         while (true) {
             byte[] header = source.readNBytes(RECORD_SIZE);
             if (header.length == 0) {
+                requireNoPendingEntryMetadata();
                 finished = true;
                 currentAttributes = null;
                 clearPendingEntryMetadata();
@@ -186,6 +187,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             }
             readLimits.acceptMetadata(header.length, null);
             if (isZeroBlock(header)) {
+                requireNoPendingEntryMetadata();
                 consumeEndMarkerAndPadding();
                 finished = true;
                 currentAttributes = null;
@@ -223,7 +225,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 skipCurrentEntryBody();
                 continue;
             }
-            if (typeFlag == TarEntryAttributes.PAX_EXTENDED_HEADER_TYPE) {
+            if (typeFlag == TarEntryAttributes.PAX_EXTENDED_HEADER_TYPE
+                    || typeFlag == TarEntryAttributes.SOLARIS_EXTENDED_HEADER_TYPE) {
                 setPendingPaxHeaders(parsePaxHeaders(
                         readCurrentEntryBodyBytes("PAX extended header", attributes.path()),
                         TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER,
@@ -260,6 +263,13 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             readLimits.acceptEntry(resolvedAttributes.path(), resolvedAttributes.size());
             currentAttributes = resolvedAttributes;
             return true;
+        }
+    }
+
+    /// Rejects an archive ending before the member described by a local extension header.
+    private void requireNoPendingEntryMetadata() throws EOFException {
+        if (pendingLongPath != null || pendingLongLink != null || pendingPaxHeaders != null) {
+            throw new EOFException("Missing TAR entry after extended header");
         }
     }
 
@@ -426,6 +436,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         return new TarEntryAttributes(
                 path,
                 typeFlag,
+                typeFlag == TarEntryAttributes.DIRECTORY_TYPE
+                        || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE && path.endsWith("/"),
                 parseIntNumeric(header, 100, 8, "entry mode"),
                 parseNonNegativeNumeric(header, 108, 8, "user id"),
                 parseNonNegativeNumeric(header, 116, 8, "group id"),
@@ -1047,6 +1059,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (paxSize != null) {
                 size = parsePaxNonNegativeLong(paxSize, "size");
             }
+            if (attributes.isDirectory()) {
+                size = 0L;
+            }
             @Nullable String paxUserId = paxValue("uid");
             if (paxUserId != null) {
                 userId = parsePaxNonNegativeLong(paxUserId, "uid");
@@ -1103,6 +1118,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                     new TarEntryAttributes(
                             path,
                             attributes.typeFlag(),
+                            attributes.isDirectory(),
                             mode,
                             userId,
                             groupId,

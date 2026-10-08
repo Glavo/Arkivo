@@ -16,7 +16,6 @@ import java.net.URI;
 import java.nio.channels.Channels;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.CopyOption;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
@@ -167,7 +166,8 @@ public final class ArkivoFileSystemProviderSupport {
     ///
     /// Regular file bodies are streamed, directories are copied without descendants, and symbolic links are followed
     /// unless `NOFOLLOW_LINKS` is requested. `REPLACE_EXISTING` and `COPY_ATTRIBUTES` are supported; other options are
-    /// rejected before the target is modified.
+    /// rejected before the target is modified. Copying onto the same entry has no effect. A distinct nonempty target
+    /// directory cannot be replaced. Target symbolic links are replaced rather than followed.
     ///
     /// @param source the source entry path
     /// @param target the destination entry path
@@ -198,7 +198,7 @@ public final class ArkivoFileSystemProviderSupport {
         BasicFileAttributes sourceAttributes = followLinks
                 ? Files.readAttributes(source, BasicFileAttributes.class)
                 : Files.readAttributes(source, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-        if (source.equals(target)) {
+        if (source.equals(target) || sameCopyEntry(source, target, sourceAttributes, followLinks)) {
             return;
         }
 
@@ -208,17 +208,16 @@ public final class ArkivoFileSystemProviderSupport {
                 ? new FileAttribute<?>[]{lastModifiedTimeAttribute(sourceAttributes.lastModifiedTime())}
                 : new FileAttribute<?>[0];
         boolean attributesInitialized = false;
+        if (replaceExisting && (copiedSymbolicLink || sourceAttributes.isDirectory() || initializeAttributes)) {
+            Files.deleteIfExists(target);
+        }
         if (copiedSymbolicLink) {
-            prepareCopyTarget(target, replaceExisting, false);
             Files.createSymbolicLink(target, Files.readSymbolicLink(source), initialAttributes);
             attributesInitialized = initializeAttributes;
         } else if (sourceAttributes.isDirectory()) {
-            if (prepareCopyTarget(target, replaceExisting, true)) {
-                Files.createDirectories(target, initialAttributes);
-                attributesInitialized = initializeAttributes;
-            }
+            Files.createDirectory(target, initialAttributes);
+            attributesInitialized = initializeAttributes;
         } else if (initializeAttributes) {
-            prepareCopyTarget(target, replaceExisting, false);
             try (InputStream input = Files.newInputStream(source);
                  SeekableByteChannel channel = Files.newByteChannel(
                          target,
@@ -230,9 +229,6 @@ public final class ArkivoFileSystemProviderSupport {
             }
             attributesInitialized = true;
         } else {
-            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS) && !replaceExisting) {
-                throw new FileAlreadyExistsException(target.toString());
-            }
             try (InputStream input = Files.newInputStream(source)) {
                 if (replaceExisting) {
                     Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
@@ -281,29 +277,28 @@ public final class ArkivoFileSystemProviderSupport {
         };
     }
 
-    /// Prepares a directory or symbolic-link copy target and returns whether a new directory must be created.
-    private static boolean prepareCopyTarget(
+    /// Compares entry identity without following a target symbolic link that copying would replace.
+    private static boolean sameCopyEntry(
+            Path source,
             Path target,
-            boolean replaceExisting,
-            boolean sourceDirectory
+            BasicFileAttributes sourceAttributes,
+            boolean followLinks
     ) throws IOException {
-        if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-            return true;
-        }
-        if (!replaceExisting) {
-            throw new FileAlreadyExistsException(target.toString());
-        }
-
-        BasicFileAttributes targetAttributes = Files.readAttributes(
-                target,
-                BasicFileAttributes.class,
-                LinkOption.NOFOLLOW_LINKS
-        );
-        if (sourceDirectory && targetAttributes.isDirectory()) {
+        if (source.getFileSystem() != target.getFileSystem()) {
             return false;
         }
-        Files.delete(target);
-        return true;
+        final BasicFileAttributes targetAttributes;
+        try {
+            targetAttributes = Files.readAttributes(target, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        } catch (NoSuchFileException ignored) {
+            return false;
+        }
+        @Nullable Object sourceKey = sourceAttributes.fileKey();
+        if (sourceKey != null && sourceKey.equals(targetAttributes.fileKey())) {
+            return true;
+        }
+        Path realSource = followLinks ? source.toRealPath() : source.toRealPath(LinkOption.NOFOLLOW_LINKS);
+        return realSource.equals(target.toRealPath(LinkOption.NOFOLLOW_LINKS));
     }
 
     /// Copies basic timestamps to a completed target entry.

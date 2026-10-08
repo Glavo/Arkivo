@@ -50,8 +50,8 @@ final class ZipLittleEndian {
         return ByteArrayAccess.readIntLittleEndian(value, offset);
     }
 
-    /// Reads a little-endian signed 32-bit integer, or `-1` when no bytes remain.
-    static int readIntOrEnd(InputStream input) throws IOException {
+    /// Reads a little-endian unsigned 32-bit integer, or `-1` when no bytes remain.
+    static long readIntOrEnd(InputStream input) throws IOException {
         int b0 = input.read();
         if (b0 < 0) {
             return -1;
@@ -59,7 +59,7 @@ final class ZipLittleEndian {
         return b0
                 | (readRequiredByte(input) << 8)
                 | (readRequiredByte(input) << 16)
-                | (readRequiredByte(input) << 24);
+                | ((long) readRequiredByte(input) << 24);
     }
 
     /// Reads one required byte.

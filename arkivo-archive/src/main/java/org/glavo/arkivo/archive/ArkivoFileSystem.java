@@ -947,13 +947,6 @@ public abstract class ArkivoFileSystem extends FileSystem {
             }
         }
 
-        /// Removes the current entry when the delegate supports mutation.
-        @Override
-        public void remove() {
-            try (Operation ignored = fileSystem.beginWriteOperation()) {
-                delegate.remove();
-            }
-        }
     }
 
 }

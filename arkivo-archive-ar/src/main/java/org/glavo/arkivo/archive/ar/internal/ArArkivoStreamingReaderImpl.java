@@ -297,6 +297,13 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
                     structuralIdentifier,
                     memberSize
             );
+            // BSD writers may pad the inline name with NUL characters to align the member data.
+            // The complete stored name length still contributes to the body offset and member size.
+            int nameEnd = path.length();
+            while (nameEnd > 0 && path.charAt(nameEnd - 1) == '\0') {
+                nameEnd--;
+            }
+            path = path.substring(0, nameEnd);
             return new ResolvedName(
                     validatePath(path),
                     memberSize - nameLength,

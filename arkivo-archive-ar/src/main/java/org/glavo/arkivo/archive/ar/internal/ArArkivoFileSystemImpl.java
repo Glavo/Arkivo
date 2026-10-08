@@ -43,7 +43,6 @@ import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.CopyOption;
-import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
@@ -665,19 +664,21 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             return Channels.newOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
         }
         validateEntryWriteOptions(options);
-        int mode = initialMode(false, false, attributes);
+        InitialAttributes initial = initialAttributes(false, false, attributes);
         String entryPath = prepareWritableEntry(path, false);
         ArArkivoStreamingWriter currentWriter = requireWriter();
         ArkivoStreamingWriter.Entry entry = currentWriter.beginFile(entryPath);
-        applyInitialMode(entry, mode);
+        applyInitialAttributes(entry, initial);
         return new WrittenEntryOutputStream(entry.openOutputStream(), entryPath);
     }
 
     /// Creates a new directory member in a writable archive.
     ///
     /// @param directory the directory path to create
-    /// @param attributes initial attributes, including an optional POSIX mode
+    /// @param attributes initial `posix:permissions` and `basic:lastModifiedTime` attributes
     /// @throws IOException if the parent is absent, the path exists, or the archive is not writable
+    /// @throws UnsupportedOperationException if an initial attribute name is unsupported
+    /// @throws IllegalArgumentException if an initial attribute has the wrong value type
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             createDirectoryLocked(directory, attributes);
@@ -688,13 +689,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     private void createDirectoryLocked(Path directory, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
-        int mode = initialMode(true, false, attributes);
+        InitialAttributes initial = initialAttributes(true, false, attributes);
         if (updateMode) {
             String entryPath = prepareUpdateMember(directory);
-            int effectiveMode = mode != UNKNOWN_MODE ? mode : 040755;
+            int effectiveMode = initial.mode() != UNKNOWN_MODE ? initial.mode() : 040755;
             addUpdateNode(new Node(
                     entryPath,
-                    defaultAttributes(entryPath, effectiveMode, 0L),
+                    defaultAttributes(entryPath, effectiveMode, 0L, initial.lastModifiedTime()),
                     true,
                     null,
                     false
@@ -704,7 +705,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         String entryPath = prepareWritableEntry(directory, true);
         ArArkivoStreamingWriter currentWriter = requireWriter();
         try (ArkivoStreamingWriter.Entry entry = currentWriter.beginDirectory(entryPath)) {
-            applyInitialMode(entry, mode);
+            applyInitialAttributes(entry, initial);
         }
         recordWrittenEntry(entryPath, true);
     }
@@ -713,8 +714,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     ///
     /// @param link the symbolic-link path to create
     /// @param target the logical link target stored as UTF-8 text
-    /// @param attributes initial attributes, including an optional POSIX mode
+    /// @param attributes initial `posix:permissions` and `basic:lastModifiedTime` attributes
     /// @throws IOException if the parent is absent, the path exists, or the archive is not writable
+    /// @throws UnsupportedOperationException if an initial attribute name is unsupported
+    /// @throws IllegalArgumentException if an initial attribute has the wrong value type
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             createSymbolicLinkLocked(link, target, attributes);
@@ -730,15 +733,15 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         if (targetText.isEmpty()) {
             throw new IllegalArgumentException("AR symbolic link target is empty");
         }
-        int mode = initialMode(false, true, attributes);
+        InitialAttributes initial = initialAttributes(false, true, attributes);
         if (updateMode) {
             String entryPath = prepareUpdateMember(link);
             byte[] targetBytes = targetText.getBytes(StandardCharsets.UTF_8);
             ArkivoStoredContent content = storeBytes(entryPath, targetBytes);
-            int effectiveMode = mode != UNKNOWN_MODE ? mode : 0120777;
+            int effectiveMode = initial.mode() != UNKNOWN_MODE ? initial.mode() : 0120777;
             addUpdateNode(new Node(
                     entryPath,
-                    defaultAttributes(entryPath, effectiveMode, targetBytes.length),
+                    defaultAttributes(entryPath, effectiveMode, targetBytes.length, initial.lastModifiedTime()),
                     false,
                     content,
                     false
@@ -748,7 +751,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         String entryPath = prepareWritableEntry(link, false);
         ArArkivoStreamingWriter currentWriter = requireWriter();
         try (ArkivoStreamingWriter.Entry entry = currentWriter.beginSymbolicLink(entryPath, targetText)) {
-            applyInitialMode(entry, mode);
+            applyInitialAttributes(entry, initial);
         }
         recordWrittenEntry(entryPath, false);
     }
@@ -915,7 +918,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Opens a directory stream for an entry.
     ///
     /// @param directory the directory member to enumerate
-    /// @param filter the filter applied once to each direct child
+    /// @param filter the filter evaluated as direct children are traversed
     /// @return a lifecycle-managed stream over accepted child paths
     /// @throws IOException if the path is absent, is not a directory, or its children cannot be enumerated
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
@@ -937,18 +940,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             throw new FileSystemException(directory.toString(), null, "AR entry is not a directory");
         }
 
-        ArrayList<Path> accepted = new ArrayList<>();
+        ArrayList<Path> paths = new ArrayList<>();
         for (String childPath : node.children().values()) {
-            Path child = rootPath.resolve(childPath);
-            try {
-                if (filter.accept(child)) {
-                    accepted.add(child);
-                }
-            } catch (IOException exception) {
-                throw new DirectoryIteratorException(exception);
-            }
+            paths.add(rootPath.resolve(childPath));
         }
-        return new FixedDirectoryStream<>(accepted);
+        return new FixedDirectoryStream<>(paths, filter);
     }
 
     /// Checks access to an entry.
@@ -1338,47 +1334,54 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
     }
 
-    /// Returns an AR mode derived from supported initial file attributes, or `UNKNOWN_MODE`.
-    private static int initialMode(boolean directory, boolean symbolicLink, FileAttribute<?>... attributes) {
-        @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
-        if (permissions == null) {
-            return UNKNOWN_MODE;
-        }
-        if (symbolicLink) {
-            return PosixModes.SYMBOLIC_LINK_FILE_TYPE | PosixModes.permissionBits(permissions);
-        }
-        if (directory) {
-            return PosixModes.DIRECTORY_FILE_TYPE | PosixModes.permissionBits(permissions);
-        }
-        return PosixModes.REGULAR_FILE_TYPE | PosixModes.permissionBits(permissions);
-    }
-
-    /// Applies a supported initial mode to the current pending AR writer member.
-    private static void applyInitialMode(ArkivoStreamingWriter.Entry entry, int mode) throws IOException {
-        if (mode == UNKNOWN_MODE) {
+    /// Applies validated creation metadata before the pending member header is emitted.
+    private static void applyInitialAttributes(ArkivoStreamingWriter.Entry entry, InitialAttributes initial) throws IOException {
+        if (initial.mode() == UNKNOWN_MODE && initial.lastModifiedTime() == null) {
             return;
         }
         ArArkivoEntryAttributeView view = entry.attributeView(ArArkivoEntryAttributeView.class);
         if (view == null) {
             throw new UnsupportedOperationException("AR writer does not expose AR member attributes");
         }
-        view.setMode(mode);
+        if (initial.mode() != UNKNOWN_MODE) {
+            view.setMode(initial.mode());
+        }
+        if (initial.lastModifiedTime() != null) {
+            view.setTimes(initial.lastModifiedTime(), null, null);
+        }
     }
 
-    /// Returns POSIX permissions stored by supported initial file attributes.
-    private static @Nullable Set<PosixFilePermission> initialPosixPermissions(FileAttribute<?>... attributes) {
+    /// Captures initial metadata before allocating content or adding implicit parent directories.
+    private static InitialAttributes initialAttributes(boolean directory, boolean symbolicLink, FileAttribute<?>... attributes) {
         Objects.requireNonNull(attributes, "attributes");
         @Nullable Set<PosixFilePermission> permissions = null;
+        @Nullable FileTime lastModifiedTime = null;
         for (FileAttribute<?> attribute : attributes) {
             Objects.requireNonNull(attribute, "attribute");
             String name = attribute.name();
             if ("posix:permissions".equals(name)) {
                 permissions = posixPermissions(attribute);
+            } else if ("basic:lastModifiedTime".equals(name)) {
+                if (!(attribute.value() instanceof FileTime time)) {
+                    throw new IllegalArgumentException("basic:lastModifiedTime must be a FileTime");
+                }
+                lastModifiedTime = time;
             } else {
                 throw new UnsupportedOperationException("Unsupported AR member initial file attribute: " + name);
             }
         }
-        return permissions;
+        int type = symbolicLink ? PosixModes.SYMBOLIC_LINK_FILE_TYPE
+                : directory ? PosixModes.DIRECTORY_FILE_TYPE : PosixModes.REGULAR_FILE_TYPE;
+        int mode = permissions != null ? type | PosixModes.permissionBits(permissions) : UNKNOWN_MODE;
+        return new InitialAttributes(mode, lastModifiedTime);
+    }
+
+    /// Holds creation metadata independently of caller-owned attribute objects.
+    ///
+    /// @param mode the initial file type and permissions, or `UNKNOWN_MODE` for the entry default
+    /// @param lastModifiedTime the modification time, or `null` for the entry default
+    @NotNullByDefault
+    private record InitialAttributes(int mode, @Nullable FileTime lastModifiedTime) {
     }
 
     /// Returns POSIX permissions stored by a file attribute.
@@ -1458,11 +1461,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         if (existing != null && existing.directory()) {
             throw new FileSystemException(path.toString(), null, "AR member is a directory");
         }
+        InitialAttributes initial = initialAttributes(false, false, attributes);
         if (existing == null) {
             ensureParents(nodes, entryPath);
         }
 
-        int mode = initialMode(false, false, attributes);
         boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
         long expectedSize = existing != null && !truncate ? existing.contentSize() : 0L;
         ArkivoStoredContent pendingContent = requireEditStorage().createContent(entryPath, expectedSize);
@@ -1501,7 +1504,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                         boolean transferred = false;
                         try {
                             if (commit) {
-                                commitUpdatedMember(entryPath, existing, mode, pendingContent);
+                                commitUpdatedMember(entryPath, existing, initial, pendingContent);
                                 transferred = true;
                             }
                         } finally {
@@ -1560,7 +1563,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     private void commitUpdatedMember(
             String path,
             @Nullable Node originalNode,
-            int initialMode,
+            InitialAttributes initial,
             ArkivoStoredContent content
     )
             throws IOException {
@@ -1572,9 +1575,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         long size = content.size();
         ArArkivoEntryAttributes base = existing != null
                 ? existing.attributes()
-                : defaultAttributes(path, 0100644, size);
-        int mode = existing == null && initialMode != UNKNOWN_MODE
-                ? initialMode
+                : defaultAttributes(path, 0100644, size, initial.lastModifiedTime());
+        int mode = existing == null && initial.mode() != UNKNOWN_MODE
+                ? initial.mode()
                 : base.mode();
         ArArkivoEntryAttributes attributes = new ArNodeAttributes(
                 path,
@@ -1603,7 +1606,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Returns default metadata for a newly created update-mode member.
-    private static ArNodeAttributes defaultAttributes(String path, int mode, long size) {
+    private static ArNodeAttributes defaultAttributes(String path, int mode, long size, @Nullable FileTime lastModifiedTime) {
         return new ArNodeAttributes(
                 path,
                 archiveIdentifier(path),
@@ -1611,7 +1614,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 0L,
                 mode,
                 size,
-                FileTime.fromMillis(0L)
+                lastModifiedTime != null ? lastModifiedTime : FileTime.fromMillis(0L)
         );
     }
 

@@ -52,7 +52,6 @@ import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.CopyOption;
 import java.nio.file.DirectoryNotEmptyException;
-import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
@@ -1025,8 +1024,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                         entry.source().localHeaderOffset(),
                         entry.source().localHeaderSize(),
                         entry.renamed() ? entry.rawName() : null,
-                        entry.localTimestampChanged() ? entry.dosTime() : -1,
-                        entry.localTimestampChanged() ? entry.dosDate() : -1
+                        entry.modifiedTimeOverride()
                 );
                 output.startRecord(rewrite.finalHeaderSize());
                 relocatedExistingEntryOffsets.put(
@@ -1048,8 +1046,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                         entry.localHeaderOffset,
                         entry.localHeaderSize,
                         entry.renamed() ? entry.rawName : null,
-                        entry.localTimestampChanged ? entry.dosTime : -1,
-                        entry.localTimestampChanged ? entry.dosDate : -1
+                        entry.modifiedTimeOverride
                 );
                 output.startRecord(rewrite.finalHeaderSize());
                 entry.relocatedLocalHeaderDiskNumber = output.diskNumber();
@@ -1152,15 +1149,11 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             long localHeaderOffset,
             long sourceHeaderSize,
             byte @Nullable [] renamedRawName,
-            int replacementDosTime,
-            int replacementDosDate
+            @Nullable FileTime replacementTime
     ) throws IOException {
-        boolean timestampChanged = replacementDosTime >= 0 || replacementDosDate >= 0;
+        boolean timestampChanged = replacementTime != null;
         if (renamedRawName == null && !timestampChanged) {
             return LocalRecordRewrite.unchanged(sourceHeaderSize);
-        }
-        if ((replacementDosTime < 0) != (replacementDosDate < 0)) {
-            throw new IllegalArgumentException("DOS time and date replacements must be provided together");
         }
         if (sourceHeaderSize < ZIP_LOCAL_FILE_HEADER_MIN_SIZE || sourceHeaderSize > Integer.MAX_VALUE) {
             throw new IOException("Invalid ZIP local file header size");
@@ -1185,14 +1178,17 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         byte[] localExtraData = renamedRawName != null
                 ? ZipExtraFields.remove(sourceExtraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID)
                 : sourceExtraData;
+        if (replacementTime != null) {
+            localExtraData = ZipExtraFieldMetadata.withLastModifiedTime(localExtraData, replacementTime);
+        }
         requireUInt16(rawName.length, "entry name length");
         requireUInt16(localExtraData.length, "local extra data length");
         if (renamedRawName != null) {
             header.putShort(6, (short) (Short.toUnsignedInt(header.getShort(6)) | UTF8_FLAG));
         }
         if (timestampChanged) {
-            header.putShort(10, (short) replacementDosTime);
-            header.putShort(12, (short) replacementDosDate);
+            header.putShort(10, (short) dosTime(replacementTime));
+            header.putShort(12, (short) dosDate(replacementTime));
         }
         header.putShort(26, (short) rawName.length);
         header.putShort(28, (short) localExtraData.length);
@@ -1484,19 +1480,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             }
 
             for (String child : visibleChildNames(directoryName)) {
-                Path childPath = getPath("/" + child);
-                try {
-                    if (filter.accept(childPath)) {
-                        paths.add(childPath);
-                    }
-                } catch (IOException exception) {
-                    throw new DirectoryIteratorException(exception);
-                }
+                paths.add(getPath("/" + child));
             }
         } finally {
             unlock();
         }
-        return new FixedDirectoryStream<>(paths);
+        return new FixedDirectoryStream<>(paths, filter);
     }
 
     /// Returns an attribute view for an entry path visible in the current output session.
@@ -1677,10 +1666,22 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         }
         for (ExistingEntry entry : existingCentralDirectoryEntries) {
             if (entry.entryName().equals(entryName)) {
-                return EntryAttributes.existing(entry.attributesSnapshot(), config);
+                return existingEntryAttributes(entry);
             }
         }
         return null;
+    }
+
+    /// Combines current central metadata with the validated source local header.
+    private EntryAttributes existingEntryAttributes(ExistingEntry entry) throws IOException {
+        ZipArkivoReadOnlyFileSystemImpl reader = Objects.requireNonNull(existingArchiveReader, "existingArchiveReader");
+        ZipArkivoEntryAttributes sourceAttributes = reader.readAttributes(
+                reader.getPath("/" + entry.source().entryName()), ZipArkivoEntryAttributes.class);
+        byte[] local = sourceAttributes.localExtraData();
+        if (entry.modifiedTimeOverride() != null) {
+            local = ZipExtraFieldMetadata.withLastModifiedTime(local, entry.modifiedTimeOverride());
+        }
+        return EntryAttributes.existing(entry.attributesSnapshot(), local, config);
     }
 
     /// Returns the immutable source name backing one visible existing entry.
@@ -1920,7 +1921,19 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Opens an output stream for the next ZIP entry.
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-        return newOutputStream(path, EntryMetadata.deflated(config.defaultEncryption()), options);
+        try (Operation ignored = beginWriteOperation()) {
+            lock();
+            try {
+                checkOpen();
+                String name = regularEntryName(path);
+                EntryMetadata metadata = rewriteSnapshot != null && visibleEntry(name)
+                        ? replacementMetadata(readZipAttributesLocked(path, name))
+                        : EntryMetadata.deflated(config.defaultEncryption());
+                return manageOutputStream(newOutputStreamLocked(path, metadata, options));
+            } finally {
+                unlock();
+            }
+        }
     }
 
     /// Opens a readable existing or staged entry channel, or a forward-only writable channel.
@@ -2049,11 +2062,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             }
 
             boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
-            EntryMetadata metadata = applyInitialAttributes(
+            EntryMetadata initialMetadata = applyInitialAttributes(
                     EntryMetadata.deflated(config.defaultEncryption()),
                     false,
                     attributes
             );
+            // Creation attributes are validated but must not replace metadata on an existing entry.
+            EntryMetadata metadata;
+            if (existing) {
+                metadata = replacementMetadata(readZipAttributesLocked(path, entryName));
+            } else {
+                metadata = initialMetadata;
+            }
             ArkivoStoredContent pendingContent = Objects.requireNonNull(editStorage, "editStorage").createContent(
                     "zip-update-random-entry-" + stagedEntrySequence++,
                     ArkivoEditStorage.UNKNOWN_SIZE
@@ -2112,6 +2132,32 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         } finally {
             unlock();
         }
+    }
+
+    /// Retains entry metadata while allowing the writer to regenerate body-dependent fields.
+    private EntryMetadata replacementMetadata(ZipArkivoEntryAttributes previous) throws IOException {
+        @Nullable String comment = previous.comment();
+        return new EntryMetadata(
+                DEFLATED_METHOD,
+                config.defaultEncryption(),
+                previous.lastModifiedTime(),
+                previous.versionMadeBy(),
+                previous.internalAttributes(),
+                previous.externalAttributes(),
+                ZipArkivoEntryAttributes.UNKNOWN_SIZE,
+                ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                replacementExtraData(previous.localExtraData()),
+                replacementExtraData(previous.centralDirectoryExtraData()),
+                comment != null ? comment.getBytes(StandardCharsets.UTF_8) : null
+        );
+    }
+
+    /// Removes size, encryption, and legacy-name records that cannot describe the rewritten UTF-8 entry.
+    private static byte[] replacementExtraData(byte[] extraData) throws IOException {
+        byte[] retained = ZipExtraFields.remove(extraData, ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID);
+        retained = ZipExtraFields.remove(retained, ZipConstants.WINZIP_AES_EXTRA_FIELD_ID);
+        retained = ZipExtraFields.remove(retained, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID);
+        return ZipExtraFields.remove(retained, ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID);
     }
 
     /// Validates open options for a complete-rewrite entry channel.
@@ -2683,6 +2729,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             );
             for (ExistingEntry entry : existingCentralDirectoryEntries) {
                 String oldName = entry.entryName();
+                // A replaced or deleted source record must not reappear under the moved path.
+                if (!visibleExistingEntry(oldName)) {
+                    continue;
+                }
                 if (oldName.equals(targetName) && !movedPaths.containsKey(oldName)) {
                     continue;
                 }
@@ -2798,11 +2848,14 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     if (lastModifiedTime == null) {
                         return entry;
                     }
+                    EntryAttributes attributes = existingEntryAttributes(entry);
                     requireTimestampUpdateSupported(
-                            EntryAttributes.existing(entry.attributesSnapshot(), config),
+                            attributes,
                             entry.dosTime(),
                             lastModifiedTime
                     );
+                    // Validate local-only timestamp representations before publishing the changed entry state.
+                    ZipExtraFieldMetadata.withLastModifiedTime(attributes.localExtraData(), lastModifiedTime);
                     return entry.withLastModifiedTime(lastModifiedTime);
                 },
                 entry -> {
@@ -2843,7 +2896,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         mutateEntryMetadata(
                 path,
                 entry -> {
-                    EntryAttributes attributes = EntryAttributes.existing(entry.attributesSnapshot(), config);
+                    EntryAttributes attributes = existingEntryAttributes(entry);
                     return entry.withExternalAttributes(
                             ZipPosixSupport.UNIX_VERSION_MADE_BY,
                             externalAttributes(copiedPermissions, attributes)
@@ -3047,12 +3100,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         }
     }
 
-    /// Checks whether a writable file entry should replace an existing append-mode entry.
+    /// Checks whether an entry body can replace a visible entry in this output session.
     private boolean checkWritableFileEntry(String entryName, OpenOption... options) throws IOException {
-        if (visibleWrittenEntry(entryName)) {
+        boolean writtenEntry = visibleWrittenEntry(entryName);
+        if (writtenEntry && rewriteSnapshot == null) {
             throw new java.nio.file.FileAlreadyExistsException(entryName);
         }
-        boolean existingEntry = visibleExistingEntry(entryName);
+        boolean existingEntry = writtenEntry || visibleExistingEntry(entryName);
         if (!existingEntry) {
             return false;
         }
@@ -3079,7 +3133,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Registers a writable file entry after its local header has been accepted.
-    private void registerWritableFileEntry(String entryName, boolean replacingExistingEntry) {
+    private void registerWritableFileEntry(String entryName, boolean replacingExistingEntry) throws IOException {
+        if (replacingExistingEntry && visibleWrittenEntry(entryName)) {
+            removeWrittenEntry(entryName);
+        }
         writtenEntries.add(entryNameKey(entryName));
         if (replacingExistingEntry) {
             replacedEntries.add(entryName);
@@ -4753,8 +4810,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// The raw ZIP entry comment bytes, or `null` when no comment is present.
         private final byte @Nullable [] rawComment;
 
-        /// The last modified time.
-        private final FileTime lastModifiedTime;
+        /// Times and Unix identifiers resolved from the entry's extra fields.
+        private final ZipExtraFieldMetadata.EntryMetadata metadata;
 
         /// Whether this path is a directory.
         private final boolean directory;
@@ -4777,7 +4834,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 byte[] localExtraData,
                 byte[] centralDirectoryExtraData,
                 byte @Nullable [] rawComment,
-                FileTime lastModifiedTime,
+                ZipExtraFieldMetadata.EntryMetadata metadata,
                 boolean directory
         ) {
             this.key = Objects.requireNonNull(key, "key");
@@ -4797,7 +4854,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             this.centralDirectoryExtraData =
                     Objects.requireNonNull(centralDirectoryExtraData, "centralDirectoryExtraData").clone();
             this.rawComment = rawComment != null ? rawComment.clone() : null;
-            this.lastModifiedTime = Objects.requireNonNull(lastModifiedTime, "lastModifiedTime");
+            this.metadata = Objects.requireNonNull(metadata, "metadata");
             this.directory = directory;
         }
 
@@ -4820,7 +4877,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     new byte[0],
                     new byte[0],
                     null,
-                    FileTime.fromMillis(0),
+                    new ZipExtraFieldMetadata.EntryMetadata(FileTime.fromMillis(0), FileTime.fromMillis(0),
+                            FileTime.fromMillis(0), UNKNOWN_UNIX_ID, UNKNOWN_UNIX_ID),
                     true
             );
         }
@@ -4854,7 +4912,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     entry.localExtraData,
                     centralDirectoryExtraData,
                     rawComment,
-                    fileTimeFromDos(entry.dosDate, entry.dosTime),
+                    ZipExtraFieldMetadata.resolve(entry.localExtraData, centralDirectoryExtraData,
+                            fileTimeFromDos(entry.dosDate, entry.dosTime)),
                     entry.directory()
             );
         }
@@ -4862,6 +4921,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Returns attributes parsed from an append-mode central directory snapshot.
         private static EntryAttributes existing(
                 ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot snapshot,
+                byte[] localExtraData,
                 ZipArkivoFileSystemConfig config
         ) throws IOException {
             byte[] bytes = snapshot.bytes();
@@ -4935,10 +4995,11 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     internalAttributes,
                     externalAttributes,
                     method,
-                    new byte[0],
+                    localExtraData,
                     extraData,
                     rawComment,
-                    fileTimeFromDos(lastModifiedDate, lastModifiedTime),
+                    ZipExtraFieldMetadata.resolve(localExtraData, extraData,
+                            fileTimeFromDos(lastModifiedDate, lastModifiedTime)),
                     decodedPath.endsWith("/")
             );
         }
@@ -4964,13 +5025,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.
         @Override
         public long compressedSize() {
-            return directory ? UNKNOWN_SIZE : compressedSize;
+            return compressedSize;
         }
 
         /// Returns the CRC-32 value stored in the ZIP metadata, or `UNKNOWN_CRC32` when it is not known.
         @Override
         public long crc32() {
-            return directory ? UNKNOWN_CRC32 : crc32;
+            return crc32;
         }
 
         /// Returns the general purpose bit flags stored for the ZIP entry.
@@ -5003,16 +5064,16 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             return externalAttributes;
         }
 
-        /// Returns `UNKNOWN_UNIX_ID` because writable entry snapshots do not synthesize Unix owner identifiers.
+        /// Returns the Unix user identifier, or `UNKNOWN_UNIX_ID` when absent.
         @Override
         public long userId() {
-            return UNKNOWN_UNIX_ID;
+            return metadata.userId();
         }
 
-        /// Returns `UNKNOWN_UNIX_ID` because writable entry snapshots do not synthesize Unix group identifiers.
+        /// Returns the Unix group identifier, or `UNKNOWN_UNIX_ID` when absent.
         @Override
         public long groupId() {
-            return UNKNOWN_UNIX_ID;
+            return metadata.groupId();
         }
 
         /// Returns the numeric ZIP compression method identifier after resolving WinZip AES metadata.
@@ -5058,19 +5119,19 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Returns the last modified time.
         @Override
         public FileTime lastModifiedTime() {
-            return lastModifiedTime;
+            return metadata.lastModifiedTime();
         }
 
         /// Returns the last access time.
         @Override
         public FileTime lastAccessTime() {
-            return lastModifiedTime;
+            return metadata.lastAccessTime();
         }
 
         /// Returns the creation time.
         @Override
         public FileTime creationTime() {
-            return lastModifiedTime;
+            return metadata.creationTime();
         }
 
         /// Returns whether this path is a regular file.
@@ -5828,13 +5889,14 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// @param entryName             the current normalized entry name
     /// @param rawName               the current encoded central and local header name
     /// @param centralDirectoryBytes the current central directory entry bytes
-    /// @param localTimestampChanged whether the local header timestamp differs from the source
+    /// @param modifiedTimeOverride the replacement modification time, or `null` to retain the source time
+    @NotNullByDefault
     private record ExistingEntry(
             ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot source,
             String entryName,
             byte @Unmodifiable [] rawName,
             byte @Unmodifiable [] centralDirectoryBytes,
-            boolean localTimestampChanged
+            @Nullable FileTime modifiedTimeOverride
     ) {
         /// Creates a validated existing entry state.
         private ExistingEntry {
@@ -5858,7 +5920,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE,
                     ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + nameLength
             );
-            return new ExistingEntry(source, source.entryName(), rawName, centralDirectoryBytes, false);
+            return new ExistingEntry(source, source.entryName(), rawName, centralDirectoryBytes, null);
         }
 
         /// Returns a state with its current name replaced.
@@ -5870,17 +5932,22 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     newEntryName,
                     renamedRawName,
                     renameCentralDirectoryEntry(centralDirectoryBytes, renamedRawName),
-                    localTimestampChanged
+                    modifiedTimeOverride
             );
         }
 
         /// Returns a state with a new last-modified timestamp.
-        private ExistingEntry withLastModifiedTime(FileTime lastModifiedTime) {
+        private ExistingEntry withLastModifiedTime(FileTime lastModifiedTime) throws IOException {
             byte[] updated = centralDirectoryBytes.clone();
+            int extraOffset = ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + readUnsignedShort(updated, 28);
+            int extraLength = readUnsignedShort(updated, 30);
+            byte[] extra = ZipExtraFieldMetadata.withLastModifiedTime(
+                    Arrays.copyOfRange(updated, extraOffset, extraOffset + extraLength), lastModifiedTime);
+            System.arraycopy(extra, 0, updated, extraOffset, extra.length);
             ByteBuffer header = ByteBuffer.wrap(updated).order(ByteOrder.LITTLE_ENDIAN);
             header.putShort(12, (short) ZipArkivoWritableFileSystemImpl.dosTime(lastModifiedTime));
             header.putShort(14, (short) ZipArkivoWritableFileSystemImpl.dosDate(lastModifiedTime));
-            return new ExistingEntry(source, entryName, rawName, updated, true);
+            return new ExistingEntry(source, entryName, rawName, updated, lastModifiedTime);
         }
 
         /// Returns a state with new ZIP internal file attributes.
@@ -5888,7 +5955,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             requireUInt16(internalAttributes, "internal attributes");
             byte[] updated = centralDirectoryBytes.clone();
             ByteBuffer.wrap(updated).order(ByteOrder.LITTLE_ENDIAN).putShort(36, (short) internalAttributes);
-            return new ExistingEntry(source, entryName, rawName, updated, localTimestampChanged);
+            return new ExistingEntry(source, entryName, rawName, updated, modifiedTimeOverride);
         }
 
         /// Returns a state with new ZIP external file attributes and version-made-by value.
@@ -5899,7 +5966,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             ByteBuffer header = ByteBuffer.wrap(updated).order(ByteOrder.LITTLE_ENDIAN);
             header.putShort(4, (short) versionMadeBy);
             header.putInt(38, (int) externalAttributes);
-            return new ExistingEntry(source, entryName, rawName, updated, localTimestampChanged);
+            return new ExistingEntry(source, entryName, rawName, updated, modifiedTimeOverride);
         }
 
         /// Returns a state with new raw entry comment bytes.
@@ -5912,17 +5979,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             byte[] updated = Arrays.copyOf(centralDirectoryBytes, commentOffset + comment.length);
             System.arraycopy(comment, 0, updated, commentOffset, comment.length);
             ByteBuffer.wrap(updated).order(ByteOrder.LITTLE_ENDIAN).putShort(32, (short) comment.length);
-            return new ExistingEntry(source, entryName, rawName, updated, localTimestampChanged);
+            return new ExistingEntry(source, entryName, rawName, updated, modifiedTimeOverride);
         }
 
         /// Returns the current central-directory DOS time field.
         private int dosTime() {
             return readUnsignedShort(centralDirectoryBytes, 12);
-        }
-
-        /// Returns the current central-directory DOS date field.
-        private int dosDate() {
-            return readUnsignedShort(centralDirectoryBytes, 14);
         }
 
         /// Returns the current ZIP version-made-by field.
@@ -6053,8 +6115,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// The raw ZIP entry comment bytes.
         private final byte[] rawComment;
 
-        /// Whether the staged local header timestamp must be replaced.
-        private final boolean localTimestampChanged;
+        /// The replacement modification time, or `null` to retain the staged local header time.
+        private final @Nullable FileTime modifiedTimeOverride;
 
         /// Creates central directory metadata.
         private CentralEntry(
@@ -6094,7 +6156,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             this.localExtraData = metadata.localExtraData.clone();
             this.centralDirectoryExtraData = metadata.centralDirectoryExtraData.clone();
             this.rawComment = metadata.rawComment.clone();
-            this.localTimestampChanged = false;
+            this.modifiedTimeOverride = null;
         }
 
         /// Creates changed central metadata over the same staged local record.
@@ -6111,7 +6173,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 byte[] localExtraData,
                 byte[] centralDirectoryExtraData,
                 byte[] rawComment,
-                boolean localTimestampChanged
+                @Nullable FileTime modifiedTimeOverride
         ) {
             this.entryName = Objects.requireNonNull(entryName, "entryName");
             this.serializedEntryName = source.serializedEntryName;
@@ -6139,7 +6201,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     "centralDirectoryExtraData"
             ).clone();
             this.rawComment = Objects.requireNonNull(rawComment, "rawComment").clone();
-            this.localTimestampChanged = source.localTimestampChanged || localTimestampChanged;
+            this.modifiedTimeOverride = modifiedTimeOverride != null ? modifiedTimeOverride : source.modifiedTimeOverride;
         }
 
         /// Returns central metadata with a new normalized entry name.
@@ -6159,12 +6221,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     ZipExtraFields.remove(localExtraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID),
                     ZipExtraFields.remove(centralDirectoryExtraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID),
                     rawComment,
-                    false
+                    null
             );
         }
 
         /// Returns central metadata with a new last-modified timestamp.
-        private CentralEntry withLastModifiedTime(FileTime lastModifiedTime) {
+        private CentralEntry withLastModifiedTime(FileTime lastModifiedTime) throws IOException {
             return new CentralEntry(
                     this,
                     entryName,
@@ -6175,10 +6237,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     versionMadeBy,
                     internalAttributes,
                     externalAttributes,
-                    localExtraData,
-                    centralDirectoryExtraData,
+                    ZipExtraFieldMetadata.withLastModifiedTime(localExtraData, lastModifiedTime),
+                    ZipExtraFieldMetadata.withLastModifiedTime(centralDirectoryExtraData, lastModifiedTime),
                     rawComment,
-                    true
+                    lastModifiedTime
             );
         }
 
@@ -6198,7 +6260,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     localExtraData,
                     centralDirectoryExtraData,
                     rawComment,
-                    false
+                    null
             );
         }
 
@@ -6219,7 +6281,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     localExtraData,
                     centralDirectoryExtraData,
                     rawComment,
-                    false
+                    null
             );
         }
 
@@ -6240,7 +6302,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     localExtraData,
                     centralDirectoryExtraData,
                     comment,
-                    false
+                    null
             );
         }
 

@@ -177,6 +177,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 : attributes.typeFlag();
         boolean storesBody = typeFlag == TarEntryAttributes.REGULAR_TYPE
                 || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE
+                || typeFlag == TarEntryAttributes.CONTIGUOUS_TYPE
                 || attributes.isOther();
         long size = storesBody ? bodySize : 0L;
         if (size > 0L && body == null) {

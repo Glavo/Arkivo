@@ -42,7 +42,6 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.ClosedFileSystemException;
-import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
@@ -577,16 +576,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
         ArrayList<Path> paths = new ArrayList<>();
         for (String child : loadedIndex.children.getOrDefault(key, List.of())) {
-            Path childPath = getPath("/" + child);
-            try {
-                if (filter.accept(childPath)) {
-                    paths.add(childPath);
-                }
-            } catch (IOException exception) {
-                throw new DirectoryIteratorException(exception);
-            }
+            paths.add(getPath("/" + child));
         }
-        return new FixedDirectoryStream<>(paths);
+        return new FixedDirectoryStream<>(paths, filter);
     }
 
     /// Checks access to an entry path.
@@ -1516,7 +1508,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             } else if (entry.compressionMethod() == ZipMethod.XZ.id()) {
                 input = openXzInputStream(input, entry.uncompressedSize);
             }
-            long expectedCrc32 = aes != null ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : entry.crc32;
+            long expectedCrc32 = aes != null && !aes.usesCrc32() ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : entry.crc32;
             input = new ValidatingEntryInputStream(input, expectedCrc32, entry.uncompressedSize, deflateDecoder);
             completed = true;
             return input;
@@ -2012,6 +2004,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     commentLength
             );
             long eocdOffset = searchOffset + index;
+            int endDiskNumber = Short.toUnsignedInt(buffer.getShort(index + 4));
+            if (endDiskNumber != UINT16_MAX) {
+                // A missing final volume must not be hidden by an empty or earlier-volume central directory.
+                channel.volumeStartOffset(endDiskNumber);
+            }
             if (hasZip64EndLocator(channel, eocdOffset)) {
                 return readZip64EndRecord(channel, eocdOffset, archiveComment);
             }
@@ -2079,6 +2076,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
 
         long zip64EndDiskNumber = Integer.toUnsignedLong(locator.getInt(4));
+        long totalDiskCount = Integer.toUnsignedLong(locator.getInt(16));
+        if (totalDiskCount == 0) {
+            throw new IOException("ZIP64 locator declares no volumes");
+        }
+        channel.volumeStartOffset(totalDiskCount - 1);
         long storedZip64EndOffset = locator.getLong(8);
         long actualZip64EndOffset = locateZip64EndRecord(
                 channel,
@@ -2093,6 +2095,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         if (fixedRecord.getInt(0) != ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
             throw new IOException("ZIP64 end of central directory record not found");
         }
+        channel.volumeStartOffset(Integer.toUnsignedLong(fixedRecord.getInt(16)));
 
         long centralDirectorySize = readZip64UnsignedLong(
                 fixedRecord,
@@ -2156,10 +2159,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         );
         long storedZip64EndLimit = zip64StoredEndLimit(storedZip64EndAbsoluteOffset);
         if (storedZip64EndLimit >= 0 && storedZip64EndLimit <= locatorOffset) {
-            ByteBuffer signature = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
-            readFully(channel, storedZip64EndAbsoluteOffset, signature);
-            signature.flip();
-            if (signature.getInt(0) == ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+            ByteBuffer header = ByteBuffer.allocate(Integer.BYTES + Long.BYTES).order(ByteOrder.LITTLE_ENDIAN);
+            readFully(channel, storedZip64EndAbsoluteOffset, header);
+            header.flip();
+            if (header.getInt(0) == ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE
+                    && header.getLong(4) == locatorOffset - storedZip64EndAbsoluteOffset - header.capacity()) {
                 return storedZip64EndAbsoluteOffset;
             }
         }
@@ -2170,7 +2174,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         readFully(channel, searchOffset, buffer);
         buffer.flip();
         for (int index = searchSize - ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE; index >= 0; index--) {
-            if (buffer.getInt(index) == ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+            // The record must end at the locator; opaque extensible data may contain the same signature.
+            if (buffer.getInt(index) == ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE
+                    && buffer.getLong(index + 4) == searchSize - index - Integer.BYTES - Long.BYTES) {
                 return searchOffset + index;
             }
         }
@@ -3192,14 +3198,14 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         @Override
         public long compressedSize() {
             ZipEntryRecord record = entry;
-            return record != null && !record.directory ? record.compressedSize : UNKNOWN_SIZE;
+            return record != null ? record.compressedSize : UNKNOWN_SIZE;
         }
 
         /// Returns the CRC-32 value stored in the ZIP metadata, or `UNKNOWN_CRC32` when it is not known.
         @Override
         public long crc32() {
             ZipEntryRecord record = entry;
-            return record != null && !record.directory ? record.crc32 : UNKNOWN_CRC32;
+            return record != null ? record.crc32 : UNKNOWN_CRC32;
         }
 
         /// Returns the general purpose bit flags stored for the ZIP entry.

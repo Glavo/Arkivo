@@ -1098,7 +1098,8 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                 int position = source.position();
                 long prefix = input.buffer | Byte.toUnsignedLong(source.get(position)) << input.bitCount;
                 int entry = fastLookup[(int) prefix & FAST_LOOKUP_MASK];
-                if (entry >= 0) {
+                // A nine-bit code may still need a second byte when no bits were buffered.
+                if (entry >= 0 && (entry & FAST_LENGTH_MASK) <= input.bitCount + Byte.SIZE) {
                     int length = entry & FAST_LENGTH_MASK;
                     if (length > input.bitCount) {
                         // Lookahead is consumed only when the selected symbol actually needs it.

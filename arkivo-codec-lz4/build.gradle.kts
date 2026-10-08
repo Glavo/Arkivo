@@ -117,3 +117,58 @@ tasks.named<Test>("tier2Test") {
         lz4JavaTestDataDirectory.get().asFile.absolutePath
     )
 }
+
+val lz4ManifestFile = rootProject.file("gradle/test-data/lz4.properties")
+val lz4Manifest = Properties().apply {
+    lz4ManifestFile.inputStream().use(::load)
+}
+val lz4Version = lz4Manifest.getProperty("version")
+val lz4Root = lz4Manifest.getProperty("archiveRoot")
+val lz4Sha256 = lz4Manifest.getProperty("archiveSha256")
+val lz4Archive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$lz4Sha256/${lz4Manifest.getProperty("archiveName")}").asFile
+})
+val lz4TestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/lz4/$lz4Version")
+
+val downloadLZ4TestSources = tasks.register<DownloadVerifiedFile>("downloadLZ4TestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned official LZ4 source release."
+    sourceUrl.set(lz4Manifest.getProperty("archiveUrl"))
+    expectedSha256.set(lz4Sha256)
+    expectedSize.set(lz4Manifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(lz4Archive)
+}
+
+val prepareLZ4TestCorpus = tasks.register<Sync>("prepareLZ4TestCorpus") {
+    group = "verification"
+    description = "Extracts official LZ4 frame and block regression sources and golden samples."
+    dependsOn(downloadLZ4TestSources)
+    from(downloadLZ4TestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$lz4Root/LICENSE", "$lz4Root/lib/LICENSE", "$lz4Root/tests/COPYING")
+        include("$lz4Root/tests/goldenSamples/**", "$lz4Root/tests/fuzzer.c", "$lz4Root/tests/frametest.c",
+                "$lz4Root/tests/decompress-partial.c", "$lz4Root/tests/decompress-partial-usingDict.c")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == lz4Root) {
+                "Unexpected LZ4 source archive path: $relativePath"
+            }
+            relativePath = RelativePath(relativePath.isFile, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(lz4ManifestFile) { rename { "UPSTREAM.properties" } }
+    into(lz4TestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareLZ4TestCorpus)
+    inputs.dir(lz4TestDataDirectory)
+    systemProperty("arkivo.lz4.testDataDirectory", lz4TestDataDirectory.get().asFile.absolutePath)
+    inputs.property("officialLz4Executable", providers.environmentVariable("ARKIVO_LZ4_EXECUTABLE").orElse(""))
+    inputs.property("requireOfficialLz4", providers.environmentVariable("ARKIVO_REQUIRE_LZ4").orElse("false"))
+}

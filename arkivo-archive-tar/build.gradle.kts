@@ -5,6 +5,12 @@ dependencies {
     api(project(":arkivo-codec"))
     testImplementation(project(":arkivo-codec-deflate"))
     testImplementation(project(":arkivo-codec-zstd"))
+    add("tier2TestImplementation", "org.apache.commons:commons-compress:1.28.0")
+}
+
+tasks.named<Test>("tier2Test") {
+    inputs.property("gnuTarExecutable", providers.environmentVariable("ARKIVO_GNU_TAR_EXECUTABLE").orElse(""))
+    inputs.property("requireGnuTar", providers.environmentVariable("ARKIVO_REQUIRE_GNU_TAR").orElse("false"))
 }
 
 val lowHeapStorageProbe by tasks.registering(JavaExec::class) {

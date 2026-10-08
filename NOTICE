@@ -1,8 +1,132 @@
 Arkivo
 Copyright (c) 2026 Glavo
 
-The Go archive corpus tests adapt expected results from Go 1.25.0's
-archive/zip and archive/tar tests. Copyright 2009, 2010 The Go Authors.
+The HTSlib BGZF tests read original boundary fixtures and a block index from
+HTSlib 1.22. Copyright (C) 2012-2025 Genome Research Ltd.; MIT/Expat license.
+The verified download retains LICENSE and test_bgzf.c. The Java driver
+checks gzip member decoding and adapts the embedded-EOF and truncation
+scenarios without implementing BAM parsing or executing the native tests.
+
+The GNU cpio tests read the embedded symlink-length crash reproducer and
+input descriptions from the unmodified GNU cpio 2.15 source distribution.
+Copyright (C) Free Software Foundation, Inc.; GPL-3.0-or-later. The verified
+download retains source notices and COPYING. The independently written Java
+driver does not execute the upstream shell scripts. Generated cases are
+cross-checked with Commons Compress, not a native GNU cpio executable.
+
+The LLVM AR tests read selected original fixtures and reference tests from
+LLVM 21.1.0 and optionally exchange generated archives with llvm-ar.
+Copyright LLVM Project; licensed under Apache-2.0 WITH LLVM-exception.
+The verified download retains LLVM's LICENSE.TXT. The Java driver does not
+execute the upstream lit scripts or include native code in Arkivo.
+
+The OpenJDK ZIP corpus tests read source-embedded archive bytes from the
+OpenJDK regression tests at commit b41070a002908a947e80670850e90ffa08ae0355.
+Copyright (c) Oracle and/or its affiliates. The checksum-verified download
+retains the unmodified source headers and LICENSE. These test sources are
+licensed under GPL-2.0-only. The independently written Java driver treats
+them as data; it does not compile or execute the downloaded Java sources.
+
+The optional ncompress interoperability tests exchange Unix compress streams
+with an explicitly configured native reference. The verified source download
+pins commit 03592d7a4702bb83558b6f1520c2a6a5381374c8 and retains its public-domain
+dedication in LICENSE.txt and UNLICENSE. The source file is also used as test
+input. The independently written Java driver does not execute upstream shell
+scripts or incorporate the native implementation into Arkivo.
+
+The GNU gzip corpus tests read reference vectors and crash reproducers from
+the unmodified GNU gzip 1.14 source distribution. Copyright (C) Free Software
+Foundation, Inc. The downloaded scripts and binary fixture remain in the
+build cache together with their GPL-3.0-or-later notices and COPYING file.
+The Java tests do not execute the shell scripts. They exercise Arkivo's
+supported formats and explicitly distinguish strict trailing-data rejection
+from GNU gzip's command-line tolerance.
+
+The miniz streaming regression tests adapt the small-buffer, large-buffer,
+and flush scenarios in miniz 3.1.2, originally derived from the zlib fuzzers
+in Google OSS-Fuzz. Copyright 2020 Google Inc. These harnesses are licensed
+under Apache-2.0; see LICENSES/Apache-2.0.txt. The verified source download
+retains tests/ossfuzz.sh and miniz's separate MIT license. The Java tests
+exercise Arkivo engines and use JDK compression as an independent reference;
+they do not execute miniz's native implementation.
+
+The .NET corpus tests use selected, unmodified compression and ZIP resources
+from dotnet/runtime-assets at commit 6ffb320c9c9bceddf217b447dbd021e9a06ec1c8.
+Update and compatibility scenarios are adapted from the .NET 10.0.0 tests.
+Copyright (c) .NET Foundation and Contributors. The verified downloads retain
+their MIT licenses, asset notices, and reference test sources. The Java tests
+compare decoded documents and updated archive trees with original plaintext.
+See LICENSES/DotNet-MIT.txt.
+
+The zip-rs corpus tests use selected, unmodified ZIP fixtures and finite fuzz
+seeds from zip-rs 8.6.0. Copyright (c) 2014 Mathijs van de Nes. The verified
+source retains its MIT license, reference assertions, and the separate MIT
+notices for the .NET Foundation's Deflate64 archive and reference binary.
+The Java tests adapt plaintext and timestamp expectations, verify independent
+decoding and updates, and replay malformed inputs under bounded read limits.
+See LICENSES/ZipRs-MIT.txt.
+
+The zip.js corpus tests read selected, unmodified regression archives from
+zip.js 2.23.0 and adapt its Deflate64 boundary expectations. Copyright (c) 2023,
+Gildas Lormeau. The downloaded source retains its BSD-3-Clause license and
+reference tests. The Java driver verifies contents, fragmented reads, metadata,
+encryption, split archives, malformed input, and updates independently.
+See LICENSES/ZipJs-BSD-3-Clause.txt.
+
+The optional fflate interoperability tests use the unmodified pure JavaScript
+module from fflate 0.8.3, distributed under the MIT license. Copyright (c) 2026
+Arjun Barrett. The verified package retains its license. The independently
+written test driver runs only when a Node.js executable is configured; fflate
+is not a production dependency.
+
+The JSZip corpus tests read unmodified ZIP fixtures and reference assertions
+from JSZip 3.10.1 under its MIT license option. Copyright (c) 2009-2016 Stuart
+Knightley, David Duponchel, Franz Buchinger, and Antonio Afonso. The downloaded
+source retains the complete upstream license. The independently written Java
+driver checks contents, metadata, malformed input, and archive updates.
+See LICENSES/JSZip-MIT.txt.
+
+The lzip reference corpus tests read unmodified members and plaintext from
+lzip 1.26. The downloaded source archive retains its GPL-2.0-or-later license
+and original testsuite/check.sh, which grants unlimited permission to copy,
+distribute, and modify that script. Copyright (C) 2008-2026 Antonio Diaz Diaz.
+The independently written Java driver checks incremental decoding, corruption,
+and frame boundaries without incorporating the upstream compressor implementation.
+
+The minizip-ng corpus tests read unmodified ZIP seeds downloaded from minizip-ng
+4.2.2. The source archive retains the upstream Zlib license and reference tests.
+The independently written Java driver checks archive contents against Commons
+Compress, Zip4j, and reference digests obtained using CPython and libarchive.
+
+The official LZ4 interoperability tests read an unmodified skippable-frame sample
+and source-embedded plaintext from LZ4 1.10.0. Downloaded reference test sources
+retain their GPL-2.0-or-later license. The Java test driver independently checks
+Arkivo's buffer contracts and optionally exchanges files with the official CLI.
+
+The klauspost Zstandard corpus tests read unmodified decoder and dictionary
+fixtures downloaded from klauspost/compress 1.18.0. The source archive retains
+its original license and reference tests. The independently written Java tests
+compare decoded bytes with upstream plaintext and the official Zstandard decoder.
+
+The py7zr corpus tests read unmodified fixtures downloaded from py7zr 0.22.0.
+The source archive retains its LGPL-2.1 license and original reference tests.
+The Java test driver independently compares archive contents with Commons
+Compress or reference digests obtained using bsdtar/libarchive 3.8.8.
+
+The Zip4j interoperability tests adapt regression scenarios and fixture passwords
+from Zip4j 2.11.5's integration tests. The original test resources, reference
+tests, and upstream license are downloaded without modification.
+See LICENSES/Apache-2.0.txt.
+
+The CPython TAR corpus tests adapt scenarios and expected results from
+CPython 3.14.0's Lib/test/test_tarfile.py for Arkivo's streaming and NIO APIs.
+Copyright (c) 2001 Python Software Foundation; All Rights Reserved.
+The original fixtures and reference tests are downloaded without modification.
+See LICENSES/Python.txt.
+
+The Go archive and compression corpus tests adapt expected results from Go
+1.25.0's archive/zip, archive/tar, and compress tests.
+Copyright 2009, 2010, 2016 The Go Authors.
 See LICENSES/Go-BSD-3-Clause.txt.
 
 The regression tests contain payload definitions adapted
@@ -52,3 +176,22 @@ The downloaded corpus retains the source notices and licenses for its
 Commons Compress, DotNetZip, Go, lbzip2, and pyflate samples. The Java
 test driver reads the upstream reference digests; it does not incorporate
 the collection's shell runner or recovery-tool implementation.
+
+The SharpZipLib corpus tests adapt regression scenarios and expected contents
+from SharpZipLib 1.4.2. Original embedded fixtures are decoded at test time
+from the verified source download, without copying binary resources into
+this repository. Copyright © 2000-2018 SharpZipLib Contributors.
+See LICENSES/SharpZipLib-MIT.txt.
+
+The libdeflate regression tests adapt the bitstream and literal-run generators
+from libdeflate 1.26 and read its original issue reproducer from a verified
+source download. Copyright 2016 Eric Biggers; Copyright 2024 Google LLC.
+The Java tests exercise incremental decoding and use JDK interoperability
+checks instead of the upstream C runners. See LICENSES/Libdeflate-MIT.txt.
+
+The Zopfli interoperability tests use an optionally configured native Zopfli
+encoder and verified sources from zopfli-1.0.3. Input scenarios include the
+empty, repetitive, and random inputs from go/zopfli/zopfli_test.go,
+Copyright 2019 Google LLC, licensed under Apache-2.0. The downloaded source
+retains its copyright notices and COPYING file. Zopfli is used only as a
+test producer, not as an Arkivo compression backend. See LICENSES/Apache-2.0.txt.

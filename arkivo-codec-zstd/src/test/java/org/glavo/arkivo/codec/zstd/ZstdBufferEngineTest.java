@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.zstd;
 
+import com.github.luben.zstd.ZstdCompressCtx;
+import com.github.luben.zstd.ZstdInputStream;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionDecoder;
@@ -12,7 +14,10 @@ import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -29,6 +34,50 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public final class ZstdBufferEngineTest {
     /// Shared Zstandard codec under test.
     private static final ZstdCodec CODEC = new ZstdCodec();
+
+    /// Checks decoded compressed-block sizes against the frame window, including the exact boundary.
+    @ParameterizedTest
+    @CsvSource({"10, -1", "10, 0", "10, 1", "12, -1", "12, 0", "12, 1",
+            "16, -1", "16, 0", "16, 1"})
+    void enforcesDecodedBlockWindowLimit(int windowLog, int excess) throws IOException {
+        int windowSize = 1 << windowLog;
+        byte[] expected = new byte[windowSize + excess];
+        Arrays.fill(expected, (byte) 'x');
+        byte[] encoded;
+        try (var encoder = new ZstdCompressCtx()) {
+            encoded = encoder.setContentSize(false).setChecksum(false).setWindowLog(17).compress(expected);
+        }
+        assertEquals(0, encoded[4], "frame must have a window descriptor and no content size");
+        assertEquals(2, (encoded[6] >>> 1) & 3, "fixture must contain a compressed block");
+        assertTrue(encoded.length < windowSize, "encoded block itself must fit the window");
+        encoded[5] = (byte) ((windowLog - 10) << 3);
+
+        try (var reference = new ZstdInputStream(new ByteArrayInputStream(encoded))) {
+            if (excess > 0) {
+                assertThrows(IOException.class, reference::readAllBytes);
+            } else {
+                assertArrayEquals(expected, reference.readAllBytes());
+            }
+        }
+        for (boolean direct : new boolean[]{false, true}) {
+            ByteBuffer storage = direct ? ByteBuffer.allocateDirect(encoded.length) : ByteBuffer.allocate(encoded.length);
+            ByteBuffer source = storage.put(encoded).flip().asReadOnlyBuffer();
+            ByteBuffer target = direct ? ByteBuffer.allocateDirect(expected.length) : ByteBuffer.allocate(expected.length);
+            try (var decoder = CODEC.newDecoder()) {
+                if (excess > 0) {
+                    IOException failure = assertThrows(IOException.class, () -> decoder.finish(source, target));
+                    assertEquals("Decoded Zstandard block exceeds the frame block-size limit", failure.getMessage());
+                    assertEquals(0, target.position(), "invalid block must not be published");
+                } else {
+                    assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
+                    byte[] actual = new byte[target.position()];
+                    target.flip().get(actual);
+                    assertArrayEquals(expected, actual);
+                }
+                assertEquals(encoded.length, source.position());
+            }
+        }
+    }
 
     /// Verifies fragmented direct buffers and exact trailing-input preservation.
     @Test

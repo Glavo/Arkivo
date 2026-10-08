@@ -1106,6 +1106,47 @@ public final class ArArchiveIntegrationTest {
         }
     }
 
+    /// Ignores BSD inline-name NUL padding without removing trailing spaces or shifting member bodies.
+    @Test
+    public void readsPaddedBsdNamesAndSkipsPaddedSymbolTables() throws IOException {
+        for (int padding = 1; padding <= 8; padding++) {
+            byte[] name = "member with trailing space ".getBytes(StandardCharsets.UTF_8);
+            byte[] symbols = "__.SYMDEF".getBytes(StandardCharsets.US_ASCII);
+            byte[] content = {0, 11, 22, 33, 0};
+            byte[] body = Arrays.copyOf(name, name.length + padding + content.length);
+            System.arraycopy(content, 0, body, name.length + padding, content.length);
+            byte[] symbolBody = Arrays.copyOf(symbols, symbols.length + padding + 8);
+            byte[] bytes = archive(
+                    member("#1/" + (symbols.length + padding), 0, 0, 0, 0, symbolBody),
+                    member("#1/" + (name.length + padding), 0, 0, 0, 0100644, body),
+                    member("following/", 0, 0, 0, 0100644, new byte[]{44})
+            );
+            try (var reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("member with trailing space ", reader.readAttributes().path());
+                assertEquals(content.length, reader.readAttributes().size());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("following", reader.readAttributes().path());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(new byte[]{44}, input.readAllBytes());
+                }
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+            }
+        }
+    }
+
+    /// Rejects an inline name consisting entirely of NUL alignment bytes.
+    @Test
+    public void rejectsEmptyPaddedBsdName() throws IOException {
+        byte[] bytes = archive(member("#1/8", 0, 0, 0, 0100644, new byte[8]));
+        try (var reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            assertEquals("AR member is missing a path", assertThrows(IOException.class, reader::next).getMessage());
+        }
+    }
+
     /// Verifies that BSD and GNU long names expose their structural header identifiers to a rich detector.
     @Test
     public void detectsExtendedNameCharsets() throws IOException {

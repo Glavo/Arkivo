@@ -1,3 +1,6 @@
+import java.util.Properties
+import org.glavo.arkivo.gradle.DownloadVerifiedFile
+
 dependencies {
     api(project(":arkivo-archive"))
     implementation(project(":arkivo-archive-codec"))
@@ -12,6 +15,44 @@ dependencies {
     testImplementation(project(":arkivo-codec-zstd"))
     testImplementation("org.tukaani:xz:1.12")
     testImplementation("org.apache.commons:commons-compress:1.28.0")
+}
+
+val openJdkZipManifestFile = rootProject.file("gradle/test-data/openjdk-zip.properties")
+val openJdkZipManifest = Properties().apply {
+    openJdkZipManifestFile.inputStream().use(::load)
+}
+val openJdkZipDirectory = rootProject.layout.buildDirectory.dir(
+    "test-data/openjdk-zip/${openJdkZipManifest.getProperty("version")}")
+val openJdkZipCache = rootProject.layout.dir(rootProject.providers.provider {
+    rootProject.file(rootProject.providers.gradleProperty("arkivo.testDataCacheDirectory").orNull
+        ?: ".arkivo-cache/test-data")
+})
+val openJdkZipDownloads = openJdkZipManifest.getProperty("files").split(',').map { name ->
+    val hash = openJdkZipManifest.getProperty("$name.sha256")
+    tasks.register<DownloadVerifiedFile>("downloadOpenJdkZip${name.substringBefore('.')}") {
+        group = "verification"
+        description = "Downloads and verifies OpenJDK's $name reference file."
+        val sourcePath = if (name == "LICENSE") name else "test/jdk/java/util/zip/ZipFile/$name"
+        sourceUrl.set("${openJdkZipManifest.getProperty("baseUrl")}/$sourcePath")
+        expectedSha256.set(hash)
+        expectedSize.set(openJdkZipManifest.getProperty("$name.size").toLong())
+        offline.set(gradle.startParameter.isOffline)
+        cacheRoot.set(openJdkZipCache)
+        cacheMarker.set(openJdkZipCache.map { it.file(".arkivo-test-data-cache") })
+        destination.set(openJdkZipCache.map { it.file("downloads/sha256/$hash/$name") })
+    }
+}
+val prepareOpenJdkZipTestCorpus = tasks.register<Sync>("prepareOpenJdkZipTestCorpus") {
+    group = "verification"
+    description = "Collects pinned OpenJDK ZIP regression sources without compiling or executing them."
+    openJdkZipDownloads.forEach { download -> from(download.flatMap { it.destination }) }
+    from(openJdkZipManifestFile) { rename { "UPSTREAM.properties" } }
+    into(openJdkZipDirectory)
+}
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareOpenJdkZipTestCorpus)
+    inputs.dir(openJdkZipDirectory)
+    systemProperty("arkivo.openjdkZip.testDataDirectory", openJdkZipDirectory.get().asFile.absolutePath)
 }
 
 val verifyOptionalCompressionFormats by tasks.registering(JavaExec::class) {

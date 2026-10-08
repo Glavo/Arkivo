@@ -48,7 +48,6 @@ import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.CopyOption;
-import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
@@ -730,7 +729,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
-    /// Opens a read-only byte channel for an entry.
+    /// Opens a byte channel for an entry in the selected file-system mode.
     ///
     /// Read channels begin at position zero and provide random access to retained logical content. Update-mode channels
     /// stage random-access changes and install the replacement body when closed. Forward-only write channels expose
@@ -738,10 +737,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     ///
     /// @param path       the regular-file entry to read, create, or replace
     /// @param options    the read, creation, truncation, append, and write options for the selected file-system mode
-    /// @param attributes initial attributes for a newly created entry; only supported creation attributes are accepted
+    /// @param attributes initial `posix:permissions` and `basic:lastModifiedTime` attributes for a newly created entry
     /// @return a caller-owned channel tracked by the file system until it is closed
     /// @throws IOException                   if the entry cannot be found, retained, created, or opened
     /// @throws UnsupportedOperationException if an option, attribute, or access combination is unsupported
+    /// @throws IllegalArgumentException if a supported initial attribute has an invalid value
     public SeekableByteChannel newByteChannel(
             Path path,
             Set<? extends OpenOption> options,
@@ -817,21 +817,22 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return Channels.newOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
         }
         validateEntryWriteOptions(options);
-        @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        InitialAttributes initial = initialAttributes(attributes);
         String entryPath = prepareWritableEntry(path, false);
         TarArkivoStreamingWriter currentWriter = requireWriter();
         ArkivoStreamingWriter.Entry entry = currentWriter.beginFile(entryPath);
-        applyInitialPermissions(entry, permissions);
+        applyInitialAttributes(entry, initial);
         return new WrittenEntryOutputStream(entry.openOutputStream(), entryPath);
     }
 
-    /// Creates a new forward-only directory entry.
+    /// Creates a directory entry.
     ///
     /// @param directory  the archive path of the new directory
-    /// @param attributes initial attributes for the directory; currently POSIX permissions are supported
+    /// @param attributes initial `posix:permissions` and `basic:lastModifiedTime` attributes for the directory
     /// @throws IOException                   if the entry exists, its parent is not a directory, or it cannot be staged or encoded
     /// @throws ReadOnlyFileSystemException   if the file system is read-only
     /// @throws UnsupportedOperationException if an initial attribute is unsupported
+    /// @throws IllegalArgumentException if a supported initial attribute has an invalid value
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             createDirectoryLocked(directory, attributes);
@@ -842,15 +843,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private void createDirectoryLocked(Path directory, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
-        @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        InitialAttributes initial = initialAttributes(attributes);
         if (updateMode) {
             String entryPath = prepareUpdateEntry(directory);
             TarEntryAttributes entryAttributes = defaultAttributes(
                     entryPath,
                     TarEntryAttributes.DIRECTORY_TYPE,
-                    permissions != null ? PosixModes.permissionBits(permissions) : 0755,
+                    initial.permissions() != null ? PosixModes.permissionBits(initial.permissions()) : 0755,
                     null,
-                    0L
+                    0L,
+                    initial.lastModifiedTime()
             );
             addUpdateNode(new Node(entryPath, entryAttributes, true, null, false));
             return;
@@ -858,21 +860,22 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         String entryPath = prepareWritableEntry(directory, true);
         TarArkivoStreamingWriter currentWriter = requireWriter();
         try (ArkivoStreamingWriter.Entry entry = currentWriter.beginDirectory(entryPath)) {
-            applyInitialPermissions(entry, permissions);
+            applyInitialAttributes(entry, initial);
         }
         recordWrittenEntry(entryPath, true);
     }
 
-    /// Creates a new forward-only symbolic link entry.
+    /// Creates a symbolic link entry.
     ///
     /// The target path is stored as archive-style text and is neither resolved nor required to exist.
     ///
     /// @param link       the archive path of the new symbolic-link entry
     /// @param target     the target text to record in the entry
-    /// @param attributes initial attributes for the link itself; currently POSIX permissions are supported
+    /// @param attributes initial `posix:permissions` and `basic:lastModifiedTime` attributes for the link itself
     /// @throws IOException                   if the entry exists, its parent is not a directory, or it cannot be staged or encoded
     /// @throws ReadOnlyFileSystemException   if the file system is read-only
     /// @throws UnsupportedOperationException if an initial attribute is unsupported
+    /// @throws IllegalArgumentException if a supported initial attribute has an invalid value
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             createSymbolicLinkLocked(link, target, attributes);
@@ -884,15 +887,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
-        @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        InitialAttributes initial = initialAttributes(attributes);
         if (updateMode) {
             String entryPath = prepareUpdateEntry(link);
             TarEntryAttributes entryAttributes = defaultAttributes(
                     entryPath,
                     TarEntryAttributes.SYMBOLIC_LINK_TYPE,
-                    permissions != null ? PosixModes.permissionBits(permissions) : 0777,
+                    initial.permissions() != null ? PosixModes.permissionBits(initial.permissions()) : 0777,
                     archivePathText(target),
-                    0L
+                    0L,
+                    initial.lastModifiedTime()
             );
             addUpdateNode(new Node(entryPath, entryAttributes, false, null, false));
             return;
@@ -901,7 +905,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         TarArkivoStreamingWriter currentWriter = requireWriter();
         try (ArkivoStreamingWriter.Entry entry =
                      currentWriter.beginSymbolicLink(entryPath, archivePathText(target))) {
-            applyInitialPermissions(entry, permissions);
+            applyInitialAttributes(entry, initial);
         }
         recordWrittenEntry(entryPath, false);
     }
@@ -939,7 +943,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     TarEntryAttributes.HARD_LINK_TYPE,
                     target.attributes().mode(),
                     targetPath,
-                    target.contentSize()
+                    target.contentSize(),
+                    UNIX_EPOCH
             );
             addUpdateNode(new Node(entryPath, entryAttributes, false, target.content(), false));
             return;
@@ -1148,10 +1153,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// is a fixed snapshot, supports one iterator, and is tracked until the caller or file system closes it.
     ///
     /// @param directory the existing directory whose immediate children are listed
-    /// @param filter    the predicate applied eagerly to each child path
+    /// @param filter    the predicate applied as child paths are traversed
     /// @return a managed directory stream containing the accepted child paths
     /// @throws IOException                if `directory` is missing, is not a directory, or cannot be read
-    /// @throws DirectoryIteratorException if `filter` throws `IOException`
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
         try (Operation ignored = beginReadOperation()) {
@@ -1171,18 +1175,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             throw new FileSystemException(directory.toString(), null, "TAR entry is not a directory");
         }
 
-        ArrayList<Path> accepted = new ArrayList<>();
+        ArrayList<Path> paths = new ArrayList<>();
         for (String childPath : node.children().values()) {
-            Path child = rootPath.resolve(childPath);
-            try {
-                if (filter.accept(child)) {
-                    accepted.add(child);
-                }
-            } catch (IOException exception) {
-                throw new DirectoryIteratorException(exception);
-            }
+            paths.add(rootPath.resolve(childPath));
         }
-        return new FixedDirectoryStream<>(accepted);
+        return new FixedDirectoryStream<>(paths, filter);
     }
 
     /// Checks access to an entry.
@@ -1609,39 +1606,61 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
-    /// Applies supported initial POSIX permissions to a pending TAR writer entry.
-    private static void applyInitialPermissions(
+    /// Applies validated creation attributes before the writer emits the entry header.
+    private static void applyInitialAttributes(
             ArkivoStreamingWriter.Entry entry,
-            @Nullable Set<PosixFilePermission> permissions
+            InitialAttributes initial
     ) throws IOException {
-        if (permissions == null) {
+        if (initial.permissions() == null && initial.lastModifiedTime() == null) {
             return;
         }
         PosixFileAttributeView view = entry.attributeView(PosixFileAttributeView.class);
         if (view == null) {
             throw new UnsupportedOperationException("TAR writer does not expose POSIX file attributes");
         }
-        view.setPermissions(permissions);
+        if (initial.permissions() != null) {
+            view.setPermissions(initial.permissions());
+        }
+        if (initial.lastModifiedTime() != null) {
+            view.setTimes(initial.lastModifiedTime(), null, null);
+        }
     }
 
-    /// Returns POSIX permissions stored by supported initial file attributes.
-    private static @Nullable Set<PosixFilePermission> initialPosixPermissions(FileAttribute<?>... attributes) {
+    /// Captures validated creation attributes without retaining caller-owned attribute objects.
+    private static InitialAttributes initialAttributes(FileAttribute<?>... attributes) {
         Objects.requireNonNull(attributes, "attributes");
         @Nullable Set<PosixFilePermission> permissions = null;
+        @Nullable FileTime lastModifiedTime = null;
         for (FileAttribute<?> attribute : attributes) {
             Objects.requireNonNull(attribute, "attribute");
             String name = attribute.name();
             if ("posix:permissions".equals(name)) {
                 permissions = posixPermissions(attribute);
+            } else if ("basic:lastModifiedTime".equals(name)) {
+                if (!(attribute.value() instanceof FileTime time)) {
+                    throw new IllegalArgumentException("basic:lastModifiedTime must be a FileTime");
+                }
+                lastModifiedTime = time;
             } else {
                 throw new UnsupportedOperationException("Unsupported TAR entry initial file attribute: " + name);
             }
         }
-        return permissions;
+        return new InitialAttributes(permissions, lastModifiedTime);
+    }
+
+    /// Stores validated attributes for a pending entry.
+    ///
+    /// @param permissions the immutable permissions, or `null` to use the entry-type default
+    /// @param lastModifiedTime the modification time, or `null` to retain the entry default
+    @NotNullByDefault
+    private record InitialAttributes(
+            @Nullable @Unmodifiable Set<PosixFilePermission> permissions,
+            @Nullable FileTime lastModifiedTime
+    ) {
     }
 
     /// Returns POSIX permissions stored by a file attribute.
-    private static Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
+    private static @Unmodifiable Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
         return PosixPermissions.copyOf(attribute.value(), "posix:permissions");
     }
 
@@ -1709,19 +1728,15 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (existing != null && existing.directory()) {
             throw new FileSystemException(path.toString(), null, "TAR entry is a directory");
         }
-        if (existing == null) {
-            ensureParents(nodes, entryPath);
-        }
-
-        @Nullable Set<PosixFilePermission> requestedPermissions = initialPosixPermissions(attributes);
-        @Nullable Set<PosixFilePermission> initialPermissions = requestedPermissions != null
-                ? Set.copyOf(requestedPermissions)
-                : null;
+        InitialAttributes initial = initialAttributes(attributes);
         boolean append = options.contains(StandardOpenOption.APPEND);
         boolean writable = options.contains(StandardOpenOption.WRITE) || append;
         boolean readable = options.contains(StandardOpenOption.READ);
         if (!readable && !writable) {
             throw new IllegalArgumentException("TAR entry update channel requires READ, WRITE, or APPEND");
+        }
+        if (existing == null) {
+            ensureParents(nodes, entryPath);
         }
         boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
         long expectedSize = existing != null && !truncate ? existing.contentSize() : 0L;
@@ -1759,7 +1774,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                                 commitUpdatedEntry(
                                         entryPath,
                                         existing,
-                                        initialPermissions,
+                                        initial,
                                         pendingContent
                                 );
                                 transferred = true;
@@ -1820,7 +1835,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private void commitUpdatedEntry(
             String path,
             @Nullable Node originalNode,
-            @Nullable Set<PosixFilePermission> initialPermissions,
+            InitialAttributes initial,
             ArkivoStoredContent content
     ) throws IOException {
         @Nullable Node existing = nodes.get(path);
@@ -1831,13 +1846,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         long size = content.size();
         TarArkivoEntryAttributes base = existing != null
                 ? existing.attributes()
-                : defaultAttributes(path, TarEntryAttributes.REGULAR_TYPE, 0644, null, size);
-        int mode = existing == null && initialPermissions != null
-                ? PosixModes.permissionBits(initialPermissions)
+                : defaultAttributes(path, TarEntryAttributes.REGULAR_TYPE, 0644, null, size, initial.lastModifiedTime());
+        int mode = existing == null && initial.permissions() != null
+                ? PosixModes.permissionBits(initial.permissions())
                 : base.mode();
         TarEntryAttributes attributes = new TarEntryAttributes(
                 path,
                 TarEntryAttributes.REGULAR_TYPE,
+                false,
                 mode,
                 base.userId(),
                 base.groupId(),
@@ -1906,11 +1922,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             byte typeFlag,
             int mode,
             @Nullable String linkName,
-            long size
+            long size,
+            @Nullable FileTime lastModifiedTime
     ) {
         return new TarEntryAttributes(
                 path,
                 typeFlag,
+                typeFlag == TarEntryAttributes.DIRECTORY_TYPE,
                 mode,
                 0L,
                 0L,
@@ -1918,7 +1936,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 null,
                 linkName,
                 size,
-                UNIX_EPOCH,
+                lastModifiedTime != null ? lastModifiedTime : UNIX_EPOCH,
                 null,
                 null,
                 null
@@ -1936,6 +1954,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return new TarEntryAttributes(
                 path,
                 typeFlag,
+                typeFlag == TarEntryAttributes.DIRECTORY_TYPE
+                        || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE && attributes.isDirectory(),
                 attributes.mode(),
                 attributes.userId(),
                 attributes.groupId(),
@@ -2133,6 +2153,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(),
                 attributes.typeFlag(),
+                attributes.isDirectory(),
                 attributes.mode(),
                 attributes.userId(),
                 attributes.groupId(),
@@ -2187,6 +2208,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return new TarEntryAttributes(
                 attributes.path(),
                 attributes.typeFlag(),
+                attributes.isDirectory(),
                 attributes.mode(),
                 attributes.userId(),
                 attributes.groupId(),
@@ -2229,7 +2251,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             throw new IllegalArgumentException("userId must not be negative");
         }
         mutateAttributes(path, attributes -> new TarEntryAttributes(
-                attributes.path(), attributes.typeFlag(), attributes.mode(), userId, attributes.groupId(),
+                attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), userId, attributes.groupId(),
                 attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2242,7 +2264,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             throw new IllegalArgumentException("groupId must not be negative");
         }
         mutateAttributes(path, attributes -> new TarEntryAttributes(
-                attributes.path(), attributes.typeFlag(), attributes.mode(), attributes.userId(), groupId,
+                attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), attributes.userId(), groupId,
                 attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2260,7 +2282,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Returns copied metadata with a changed mode.
     private static TarEntryAttributes copyWithMode(TarArkivoEntryAttributes attributes, int mode) {
         return new TarEntryAttributes(
-                attributes.path(), attributes.typeFlag(), mode, attributes.userId(), attributes.groupId(),
+                attributes.path(), attributes.typeFlag(), attributes.isDirectory(), mode, attributes.userId(), attributes.groupId(),
                 attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2270,7 +2292,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Sets the TAR user name in update mode.
     private void setUserName(Path path, @Nullable String userName) throws IOException {
         mutateAttributes(path, attributes -> new TarEntryAttributes(
-                attributes.path(), attributes.typeFlag(), attributes.mode(), attributes.userId(), attributes.groupId(),
+                attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), attributes.userId(), attributes.groupId(),
                 userName, attributes.groupName(), attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2280,7 +2302,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Sets the TAR group name in update mode.
     private void setGroupName(Path path, @Nullable String groupName) throws IOException {
         mutateAttributes(path, attributes -> new TarEntryAttributes(
-                attributes.path(), attributes.typeFlag(), attributes.mode(), attributes.userId(), attributes.groupId(),
+                attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), attributes.userId(), attributes.groupId(),
                 attributes.userName(), groupName, attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2703,6 +2725,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return new TarEntryAttributes(
                 attributes.path(),
                 attributes.typeFlag(),
+                attributes.isDirectory(),
                 attributes.mode(),
                 attributes.userId(),
                 attributes.groupId(),
@@ -2830,6 +2853,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return new TarEntryAttributes(
                 path,
                 TarEntryAttributes.DIRECTORY_TYPE,
+                true,
                 040755,
                 0L,
                 0L,

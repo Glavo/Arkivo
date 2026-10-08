@@ -47,6 +47,11 @@ import java.util.Set;
 /// GNU sparse entries are staged as expanded logical files; an update commit normalizes old GNU `S` entries to regular
 /// TAR entries while preserving their expanded content and metadata.
 ///
+/// Entry creation accepts `posix:permissions` and `basic:lastModifiedTime` initial attributes. Modification times are
+/// [java.nio.file.attribute.FileTime] values and may include fractional seconds. Creation attributes do not change an
+/// existing file opened for writing. When an attribute is repeated, its last value is used; unsupported names and invalid
+/// values are rejected before an entry is created.
+///
 /// A channel or repeatable source remains caller-owned until factory arguments have been validated. Ownership then
 /// transfers to the open operation: initialization failure closes the source, and a returned file system closes it
 /// during file-system close. Creation uses create-new semantics and fails when the archive path already exists. Closing

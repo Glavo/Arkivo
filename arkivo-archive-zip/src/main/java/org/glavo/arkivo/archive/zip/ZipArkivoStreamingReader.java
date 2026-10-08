@@ -20,9 +20,11 @@ import java.util.Objects;
 /// Reads ZIP local file records from a forward-only stream.
 ///
 /// `next()` positions the cursor at the next local file header without requiring the central directory. Attributes are
-/// detached snapshots of metadata available from that header. The entry body may be opened once; advancing closes it,
-/// validates and consumes any remaining body and data descriptor, and then parses the next local record. After
-/// `next()` returns `false`, no current entry exists.
+/// detached snapshots of metadata available from that header. The entry body may be opened once. Advancing closes an
+/// opened body, consumes and validates its remaining content and data descriptor, and then parses the next local record.
+/// An unopened body without a data descriptor is skipped using its local compressed size, without decompression,
+/// password lookup, CRC validation, or authentication. An unopened body with a data descriptor must instead be decoded
+/// to locate its end and is validated while being consumed. After `next()` returns `false`, no current entry exists.
 ///
 /// A successfully returned reader owns the supplied stream, channel, or volume source and every volume channel it
 /// opens. Reader close releases them; closing an entry body does not close the reader. The cursor is stateful, and its

@@ -157,12 +157,12 @@ final class ZipStreamingEntryAttributesTest {
         assertArrayEquals(LOCAL_EXTRA_DATA, attributes.localExtraData());
     }
 
-    /// Asserts directory-specific values synthesized from a streaming local header.
+    /// Asserts known empty-directory metadata from a streaming local header.
     private static void assertDirectoryAttributes(ZipArkivoEntryAttributes attributes) {
         assertEquals("folder/", attributes.path());
         assertArrayEquals("folder/".getBytes(StandardCharsets.UTF_8), attributes.rawPath());
-        assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
-        assertEquals(ZipArkivoEntryAttributes.UNKNOWN_CRC32, attributes.crc32());
+        assertEquals(0L, attributes.compressedSize());
+        assertEquals(0L, attributes.crc32());
         assertFalse(attributes.isRegularFile());
         assertTrue(attributes.isDirectory());
         assertFalse(attributes.isSymbolicLink());

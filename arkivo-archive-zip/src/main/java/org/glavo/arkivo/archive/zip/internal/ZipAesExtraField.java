@@ -198,6 +198,11 @@ final class ZipAesExtraField {
         return compressionMethod;
     }
 
+    /// Returns whether AE-1 requires the plaintext CRC in addition to ciphertext authentication.
+    boolean usesCrc32() {
+        return vendorVersion == AE_1_VENDOR_VERSION;
+    }
+
     /// Returns whether this field has the same metadata as another parsed WinZip AES field.
     boolean metadataMatches(ZipAesExtraField other) {
         Objects.requireNonNull(other, "other");

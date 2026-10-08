@@ -65,13 +65,6 @@ final class TarCommonsCompressCorpusTest {
             "COMPRESS-612/test-times-xustar-incremental.tar"
     );
 
-    /// Fixtures with absolute entry paths rejected by Arkivo's archive path-safety contract.
-    private static final @Unmodifiable Set<String> UNSAFE_PATH_ARCHIVES = Set.of(
-            "archives/SunOS_cAEf.tar",
-            "archives/SunOS_cEf.tar",
-            "longpath/hudson-E.tar"
-    );
-
     /// Physical entry paths and logical sizes asserted by the upstream COMPRESS-700 regression.
     private static final @Unmodifiable List<ExpectedTarEntry> COMPRESS_700_ENTRIES = List.of(
             new ExpectedTarEntry(0L, "build/app.dill"),
@@ -306,15 +299,6 @@ final class TarCommonsCompressCorpusTest {
         assertEquals("Duplicate TAR entry path: test-times.txt", exception.getMessage());
     }
 
-    /// Rejects absolute archive entry paths before exposing them through either read API.
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("unsafePathArchives")
-    void rejectsUnsafeAbsolutePaths(String resource) throws IOException {
-        Path archive = CommonsCompressTestResources.resource(resource);
-        IOException exception = assertThrows(IOException.class, () -> TarArkivoFileSystem.open(archive).close());
-        assertEquals("TAR entry path must be relative", exception.getMessage());
-    }
-
     /// Leaves the caller-owned source positioned exactly at the first byte following the padded TAR archive.
     @Test
     void leavesCallerOwnedSourceAtArchiveTrailer() throws IOException {
@@ -351,8 +335,7 @@ final class TarCommonsCompressCorpusTest {
                 .filter(resource -> !TIER3_ARCHIVES.contains(resource))
                 .filter(resource -> !DELEGATED_CONTAINERS.contains(resource))
                 .filter(resource -> !EXPLICIT_CHARSET_ARCHIVES.contains(resource))
-                .filter(resource -> !DUPLICATE_PATH_ARCHIVES.contains(resource))
-                .filter(resource -> !UNSAFE_PATH_ARCHIVES.contains(resource));
+                .filter(resource -> !DUPLICATE_PATH_ARCHIVES.contains(resource));
     }
 
     /// Discovers TAR fixtures whose names define an expected parser failure.
@@ -363,11 +346,6 @@ final class TarCommonsCompressCorpusTest {
     /// Returns incremental archive fixtures containing repeated paths.
     private static Stream<String> duplicatePathArchives() {
         return DUPLICATE_PATH_ARCHIVES.stream().sorted();
-    }
-
-    /// Returns archives intentionally containing absolute entry paths.
-    private static Stream<String> unsafePathArchives() {
-        return UNSAFE_PATH_ARCHIVES.stream().sorted();
     }
 
     /// Returns every TAR-shaped resource relative to the official source resource root.

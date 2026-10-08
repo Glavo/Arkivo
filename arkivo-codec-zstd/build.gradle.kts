@@ -82,3 +82,57 @@ tasks.named<Test>("tier2Test") {
     inputs.dir(zstdTestDataDirectory)
     systemProperty("arkivo.zstd.testDataDirectory", zstdTestDataDirectory.get().asFile.absolutePath)
 }
+
+val klauspostManifestFile = rootProject.file("gradle/test-data/klauspost-compress.properties")
+val klauspostManifest = Properties().apply {
+    klauspostManifestFile.inputStream().use(::load)
+}
+val klauspostVersion = klauspostManifest.getProperty("version")
+val klauspostRoot = klauspostManifest.getProperty("archiveRoot")
+val klauspostSha256 = klauspostManifest.getProperty("archiveSha256")
+val klauspostArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$klauspostSha256/${klauspostManifest.getProperty("archiveName")}").asFile
+})
+val klauspostTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/klauspost-compress/$klauspostVersion")
+
+val downloadKlauspostTestSources = tasks.register<DownloadVerifiedFile>("downloadKlauspostTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned klauspost/compress source release."
+    sourceUrl.set(klauspostManifest.getProperty("archiveUrl"))
+    expectedSha256.set(klauspostSha256)
+    expectedSize.set(klauspostManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(klauspostArchive)
+}
+
+val prepareKlauspostTestCorpus = tasks.register<Sync>("prepareKlauspostTestCorpus") {
+    group = "verification"
+    description = "Extracts klauspost Zstandard decoder and dictionary regression fixtures with their reference tests."
+    dependsOn(downloadKlauspostTestSources)
+    from(downloadKlauspostTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$klauspostRoot/LICENSE", "$klauspostRoot/zstd/*_test.go")
+        include("$klauspostRoot/zstd/testdata/bad.zip", "$klauspostRoot/zstd/testdata/good.zip",
+                "$klauspostRoot/zstd/testdata/decoder.zip", "$klauspostRoot/zstd/testdata/decode-regression.zip",
+                "$klauspostRoot/zstd/testdata/dict-tests-small.zip", "$klauspostRoot/zstd/testdata/delta/**")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == klauspostRoot) {
+                "Unexpected klauspost source archive path: $relativePath"
+            }
+            relativePath = RelativePath(relativePath.isFile, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(klauspostManifestFile) { rename { "UPSTREAM.properties" } }
+    into(klauspostTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareKlauspostTestCorpus)
+    inputs.dir(klauspostTestDataDirectory)
+    systemProperty("arkivo.klauspost.testDataDirectory", klauspostTestDataDirectory.get().asFile.absolutePath)
+}

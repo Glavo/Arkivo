@@ -158,13 +158,13 @@ final class RarArkivoFileSystemContractTest {
             try (DirectoryStream<Path> rejected = Files.newDirectoryStream(root, ignored -> false)) {
                 assertFalse(rejected.iterator().hasNext());
             }
-            DirectoryIteratorException filterFailure = assertThrows(
-                    DirectoryIteratorException.class,
-                    () -> Files.newDirectoryStream(root, ignored -> {
-                        throw new IOException("filter failure");
-                    })
-            );
-            assertEquals("filter failure", filterFailure.getCause().getMessage());
+            try (var failing = Files.newDirectoryStream(root, ignored -> {
+                throw new IOException("filter failure");
+            })) {
+                DirectoryIteratorException filterFailure = assertThrows(
+                        DirectoryIteratorException.class, failing.iterator()::hasNext);
+                assertEquals("filter failure", filterFailure.getCause().getMessage());
+            }
             assertThrows(FileSystemException.class, () -> Files.newDirectoryStream(file));
             assertThrows(FileSystemException.class, () -> Files.newInputStream(directory));
             assertThrows(

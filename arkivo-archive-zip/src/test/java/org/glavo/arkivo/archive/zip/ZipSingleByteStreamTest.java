@@ -5,31 +5,111 @@ package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.zip.CRC32;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies ZIP entry streams preserve state when callers use only single-byte I/O operations.
+/// Verifies ZIP entry streams preserve bytes and checksums across single-byte and mixed write operations.
 @NotNullByDefault
 final class ZipSingleByteStreamTest {
+    /// Selects archive creation instead of replacement of an existing entry.
+    private static final int CREATE_NEW_ARCHIVE = -1;
+
     /// Temporary storage used for indexed file-system round trips.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Checks CRC and byte counts when one output stream mixes all three write overloads during creation or replacement.
+    ///
+    /// Independently exercises the output-stream checksum interaction reported in JDK-8232879.
+    @ParameterizedTest(name = "originalMethod={0}")
+    @ValueSource(ints = {CREATE_NEW_ARCHIVE, ZipEntry.STORED, ZipEntry.DEFLATED})
+    void mixesWriteOverloadsWithoutDoubleCounting(int originalMethod) throws IOException {
+        Path archive = temporaryDirectory.resolve("mixed-writes.zip");
+        if (originalMethod != CREATE_NEW_ARCHIVE) {
+            try (var zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+                byte[] previous = new byte[1025];
+                Arrays.fill(previous, (byte) 0x5a);
+                ZipEntry entry = new ZipEntry("payload.bin");
+                CRC32 checksum = new CRC32();
+                checksum.update(previous);
+                entry.setMethod(originalMethod);
+                entry.setSize(previous.length);
+                entry.setCrc(checksum.getValue());
+                zip.putNextEntry(entry);
+                zip.write(previous);
+            }
+        }
+        byte[] expected = new byte[256 * 3];
+        for (int i = 0; i < expected.length; i++) expected[i] = (byte) i;
+        try (var fileSystem = originalMethod == CREATE_NEW_ARCHIVE ? ZipArkivoFileSystem.create(archive)
+                : ZipArkivoFileSystem.update(archive);
+             var output = Files.newOutputStream(fileSystem.getPath("/payload.bin"))) {
+            // Negative values and values above 255 must contribute only their low eight bits.
+            for (int i = 0; i < 256; i++) output.write(i % 2 == 0 ? i - 256 : i + 256);
+            output.write(Arrays.copyOfRange(expected, 256, 512));
+            byte[] padded = new byte[270];
+            Arrays.fill(padded, (byte) 0x5a);
+            System.arraycopy(expected, 512, padded, 7, 256);
+            output.write(padded, 7, 256);
+            output.write(new byte[0]);
+            output.write(padded, padded.length, 0);
+            output.flush();
+        }
+        CRC32 checksum = new CRC32();
+        checksum.update(expected);
+        try (var zip = new ZipFile(archive.toFile())) {
+            assertEquals(1, zip.size());
+            @Nullable ZipEntry entry = zip.getEntry("payload.bin");
+            assertNotNull(entry);
+            assertEquals(ZipEntry.DEFLATED, entry.getMethod());
+            assertEquals(expected.length, entry.getSize());
+            assertEquals(checksum.getValue(), entry.getCrc());
+            try (var input = zip.getInputStream(entry)) {
+                assertArrayEquals(expected, input.readAllBytes());
+            }
+        }
+        // ZipInputStream verifies the local record and descriptor CRC, not just the central directory.
+        try (var input = new ZipInputStream(Files.newInputStream(archive))) {
+            @Nullable ZipEntry entry = input.getNextEntry();
+            assertNotNull(entry);
+            assertEquals("payload.bin", entry.getName());
+            assertArrayEquals(expected, input.readAllBytes());
+            assertEquals(checksum.getValue(), entry.getCrc());
+            assertNull(input.getNextEntry());
+        }
+        try (var reference = FileSystems.newFileSystem(archive, Map.of());
+             var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            assertArrayEquals(expected, Files.readAllBytes(reference.getPath("/payload.bin")));
+            assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/payload.bin")));
+        }
+    }
 
     /// Verifies indexed entry streams implement single-byte writes and reads through archive finalization.
     @Test

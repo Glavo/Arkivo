@@ -7,18 +7,28 @@ import org.apache.commons.compress.archivers.cpio.CpioArchiveEntry;
 import org.apache.commons.compress.archivers.cpio.CpioArchiveInputStream;
 import org.apache.commons.compress.archivers.cpio.CpioArchiveOutputStream;
 import org.apache.commons.compress.archivers.cpio.CpioConstants;
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,6 +41,144 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public final class CPIOCommonsCompressInteropTest {
     /// The modification timestamp shared by independently encoded fixtures.
     private static final long MODIFICATION_TIME_SECONDS = 1_700_000_321L;
+
+    /// Selects each dialect, binary byte order, metadata encoding, and short-read size.
+    private static Stream<Arguments> alignmentVariants() {
+        return Stream.of(CPIODialect.values()).flatMap(dialect ->
+                (dialect == CPIODialect.OLD_BINARY ? Stream.of(CPIOBinaryByteOrder.values())
+                        : Stream.of(CPIOBinaryByteOrder.BIG_ENDIAN)).flatMap(order ->
+                        Stream.of("UTF-8", "Shift_JIS").flatMap(charset ->
+                                Stream.of(7, 8192).map(chunk -> Arguments.of(dialect, order, charset, chunk)))));
+    }
+
+    /// Checks byte-based name padding and old-binary size word boundaries against an independent implementation.
+    @ParameterizedTest(name = "{0}, {1}, {2}, chunk={3}")
+    @MethodSource("alignmentVariants")
+    void readsMultibyteNamesAcrossAlignmentBoundaries(
+            CPIODialect dialect, CPIOBinaryByteOrder order, String encoding, int chunk
+    ) throws IOException {
+        Charset charset = Charset.forName(encoding);
+        List<AlignmentEntry> entries = new ArrayList<>();
+        for (int size : new int[]{0, 1, 2, 3, 4, 255, 256, 257, 65535, 65536, 65537}) {
+            for (int suffix = 0; suffix < 4; suffix++) {
+                String name = "\u6587\u66f8/" + size + "-\u65e5\u672c" + "x".repeat(suffix);
+                byte[] content = new byte[size];
+                for (int index = 0; index < size; index++) {
+                    content[index] = (byte) (index * 73 + suffix * 19 + size);
+                }
+                entries.add(new AlignmentEntry(name, content));
+            }
+        }
+
+        var commonsBytes = new ByteArrayOutputStream();
+        var arkivoBytes = new ByteArrayOutputStream();
+        CPIOArchiveOptions.Create options = CPIOArchiveOptions.CREATE_DEFAULTS
+                .withDialect(dialect).withBinaryByteOrder(order).withMetadataCharset(charset);
+        try (var commons = new CpioArchiveOutputStream(commonsBytes, commonsFormat(dialect), 512, encoding);
+             var arkivo = CPIOArkivoStreamingWriter.open(arkivoBytes, options)) {
+            for (AlignmentEntry expected : entries) {
+                var reference = new CpioArchiveEntry(commonsFormat(dialect), expected.name(), expected.content().length);
+                reference.setMode(0100644);
+                reference.setTime(MODIFICATION_TIME_SECONDS);
+                if (dialect == CPIODialect.NEW_ASCII_CRC) {
+                    reference.setChksum(checksum(expected.content()));
+                }
+                commons.putArchiveEntry(reference);
+                commons.write(expected.content());
+                commons.closeArchiveEntry();
+                try (var body = arkivo.beginFile(expected.name()).openOutputStream()) {
+                    body.write(expected.content());
+                }
+            }
+        }
+
+        try (var commons = new CpioArchiveInputStream(
+                new ChunkedInput(arkivoBytes.toByteArray(), chunk), 512, encoding)) {
+            for (AlignmentEntry expected : entries) {
+                var actual = Objects.requireNonNull(commons.getNextEntry());
+                assertEquals(expected.name(), actual.getName());
+                assertEquals(expected.content().length, actual.getSize());
+                assertArrayEquals(expected.content(), commons.readAllBytes());
+            }
+            assertNull(commons.getNextEntry());
+        }
+        byte[] referenceBytes = commonsBytes.toByteArray();
+        if (dialect == CPIODialect.OLD_BINARY && order == CPIOBinaryByteOrder.LITTLE_ENDIAN) {
+            convertBinaryHeadersToLittleEndian(referenceBytes, entries, charset);
+            try (var commons = new CpioArchiveInputStream(new ByteArrayInputStream(referenceBytes), 512, encoding)) {
+                for (AlignmentEntry expected : entries) {
+                    assertEquals(expected.name(), Objects.requireNonNull(commons.getNextEntry()).getName());
+                    assertArrayEquals(expected.content(), commons.readAllBytes());
+                }
+                assertNull(commons.getNextEntry());
+            }
+        }
+        try (var arkivo = CPIOArkivoStreamingReader.open(
+                new ChunkedInput(referenceBytes, chunk),
+                CPIOArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(
+                        ArchiveMetadataCharsetDetector.fixed(charset)))) {
+            for (AlignmentEntry expected : entries) {
+                assertTrue(arkivo.next());
+                var actual = arkivo.readAttributes(CPIOArkivoEntryAttributes.class);
+                assertEquals(expected.name(), actual.path());
+                assertEquals(dialect, actual.dialect());
+                assertEquals(dialect == CPIODialect.OLD_BINARY ? order : null, actual.binaryByteOrder());
+                assertEquals(expected.content().length, actual.size());
+                if (dialect == CPIODialect.NEW_ASCII_CRC) {
+                    assertEquals(checksum(expected.content()), actual.checksum());
+                }
+                try (var body = arkivo.openInputStream()) {
+                    assertArrayEquals(expected.content(), body.readAllBytes());
+                }
+            }
+            assertFalse(arkivo.next());
+        }
+    }
+
+    /// Changes only the byte order within each 16-bit old-binary header word, including the trailer.
+    private static void convertBinaryHeadersToLittleEndian(
+            byte[] archive, List<AlignmentEntry> entries, Charset charset
+    ) {
+        int offset = 0;
+        for (int index = 0; index <= entries.size(); index++) {
+            assertEquals(070707, Short.toUnsignedInt(ByteArrayAccess.readShortBigEndian(archive, offset)));
+            for (int word = 0; word < 26; word += 2) {
+                short value = ByteArrayAccess.readShortBigEndian(archive, offset + word);
+                ByteArrayAccess.writeShortLittleEndian(archive, offset + word, value);
+            }
+            String name = index == entries.size() ? "TRAILER!!!" : entries.get(index).name();
+            int size = index == entries.size() ? 0 : entries.get(index).content().length;
+            int nameEnd = offset + 26 + name.getBytes(charset).length + 1;
+            offset = ((nameEnd + 1) & ~1) + ((size + 1) & ~1);
+        }
+    }
+
+    /// Stores an independently generated name and body used by both archive producers.
+    ///
+    /// @param name the path containing multibyte characters
+    /// @param content the immutable expected body
+    @NotNullByDefault
+    private record AlignmentEntry(String name, byte @Unmodifiable [] content) {
+    }
+
+    /// Limits bulk reads so that names and numeric fields can straddle source reads.
+    @NotNullByDefault
+    private static final class ChunkedInput extends ByteArrayInputStream {
+        /// Maximum bytes returned by a bulk read.
+        private final int chunk;
+
+        /// Creates a short-read source over a completed archive.
+        private ChunkedInput(byte[] content, int chunk) {
+            super(content);
+            this.chunk = chunk;
+        }
+
+        /// Reads at most the configured number of bytes.
+        @Override
+        public synchronized int read(byte[] destination, int offset, int length) {
+            return super.read(destination, offset, Math.min(length, chunk));
+        }
+    }
 
     /// Verifies Commons Compress reads Arkivo output for every dialect and both old-binary byte orders.
     @Test

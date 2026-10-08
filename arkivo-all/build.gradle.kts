@@ -53,7 +53,9 @@ dependencies {
     testFixturesCompileOnly("org.jetbrains:annotations:26.1.0")
     testImplementation("org.tukaani:xz:1.12")
     testImplementation("org.apache.commons:commons-compress:1.28.0")
+    add("tier2TestImplementation", project(":arkivo-base"))
     add("tier2TestImplementation", "com.github.luben:zstd-jni:1.5.7-9")
+    add("tier2TestImplementation", "net.lingala.zip4j:zip4j:2.11.5")
     add("tier3TestImplementation", testFixtures(project()))
     add(benchmarkSourceSet.compileOnlyConfigurationName, "org.jetbrains:annotations:26.1.0")
     add(benchmarkSourceSet.implementationConfigurationName, "org.openjdk.jmh:jmh-core:1.37")
@@ -204,6 +206,57 @@ tasks.named<Test>("tier2Test") {
     dependsOn(prepareSharpCompressTestCorpus)
     inputs.dir(sharpCompressTestDataDirectory)
     systemProperty("arkivo.sharpcompress.testDataDirectory", sharpCompressTestDataDirectory.get().asFile.absolutePath)
+}
+
+val py7zrManifestFile = rootProject.file("gradle/test-data/py7zr.properties")
+val py7zrManifest = Properties().apply {
+    py7zrManifestFile.inputStream().use(::load)
+}
+val py7zrVersion = py7zrManifest.getProperty("version")
+val py7zrRoot = py7zrManifest.getProperty("archiveRoot")
+val py7zrSha256 = py7zrManifest.getProperty("archiveSha256")
+val py7zrArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$py7zrSha256/${py7zrManifest.getProperty("archiveName")}").asFile
+})
+val py7zrTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/py7zr/$py7zrVersion")
+
+val downloadPy7zrTestSources = tasks.register<DownloadVerifiedFile>("downloadPy7zrTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned py7zr source and archive fixtures."
+    sourceUrl.set(py7zrManifest.getProperty("archiveUrl"))
+    expectedSha256.set(py7zrSha256)
+    expectedSize.set(py7zrManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(py7zrArchive)
+}
+
+val preparePy7zrTestCorpus = tasks.register<Sync>("preparePy7zrTestCorpus") {
+    group = "verification"
+    description = "Extracts py7zr fixtures, reference tests, and their upstream license."
+    dependsOn(downloadPy7zrTestSources)
+    from(downloadPy7zrTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$py7zrRoot/LICENSE", "$py7zrRoot/tests/**")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == py7zrRoot) {
+                "Unexpected py7zr source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(py7zrManifestFile) { rename { "UPSTREAM.properties" } }
+    into(py7zrTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(preparePy7zrTestCorpus)
+    inputs.dir(py7zrTestDataDirectory)
+    systemProperty("arkivo.py7zr.testDataDirectory", py7zrTestDataDirectory.get().asFile.absolutePath)
 }
 
 val libzipManifestFile = rootProject.file("gradle/test-data/libzip.properties")
@@ -361,6 +414,534 @@ tasks.named<Test>("tier2Test") {
     dependsOn(prepareGoTestCorpus)
     inputs.dir(goTestDataDirectory)
     systemProperty("arkivo.go.testDataDirectory", goTestDataDirectory.get().asFile.absolutePath)
+}
+
+val cpythonManifestFile = rootProject.file("gradle/test-data/cpython.properties")
+val cpythonManifest = Properties().apply {
+    cpythonManifestFile.inputStream().use(::load)
+}
+val cpythonVersion = cpythonManifest.getProperty("version")
+val cpythonRoot = cpythonManifest.getProperty("archiveRoot")
+val cpythonSha256 = cpythonManifest.getProperty("archiveSha256")
+val cpythonArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$cpythonSha256/${cpythonManifest.getProperty("archiveName")}").asFile
+})
+val cpythonTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/cpython/$cpythonVersion")
+
+val downloadCPythonTestSources = tasks.register<DownloadVerifiedFile>("downloadCPythonTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned CPython source release."
+    sourceUrl.set(cpythonManifest.getProperty("archiveUrl"))
+    expectedSha256.set(cpythonSha256)
+    expectedSize.set(cpythonManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(cpythonArchive)
+}
+
+val prepareCPythonTestCorpus = tasks.register<Sync>("prepareCPythonTestCorpus") {
+    group = "verification"
+    description = "Extracts CPython TAR fixtures with their reference tests and license."
+    dependsOn(downloadCPythonTestSources)
+    from(downloadCPythonTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$cpythonRoot/LICENSE")
+        include("$cpythonRoot/Lib/test/archivetestdata/**", "$cpythonRoot/Lib/test/test_tarfile.py")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == cpythonRoot) {
+                "Unexpected CPython source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(cpythonManifestFile) { rename { "UPSTREAM.properties" } }
+    into(cpythonTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareCPythonTestCorpus)
+    inputs.dir(cpythonTestDataDirectory)
+    systemProperty("arkivo.cpython.testDataDirectory", cpythonTestDataDirectory.get().asFile.absolutePath)
+}
+
+val zip4jManifestFile = rootProject.file("gradle/test-data/zip4j.properties")
+val zip4jManifest = Properties().apply {
+    zip4jManifestFile.inputStream().use(::load)
+}
+val zip4jVersion = zip4jManifest.getProperty("version")
+val zip4jRoot = zip4jManifest.getProperty("archiveRoot")
+val zip4jSha256 = zip4jManifest.getProperty("archiveSha256")
+val zip4jArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$zip4jSha256/${zip4jManifest.getProperty("archiveName")}").asFile
+})
+val zip4jTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/zip4j/$zip4jVersion")
+
+val downloadZip4jTestSources = tasks.register<DownloadVerifiedFile>("downloadZip4jTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned Zip4j source release."
+    sourceUrl.set(zip4jManifest.getProperty("archiveUrl"))
+    expectedSha256.set(zip4jSha256)
+    expectedSize.set(zip4jManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(zip4jArchive)
+}
+
+val prepareZip4jTestCorpus = tasks.register<Sync>("prepareZip4jTestCorpus") {
+    group = "verification"
+    description = "Extracts Zip4j regression archives, original contents, reference tests, and license."
+    dependsOn(downloadZip4jTestSources)
+    from(downloadZip4jTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$zip4jRoot/LICENSE", "$zip4jRoot/src/test/**")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == zip4jRoot) {
+                "Unexpected Zip4j source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(zip4jManifestFile) { rename { "UPSTREAM.properties" } }
+    into(zip4jTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareZip4jTestCorpus)
+    inputs.dir(zip4jTestDataDirectory)
+    systemProperty("arkivo.zip4j.testDataDirectory", zip4jTestDataDirectory.get().asFile.absolutePath)
+}
+
+val minizipManifestFile = rootProject.file("gradle/test-data/minizip-ng.properties")
+val minizipManifest = Properties().apply {
+    minizipManifestFile.inputStream().use(::load)
+}
+val minizipVersion = minizipManifest.getProperty("version")
+val minizipRoot = minizipManifest.getProperty("archiveRoot")
+val minizipSha256 = minizipManifest.getProperty("archiveSha256")
+val minizipArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$minizipSha256/${minizipManifest.getProperty("archiveName")}").asFile
+})
+val minizipTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/minizip-ng/$minizipVersion")
+
+val downloadMinizipTestSources = tasks.register<DownloadVerifiedFile>("downloadMinizipTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned minizip-ng source release."
+    sourceUrl.set(minizipManifest.getProperty("archiveUrl"))
+    expectedSha256.set(minizipSha256)
+    expectedSize.set(minizipManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(minizipArchive)
+}
+
+val prepareMinizipTestCorpus = tasks.register<Sync>("prepareMinizipTestCorpus") {
+    group = "verification"
+    description = "Extracts minizip-ng ZIP seeds, reference tests, and license."
+    dependsOn(downloadMinizipTestSources)
+    from(downloadMinizipTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$minizipRoot/LICENSE", "$minizipRoot/test/**")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == minizipRoot) {
+                "Unexpected minizip-ng source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(minizipManifestFile) { rename { "UPSTREAM.properties" } }
+    into(minizipTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareMinizipTestCorpus)
+    inputs.dir(minizipTestDataDirectory)
+    systemProperty("arkivo.minizip.testDataDirectory", minizipTestDataDirectory.get().asFile.absolutePath)
+}
+
+val sharpZipLibManifestFile = rootProject.file("gradle/test-data/sharpziplib.properties")
+val sharpZipLibManifest = Properties().apply {
+    sharpZipLibManifestFile.inputStream().use(::load)
+}
+val sharpZipLibVersion = sharpZipLibManifest.getProperty("version")
+val sharpZipLibRoot = sharpZipLibManifest.getProperty("archiveRoot")
+val sharpZipLibSha256 = sharpZipLibManifest.getProperty("archiveSha256")
+val sharpZipLibArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$sharpZipLibSha256/${sharpZipLibManifest.getProperty("archiveName")}").asFile
+})
+val sharpZipLibTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/sharpziplib/$sharpZipLibVersion")
+
+val downloadSharpZipLibTestSources = tasks.register<DownloadVerifiedFile>("downloadSharpZipLibTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned SharpZipLib source release."
+    sourceUrl.set(sharpZipLibManifest.getProperty("archiveUrl"))
+    expectedSha256.set(sharpZipLibSha256)
+    expectedSize.set(sharpZipLibManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(sharpZipLibArchive)
+}
+
+val prepareSharpZipLibTestCorpus = tasks.register<Sync>("prepareSharpZipLibTestCorpus") {
+    group = "verification"
+    description = "Extracts SharpZipLib reference tests with embedded regression archives and their license."
+    dependsOn(downloadSharpZipLibTestSources)
+    from(downloadSharpZipLibTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$sharpZipLibRoot/LICENSE.txt", "$sharpZipLibRoot/test/**")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == sharpZipLibRoot) {
+                "Unexpected SharpZipLib source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(sharpZipLibManifestFile) { rename { "UPSTREAM.properties" } }
+    into(sharpZipLibTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareSharpZipLibTestCorpus)
+    inputs.dir(sharpZipLibTestDataDirectory)
+    systemProperty("arkivo.sharpziplib.testDataDirectory", sharpZipLibTestDataDirectory.get().asFile.absolutePath)
+}
+
+val jsZipManifestFile = rootProject.file("gradle/test-data/jszip.properties")
+val jsZipManifest = Properties().apply {
+    jsZipManifestFile.inputStream().use(::load)
+}
+val jsZipVersion = jsZipManifest.getProperty("version")
+val jsZipRoot = jsZipManifest.getProperty("archiveRoot")
+val jsZipSha256 = jsZipManifest.getProperty("archiveSha256")
+val jsZipArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$jsZipSha256/${jsZipManifest.getProperty("archiveName")}").asFile
+})
+val jsZipTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/jszip/$jsZipVersion")
+
+val downloadJSZipTestSources = tasks.register<DownloadVerifiedFile>("downloadJSZipTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned JSZip source release."
+    sourceUrl.set(jsZipManifest.getProperty("archiveUrl"))
+    expectedSha256.set(jsZipSha256)
+    expectedSize.set(jsZipManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(jsZipArchive)
+}
+
+val prepareJSZipTestCorpus = tasks.register<Sync>("prepareJSZipTestCorpus") {
+    group = "verification"
+    description = "Extracts the JSZip interoperability corpus, reference assertions, and its license."
+    dependsOn(downloadJSZipTestSources)
+    val corpusPatterns = listOf("LICENSE.markdown", "test/asserts/**", "test/ref/**")
+    inputs.property("corpusPatterns", corpusPatterns)
+    from(downloadJSZipTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include(*corpusPatterns.map { "$jsZipRoot/$it" }.toTypedArray())
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == jsZipRoot) {
+                "Unexpected JSZip source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(jsZipManifestFile) { rename { "UPSTREAM.properties" } }
+    into(jsZipTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareJSZipTestCorpus)
+    inputs.dir(jsZipTestDataDirectory)
+    systemProperty("arkivo.jszip.testDataDirectory", jsZipTestDataDirectory.get().asFile.absolutePath)
+}
+
+val zipJsManifestFile = rootProject.file("gradle/test-data/zipjs.properties")
+val zipJsManifest = Properties().apply {
+    zipJsManifestFile.inputStream().use(::load)
+}
+val zipJsVersion = zipJsManifest.getProperty("version")
+val zipJsRoot = zipJsManifest.getProperty("archiveRoot")
+val zipJsSha256 = zipJsManifest.getProperty("archiveSha256")
+val zipJsArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$zipJsSha256/${zipJsManifest.getProperty("archiveName")}").asFile
+})
+val zipJsTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/zipjs/$zipJsVersion")
+
+val downloadZipJsTestSources = tasks.register<DownloadVerifiedFile>("downloadZipJsTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned zip.js source release."
+    sourceUrl.set(zipJsManifest.getProperty("archiveUrl"))
+    expectedSha256.set(zipJsSha256)
+    expectedSize.set(zipJsManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(zipJsArchive)
+}
+
+val prepareZipJsTestCorpus = tasks.register<Sync>("prepareZipJsTestCorpus") {
+    group = "verification"
+    description = "Extracts selected zip.js regression archives, reference tests, and their license."
+    dependsOn(downloadZipJsTestSources)
+    val corpusPatterns = listOf("LICENSE", "tests/all/**") +
+        zipJsManifest.getProperty("fixtures").split(',').map { "tests/data/$it" }
+    inputs.property("corpusPatterns", corpusPatterns)
+    from(downloadZipJsTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include(*corpusPatterns.map { "$zipJsRoot/$it" }.toTypedArray())
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == zipJsRoot) {
+                "Unexpected zip.js source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(zipJsManifestFile) { rename { "UPSTREAM.properties" } }
+    into(zipJsTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareZipJsTestCorpus)
+    inputs.dir(zipJsTestDataDirectory)
+    systemProperty("arkivo.zipjs.testDataDirectory", zipJsTestDataDirectory.get().asFile.absolutePath)
+}
+
+val zipRsManifestFile = rootProject.file("gradle/test-data/ziprs.properties")
+val zipRsManifest = Properties().apply {
+    zipRsManifestFile.inputStream().use(::load)
+}
+val zipRsVersion = zipRsManifest.getProperty("version")
+val zipRsRoot = zipRsManifest.getProperty("archiveRoot")
+val zipRsSha256 = zipRsManifest.getProperty("archiveSha256")
+val zipRsArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$zipRsSha256/${zipRsManifest.getProperty("archiveName")}").asFile
+})
+val zipRsTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/ziprs/$zipRsVersion")
+
+val downloadZipRsTestSources = tasks.register<DownloadVerifiedFile>("downloadZipRsTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned zip-rs source release."
+    sourceUrl.set(zipRsManifest.getProperty("archiveUrl"))
+    expectedSha256.set(zipRsSha256)
+    expectedSize.set(zipRsManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(zipRsArchive)
+}
+
+val prepareZipRsTestCorpus = tasks.register<Sync>("prepareZipRsTestCorpus") {
+    group = "verification"
+    description = "Extracts zip-rs ZIP regressions, finite fuzz seeds, reference assertions, and licenses."
+    dependsOn(downloadZipRsTestSources)
+    val corpusPatterns = listOf("LICENSE", "tests/*.rs", "src/read*.rs", "src/read/*.rs",
+        "src/extra_fields/extended_timestamp.rs", "tests/data/*.zip", "tests/data/LICENSE.deflate64.zip.txt",
+        "tests/data/folder/**", "tests/data/legacy/*.zip", "fuzz/read/in/*")
+    val excludedPatterns = listOf("tests/data/lin-ub_iwd-v11.zip", "tests/data/pandoc_soft_links.zip")
+    inputs.property("corpusPatterns", corpusPatterns)
+    inputs.property("excludedPatterns", excludedPatterns)
+    from(downloadZipRsTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include(*corpusPatterns.map { "$zipRsRoot/$it" }.toTypedArray())
+        exclude(*excludedPatterns.map { "$zipRsRoot/$it" }.toTypedArray())
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == zipRsRoot) {
+                "Unexpected zip-rs source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(zipRsManifestFile) { rename { "UPSTREAM.properties" } }
+    into(zipRsTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareZipRsTestCorpus)
+    inputs.dir(zipRsTestDataDirectory)
+    systemProperty("arkivo.ziprs.testDataDirectory", zipRsTestDataDirectory.get().asFile.absolutePath)
+}
+
+val gnuGzipManifestFile = rootProject.file("gradle/test-data/gnu-gzip.properties")
+val gnuGzipManifest = Properties().apply { gnuGzipManifestFile.inputStream().use(::load) }
+val gnuGzipVersion = gnuGzipManifest.getProperty("version")
+val gnuGzipRoot = gnuGzipManifest.getProperty("archiveRoot")
+val gnuGzipSha256 = gnuGzipManifest.getProperty("archiveSha256")
+val gnuGzipTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/gnu-gzip/$gnuGzipVersion")
+
+val downloadGnuGzipTestSources = tasks.register<DownloadVerifiedFile>("downloadGnuGzipTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned GNU gzip regression resources."
+    sourceUrl.set(gnuGzipManifest.getProperty("archiveUrl"))
+    expectedSha256.set(gnuGzipSha256)
+    expectedSize.set(gnuGzipManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(testDataCacheDirectory.map {
+        it.file("downloads/sha256/$gnuGzipSha256/${gnuGzipManifest.getProperty("archiveName")}")
+    })
+}
+
+val prepareGnuGzipTestCorpus = tasks.register<Sync>("prepareGnuGzipTestCorpus") {
+    group = "verification"
+    description = "Extracts GNU gzip reference bytes, crash reproducers, and their original license."
+    dependsOn(downloadGnuGzipTestSources)
+    val corpusFiles = listOf("COPYING", "tests/reference", "tests/helin-segv", "tests/hufts",
+        "tests/hufts-segv.gz", "tests/unpack-invalid", "tests/memcpy-abuse", "tests/trailing-nul")
+    inputs.property("corpusFiles", corpusFiles)
+    from(downloadGnuGzipTestSources.flatMap { it.destination }.map { tarTree(resources.gzip(it.asFile)) }) {
+        include(*corpusFiles.map { "$gnuGzipRoot/$it" }.toTypedArray())
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == gnuGzipRoot) { "Unexpected GNU gzip archive path: $relativePath" }
+            relativePath = RelativePath(relativePath.isFile, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(gnuGzipManifestFile) { rename { "UPSTREAM.properties" } }
+    into(gnuGzipTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareGnuGzipTestCorpus)
+    inputs.dir(gnuGzipTestDataDirectory)
+    systemProperty("arkivo.gnu-gzip.testDataDirectory", gnuGzipTestDataDirectory.get().asFile.absolutePath)
+}
+
+val dotNetAssetsManifestFile = rootProject.file("gradle/test-data/dotnet-assets.properties")
+val dotNetAssetsManifest = Properties().apply {
+    dotNetAssetsManifestFile.inputStream().use(::load)
+}
+val dotNetAssetsVersion = dotNetAssetsManifest.getProperty("version")
+val dotNetAssetsRoot = dotNetAssetsManifest.getProperty("archiveRoot")
+val dotNetAssetsSha256 = dotNetAssetsManifest.getProperty("archiveSha256")
+val dotNetAssetsArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$dotNetAssetsSha256/${dotNetAssetsManifest.getProperty("archiveName")}").asFile
+})
+val dotNetAssetsTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/dotnet-assets/$dotNetAssetsVersion")
+
+val downloadDotNetAssetsTestSources = tasks.register<DownloadVerifiedFile>("downloadDotNetAssetsTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned dotnet-assets source archive."
+    sourceUrl.set(dotNetAssetsManifest.getProperty("archiveUrl"))
+    expectedSha256.set(dotNetAssetsSha256)
+    expectedSize.set(dotNetAssetsManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(dotNetAssetsArchive)
+}
+
+val prepareDotNetAssetsTestCorpus = tasks.register<Sync>("prepareDotNetAssetsTestCorpus") {
+    group = "verification"
+    description = "Extracts selected dotnet-assets compression test resources and notices."
+    dependsOn(downloadDotNetAssetsTestSources)
+    val corpusPatterns = listOf("LICENSE.TXT", "THIRD-PARTY-NOTICES.TXT",
+        "src/System.IO.Compression.TestData/ZipTestData/**") +
+        listOf("UncompressedTestFiles", "DeflateTestData", "GZipTestData", "ZLibTestData", "ZstandardTestData")
+            .map { "src/System.IO.Compression.TestData/$it/TestDocument.*" }
+    inputs.property("corpusPatterns", corpusPatterns)
+    from(downloadDotNetAssetsTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include(*corpusPatterns.map { "$dotNetAssetsRoot/$it" }.toTypedArray())
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == dotNetAssetsRoot) {
+                "Unexpected dotnet-assets source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(dotNetAssetsManifestFile) { rename { "UPSTREAM.properties" } }
+    into(dotNetAssetsTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareDotNetAssetsTestCorpus)
+    inputs.dir(dotNetAssetsTestDataDirectory)
+    systemProperty("arkivo.dotnet-assets.testDataDirectory", dotNetAssetsTestDataDirectory.get().asFile.absolutePath)
+}
+
+val dotNetRuntimeManifestFile = rootProject.file("gradle/test-data/dotnet-runtime.properties")
+val dotNetRuntimeManifest = Properties().apply {
+    dotNetRuntimeManifestFile.inputStream().use(::load)
+}
+val dotNetRuntimeVersion = dotNetRuntimeManifest.getProperty("version")
+val dotNetRuntimeRoot = dotNetRuntimeManifest.getProperty("archiveRoot")
+val dotNetRuntimeSha256 = dotNetRuntimeManifest.getProperty("archiveSha256")
+val dotNetRuntimeArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$dotNetRuntimeSha256/${dotNetRuntimeManifest.getProperty("archiveName")}").asFile
+})
+val dotNetRuntimeTestDataDirectory = rootProject.layout.buildDirectory.dir("test-data/dotnet-runtime/$dotNetRuntimeVersion")
+
+val downloadDotNetRuntimeTestSources = tasks.register<DownloadVerifiedFile>("downloadDotNetRuntimeTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned dotnet-runtime source archive."
+    sourceUrl.set(dotNetRuntimeManifest.getProperty("archiveUrl"))
+    expectedSha256.set(dotNetRuntimeSha256)
+    expectedSize.set(dotNetRuntimeManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(dotNetRuntimeArchive)
+}
+
+val prepareDotNetRuntimeTestCorpus = tasks.register<Sync>("prepareDotNetRuntimeTestCorpus") {
+    group = "verification"
+    description = "Extracts selected dotnet-runtime compression test resources and notices."
+    dependsOn(downloadDotNetRuntimeTestSources)
+    val corpusPatterns = listOf("LICENSE.TXT",
+        "src/libraries/System.IO.Compression/tests/**",
+        "src/libraries/System.IO.Compression.ZipFile/tests/**")
+    inputs.property("corpusPatterns", corpusPatterns)
+    from(downloadDotNetRuntimeTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include(*corpusPatterns.map { "$dotNetRuntimeRoot/$it" }.toTypedArray())
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == dotNetRuntimeRoot) {
+                "Unexpected dotnet-runtime source archive path: $relativePath"
+            }
+            relativePath = RelativePath(true, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(dotNetRuntimeManifestFile) { rename { "UPSTREAM.properties" } }
+    into(dotNetRuntimeTestDataDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareDotNetRuntimeTestCorpus)
+    inputs.dir(dotNetRuntimeTestDataDirectory)
+    systemProperty("arkivo.dotnet-runtime.testDataDirectory", dotNetRuntimeTestDataDirectory.get().asFile.absolutePath)
 }
 
 val benchmarkArguments = providers.gradleProperty("benchmarkArgs")

@@ -26,6 +26,9 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     /// The TAR type flag for regular files in older archives.
     static final byte OLD_REGULAR_TYPE = 0;
 
+    /// The POSIX TAR type flag for contiguous files, read as ordinary file data.
+    static final byte CONTIGUOUS_TYPE = '7';
+
     /// The TAR type flag for hard links.
     static final byte HARD_LINK_TYPE = TarArkivoEntryAttributes.HARD_LINK_TYPE;
 
@@ -34,6 +37,9 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
 
     /// The TAR type flag for directories.
     static final byte DIRECTORY_TYPE = '5';
+
+    /// The Solaris TAR type flag for a local POSIX extended header.
+    static final byte SOLARIS_EXTENDED_HEADER_TYPE = 'X';
 
     /// The GNU TAR type flag for a long path metadata entry.
     static final byte GNU_LONG_PATH_TYPE = 'L';
@@ -55,6 +61,9 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
 
     /// The raw type flag.
     private final byte typeFlag;
+
+    /// The directory classification, retained when a V7 path loses its trailing slash during indexing.
+    private final boolean directory;
 
     /// The POSIX mode bits.
     private final int mode;
@@ -93,6 +102,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     TarEntryAttributes(
             String path,
             byte typeFlag,
+            boolean directory,
             int mode,
             long userId,
             long groupId,
@@ -110,6 +120,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
         }
         this.path = Objects.requireNonNull(path, "path");
         this.typeFlag = typeFlag;
+        this.directory = directory;
         this.mode = mode;
         this.userId = userId;
         this.groupId = groupId;
@@ -222,7 +233,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     /// Returns whether this entry is a directory.
     @Override
     public boolean isDirectory() {
-        return typeFlag == DIRECTORY_TYPE;
+        return directory;
     }
 
     /// Returns whether this entry is a symbolic link.
@@ -267,15 +278,16 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
         return PosixModes.permissions(mode);
     }
 
-    /// Returns the raw TAR body size.
+    /// Returns the stored body size, ignoring the unused size field of directory records.
     long bodySize() {
-        return size;
+        return isDirectory() ? 0L : size;
     }
 
     /// Returns whether this entry stores file data in its own TAR body.
     boolean hasDataBody() {
-        return typeFlag == REGULAR_TYPE
+        return !isDirectory() && (typeFlag == REGULAR_TYPE
                 || typeFlag == OLD_REGULAR_TYPE
-                || typeFlag == OLD_GNU_SPARSE_TYPE;
+                || typeFlag == CONTIGUOUS_TYPE
+                || typeFlag == OLD_GNU_SPARSE_TYPE);
     }
 }

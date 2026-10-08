@@ -851,7 +851,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     ///
     /// @param path the entry to open in this file system
     /// @param options the read, creation, truncation, append, and write options for the requested access mode
-    /// @param attributes initial attributes for a newly created entry; only supported creation attributes are accepted
+    /// @param attributes initial `posix:permissions` and `basic:lastModifiedTime` attributes for a newly created entry
     /// @return a channel owned by the caller and tracked by the file system until the channel is closed
     /// @throws IOException if the entry cannot be found, created, decoded, staged, or opened
     /// @throws UnsupportedOperationException if an option, attribute, or access combination is unsupported
@@ -984,7 +984,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// completed archive remains deferred until file-system close.
     ///
     /// @param directory the archive path of the directory to create
-    /// @param attributes initial attributes for the directory; currently POSIX permissions are supported
+    /// @param attributes initial `posix:permissions` and `basic:lastModifiedTime` attributes for the directory
     /// @throws IOException if the entry already exists, its parent is not a directory, or it cannot be staged or encoded
     /// @throws UnsupportedOperationException if the file system is read-only or an initial attribute is unsupported
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
@@ -1025,7 +1025,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     ///
     /// @param link the archive path of the symbolic-link entry to create
     /// @param target the target text to store in the new entry
-    /// @param attributes initial attributes for the link itself; currently POSIX permissions are supported
+    /// @param attributes initial `posix:permissions` and `basic:lastModifiedTime` attributes for the link itself
     /// @throws IOException if the entry already exists, its parent is not a directory, or link data cannot be staged or
     ///                     encoded
     /// @throws UnsupportedOperationException if the file system is read-only or an initial attribute is unsupported
@@ -2186,7 +2186,23 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             boolean symbolicLink,
             FileAttribute<?>... attributes
     ) {
-        @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        Objects.requireNonNull(attributes, "attributes");
+        @Nullable Set<PosixFilePermission> permissions = null;
+        @Nullable FileTime lastModifiedTime = null;
+        for (FileAttribute<?> attribute : attributes) {
+            Objects.requireNonNull(attribute, "attribute");
+            String name = attribute.name();
+            if ("posix:permissions".equals(name)) {
+                permissions = posixPermissions(attribute);
+            } else if ("basic:lastModifiedTime".equals(name)) {
+                if (!(attribute.value() instanceof FileTime time)) {
+                    throw new IllegalArgumentException("basic:lastModifiedTime must be a FileTime");
+                }
+                lastModifiedTime = time;
+            } else {
+                throw new UnsupportedOperationException("Unsupported 7z entry initial file attribute: " + name);
+            }
+        }
         int windowsAttributes;
         if (permissions == null) {
             windowsAttributes = symbolicLink
@@ -2199,23 +2215,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         } else {
             windowsAttributes = SevenZipPosixSupport.regularFileWindowsAttributes(permissions);
         }
-        return SevenZipEntryWriteMetadata.withWindowsAttributes(windowsAttributes);
-    }
-
-    /// Returns POSIX permissions stored by supported initial file attributes.
-    private static @Nullable Set<PosixFilePermission> initialPosixPermissions(FileAttribute<?>... attributes) {
-        Objects.requireNonNull(attributes, "attributes");
-        @Nullable Set<PosixFilePermission> permissions = null;
-        for (FileAttribute<?> attribute : attributes) {
-            Objects.requireNonNull(attribute, "attribute");
-            String name = attribute.name();
-            if ("posix:permissions".equals(name)) {
-                permissions = posixPermissions(attribute);
-            } else {
-                throw new UnsupportedOperationException("Unsupported 7z entry initial file attribute: " + name);
-            }
-        }
-        return permissions;
+        return new SevenZipEntryWriteMetadata(lastModifiedTime, null, null, windowsAttributes, null, false, null);
     }
 
     /// Returns POSIX permissions stored by a file attribute.

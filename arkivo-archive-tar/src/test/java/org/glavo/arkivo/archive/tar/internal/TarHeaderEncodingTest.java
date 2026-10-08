@@ -89,7 +89,7 @@ final class TarHeaderEncodingTest {
         ByteArrayOutputStream target = new ByteArrayOutputStream();
         long size = field == 3 ? 1L << 33 : 1L;
         TarEntryAttributes attributes = new TarEntryAttributes(
-                "p".repeat(101), TarEntryAttributes.REGULAR_TYPE, field == 0 ? Integer.MAX_VALUE : 0644,
+                "p".repeat(101), TarEntryAttributes.REGULAR_TYPE, false, field == 0 ? Integer.MAX_VALUE : 0644,
                 field == 1 ? -1L : 0L, field == 2 ? -1L : 0L, null, null, null, size,
                 FileTime.fromMillis(1234L), null, null, null);
         ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{7});

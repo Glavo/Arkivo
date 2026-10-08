@@ -101,13 +101,13 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
     /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.
     @Override
     public long compressedSize() {
-        return directory ? UNKNOWN_SIZE : compressedSize;
+        return compressedSize;
     }
 
     /// Returns the CRC-32 value stored in the ZIP metadata, or `UNKNOWN_CRC32` when it is not known.
     @Override
     public long crc32() {
-        return directory ? UNKNOWN_CRC32 : crc32;
+        return crc32;
     }
 
     /// Returns the general purpose bit flags stored for the ZIP entry.

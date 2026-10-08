@@ -354,7 +354,9 @@ public final class ZstdDecoder
             case 2 -> decoder.decodeCompressed(compressed);
             default -> throw new AssertionError(blockType);
         };
-        if (decoded.length > ZstdBlockDecoder.MAX_BLOCK_SIZE) {
+        // Compressed size alone cannot establish the regenerated block's window-size bound.
+        if (decoded.length > Math.min(ZstdBlockDecoder.MAX_BLOCK_SIZE,
+                Objects.requireNonNull(frameInfo).windowSize())) {
             throw new IOException("Decoded Zstandard block exceeds the frame block-size limit");
         }
         @Nullable ChecksumAccumulator.Width64 selectedChecksum = checksum;

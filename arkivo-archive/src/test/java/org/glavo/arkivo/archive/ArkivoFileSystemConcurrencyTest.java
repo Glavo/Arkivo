@@ -413,8 +413,8 @@ public final class ArkivoFileSystemConcurrencyTest {
             Iterator<Path> iterator = directory.iterator();
             assertTrue(iterator.hasNext());
             assertEquals(first, iterator.next());
-            iterator.remove();
-            assertEquals(List.of(second), directoryDelegate.entries());
+            assertThrows(UnsupportedOperationException.class, iterator::remove);
+            assertEquals(List.of(first, second), directoryDelegate.entries());
             assertEquals(second, iterator.next());
             assertFalse(iterator.hasNext());
             directory.close();

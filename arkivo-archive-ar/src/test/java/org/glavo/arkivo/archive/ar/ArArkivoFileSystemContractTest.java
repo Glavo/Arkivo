@@ -723,7 +723,7 @@ final class ArArkivoFileSystemContractTest {
         }
     }
 
-    /// Verifies indexed directory streams apply filters eagerly and reject contradictory logical member paths.
+    /// Verifies indexed directory streams report filter failures during traversal and reject conflicting member paths.
     @Test
     void enforcesDirectoryAndDuplicateMemberContracts() throws IOException {
         Path archive = createArchive();
@@ -733,13 +733,13 @@ final class ArArkivoFileSystemContractTest {
                 assertFalse(stream.iterator().hasNext());
             }
 
-            DirectoryIteratorException exception = assertThrows(
-                    DirectoryIteratorException.class,
-                    () -> Files.newDirectoryStream(directory, path -> {
-                        throw new IOException("filter failed");
-                    })
-            );
-            assertEquals("filter failed", exception.getCause().getMessage());
+            try (var failing = Files.newDirectoryStream(directory, path -> {
+                throw new IOException("filter failed");
+            })) {
+                DirectoryIteratorException exception = assertThrows(
+                        DirectoryIteratorException.class, failing.iterator()::hasNext);
+                assertEquals("filter failed", exception.getCause().getMessage());
+            }
             assertThrows(
                     FileSystemException.class,
                     () -> Files.newDirectoryStream(fileSystem.getPath("/dir/value.txt"))

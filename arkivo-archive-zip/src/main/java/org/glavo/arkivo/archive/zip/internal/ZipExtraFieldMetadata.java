@@ -38,6 +38,69 @@ final class ZipExtraFieldMetadata {
     private ZipExtraFieldMetadata() {
     }
 
+    /// Replaces modification times in existing timestamp records without changing their layout or other metadata.
+    ///
+    /// Subsecond precision follows each record's representation. No timestamp record is added. An unrepresentable
+    /// time or malformed record is rejected before returning; the input array is never modified.
+    static byte[] withLastModifiedTime(byte[] extraData, FileTime time) throws IOException {
+        byte[] result = extraData.clone();
+        Instant instant = time.toInstant();
+        for (int offset = 0; offset < result.length;) {
+            @Nullable ZipExtraFields.Field field = ZipExtraFields.readForReading(result, offset);
+            if (field == null) {
+                break;
+            }
+            int start = field.dataOffset();
+            int size = field.dataSize();
+            if (field.id() == ZipConstants.NTFS_EXTRA_FIELD_ID) {
+                parseNtfsTimestamps(result, start, size);
+                for (int attribute = start + Integer.BYTES; attribute < field.nextOffset();) {
+                    int tag = ZipLittleEndian.readUnsignedShort(result, attribute);
+                    int length = ZipLittleEndian.readUnsignedShort(result, attribute + Short.BYTES);
+                    if (tag == 1) {
+                        ByteArrayAccess.writeLongLittleEndian(result, attribute + Integer.BYTES, fileTimeTicks(instant));
+                    }
+                    attribute += Integer.BYTES + length;
+                }
+            } else if (field.id() == ZipConstants.EXTENDED_TIMESTAMP_EXTRA_FIELD_ID) {
+                parseExtendedTimestamp(result, start, size);
+                if (size >= 5 && (result[start] & MODIFY_TIME_FLAG) != 0) {
+                    long seconds = instant.getEpochSecond();
+                    if (seconds < Integer.MIN_VALUE || seconds > Integer.MAX_VALUE) {
+                        throw new IOException("Modification time is outside the signed Unix timestamp range");
+                    }
+                    ByteArrayAccess.writeIntLittleEndian(result, start + 1, (int) seconds);
+                }
+            } else if (field.id() == ZipConstants.INFO_ZIP_UNIX_EXTRA_FIELD_ID
+                    || field.id() == ZipConstants.UNIX_EXTRA_FIELD_ID) {
+                if (size < 8) {
+                    throw new IOException("ZIP Unix timestamp extra field is too short");
+                }
+                long seconds = instant.getEpochSecond();
+                if (seconds < 0 || seconds > 0xffff_ffffL) {
+                    throw new IOException("Modification time is outside the unsigned Unix timestamp range");
+                }
+                ByteArrayAccess.writeIntLittleEndian(result, start + Integer.BYTES, (int) seconds);
+            }
+            offset = field.nextOffset();
+        }
+        return result;
+    }
+
+    /// Encodes an unsigned FILETIME, rejecting overflow and the zero value reserved for absent timestamps.
+    private static long fileTimeTicks(Instant instant) throws IOException {
+        long seconds = instant.getEpochSecond() + WINDOWS_EPOCH_OFFSET;
+        long fraction = instant.getNano() / 100;
+        long maximumSeconds = Long.divideUnsigned(-1L, FILETIME_TICKS_PER_SECOND);
+        if (seconds < 0 || seconds > maximumSeconds
+                || (seconds == maximumSeconds && fraction > Long.remainderUnsigned(-1L, FILETIME_TICKS_PER_SECOND))
+                || (seconds == 0 && fraction == 0)) {
+            throw new IOException("Modification time is outside the NTFS timestamp range");
+        }
+        // Overflow into the sign bit is intentional: FILETIME uses all 64 bits as an unsigned value.
+        return seconds * FILETIME_TICKS_PER_SECOND + fraction;
+    }
+
     /// Resolves recognized metadata from local and central-directory extra fields.
     ///
     /// A local extended timestamp field replaces the corresponding central-directory field because the central form
