@@ -1,9 +1,8 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.encoding.detector;
+package org.glavo.arkivo.encoding.detector.internal;
 
-import org.glavo.arkivo.encoding.detector.internal.DetectionEngine;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

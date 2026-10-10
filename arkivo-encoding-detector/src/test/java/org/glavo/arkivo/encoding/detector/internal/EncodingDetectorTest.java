@@ -1,7 +1,7 @@
 // Copyright Mozilla Foundation and (c) 2026 Glavo
 // SPDX-License-Identifier: MIT
 
-package org.glavo.arkivo.encoding.detector;
+package org.glavo.arkivo.encoding.detector.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -28,7 +28,8 @@ class EncodingDetectorTest {
     /// Supplies the upstream text assertions without deriving expected answers from the port.
     static Stream<String[]> upstream() throws Exception {
         try (var reader = new BufferedReader(new InputStreamReader(
-                Objects.requireNonNull(EncodingDetectorTest.class.getResourceAsStream("upstream.tsv")),
+                Objects.requireNonNull(EncodingDetectorTest.class.getResourceAsStream(
+                        "/org/glavo/arkivo/encoding/detector/upstream.tsv")),
                 StandardCharsets.UTF_8))) {
             return reader.lines().filter(line -> !line.startsWith("#"))
                     .map(line -> line.split("\t", 5)).toList().stream();
