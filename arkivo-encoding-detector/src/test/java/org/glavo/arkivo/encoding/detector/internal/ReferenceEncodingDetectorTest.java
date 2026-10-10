@@ -24,11 +24,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /// Exercises upstream regressions and byte-buffer lifecycle contracts.
 @NotNullByDefault
-class EncodingDetectorTest {
+class ReferenceEncodingDetectorTest {
     /// Supplies the upstream text assertions without deriving expected answers from the port.
     static Stream<String[]> upstream() throws Exception {
         try (var reader = new BufferedReader(new InputStreamReader(
-                Objects.requireNonNull(EncodingDetectorTest.class.getResourceAsStream(
+                Objects.requireNonNull(ReferenceEncodingDetectorTest.class.getResourceAsStream(
                         "/org/glavo/arkivo/encoding/detector/upstream.tsv")),
                 StandardCharsets.UTF_8))) {
             return reader.lines().filter(line -> !line.startsWith("#"))
@@ -46,7 +46,7 @@ class EncodingDetectorTest {
         if (charset.newEncoder().canEncode(original)) {
             assertEquals(original, charset.newDecoder().decode(ByteBuffer.wrap(bytes)).toString());
         }
-        var detector = new EncodingDetector(true);
+        var detector = new ReferenceEncodingDetector(true);
         for (int split = 0; split <= bytes.length; split++) {
             detector.reset();
             detector.feed(ByteBuffer.wrap(bytes, 0, split), false);
@@ -65,7 +65,7 @@ class EncodingDetectorTest {
     /// Covers empty streams, ASCII fallback, completion, and reset.
     @Test
     void lifecycle() {
-        var detector = new EncodingDetector();
+        var detector = new ReferenceEncodingDetector();
         assertEquals(StandardCharsets.UTF_8, detector.guess());
         assertEquals(Charset.forName("windows-1252"), detector.guess(false));
         assertFalse(detector.feed(new byte[0], false));
@@ -93,16 +93,16 @@ class EncodingDetectorTest {
                 source = source.asReadOnlyBuffer();
             }
             source.mark();
-            assertEquals(expected, EncodingDetector.detect(source));
+            assertEquals(expected, ReferenceEncodingDetector.detect(source));
             assertEquals(2, source.position());
             source.reset();
-            var detector = new EncodingDetector();
+            var detector = new ReferenceEncodingDetector();
             assertTrue(detector.feed(source, false));
             assertEquals(source.limit(), source.position());
             detector.feed(new byte[0], true);
             assertEquals(expected, detector.guess());
         }
-        var detector = new EncodingDetector();
+        var detector = new ReferenceEncodingDetector();
         var prefix = new byte[]{(byte) 0xE2};
         detector.feed(prefix, false);
         prefix[0] = 0;
@@ -114,16 +114,16 @@ class EncodingDetectorTest {
     @Test
     void utf8Validation() {
         for (var hex : new String[]{"c080", "eda080", "f4908080", "80", "f5808080", "e282", "c2"}) {
-            var detector = new EncodingDetector();
+            var detector = new ReferenceEncodingDetector();
             detector.feed(HexFormat.of().parseHex(hex), true);
             assertNotEquals(StandardCharsets.UTF_8, detector.guess(), hex);
         }
-        var detector = new EncodingDetector();
+        var detector = new ReferenceEncodingDetector();
         detector.feed(HexFormat.of().parseHex("e282"), false);
         assertEquals(StandardCharsets.UTF_8, detector.guess());
         detector.feed(new byte[0], true);
         assertNotEquals(StandardCharsets.UTF_8, detector.guess());
-        assertEquals(StandardCharsets.UTF_8, EncodingDetector.detect("𠀀😀".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(StandardCharsets.UTF_8, ReferenceEncodingDetector.detect("𠀀😀".getBytes(StandardCharsets.UTF_8)));
     }
 
     /// Applies the ISO-2022-JP setting across resets and escape-sequence boundaries.
@@ -131,11 +131,11 @@ class EncodingDetectorTest {
     void iso2022Jp() {
         var charset = Charset.forName("ISO-2022-JP");
         var bytes = "日本語".getBytes(charset);
-        var disabled = new EncodingDetector();
+        var disabled = new ReferenceEncodingDetector();
         disabled.feed(bytes, true);
         assertEquals(StandardCharsets.UTF_8, disabled.guess());
         assertEquals(Charset.forName("windows-1252"), disabled.guess(false));
-        var enabled = new EncodingDetector(true);
+        var enabled = new ReferenceEncodingDetector(true);
         for (int i = 0; i < 2; i++) {
             for (byte value : bytes) {
                 assertFalse(enabled.feed(new byte[]{value}, false));
@@ -152,7 +152,7 @@ class EncodingDetectorTest {
     @Test
     void asciiContext() {
         for (String hex : new String[]{"6e2eba31", "206e2eba31", "72726e2eba31", "4992", "446f6eb47420"}) {
-            var detector = new EncodingDetector();
+            var detector = new ReferenceEncodingDetector();
             for (byte value : HexFormat.of().parseHex(hex)) {
                 detector.feed(new byte[]{value}, false);
             }
@@ -168,9 +168,9 @@ class EncodingDetectorTest {
         for (int iteration = 0; iteration < 300; iteration++) {
             var bytes = new byte[random.nextInt(192)];
             random.nextBytes(bytes);
-            var whole = new EncodingDetector(true);
+            var whole = new ReferenceEncodingDetector(true);
             whole.feed(bytes, true);
-            var chunked = new EncodingDetector(true);
+            var chunked = new ReferenceEncodingDetector(true);
             for (int offset = 0; offset < bytes.length; ) {
                 int length = Math.min(bytes.length - offset, random.nextInt(7) + 1);
                 chunked.feed(ByteBuffer.wrap(bytes, offset, length), false);
@@ -188,7 +188,7 @@ class EncodingDetectorTest {
         var bytes = "这是一个字符编码测试。".getBytes(Charset.forName("GB18030"));
         var executor = Executors.newFixedThreadPool(4);
         try {
-            Callable<Charset> operation = () -> EncodingDetector.detect(bytes);
+            Callable<Charset> operation = () -> ReferenceEncodingDetector.detect(bytes);
             for (var result : executor.invokeAll(java.util.Collections.nCopies(100, operation))) {
                 assertEquals(Charset.forName("GB18030"), result.get());
             }
@@ -200,11 +200,11 @@ class EncodingDetectorTest {
     /// Rejects null without changing a detector's lifecycle.
     @Test
     void nullInput() {
-        var detector = new EncodingDetector();
+        var detector = new ReferenceEncodingDetector();
         assertThrows(NullPointerException.class, () -> detector.feed((byte[]) null, true));
         assertThrows(NullPointerException.class, () -> detector.feed((ByteBuffer) null, true));
-        assertThrows(NullPointerException.class, () -> EncodingDetector.detect((byte[]) null));
-        assertThrows(NullPointerException.class, () -> EncodingDetector.detect((ByteBuffer) null));
+        assertThrows(NullPointerException.class, () -> ReferenceEncodingDetector.detect((byte[]) null));
+        assertThrows(NullPointerException.class, () -> ReferenceEncodingDetector.detect((ByteBuffer) null));
         assertFalse(detector.feed(new byte[0], true));
     }
 }

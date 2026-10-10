@@ -23,6 +23,15 @@ class ByteDecoderExhaustiveTest {
     void allBytePairs(String name) {
         var charset = Charset.forName(name);
         var reference = charset.newDecoder();
+        var family = switch (name) {
+            case "GB18030" -> MetadataScorer.Family.CHINESE;
+            case "Big5-HKSCS" -> MetadataScorer.Family.BIG5;
+            case "windows-31j", "EUC-JP" -> MetadataScorer.Family.JAPANESE;
+            case "x-windows-949" -> MetadataScorer.Family.KOREAN;
+            default -> MetadataScorer.Family.UTF8;
+        };
+        var metadata = new MetadataScorer(charset, null, family);
+        var workspace = java.nio.CharBuffer.allocate(16);
         for (int size = 1; size <= 2; size++) {
             var bytes = new byte[size];
             var input = ByteBuffer.wrap(bytes);
@@ -46,6 +55,9 @@ class ByteDecoderExhaustiveTest {
                 }
                 accepted &= decoder.finish();
                 assertEquals(expected, accepted, name + " length=" + size + " bytes=" + value);
+                input.clear();
+                assertEquals(expected, metadata.score(input, EncodingDetector.Kind.NAME, workspace) != null,
+                        "metadata " + name + " length=" + size + " bytes=" + value);
             }
         }
     }

@@ -7,6 +7,7 @@ import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
@@ -81,14 +82,16 @@ class ZipMetadataCorpusTest {
         int previous = 0;
         int isolated = 0;
         int joint = 0;
+        var detector = new EncodingDetector();
         for (int index = 0; index < names.size(); index++) {
             String expected = names.get(index);
             var input = rawNames.get(index);
             var others = new ArrayList<>(rawNames);
             others.remove(index);
             String old = ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(input);
-            String single = ZipMetadataScoringTest.selectForEvaluation(input, DetectionEngine.scoreField(input));
-            String combined = ZipMetadataScoringTest.selectWithEvidence(input, DetectionEngine.scoreFields(others));
+            @Nullable String single = ZipMetadataScoringTest.decodeForEvaluation(detector, input, null);
+            @Nullable String combined = ZipMetadataScoringTest.decodeForEvaluation(detector, input,
+                    detector.prepare(others, EncodingDetector.Kind.NAME));
             if (expected.equals(old)) previous++;
             if (expected.equals(single)) isolated++;
             if (expected.equals(combined)) joint++;

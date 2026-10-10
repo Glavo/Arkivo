@@ -3,6 +3,11 @@
 
 import java.util.Properties
 
+sourceSets.named("tier2Test") {
+    compileClasspath += sourceSets.test.get().output
+    runtimeClasspath += sourceSets.test.get().output
+}
+
 dependencies {
     "tier2TestImplementation"(project(":arkivo-archive-zip"))
     "tier2TestImplementation"("org.apache.commons:commons-compress:1.28.0")

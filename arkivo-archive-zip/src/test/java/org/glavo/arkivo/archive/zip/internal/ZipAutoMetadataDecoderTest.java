@@ -444,7 +444,7 @@ public final class ZipAutoMetadataDecoderTest {
     }
 
     /// Constructs mixed-encoding archives from JDK-generated records without storing binary fixtures.
-    private static byte[] archive(Sample... samples) throws IOException {
+    static byte[] archive(Sample... samples) throws IOException {
         ByteArrayOutputStream local = new ByteArrayOutputStream();
         ArrayList<byte[]> centralRecords = new ArrayList<>();
         for (Sample sample : samples) {
@@ -506,6 +506,6 @@ public final class ZipAutoMetadataDecoderTest {
     /// @param unicode whether matching Unicode extra fields are included
     /// @param creator the ZIP creator-system identifier
     @NotNullByDefault
-    private record Sample(String name, String encoding, @Nullable String comment, boolean unicode, int creator) {
+    record Sample(String name, String encoding, @Nullable String comment, boolean unicode, int creator) {
     }
 }

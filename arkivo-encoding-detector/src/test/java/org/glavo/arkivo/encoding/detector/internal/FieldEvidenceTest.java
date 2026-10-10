@@ -12,91 +12,76 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Checks bounded evidence collection independently of any archive selection policy.
+/// Verifies role isolation and bounded, deterministic metadata context.
 @NotNullByDefault
 class FieldEvidenceTest {
-    /// Adds independently completed scores without spanning character or word boundaries.
+    /// Reduces duplicate names, parent-prefix changes, and numbered variants without retaining buffers.
     @Test
-    void equalsIndependentScores() {
-        var inputs = List.of(ByteBuffer.wrap(new byte[]{(byte) 0xC3}),
-                ByteBuffer.wrap(new byte[]{(byte) 0xA9}),
-                ByteBuffer.wrap("日本語".getBytes(Charset.forName("windows-31j"))));
-        var expected = new TreeMap<Charset, EncodingEvidence>();
-        for (var input : inputs) {
-            for (var score : DetectionEngine.scoreField(input)) {
-                var previous = expected.getOrDefault(score.charset(), new EncodingEvidence(score.charset(), 0, 0));
-                expected.put(score.charset(), new EncodingEvidence(score.charset(),
-                        previous.score() + score.score(), previous.fields() + 1));
-            }
-        }
-        assertEquals(List.copyOf(expected.values()), DetectionEngine.scoreFields(inputs));
-        assertFalse(expected.containsKey(StandardCharsets.UTF_8));
-    }
-
-    /// Collapses exact byte duplicates across buffer representations and preserves order independence.
-    @Test
-    void deduplicationOrderAndLifetime() {
-        byte[] bytes = "résumé".getBytes(Charset.forName("IBM437"));
-        var first = ByteBuffer.allocateDirect(bytes.length + 4);
-        first.position(2).put(bytes).limit(bytes.length + 2).position(2).mark();
-        var second = ByteBuffer.wrap("日本語".getBytes(Charset.forName("windows-31j")));
-        var inputs = new ArrayList<>(List.of(first, second, ByteBuffer.wrap(bytes), first.slice().asReadOnlyBuffer()));
-        var snapshot = DetectionEngine.scoreFields(inputs);
-        assertEquals(DetectionEngine.scoreFields(List.of(first, second)), snapshot);
+    void repetitionOrderAndLifetime() {
+        var detector = new EncodingDetector();
+        var charset = Charset.forName("windows-31j");
+        var first = ByteBuffer.wrap("親/日本語_001.txt".getBytes(charset));
+        var second = ByteBuffer.wrap("別/日本語_999.bin".getBytes(charset));
+        var expected = detector.prepare(List.of(first), EncodingDetector.Kind.NAME);
+        var combined = detector.prepare(List.of(first, second, first.asReadOnlyBuffer()), EncodingDetector.Kind.NAME);
+        // The correct candidate sees identical basename features; wrong candidates may see different text.
+        assertEquals(support(expected, charset), support(combined, charset));
+        var inputs = new ArrayList<>(List.of(first, second));
+        var snapshot = detector.prepare(inputs, EncodingDetector.Kind.NAME);
         Collections.reverse(inputs);
-        assertEquals(snapshot, DetectionEngine.scoreFields(inputs));
-        first.reset();
-        assertEquals(2, first.position());
-        first.put(2, (byte) 'X');
-        assertEquals(DetectionEngine.scoreFields(List.of(ByteBuffer.wrap(bytes), second)), snapshot);
-        assertThrows(UnsupportedOperationException.class, snapshot::clear);
+        assertEquals(snapshot.candidates(), detector.prepare(inputs, EncodingDetector.Kind.NAME).candidates());
+        var saved = List.copyOf(snapshot.candidates());
+        first.put(0, (byte) 'X');
+        assertEquals(saved, snapshot.candidates());
+        assertThrows(UnsupportedOperationException.class, snapshot.candidates()::clear);
     }
 
-    /// Keeps UTF-8 evidence from one field even when another field is not valid UTF-8.
+    /// Keeps names and comments separate and rejects accidental role mixing at selection.
     @Test
-    void invalidFieldsDoNotEliminateOtherEvidence() {
-        var valid = ByteBuffer.wrap("中".getBytes(StandardCharsets.UTF_8));
+    void rolesAreNotInterchangeable() {
+        var detector = new EncodingDetector();
+        var input = ByteBuffer.wrap("é.txt".getBytes(Charset.forName("windows-1252")));
+        var comments = detector.prepare(List.of(input), EncodingDetector.Kind.COMMENT);
+        assertThrows(IllegalArgumentException.class, () -> detector.detect(input, EncodingDetector.Kind.NAME, comments));
+    }
+
+    /// Preserves evidence from valid fields when another field rejects that encoding.
+    @Test
+    void invalidFieldDoesNotVetoArchive() {
+        var detector = new EncodingDetector();
+        var utf8 = ByteBuffer.wrap("中日".getBytes(StandardCharsets.UTF_8));
         var invalid = ByteBuffer.wrap(new byte[]{(byte) 0xFF});
-        var expected = DetectionEngine.scoreFields(List.of(valid)).stream()
-                .filter(value -> value.charset().equals(StandardCharsets.UTF_8)).toList();
-        assertEquals(1, expected.size());
-        assertEquals(expected, DetectionEngine.scoreFields(List.of(invalid, valid)).stream()
-                .filter(value -> value.charset().equals(StandardCharsets.UTF_8)).toList());
+        var context = detector.prepare(List.of(utf8, invalid), EncodingDetector.Kind.NAME);
+        assertEquals(1, support(context, StandardCharsets.UTF_8).fields());
+        var invalidScores = detector.analyze(invalid, EncodingDetector.Kind.NAME);
+        assertFalse(invalidScores.stream().anyMatch(value -> value.charset().equals(StandardCharsets.UTF_8)));
+        assertNotEquals(StandardCharsets.UTF_8, detector.detect(invalid, EncodingDetector.Kind.NAME, context));
     }
 
-    /// Compares full remaining bytes when two different fields share a buffer hash code.
-    @Test
-    void hashCollisionsDoNotDiscardFields() {
-        var first = ByteBuffer.wrap(new byte[]{(byte) 0x80, (byte) 0x81});
-        var second = ByteBuffer.wrap(new byte[]{(byte) 0x9F, (byte) 0x80});
-        assertEquals(first.hashCode(), second.hashCode());
-        assertNotEquals(first, second);
-        var dos = DetectionEngine.scoreFields(List.of(first, second)).stream()
-                .filter(value -> value.charset().equals(Charset.forName("IBM437"))).toList();
-        assertEquals(1, dos.size());
-        assertEquals(2, dos.get(0).fields());
-    }
-
-    /// Checks exact limits before deduplication and rejects over-budget input without moving buffers.
+    /// Checks all batch limits before deduplication; no oversized field is silently sampled.
     @Test
     void budgetsAndEmptyInput() {
-        assertTrue(DetectionEngine.scoreFields(List.of()).isEmpty());
-        assertTrue(DetectionEngine.scoreFields(Collections.nCopies(512, ByteBuffer.allocate(0))).isEmpty());
+        var detector = new EncodingDetector();
+        var kind = EncodingDetector.Kind.NAME;
+        assertTrue(detector.prepare(List.of(), kind).candidates().isEmpty());
+        assertTrue(detector.prepare(Collections.nCopies(512, ByteBuffer.allocate(0)), kind).candidates().isEmpty());
         assertThrows(IllegalArgumentException.class,
-                () -> DetectionEngine.scoreFields(Collections.nCopies(513, ByteBuffer.allocate(0))));
+                () -> detector.prepare(Collections.nCopies(513, ByteBuffer.allocate(0)), kind));
         var maximum = ByteBuffer.allocate(4096);
-        assertTrue(DetectionEngine.scoreFields(Collections.nCopies(64, maximum)).isEmpty());
-        assertThrows(IllegalArgumentException.class,
-                () -> DetectionEngine.scoreFields(Collections.nCopies(65, maximum)));
-        assertThrows(IllegalArgumentException.class,
-                () -> DetectionEngine.scoreFields(List.of(ByteBuffer.allocate(4097))));
+        assertTrue(detector.prepare(Collections.nCopies(64, maximum), kind).candidates().isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> detector.prepare(Collections.nCopies(65, maximum), kind));
+        assertThrows(IllegalArgumentException.class, () -> detector.prepare(List.of(ByteBuffer.allocate(4097)), kind));
         assertEquals(0, maximum.position());
-        assertThrows(NullPointerException.class, () -> DetectionEngine.scoreFields(null));
-        assertThrows(NullPointerException.class,
-                () -> DetectionEngine.scoreFields(Collections.singletonList(null)));
+        assertThrows(NullPointerException.class, () -> detector.prepare(null, kind));
+        assertThrows(NullPointerException.class, () -> detector.prepare(Collections.singletonList(null), kind));
+    }
+
+    /// Finds a support record without interpreting it as a probability or selected label.
+    private static EncodingEvidence.Support support(EncodingEvidence context, Charset charset) {
+        for (var value : context.candidates()) if (value.charset().equals(charset)) return value;
+        throw new AssertionError("Missing context charset: " + charset);
     }
 }

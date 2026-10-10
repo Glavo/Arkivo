@@ -12,8 +12,6 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharacterCodingException;
 import java.util.Arrays;
 
-import static org.glavo.arkivo.encoding.detector.internal.Weights.IMPLAUSIBILITY_PENALTY;
-
 /// Maps bytes to character classes and scores adjacent classes.
 ///
 /// @param charsetName   JDK charset name
@@ -27,6 +25,9 @@ import static org.glavo.arkivo.encoding.detector.internal.Weights.IMPLAUSIBILITY
 record SingleByteData(String charsetName, byte @Unmodifiable [] lower, byte @Unmodifiable [] upper,
                       byte @Unmodifiable [] probabilities, int ascii, int nonAscii,
                       long @Unmodifiable [] decodable) {
+    /// Pair score represented by the reserved table value 255.
+    private static final int IMPLAUSIBILITY_PENALTY = -220;
+
     /// Creates a shared model restricted to bytes supported by the installed charset.
     SingleByteData(String charsetName, byte @Unmodifiable [] lower, byte @Unmodifiable [] upper,
                    byte @Unmodifiable [] probabilities, int ascii, int nonAscii) {

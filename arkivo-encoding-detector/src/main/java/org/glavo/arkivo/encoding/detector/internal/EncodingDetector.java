@@ -5,209 +5,271 @@ package org.glavo.arkivo.encoding.detector.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
+import java.util.TreeMap;
 
-/// Guesses the character encoding of one continuous byte sequence.
+/// Analyzes complete archive metadata fields using reusable, bounded decoding workspaces.
+/// No caller buffer is changed or retained. Instances are not safe for concurrent use; immutable
+/// evidence summaries can be shared. Every operation starts independent field state, including after
+/// an earlier field failed validation. ASCII-only input does not initialize statistical models.
 ///
-/// Input is supplied by [#feed(ByteBuffer, boolean)] or [#feed(byte[], boolean)].
-/// Chunk boundaries do not delimit fields or reset decoding state. A detector for several independent
-/// names must not be fed their concatenation; each name requires a separate detector or a call to [#reset()].
-/// Input storage is never retained.
-///
-/// [#guess()] may be called before, during, or after input. A guess is heuristic, not a validation result
-/// or a guarantee that every byte can be decoded with the returned charset. Explicit encoding declarations
-/// should take precedence over detection. Short or ambiguous sequences can be misidentified.
-///
-/// Instances are mutable and are not safe for concurrent use. Independent instances share immutable
-/// scoring tables but no input state. ASCII input without enabled escape-based detection
-/// does not load those tables.
-///
-/// @implNote The statistical rules and tables are adapted from chardetng 1.0.0, without browser
-/// domain preferences. Multibyte validation uses installed JDK charsets, not the WHATWG decoding
-/// tables. Unavailable optional charsets are excluded. DOS encodings other than IBM866 are not
-/// candidates. Windows-1252 must be available for [#guess(boolean)] when UTF-8 is not selected.
+/// This class neither processes format declarations nor supplies a fallback charset. A selected encoding
+/// is heuristic, not an assertion about the producer. Names and comments use separate evidence profiles.
 @NotNullByDefault
-public final class EncodingDetector {
-    /// Indicates that no ASCII context byte has been retained.
-    private static final int NO_BYTE = -1;
-    /// Whether ISO-2022-JP escape sequences participate in detection.
-    private final boolean allowIso2022Jp;
-    /// Lazily allocated non-ASCII scoring state.
-    private @Nullable DetectionEngine engine;
-    /// Whether end of input has been supplied.
-    private boolean finished;
-    /// Whether the stream has contained a non-ASCII byte.
-    private boolean nonAscii;
-    /// Whether the stream has contained an escape byte.
-    private boolean escape;
-    /// Older ASCII byte retained before scoring starts, or -1.
-    private int beforePrevious = NO_BYTE;
-    /// Most recent ASCII byte retained before scoring starts, or -1.
-    private int previous = NO_BYTE;
+final class EncodingDetector {
+    /// Maximum supplied fields per context batch, before deduplication.
+    static final int MAX_EVIDENCE_FIELDS = 512;
+    /// Maximum raw bytes in one context sample.
+    static final int MAX_EVIDENCE_FIELD_BYTES = 4096;
+    /// Maximum total raw bytes in a context batch, before deduplication.
+    static final int MAX_EVIDENCE_BYTES = 256 * 1024;
+    /// Sentinel returned by a decoded cursor at end of field.
+    private static final int END = -1;
+    /// Output storage shared across sequential candidate evaluations.
+    private final CharBuffer output = CharBuffer.allocate(1024);
+    /// Second output buffer used only for exact equivalence comparisons.
+    private final CharBuffer comparison = CharBuffer.allocate(1024);
+    /// Lazily initialized candidate workspaces; no per-field decoder allocation is required.
+    private @Nullable
+    @Unmodifiable List<MetadataScorer> scorers;
 
-    /// Creates a detector with ISO-2022-JP detection disabled.
-    public EncodingDetector() {
-        this(false);
+    /// Identifies the metadata role, independently of the archive format.
+    @NotNullByDefault
+    enum Kind {
+        /// Basename evidence with decoded path, extension, and numeric boundaries.
+        NAME,
+        /// Continuous comment evidence without path segmentation.
+        COMMENT
     }
 
-    /// Creates a detector with optional escape-based Japanese detection.
-    ///
-    /// @param allowIso2022Jp whether ISO-2022-JP is a candidate
-    public EncodingDetector(boolean allowIso2022Jp) {
-        this.allowIso2022Jp = allowIso2022Jp;
+    /// Creates an independent metadata workspace without loading statistical tables.
+    EncodingDetector() {
     }
 
-    /// Guesses the encoding of an entire byte array, allowing UTF-8.
+    /// Returns immutable scores for all candidates that strictly decode the complete field.
+    /// Empty or ASCII-only fields return an empty list. Non-positive scores describe absent or contrary
+    /// evidence, not malformed bytes. Candidate alternatives for one charset are merged by quality.
+    /// At most 4096 scalars per comment or path component are scored; all bytes are validated.
+    /// Names use the last component containing non-ASCII text, so repeated parent prefixes do not
+    /// outweigh a non-ASCII basename. Scores are in charset-name order, not confidence order.
     ///
-    /// The array is not modified or retained. ISO-2022-JP detection is disabled.
-    ///
-    /// @param input complete input
-    /// @return the guessed charset; UTF-8 for empty or ASCII-only input
-    /// @throws NullPointerException if input is null
-    public static Charset detect(byte[] input) {
-        var detector = new EncodingDetector();
-        detector.feed(input, true);
-        return detector.guess();
-    }
-
-    /// Guesses the encoding of the remaining bytes without changing buffer state.
-    ///
-    /// The buffer is not modified or retained. ISO-2022-JP detection is disabled.
-    ///
-    /// @param input complete input between position and limit
-    /// @return the guessed charset; UTF-8 for empty or ASCII-only input
-    /// @throws NullPointerException if input is null
-    public static Charset detect(ByteBuffer input) {
-        var detector = new EncodingDetector();
-        detector.feed(input.duplicate(), true);
-        return detector.guess();
-    }
-
-    /// Supplies a complete array as the next chunk.
-    ///
-    /// The array is not modified or retained. The end-of-input and return-value semantics
-    /// are the same as [#feed(ByteBuffer, boolean)].
-    ///
-    /// @param input      next input chunk
-    /// @param endOfInput whether this is the final chunk
-    /// @return whether any non-ASCII byte has been seen in this sequence
-    /// @throws NullPointerException  if input is null
-    /// @throws IllegalStateException if end of input was already supplied
-    public boolean feed(byte[] input, boolean endOfInput) {
-        Objects.requireNonNull(input, "input");
-        ensureAccepting();
-        for (byte value : input) {
-            accept(value & 255);
-        }
-        finishIfRequested(endOfInput);
-        return nonAscii;
-    }
-
-    /// Consumes all remaining bytes as the next chunk.
-    ///
-    /// On normal return the position equals the limit; the limit and content are unchanged.
-    /// Heap, direct, and read-only buffers are accepted. Empty chunks are permitted.
-    /// This method retains neither the buffer nor a view of it.
-    ///
-    /// If endOfInput is true, incomplete characters are rejected and no more input may be
-    /// supplied until [#reset()] is called. To inspect only a prefix of an unfinished stream,
-    /// pass false and call [#guess()] without finishing the detector.
-    ///
-    /// @param input      next input chunk
-    /// @param endOfInput whether the byte sequence ends after this chunk
-    /// @return whether any non-ASCII byte has been seen; this is not a confidence indicator
-    /// @throws NullPointerException  if input is null
-    /// @throws IllegalStateException if end of input was already supplied, without consuming input
-    public boolean feed(ByteBuffer input, boolean endOfInput) {
-        Objects.requireNonNull(input, "input");
-        ensureAccepting();
-        while (input.hasRemaining()) {
-            accept(input.get() & 255);
-        }
-        finishIfRequested(endOfInput);
-        return nonAscii;
-    }
-
-    /// Returns the current guess, allowing UTF-8.
-    ///
-    /// This method is equivalent to calling [#guess(boolean)] with true.
-    ///
-    /// @return the guessed charset
-    public Charset guess() {
-        return guess(true);
-    }
-
-    /// Returns a guess without changing detector state.
-    ///
-    /// If allowed and still valid, UTF-8 takes precedence over statistical candidates.
-    /// An enabled, valid ISO-2022-JP candidate takes precedence for ASCII-only input containing
-    /// an escape byte. Otherwise the highest positive eligible score wins; Windows-1252 is
-    /// the fallback when no candidate has a positive score. The fallback is not a validity guarantee.
-    ///
-    /// A guess made before end of input may change when more input arrives or when an incomplete
-    /// character is rejected at end of input. Repeated calls with the same argument and no intervening
-    /// feed or reset return the same charset.
-    ///
-    /// @param allowUtf8 whether UTF-8 may be returned
-    /// @return the guessed charset; UTF-8 for empty input if allowed, otherwise Windows-1252
-    /// @throws java.nio.charset.UnsupportedCharsetException if Windows-1252 is needed but unavailable
-    public Charset guess(boolean allowUtf8) {
-        return engine == null
-                ? allowUtf8 ? StandardCharsets.UTF_8 : Charset.forName("windows-1252")
-                : engine.guess(allowUtf8, nonAscii, escape);
-    }
-
-    /// Discards all input state and starts an independent byte sequence.
-    ///
-    /// ISO-2022-JP configuration is preserved. This method may be called before or after end of input.
-    public void reset() {
-        engine = null;
-        finished = false;
-        nonAscii = false;
-        escape = false;
-        beforePrevious = NO_BYTE;
-        previous = NO_BYTE;
-    }
-
-    /// Rejects input after the final chunk.
-    private void ensureAccepting() {
-        if (finished) {
-            throw new IllegalStateException("End of input has already been supplied");
-        }
-    }
-
-    /// Retains only two ASCII context bytes until statistical scoring is necessary.
-    private void accept(int value) {
-        nonAscii |= value >= 128;
-        escape |= value == 27;
-        if (engine == null) {
-            if (value < 128 && !(allowIso2022Jp && value == 27)) {
-                beforePrevious = previous;
-                previous = value;
-                return;
-            }
-            engine = new DetectionEngine(allowIso2022Jp);
-            if (beforePrevious >= 0) {
-                engine.accept(beforePrevious);
-            }
-            if (previous >= 0) {
-                engine.accept(previous);
+    /// @param input complete field between position and limit; mark and content are preserved
+    /// @param kind  metadata role
+    /// @return scores without references to caller storage
+    /// @throws NullPointerException if an argument is null
+    @Unmodifiable
+    List<EncodingScore> analyze(@UnmodifiableView ByteBuffer input, Kind kind) {
+        Objects.requireNonNull(kind);
+        if (isAscii(input)) return List.of();
+        var scores = new TreeMap<Charset, EncodingScore>();
+        for (var scorer : scorers()) {
+            @Nullable var value = scorer.score(input, kind, output);
+            if (value != null) {
+                scores.merge(value.charset(), value, (left, right) -> left.compareQuality(right) >= 0 ? left : right);
             }
         }
-        engine.accept(value);
+        return List.copyOf(scores.values());
     }
 
-    /// Completes validation exactly once at the end of a sequence.
-    private void finishIfRequested(boolean endOfInput) {
-        if (endOfInput) {
-            if (engine != null) {
-                engine.finish();
+    /// Selects an encoding from one complete field without historical context or a fallback.
+    /// Equivalent to [#detect(ByteBuffer, Kind, EncodingEvidence)] with null evidence.
+    @Nullable Charset detect(@UnmodifiableView ByteBuffer input, Kind kind) {
+        return detect(input, kind, null);
+    }
+
+    /// Selects a strictly valid encoding, or null when the retained evidence is insufficient or tied.
+    /// ASCII-only fields return US-ASCII. Positive candidates are ranked by lexical consistency and mean
+    /// feature score. At least two contributing features are needed without supporting context. Equal
+    /// quality outputs are compared exactly, without normalization; equivalent outputs are not ambiguous.
+    /// Context can break a quality tie or resolve a one-feature field, but cannot override a stronger
+    /// multi-feature local result or admit a locally invalid candidate. No numeric confidence is returned.
+    ///
+    /// @param input   complete field; buffer state and content are preserved
+    /// @param kind    role of the current field
+    /// @param context optional immutable context of the same role
+    /// @return heuristic selection, or null; format-specific fallback belongs to the caller
+    /// @throws NullPointerException     if input or kind is null
+    /// @throws IllegalArgumentException if context belongs to a different role
+    @Nullable Charset detect(@UnmodifiableView ByteBuffer input, Kind kind, @Nullable EncodingEvidence context) {
+        Objects.requireNonNull(kind);
+        if (context != null && context.kind() != kind) throw new IllegalArgumentException("Metadata role mismatch");
+        if (isAscii(input)) return StandardCharsets.US_ASCII;
+        var scores = analyze(input, kind).stream()
+                .filter(value -> value.score() > 0 && value.evidence() > 0 && value.suspicious() == 0).toList();
+        if (scores.isEmpty()) return null;
+        var best = scores.get(0);
+        for (var score : scores) if (score.compareQuality(best) > 0) best = score;
+        var choices = new ArrayList<EncodingScore>();
+        for (var score : scores) if (best.evidence() < 2 || score.compareQuality(best) == 0) choices.add(score);
+        if (best.evidence() >= 2 && sameOutputs(input, choices)) return choices.get(0).charset();
+        if (context == null) return null;
+        @Nullable EncodingEvidence.Support strongest = null;
+        var supported = new ArrayList<EncodingScore>();
+        for (var choice : choices) {
+            for (var support : context.candidates()) {
+                if (!support.charset().equals(choice.charset()) || support.fields() < 2 || support.rank() <= 0)
+                    continue;
+                int order = strongest == null ? 1 : Long.compare(support.rank() * strongest.fields(),
+                        strongest.rank() * support.fields());
+                if (order > 0) {
+                    strongest = support;
+                    supported.clear();
+                }
+                if (order >= 0) supported.add(choice);
             }
-            finished = true;
+        }
+        return !supported.isEmpty() && sameOutputs(input, supported) ? supported.get(0).charset() : null;
+    }
+
+    /// Builds bounded ordinal context without connecting decoder state across fields.
+    /// Batches exceeding any MAX_EVIDENCE limit are rejected, not sampled. Fields are processed in byte
+    /// order for deterministic results. Exact byte duplicates and repeated per-candidate feature signatures
+    /// contribute once; signatures reduce repetition but do not prove text equality. Name signatures ignore
+    /// numbered suffixes and ASCII extensions at scoring boundaries. Comments are collected separately.
+    /// Rejected candidates in one field remain eligible for other fields. The summary retains no input.
+    ///
+    /// @param inputs complete fields, unchanged and borrowed only for this call
+    /// @param kind   metadata role; callers must group names and comments separately
+    /// @return immutable per-candidate ordinal support
+    /// @throws NullPointerException     if the list, kind, or an element is null
+    /// @throws IllegalArgumentException if a batch limit is exceeded
+    EncodingEvidence prepare(List<? extends ByteBuffer> inputs, Kind kind) {
+        Objects.requireNonNull(kind);
+        if (inputs.size() > MAX_EVIDENCE_FIELDS) throw new IllegalArgumentException("Too many metadata fields");
+        int bytes = 0;
+        var fields = new ArrayList<ByteBuffer>(inputs.size());
+        for (var input : inputs) {
+            if (input.remaining() > MAX_EVIDENCE_FIELD_BYTES)
+                throw new IllegalArgumentException("Metadata field too large");
+            bytes += input.remaining();
+            fields.add(input.asReadOnlyBuffer());
+        }
+        if (bytes > MAX_EVIDENCE_BYTES) throw new IllegalArgumentException("Metadata batch too large");
+        fields.sort(ByteBuffer::compareTo);
+        var seen = new HashMap<Charset, HashSet<EncodingScore>>();
+        var support = new TreeMap<Charset, EncodingEvidence.Support>();
+        @Nullable ByteBuffer previous = null;
+        for (var field : fields) {
+            if (field.equals(previous)) continue;
+            previous = field;
+            var scores = analyze(field, kind);
+            for (var score : scores) {
+                if (score.evidence() == 0 || !seen.computeIfAbsent(score.charset(), ignored -> new HashSet<>()).add(score))
+                    continue;
+                long rank = 0;
+                for (var other : scores) {
+                    if (other.evidence() > 0) rank += Integer.signum(score.compareQuality(other));
+                }
+                var value = new EncodingEvidence.Support(score.charset(), rank, 1);
+                support.merge(score.charset(), value, (left, right) -> new EncodingEvidence.Support(
+                        left.charset(), left.rank() + right.rank(), left.fields() + right.fields()));
+            }
+        }
+        return new EncodingEvidence(kind, List.copyOf(support.values()));
+    }
+
+    /// Tests bytes without consuming the field or loading models.
+    private static boolean isAscii(ByteBuffer input) {
+        for (int i = input.position(); i < input.limit(); i++) if (input.get(i) < 0) return false;
+        return true;
+    }
+
+    /// Allocates installed candidates once per detector; model tables are shared and immutable.
+    private @Unmodifiable List<MetadataScorer> scorers() {
+        if (scorers == null) {
+            var values = new ArrayList<MetadataScorer>();
+            add(values, "UTF-8", MetadataScorer.Family.UTF8);
+            add(values, "GB18030", MetadataScorer.Family.CHINESE);
+            add(values, "Big5-HKSCS", MetadataScorer.Family.BIG5);
+            add(values, "windows-31j", MetadataScorer.Family.JAPANESE);
+            add(values, "EUC-JP", MetadataScorer.Family.JAPANESE);
+            add(values, "x-windows-949", MetadataScorer.Family.KOREAN);
+            for (var group : List.of(Models.SINGLE_BYTE_DATA, DosModels.VALUES)) {
+                for (var model : group) {
+                    if (Charset.isSupported(model.charsetName())) values.add(new MetadataScorer(
+                            Charset.forName(model.charsetName()), model, MetadataScorer.Family.SINGLE_BYTE));
+                }
+            }
+            scorers = List.copyOf(values);
+        }
+        return scorers;
+    }
+
+    /// Adds a multibyte candidate only when its JDK charset is available.
+    private static void add(List<MetadataScorer> values, String name, MetadataScorer.Family family) {
+        if (Charset.isSupported(name)) values.add(new MetadataScorer(Charset.forName(name), null, family));
+    }
+
+    /// Tests decoded output equality exactly, without constructing a String per candidate.
+    private boolean sameOutputs(ByteBuffer input, List<EncodingScore> choices) {
+        for (int i = 1; i < choices.size(); i++) {
+            var first = cursor(input, choices.get(0).charset(), output);
+            var second = cursor(input, choices.get(i).charset(), comparison);
+            while (true) {
+                int left = first.read();
+                if (left != second.read()) return false;
+                if (left == END) break;
+            }
+        }
+        return true;
+    }
+
+    /// Borrows a candidate decoder for output comparison after scoring has completed.
+    private TextCursor cursor(ByteBuffer input, Charset charset, CharBuffer buffer) {
+        for (var scorer : scorers()) {
+            if (scorer.charset.equals(charset)) return new TextCursor(input, scorer.decoder, buffer);
+        }
+        throw new IllegalArgumentException("Charset is not a scored candidate");
+    }
+
+    /// Reads UTF-16 units through fixed storage; used only while comparing candidate outputs.
+    @NotNullByDefault
+    private static final class TextCursor {
+        /// Borrowed input view, retained only by this call-local cursor.
+        private final ByteBuffer input;
+        /// Borrowed reusable decoder.
+        private final CharsetDecoder decoder;
+        /// Borrowed output workspace.
+        private final CharBuffer buffer;
+        /// Whether decoding has reached its final underflow.
+        private boolean flushing;
+        /// Whether decoder flushing has finished.
+        private boolean finished;
+
+        /// Starts an independent complete-field decoding pass.
+        TextCursor(ByteBuffer input, CharsetDecoder decoder, CharBuffer buffer) {
+            this.input = input.duplicate();
+            this.decoder = decoder.reset();
+            this.buffer = buffer;
+            buffer.clear().limit(0);
+        }
+
+        /// Returns a UTF-16 unit or END; input must remain unchanged since validation.
+        int read() {
+            while (!buffer.hasRemaining()) {
+                if (finished) return END;
+                buffer.clear();
+                var result = flushing ? decoder.flush(buffer) : decoder.decode(input, buffer, true);
+                if (result.isError()) throw new IllegalStateException("Validated metadata changed during selection");
+                if (result.isUnderflow()) {
+                    if (flushing) finished = true;
+                    else flushing = true;
+                }
+                buffer.flip();
+            }
+            return buffer.get();
         }
     }
 }
