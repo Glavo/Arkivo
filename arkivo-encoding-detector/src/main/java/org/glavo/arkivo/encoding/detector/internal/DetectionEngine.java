@@ -10,13 +10,21 @@ import org.jetbrains.annotations.UnmodifiableView;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.TreeMap;
 
 /// Scores independent encoding candidates and applies continuous-text selection.
 @NotNullByDefault
 public final class DetectionEngine {
+    /// Maximum number of supplied fields per evidence batch, including duplicates and ASCII fields.
+    static final int MAX_EVIDENCE_FIELDS = 512;
+    /// Maximum remaining byte count of one field in an evidence batch.
+    static final int MAX_EVIDENCE_FIELD_BYTES = 4096;
+    /// Maximum total remaining byte count of all supplied fields, before deduplication.
+    static final int MAX_EVIDENCE_BYTES = 256 * 1024;
     /// Candidates in upstream tie-breaking order.
     private final Candidate[] candidates = {
             new DecodedCandidate("UTF-8"),
@@ -109,6 +117,50 @@ public final class DetectionEngine {
                 scores.merge(charset, value, (left, right) -> left.score() >= right.score() ? left : right);
             }
         }
+    }
+
+    /// Sums independently finished field scores, counting identical remaining byte sequences only once.
+    /// ASCII-only fields supply no evidence. A rejected candidate contributes neither a score nor a count
+    /// for that field, but can still contribute for other fields. Longer fields can have larger scores;
+    /// this method does not normalize, select an encoding, or impose an encoding on an individual field.
+    /// Results are immutable and sorted by charset name, independent of field order.
+    ///
+    /// Callers must not modify the list, buffer state, or contents during this call. Input buffers are
+    /// borrowed only until return and are not changed. The returned summaries retain none of that storage.
+    /// Oversized batches are rejected rather than silently sampled or truncated.
+    ///
+    /// @param inputs complete fields; at most MAX_EVIDENCE_FIELDS, each at most MAX_EVIDENCE_FIELD_BYTES,
+    ///               and together at most MAX_EVIDENCE_BYTES bytes
+    /// @return scores and contribution counts for candidates accepted in at least one non-ASCII field
+    /// @throws NullPointerException if the list or an element is null
+    /// @throws IllegalArgumentException if any batch limit is exceeded
+    static @Unmodifiable List<EncodingEvidence> scoreFields(List<? extends ByteBuffer> inputs) {
+        if (inputs.size() > MAX_EVIDENCE_FIELDS) {
+            throw new IllegalArgumentException("Too many metadata fields");
+        }
+        int bytes = 0;
+        for (var input : inputs) {
+            if (input.remaining() > MAX_EVIDENCE_FIELD_BYTES) {
+                throw new IllegalArgumentException("Metadata field exceeds evidence limit");
+            }
+            bytes += input.remaining();
+        }
+        if (bytes > MAX_EVIDENCE_BYTES) {
+            throw new IllegalArgumentException("Metadata batch exceeds evidence limit");
+        }
+        var seen = new HashSet<ByteBuffer>();
+        var evidence = new TreeMap<Charset, EncodingEvidence>();
+        for (var input : inputs) {
+            if (!seen.add(input.asReadOnlyBuffer())) {
+                continue;
+            }
+            for (var score : scoreField(input)) {
+                var value = new EncodingEvidence(score.charset(), score.score(), 1);
+                evidence.merge(score.charset(), value, (left, right) -> new EncodingEvidence(
+                        left.charset(), left.score() + right.score(), left.fields() + right.fields()));
+            }
+        }
+        return List.copyOf(evidence.values());
     }
 
     /// Feeds an unsigned byte to every remaining candidate.
