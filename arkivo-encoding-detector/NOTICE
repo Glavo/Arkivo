@@ -21,3 +21,11 @@ classifications derived from JDK mappings. These reuse the Western and
 Central European pair scores; characters absent from the source models
 receive neutral classes. Repeated features are capped and bounded context
 summaries accumulate relative candidate support, not confidence probabilities.
+
+The Tier 2 metadata comparison includes an adaptation of Kala's IDF-weighted
+byte-bigram cosine scorer (MPL-2.0), copyright (c) 2026 Glavo:
+https://github.com/Glavo/kala-encoding-detector/tree/5e9931d18900d022b7fc39543d6c48af847bec13
+Its chardet model data is downloaded for tests only, under the 0BSD license,
+copyright (c) 2026 Dan Blanchard. See LICENSES/Chardet-0BSD.txt and
+gradle/test-data/kala-encoding-detector.properties in the source distribution.
+Neither these model resources nor the comparison implementation is published.

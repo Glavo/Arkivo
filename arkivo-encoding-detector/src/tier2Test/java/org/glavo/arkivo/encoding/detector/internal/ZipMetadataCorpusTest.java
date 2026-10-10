@@ -82,7 +82,10 @@ class ZipMetadataCorpusTest {
         int defaults = 0;
         int isolated = 0;
         int joint = 0;
+        int kalaIsolated = 0;
+        int kalaJoint = 0;
         var detector = new EncodingDetector();
+        var kala = new KalaMetadataDetector();
         for (int index = 0; index < names.size(); index++) {
             String expected = names.get(index);
             var input = rawNames.get(index);
@@ -92,14 +95,20 @@ class ZipMetadataCorpusTest {
             @Nullable String single = ZipMetadataScoringTest.decodeForEvaluation(detector, input, null);
             @Nullable String combined = ZipMetadataScoringTest.decodeForEvaluation(detector, input,
                     detector.prepare(others, EncodingDetector.Kind.NAME));
+            @Nullable String kalaSingle = ZipMetadataScoringTest.decodeForEvaluation(kala, input, null);
+            @Nullable String kalaCombined = ZipMetadataScoringTest.decodeForEvaluation(kala, input,
+                    kala.prepare(others, EncodingDetector.Kind.NAME));
             assertEquals(expected, automatic);
             if (expected.equals(automatic)) defaults++;
             if (expected.equals(single)) isolated++;
             if (expected.equals(combined)) joint++;
-            System.out.println(path.getFileName() + " expected=" + expected + " isolated=" + single + " joint=" + combined);
+            if (expected.equals(kalaSingle)) kalaIsolated++;
+            if (expected.equals(kalaCombined)) kalaJoint++;
+            System.out.println(path.getFileName() + " expected=" + expected + " isolated=" + single + " joint=" + combined
+                    + " kala_isolated=" + kalaSingle + " kala_joint=" + kalaCombined);
         }
-        System.out.printf(java.util.Locale.ROOT, "archive=%s,total=%d,zip_default=%d,field_scores=%d,joint_scores=%d%n",
-                path.getFileName(), names.size(), defaults, isolated, joint);
+        System.out.printf(java.util.Locale.ROOT, "archive=%s,total=%d,zip_default=%d,field_scores=%d,joint_scores=%d,kala_field=%d,kala_joint=%d%n",
+                path.getFileName(), names.size(), defaults, isolated, joint, kalaIsolated, kalaJoint);
         return isolated;
     }
 }

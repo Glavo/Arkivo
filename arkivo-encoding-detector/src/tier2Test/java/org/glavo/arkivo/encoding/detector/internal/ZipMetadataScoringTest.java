@@ -37,11 +37,14 @@ class ZipMetadataScoringTest {
                 {"x-windows-949", "가", "한", "자료", "사용설명파일"},
                 {"UTF-8", "é", "中", "日本語", "자료"}
         };
-        System.out.println("charset,non_ascii_length,total,zip_default,reference_detector,field_correct,joint_correct,field_unknown,joint_unknown");
+        System.out.println("charset,non_ascii_length,total,zip_default,reference_detector,field_correct,joint_correct,"
+                + "field_unknown,joint_unknown,kala_field_correct,kala_joint_correct,kala_field_unknown,kala_joint_unknown,"
+                + "kala_field_with_cp437_fallback");
         for (String[] group : groups) {
             var charset = Charset.forName(group[0]);
             var detector = new EncodingDetector();
-            int[][] counts = new int[2][7];
+            var kala = new KalaMetadataDetector();
+            int[][] counts = new int[2][12];
             for (int i = 1; i < group.length; i++) {
                 String stem = group[i];
                 var context = new java.util.ArrayList<ByteBuffer>();
@@ -52,6 +55,7 @@ class ZipMetadataScoringTest {
                 }
                 // Exclude the evaluated stem and every filename variant of it from its context.
                 var evidence = detector.prepare(context, EncodingDetector.Kind.NAME);
+                var kalaEvidence = kala.prepare(context, EncodingDetector.Kind.NAME);
                 for (String name : List.of(stem, stem + ".txt", "dir/" + stem + "_001.txt", "dir/" + stem + "_999.bin")) {
                     ByteBuffer bytes = charset.newEncoder().encode(CharBuffer.wrap(name));
                     assertEquals(name, charset.newDecoder().decode(bytes.duplicate()).toString());
@@ -62,19 +66,29 @@ class ZipMetadataScoringTest {
                     String continuous = ReferenceEncodingDetector.detect(bytes).decode(bytes.duplicate()).toString();
                     @Nullable String field = decodeForEvaluation(detector, bytes, null);
                     @Nullable String joint = decodeForEvaluation(detector, bytes, evidence);
+                    @Nullable String kalaField = decodeForEvaluation(kala, bytes, null);
+                    @Nullable String kalaJoint = decodeForEvaluation(kala, bytes, kalaEvidence);
                     if (automatic.equals(name)) row[1]++;
                     if (continuous.equals(name)) row[2]++;
                     if (name.equals(field)) row[3]++;
                     if (name.equals(joint)) row[4]++;
                     if (field == null) row[5]++;
                     if (joint == null) row[6]++;
+                    if (name.equals(kalaField)) row[7]++;
+                    if (name.equals(kalaJoint)) row[8]++;
+                    if (kalaField == null) row[9]++;
+                    if (kalaJoint == null) row[10]++;
+                    String kalaFallback = kalaField == null
+                            ? Charset.forName("IBM437").newDecoder().decode(bytes.duplicate()).toString() : kalaField;
+                    if (name.equals(kalaFallback)) row[11]++;
                     assertEquals(0, bytes.position());
                 }
             }
             for (int bucket = 0; bucket < counts.length; bucket++) {
                 int[] row = counts[bucket];
-                System.out.printf(java.util.Locale.ROOT, "%s,%s,%d,%d,%d,%d,%d,%d,%d%n", group[0],
-                        bucket == 0 ? "1-2" : "3+", row[0], row[1], row[2], row[3], row[4], row[5], row[6]);
+                System.out.printf(java.util.Locale.ROOT, "%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d%n", group[0],
+                        bucket == 0 ? "1-2" : "3+", row[0], row[1], row[2], row[3], row[4], row[5], row[6],
+                        row[7], row[8], row[9], row[10], row[11]);
             }
         }
     }
@@ -82,6 +96,13 @@ class ZipMetadataScoringTest {
     /// Decodes only an actual selection; uncertainty is measured separately and never silently replaced.
     static @Nullable String decodeForEvaluation(EncodingDetector detector, ByteBuffer input,
                                                 @Nullable EncodingEvidence context) throws Exception {
+        @Nullable var charset = detector.detect(input, EncodingDetector.Kind.NAME, context);
+        return charset == null ? null : charset.newDecoder().decode(input.duplicate()).toString();
+    }
+
+    /// Measures the port with the same strict materialization and no implicit legacy fallback.
+    static @Nullable String decodeForEvaluation(KalaMetadataDetector detector, ByteBuffer input,
+                                                @Nullable KalaMetadataDetector.Context context) throws Exception {
         @Nullable var charset = detector.detect(input, EncodingDetector.Kind.NAME, context);
         return charset == null ? null : charset.newDecoder().decode(input.duplicate()).toString();
     }
