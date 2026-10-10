@@ -18,9 +18,13 @@ data class ArkivoPublicationMetadata(
 )
 
 val publicationMetadata = mapOf(
+    "arkivo-encoding" to ArkivoPublicationMetadata(
+        "Arkivo Character Encoding Detection",
+        "Provides incremental pure Java character encoding detection based on chardetng."
+    ),
     "arkivo-all" to ArkivoPublicationMetadata(
         "Arkivo",
-        "Aggregates all Arkivo archive formats, checksum algorithms, and compression codecs."
+        "Aggregates all Arkivo archive formats, checksum algorithms, compression codecs, and encoding detection."
     ),
     "arkivo-base" to ArkivoPublicationMetadata(
         "Arkivo Base",
@@ -341,12 +345,14 @@ val centralPortalBundle by tasks.registering(Zip::class) {
 }
 
 val expectedDependencies = mapOf(
+    "arkivo-encoding" to emptySet(),
     "arkivo-all" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
         "org.glavo:arkivo-archive-all:compile:$publicationVersion",
         "org.glavo:arkivo-archive-codec:runtime:$publicationVersion",
         "org.glavo:arkivo-checksum:compile:$publicationVersion",
         "org.glavo:arkivo-checksum-xxhash:compile:$publicationVersion",
+        "org.glavo:arkivo-encoding:compile:$publicationVersion",
         "org.glavo:arkivo-codec-all:compile:$publicationVersion"
     ),
     "arkivo-base" to emptySet(),

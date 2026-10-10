@@ -1,0 +1,62 @@
+# chardetng v1.0.0 regression cases (MIT), encoded with encoding_rs 0.8.35.
+# Case, JDK charset alias, hex input, original text, upstream candidate score (tab-delimited).
+# Persian yeh is emitted as a numeric character reference by the upstream encoder.
+test_fi	WINDOWS-1252	c4e46e69	Ääni	384
+test_fi_bis	WINDOWS-1252	54e46de4	Tämä	580
+test_pt	WINDOWS-1252	4573746520e920756d20746573746520646520636f646966696361e7e36f20646520636172616374657265732e	Este é um teste de codificação de caracteres.	794
+test_is	WINDOWS-1252	de65747461206572206bf3f0756e61727072f36620e120737461662e2046797269722073756d2074756e67756de16c2073656d206e6f7461206c61746e65736b6120737461666920fe757266756d207669f0206d6569726120696e6e74616b2074696c2061f02074616b6120e16b76f672f0756e696e612e	Þetta er kóðunarpróf á staf. Fyrir sum tungumál sem nota latneska stafi þurfum við meira inntak til að taka ákvörðunina.	-1272
+test_ru_short	WINDOWS-1251	d0f3f1f1eae8e9	Русский	178
+test_ru	WINDOWS-1251	ddf2ee20f2e5f1f220eaeee4e8f0eee2eae820f1e8ece2eeebeee22e	Это тест кодировки символов.	732
+test_ru_iso	ISO-8859-5	cde2de20e2d5e1e220daded4d8e0ded2dad820e1d8dcd2dedbded22e	Это тест кодировки символов.	732
+test_ru_ibm	IBM866	9de2ae20e2a5e1e220aaaea4a8e0aea2aaa820e1a8aca2aeabaea22e	Это тест кодировки символов.	732
+test_ru_koi	KOI8-U	fcd4cf20d4c5d3d420cbcfc4c9d2cfd7cbc920d3c9cdd7cfcccfd72e	Это тест кодировки символов.	732
+test_uk	WINDOWS-1251	d6e520f2e5f1f220ede020eaeee4f3e2e0ededff20f1e8ece2eeebb3e22e	Це тест на кодування символів.	929
+test_uk_koi	KOI8-U	e3c520d4c5d3d420cec120cbcfc4d5d7c1ceced120d3c9cdd7cfcca6d72e	Це тест на кодування символів.	929
+test_el_short	WINDOWS-1253	c5ebebe7ede9eadc	Ελληνικά	175
+test_el	WINDOWS-1253	d0f1fceae5e9f4e1e920e3e9e120e4efeae9ecde20eaf9e4e9eaeff0efdfe7f3e7f220f7e1f1e1eaf4def1f9ed3a20a2f1e7f2	Πρόκειται για δοκιμή κωδικοποίησης χαρακτήρων: Άρης	990
+test_el_iso	ISO-8859-7	d0f1fceae5e9f4e1e920e3e9e120e4efeae9ecde20eaf9e4e9eaeff0efdfe7f3e7f220f7e1f1e1eaf4def1f9ed3a20b6f1e7f2	Πρόκειται για δοκιμή κωδικοποίησης χαρακτήρων: Άρης	990
+test_de	WINDOWS-1252	53747261df65	Straße	92
+test_he	WINDOWS-1255	f2e1f8e9fa	עברית	287
+test_2022	ISO-2022-JP	1b2442467c4b5c386c1b2842	日本語	0
+test_th	x-windows-874	b9d5e8a4d7cda1d2c3b7b4cacdbaa1d2c3e0a2e9d2c3cbd1cacdd1a1a2c3d0	นี่คือการทดสอบการเข้ารหัสอักขระ	1769
+test_vi	WINDOWS-1258	d0e279206c61cc206df4f274207468fdd2206e676869eaf26d206d61de20686fec61206b79ec2074fdf22e	Đây là một thử nghiệm mã hóa ký tự.	727
+test_tr	WINDOWS-1254	427520626972206b6172616b746572206b6f646c616d612074657374696469722e204c6174696e6365206b6172616b7465726c657269206b756c6c616e616e2062617afd2064696c6c65726465206b61726172207665726d656b2069e7696e20646168612066617a6c6120676972646979652069687469796163fd6dfd7a207661722e	Bu bir karakter kodlama testidir. Latince karakterleri kullanan bazı dillerde karar vermek için daha fazla girdiye ihtiyacımız var.	348
+test_simplified	GB18030	d5e2cac7d2bbb8f6d7d6b7fbb1e0c2ebb2e2cad4a1a3	这是一个字符编码测试。	449
+test_traditional	Big5-HKSCS	b36fac4fa440add3a672b2c5bd73bd58b4fab8d5a143	這是一個字符編碼測試。	430
+test_ko	x-windows-949	c0ccb0cdc0ba20b9aec0da20c0cec4dab5f920c5d7bdbac6aec0d4b4cfb4d92e	이것은 문자 인코딩 테스트입니다.	635
+test_shift	windows-31j	82b182ea82cd95b68e9a8ec08cb182c582b78142	これは文字実験です。	288
+test_euc	EUC-JP	a4b3a4eca4cfcab8bbfabcc2b8b3a4c7a4b9a1a3	これは文字実験です。	444
+test_ar	WINDOWS-1256	e5d0c720e5e620c7cecac8c7d120cad1e3edd220c7e1c3cdd1dd2e	هذا هو اختبار ترميز الأحرف.	778
+test_ar_iso	ISO-8859-6	e7d0c720e7e820c7cecac8c7d120cad1e5ead220c7e4c3cdd1e12e	هذا هو اختبار ترميز الأحرف.	778
+test_fa	WINDOWS-1256	c72623313734303be4202623313734303b9820cad3ca20d1e3d290d0c7d12623313734303b2098c7d1c798cad120c7d3ca2e	این یک تست رمزگذاری کاراکتر است.	1156
+test_visual	ISO-8859-8	2eede9e5e5fa20e3e5e3e9f720efe7e1ee20e5e4e6	.םיוות דודיק ןחבמ והז	589
+test_yi	WINDOWS-1255	e3e0c8f120e0e9e620e0c720e8f2f1e820f4cfe0c7f820f7e0c8e3e9f8e5f0e220f4e5ef20ebe0c7f8e0c7f7e8f2f82e	דאָס איז אַ טעסט פֿאַר קאָדירונג פון כאַראַקטער.	1542
+test_it	WINDOWS-1252	e8	è	508
+test_en	WINDOWS-1252	69736e9274	isn’t	0
+test_en_bis	WINDOWS-1252	526f636b20926e20526f6c6c	Rock ’n Roll	0
+test_ca	WINDOWS-1252	436f6469666963616369f320646520636172e06374657273	Codificació de caràcters	535
+test_et	WINDOWS-1252	76f569	või	200
+test_pl_iso	ISO-8859-2	546f206a6573742074657374206b6f646f77616e6961207a6e616bf3772e20572070727a797061646b75206e69656b74f372796368206aea7a796bf3772c206b74f372652075bf7977616ab1207a6e616bf37720b3616369f1736b6963682c20706f74727a6562756a656d79207769ea63656a2064616e7963682c2061627920706f646ab1e620646563797a6aea2e	To jest test kodowania znaków. W przypadku niektórych języków, które używają znaków łacińskich, potrzebujemy więcej danych, aby podjąć decyzję.	1490
+test_pl	WINDOWS-1250	546f206a6573742074657374206b6f646f77616e6961207a6e616bf3772e20572070727a797061646b75206e69656b74f372796368206aea7a796bf3772c206b74f372652075bf7977616ab9207a6e616bf37720b3616369f1736b6963682c20706f74727a6562756a656d79207769ea63656a2064616e7963682c2061627920706f646ab9e620646563797a6aea2e	To jest test kodowania znaków. W przypadku niektórych języków, które używają znaków łacińskich, potrzebujemy więcej danych, aby podjąć decyzję.	1490
+test_lt	WINDOWS-1257	5461692073696d626f6c69f8206b6f646176696d6f207465737461732e204b6169206b7572696f6d73206b616c626f6d732c206e6175646f6a616ee8696f6d73206c6f74796e69f06b7573207261f06d656e69732c206d756d73207265696b6961206461756769617520696e666f726d6163696a6f732c206b61642067616ceb74756d6520707269696d746920737072656e64696de02e	Tai simbolių kodavimo testas. Kai kurioms kalboms, naudojančioms lotyniškus rašmenis, mums reikia daugiau informacijos, kad galėtume priimti sprendimą.	611
+test_lv	WINDOWS-1257	d069732069722072616b73747aee6d6a75206b6f64e7f0616e61732074657374732e204461fee2732076616c6f64e2732c206b7572e273207469656b20697a6d616e746f746173206c6174eef2752076616c6f6461732062757274692c206ce76d756d6120706965f2656df0616e6169206d756d73206972206e65706965636965f0616d732076616972e26b20696567756c64ee6a756d612e	Šis ir rakstzīmju kodēšanas tests. Dažās valodās, kurās tiek izmantotas latīņu valodas burti, lēmuma pieņemšanai mums ir nepieciešams vairāk ieguldījuma.	732
+test_lv_iso_8859_4	ISO-8859-4	a969732069722072616b73747aef6d6a75206b6f64bab9616e61732074657374732e204461bee0732076616c6f64e0732c206b7572e073207469656b20697a6d616e746f746173206c6174eff1752076616c6f6461732062757274692c206cba6d756d6120706965f1656db9616e6169206d756d73206972206e65706965636965b9616d732076616972e06b20696567756c64ef6a756d612e	Šis ir rakstzīmju kodēšanas tests. Dažās valodās, kurās tiek izmantotas latīņu valodas burti, lēmuma pieņemšanai mums ir nepieciešams vairāk ieguldījuma.	732
+test_a0	WINDOWS-1252	a0a020a0	    	0
+test_a0a0	WINDOWS-1252	a0a0	  	0
+test_space_copyright_space	WINDOWS-1252	20a920	 © 	222
+test_space_masculine_space	WINDOWS-1252	20ba20	 º 	300
+test_space_feminine_space	WINDOWS-1252	20aa20	 ª 	300
+test_period_masculine_space	WINDOWS-1252	2eba20	.º 	300
+test_period_feminine_space	WINDOWS-1252	2eaa20	.ª 	300
+test_maria	WINDOWS-1252	204daa20	 Mª 	300
+test_dona	WINDOWS-1252	2044aa20	 Dª 	300
+test_nuestra	WINDOWS-1252	204eaa20	 Nª 	300
+test_senora	WINDOWS-1252	2053aa20	 Sª 	300
+test_digit_feminine	WINDOWS-1252	203432aa20	 42ª 	300
+test_digit_masculine	WINDOWS-1252	203432ba20	 42º 	300
+test_roman_feminine	WINDOWS-1252	20584956aa20	 XIVª 	300
+test_roman_masculine	WINDOWS-1252	20584956ba20	 XIVº 	300
+test_numero_uno	WINDOWS-1252	4eba31	Nº1	300
+test_numero	WINDOWS-1252	4eba	Nº	300
+test_euro	WINDOWS-1252	208039	 €9	0
+test_shift_jis_half_width_katakana	windows-31j	cab0c4deb3aab1cab0c4deb3aab1cab0c4deb3aab1cab0c4deb3aab1cab0c4deb3aab1	ﾊｰﾄﾞｳｪｱﾊｰﾄﾞｳｪｱﾊｰﾄﾞｳｪｱﾊｰﾄﾞｳｪｱﾊｰﾄﾞｳｪｱ	10

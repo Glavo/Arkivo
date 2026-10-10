@@ -1,0 +1,16 @@
+Arkivo Character Encoding Detection
+Copyright (c) 2026 Glavo
+
+The scoring state machines and regression cases are adapted from chardetng
+1.0.0, copyright Mozilla Foundation, under the MIT license option.
+See META-INF/LICENSES/Chardetng-MIT.txt in the published archives.
+Source: https://github.com/hsivonen/chardetng/tree/v1.0.0
+
+The character-class maps, pair scores, and CJK frequency lists are derived
+from src/data.rs, dedicated to the public domain under CC0 1.0:
+https://creativecommons.org/publicdomain/zero/1.0/
+
+This port uses JDK charset decoders and rejects malformed or unmappable
+input for each candidate. It does not emulate encoding_rs decoding tables
+or the upstream allowances for unsupported Macintosh and vendor extensions.
+It uses the generic-domain selection rules, without browser domain hints.
