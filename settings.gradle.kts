@@ -2,7 +2,7 @@ rootProject.name = "arkivo"
 
 include(
     "arkivo-base",
-    "arkivo-encoding",
+    "arkivo-encoding-detector",
     "arkivo-checksum",
     "arkivo-checksum-xxhash",
     "arkivo-archive",

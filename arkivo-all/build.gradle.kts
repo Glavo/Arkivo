@@ -48,7 +48,7 @@ dependencies {
     api(project(":arkivo-archive-all"))
     api(project(":arkivo-checksum"))
     api(project(":arkivo-checksum-xxhash"))
-    api(project(":arkivo-encoding"))
+    api(project(":arkivo-encoding-detector"))
     api(project(":arkivo-codec-all"))
     implementation(project(":arkivo-archive-codec"))
     testFixturesCompileOnly("org.jetbrains:annotations:26.1.0")
@@ -1194,7 +1194,7 @@ val verifyModuleDescriptors by tasks.registering {
                 "org.glavo.arkivo.archive.all",
                 "org.glavo.arkivo.checksum",
                 "org.glavo.arkivo.checksum.xxhash",
-                "org.glavo.arkivo.encoding",
+                "org.glavo.arkivo.encoding.detector",
                 "org.glavo.arkivo.codec.all"
             ),
             "org.glavo.arkivo.checksum.xxhash" to setOf(
@@ -1254,7 +1254,7 @@ val verifyModuleDescriptors by tasks.registering {
         }
 
         val expectedPublicExports = mapOf(
-            "org.glavo.arkivo.encoding" to setOf("org.glavo.arkivo.encoding"),
+            "org.glavo.arkivo.encoding.detector" to setOf("org.glavo.arkivo.encoding.detector"),
             "org.glavo.arkivo.checksum" to setOf("org.glavo.arkivo.checksum"),
             "org.glavo.arkivo.checksum.xxhash" to setOf("org.glavo.arkivo.checksum.xxhash"),
             archiveModule to setOf("org.glavo.arkivo.archive"),
