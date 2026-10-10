@@ -13,14 +13,20 @@ import java.nio.charset.Charset;
 /// @param charset     validated charset
 /// @param score       sum of feature contributions
 /// @param evidence    number of contributing features after repetition limits
-/// @param suspicious  unsupported characters or unmatched delimiters in the scored segment
+/// @param suspicious  unlikely character mixtures, used only as a soft penalty
+/// @param controls    control characters unsuitable for the field's role
+/// @param nonAscii    non-ASCII scalar count, saturated at two
 /// @param fingerprint scored-feature hash used only to reduce repeated context contributions
 @NotNullByDefault
-record EncodingScore(Charset charset, long score, int evidence, int suspicious, long fingerprint) {
-    /// Compares lexical plausibility and mean feature scores; positive means this is stronger.
+public record EncodingScore(Charset charset, long score, int evidence, int suspicious, int controls, int nonAscii, long fingerprint) {
+    /// Returns a bounded mean score in fixed-point units, penalizing control characters.
+    long strength() {
+        return Math.max(-255 * 256L, Math.min(255 * 256L,
+                score * 256 / Math.max(1, evidence) - (suspicious + controls) * 64 * 256L));
+    }
+
+    /// Compares character plausibility and mean statistical support; positive means this is stronger.
     int compareQuality(EncodingScore other) {
-        int result = Integer.compare(other.suspicious, suspicious);
-        return result != 0 ? result : Long.compare(score * Math.max(1, other.evidence),
-                other.score * Math.max(1, evidence));
+        return Long.compare(strength(), other.strength());
     }
 }

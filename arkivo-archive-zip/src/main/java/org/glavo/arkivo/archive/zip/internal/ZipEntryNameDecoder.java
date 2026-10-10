@@ -250,7 +250,7 @@ public final class ZipEntryNameDecoder {
         }
 
         if (legacyMetadataDecoder instanceof ZipAutoMetadataDecoder automatic) {
-            return automatic.decode(rawValue, metadataKind, versionMadeBy);
+            return automatic.decode(rawValue, metadataKind, versionMadeBy, externalAttributes, headerSource);
         }
 
         String decoded;

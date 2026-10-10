@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.benchmark;
 
-import org.glavo.arkivo.archive.zip.internal.ZipLearnedMetadataDecoder;
+import org.glavo.arkivo.archive.zip.internal.ZipAutoMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.openjdk.jmh.annotations.*;
 
@@ -19,10 +19,10 @@ import java.util.concurrent.TimeUnit;
 @Measurement(iterations = 1)
 @Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
 public class ZipMetadataLoadBenchmark {
-    /// Loads the shared coefficients and strictly decodes a short UTF-8 field once.
+    /// Loads the shared small tables and strictly decodes a short UTF-8 field once.
     /// @return decoded text, consumed by JMH
     @Benchmark
     public String load() {
-        return new ZipLearnedMetadataDecoder().decode(ByteBuffer.wrap(new byte[]{(byte) 0xc3, (byte) 0xa9}));
+        return ZipAutoMetadataDecoder.DEFAULT.decode(ByteBuffer.wrap(new byte[]{(byte) 0xc3, (byte) 0xa9}));
     }
 }

@@ -1290,6 +1290,9 @@ val verifyModuleDescriptors by tasks.registering {
         }
 
         val expectedQualifiedExports = mapOf(
+            "org.glavo.arkivo.encoding.detector" to mapOf(
+                "org.glavo.arkivo.encoding.detector.internal" to setOf("org.glavo.arkivo.archive.zip")
+            ),
             codecModule to mapOf(
                 "org.glavo.arkivo.codec.internal" to setOf(
                     "org.glavo.arkivo.archive.zip",

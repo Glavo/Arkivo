@@ -5,6 +5,7 @@ dependencies {
     api(project(":arkivo-archive"))
     implementation(project(":arkivo-archive-codec"))
     implementation(project(":arkivo-base"))
+    implementation(project(":arkivo-encoding-detector"))
     implementation(project(":arkivo-codec"))
     implementation(project(":arkivo-codec-deflate"))
     compileOnly(project(":arkivo-codec-lzma"))

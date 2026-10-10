@@ -24,18 +24,20 @@ import java.util.Objects;
 /// records retain their existing bytes.
 ///
 /// The legacy decoder is used only when neither a valid Info-ZIP Unicode extra field nor the UTF-8 flag supplies the
-/// text encoding. The default decoder recognizes unmarked UTF-8 and uses conservative legacy-encoding heuristics,
+/// text encoding. The default decoder evaluates unmarked UTF-8 and legacy encodings,
 /// falling back to CP437 when evidence is insufficient. Custom decoders determine their own conversion and failure policy.
 /// [ZipLegacyMetadataDecoder#forCodePages(Charset, Charset)] provides an opt-in creator-aware compatibility policy.
 @NotNullByDefault
 public final class ZipArchiveOptions {
     /// The automatic decoder for names and comments without explicit Unicode metadata.
     ///
-    /// Recognizes unmarked UTF-8 and uses bounded script and character heuristics for Chinese, Japanese,
-    /// and Korean legacy text. Indexed readers also collect evidence from a bounded central-directory prefix,
-    /// separately for names, comments, and creator systems. Matching Unicode extra fields can identify legacy
-    /// code pages for other entries. Decisive names also supply hints for matching raw directory prefixes.
-    /// Ambiguous or conflicting evidence falls back to per-value detection and CP437.
+    /// ASCII values bypass statistical analysis. Other values are strictly validated against candidate encodings
+    /// and ranked using character properties and small character-frequency tables. Creator-aware OEM/ANSI rules
+    /// break content-score ties without identifying a language or consulting the system code page.
+    /// Indexed readers take bounded, deterministic samples from the complete central directory, separately for
+    /// names, comments, and creator systems. Repeated features and the queried field's own contribution do not
+    /// amplify joint evidence. Valid Unicode counterparts and matching raw directory prefixes provide additional
+    /// hints. Ambiguous or conflicting evidence falls back to per-value detection and CP437.
     ///
     /// Forward-only readers and direct decoder calls analyze individual values without looking ahead.
     /// Their results can differ from indexed reading. Detection is heuristic, does not consult the system locale,

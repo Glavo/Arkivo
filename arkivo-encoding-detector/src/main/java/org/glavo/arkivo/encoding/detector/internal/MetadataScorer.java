@@ -19,7 +19,9 @@ import java.util.Arrays;
 final class MetadataScorer {
     /// Maximum scored scalars in a comment or path component; validation has no such limit.
     private static final int MAX_SCORED_CHARACTERS = 4096;
-    /// Sentinel for an absent surrogate or delimiter index.
+    /// Bounded UTF-8 structural preference, on the same scale as the largest CJK frequency bonus.
+    private static final int UTF8_STRUCTURE_BONUS = 8;
+    /// Sentinel for an absent surrogate.
     private static final int ABSENT = -1;
     /// Fixed slots for exact feature keys; full tables stop admitting new features.
     private final int[] features = new int[512];
@@ -43,6 +45,12 @@ final class MetadataScorer {
     private int evidence;
     /// Current segment's lexical inconsistencies.
     private int suspicious;
+    /// Control characters unsuitable for the current role.
+    private int controls;
+    /// Whether the preceding scalar is a box-drawing or block-element graphic.
+    private boolean previousGraphic;
+    /// Whether the preceding scalar is a letter.
+    private boolean previousLetter;
     /// Current segment's admitted scalar count.
     private int characters;
     /// Previous single-byte character class.
@@ -51,8 +59,10 @@ final class MetadataScorer {
     private boolean previousNonAscii;
     /// Non-ASCII scalars in the current segment.
     private int nonAscii;
-    /// Unclosed parentheses, brackets, braces, guillemets, and curly quotes.
-    private final int[] delimiters = new int[5];
+    /// Non-ASCII letters in the current segment's scoring window.
+    private int letters;
+    /// Non-ASCII punctuation and symbols in the current segment's scoring window.
+    private int symbols;
     /// Order-sensitive hash of admitted features.
     private long fingerprint;
     /// Last non-ASCII parent component, used when the basename supplies no non-ASCII text.
@@ -153,14 +163,18 @@ final class MetadataScorer {
         score = 0;
         evidence = 0;
         suspicious = 0;
+        controls = 0;
+        previousGraphic = false;
+        previousLetter = false;
         characters = 0;
         previous = 0;
         previousNonAscii = false;
         nonAscii = 0;
+        letters = 0;
+        symbols = 0;
         fingerprint = 0;
         Arrays.fill(features, 0);
         Arrays.fill(repetitions, (byte) 0);
-        Arrays.fill(delimiters, 0);
     }
 
     /// Applies boundaries to decoded scalars, never to undecoded bytes.
@@ -172,15 +186,29 @@ final class MetadataScorer {
             return;
         }
         if (characters++ >= MAX_SCORED_CHARACTERS) return;
-        if (point >= 128) nonAscii++;
+        if (point >= 128) nonAscii = Math.min(2, nonAscii + 1);
         int type = Character.getType(point);
         if (type == Character.CONTROL && !(kind == EncodingDetector.Kind.COMMENT
                 && (point == '\r' || point == '\n' || point == '\t'))
-                || type == Character.PRIVATE_USE || type == Character.UNASSIGNED || type == Character.SURROGATE) {
-            suspicious++;
+                || type == Character.SURROGATE) {
+            controls++;
         }
+        var block = Character.UnicodeBlock.of(point);
+        boolean graphic = block == Character.UnicodeBlock.BOX_DRAWING || block == Character.UnicodeBlock.BLOCK_ELEMENTS;
+        boolean letter = Character.isLetter(point);
+        if (point >= 128) {
+            if (letter) letters++;
+            else if (type == Character.MATH_SYMBOL || type == Character.CURRENCY_SYMBOL
+                    || type == Character.MODIFIER_SYMBOL || type == Character.OTHER_SYMBOL
+                    || type == Character.CONNECTOR_PUNCTUATION || type == Character.DASH_PUNCTUATION
+                    || type == Character.START_PUNCTUATION || type == Character.END_PUNCTUATION
+                    || type == Character.INITIAL_QUOTE_PUNCTUATION || type == Character.FINAL_QUOTE_PUNCTUATION
+                    || type == Character.OTHER_PUNCTUATION) symbols++;
+        }
+        if (graphic && previousLetter || letter && previousGraphic) suspicious++;
+        previousGraphic = graphic;
+        previousLetter = letter;
         if (kind == EncodingDetector.Kind.NAME) {
-            delimiter(point);
             if (point == '.' || point == '_' || point == '-' || point >= '0' && point <= '9') {
                 boundary();
                 return;
@@ -188,7 +216,6 @@ final class MetadataScorer {
         }
         if (model != null) {
             if (classification == 255) {
-                suspicious++;
                 boundary();
                 return;
             }
@@ -202,7 +229,6 @@ final class MetadataScorer {
         } else if (point >= 128) {
             long value = repertoireScore(point, classification);
             if (value > 0) add(0x10000 + point, value);
-            else if (Character.isLetter(point)) suspicious++;
         }
     }
 
@@ -210,7 +236,7 @@ final class MetadataScorer {
     private long repertoireScore(int point, int bytes) {
         int lead = bytes >>> 8;
         int trail = bytes & 255;
-        if (family == Family.UTF8) return Character.isDefined(point) ? 41 : 0;
+        if (family == Family.UTF8) return Character.isDefined(point) ? 41 + UTF8_STRUCTURE_BONUS : 0;
         if (family == Family.JAPANESE && point >= 0x3040 && point < 0x3100) return eucJapanese ? 54 : 20;
         if (family == Family.JAPANESE && point >= 0xFF61 && point <= 0xFF9F) return 1;
         if (family == Family.KOREAN && point >= 0xAC00 && point <= 0xD7A3) {
@@ -265,39 +291,16 @@ final class MetadataScorer {
         previousNonAscii = false;
     }
 
-    /// Counts unpaired punctuation as lexical inconsistency rather than a decoding error.
-    private void delimiter(int point) {
-        int opening = switch (point) {
-            case '(' -> 0;
-            case '[' -> 1;
-            case '{' -> 2;
-            case '«' -> 3;
-            case '“' -> 4;
-            default -> ABSENT;
-        };
-        int closing = switch (point) {
-            case ')' -> 0;
-            case ']' -> 1;
-            case '}' -> 2;
-            case '»' -> 3;
-            case '”' -> 4;
-            default -> ABSENT;
-        };
-        if (opening >= 0) delimiters[opening]++;
-        if (closing >= 0) {
-            if (delimiters[closing] == 0) suspicious++;
-            else delimiters[closing]--;
-        }
-    }
-
-    /// Completes the current segment's word and delimiter state.
+    /// Completes the current segment's word state.
     private void finishSegment() {
         boundary();
-        for (int count : delimiters) suspicious += count;
+        // Sparse letters surrounded by unrelated punctuation are weak legacy-language evidence.
+        // Valid Unicode symbols are not evidence against UTF-8.
+        if (family != Family.UTF8 && letters > 0) suspicious += Math.max(0, symbols - letters);
     }
 
     /// Copies metrics without exposing mutable workspace storage.
     private EncodingScore snapshot() {
-        return new EncodingScore(charset, score, evidence, suspicious, fingerprint);
+        return new EncodingScore(charset, score, evidence, suspicious, controls, nonAscii, fingerprint);
     }
 }

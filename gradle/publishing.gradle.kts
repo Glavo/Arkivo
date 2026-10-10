@@ -413,7 +413,8 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:runtime:$publicationVersion",
         "org.glavo:arkivo-codec-deflate:runtime:$publicationVersion",
-        "org.glavo:arkivo-codec-lzma:runtime:$publicationVersion"
+        "org.glavo:arkivo-codec-lzma:runtime:$publicationVersion",
+        "org.glavo:arkivo-encoding-detector:runtime:$publicationVersion"
     ),
     "arkivo-archive-7z" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",

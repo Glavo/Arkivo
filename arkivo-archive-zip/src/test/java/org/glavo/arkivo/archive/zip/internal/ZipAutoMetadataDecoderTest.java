@@ -9,6 +9,7 @@ import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
+import org.glavo.arkivo.encoding.detector.internal.EncodingDetector;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -29,6 +30,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import java.util.zip.CRC32;
@@ -79,6 +83,39 @@ public final class ZipAutoMetadataDecoderTest {
         byte[] raw = java.util.HexFormat.of().parseHex(hex);
         assertEquals(new String(raw, Charset.forName("IBM437")),
                 ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(raw));
+    }
+
+    /// Applies ASCII bypass only after checking authoritative Unicode, without bypassing user callbacks.
+    @Test
+    public void asciiPreservesDeclarationPriority() throws IOException {
+        byte[] raw = "??.txt".getBytes(StandardCharsets.US_ASCII);
+        byte[] extra = unicodeExtra(0x7075, "中文.txt", StandardCharsets.US_ASCII);
+        var decoder = new ZipEntryNameDecoder(ZipAutoMetadataDecoder.DEFAULT);
+        assertEquals("中文.txt", decoder.decodePath(raw, 0, extra));
+        extra[extra.length - 1] = (byte) 0xFF;
+        assertThrows(IOException.class, () -> decoder.decodePath(raw, 0, extra));
+        AtomicInteger calls = new AtomicInteger();
+        var custom = new ZipEntryNameDecoder(bytes -> {
+            calls.incrementAndGet();
+            return "custom.txt";
+        });
+        assertEquals("custom.txt", custom.decodePath(raw, 0, new byte[0]));
+        assertEquals(1, calls.get());
+    }
+
+    /// Uses documented OEM/ANSI branches without assigning a language or a Windows family to Unix producers.
+    @ParameterizedTest
+    @CsvSource({
+            "-1, 0, UNKNOWN, NONE", "0x0314, 0, CENTRAL_DIRECTORY, NONE",
+            "20, 0, CENTRAL_DIRECTORY, OEM", "25, 0, CENTRAL_DIRECTORY, OEM",
+            "25, 65536, CENTRAL_DIRECTORY, ANSI", "26, 0, LOCAL_FILE_HEADER, ANSI",
+            "40, 65536, CENTRAL_DIRECTORY, ANSI", "0x0614, 0, CENTRAL_DIRECTORY, OEM",
+            "0x0A32, 0, CENTRAL_DIRECTORY, OEM", "0x0B32, 0, CENTRAL_DIRECTORY, OEM",
+            "0x0A14, 0, CENTRAL_DIRECTORY, ANSI"
+    })
+    public void producerCodePageFamilies(int madeBy, long attributes, ZipLegacyMetadataDecoder.HeaderSource source,
+                                        EncodingDetector.Preference expected) {
+        assertEquals(expected, ZipLegacyCodePages.preference(madeBy, attributes, source));
     }
 
     /// Does not modify or retain heap, direct, sliced, or read-only caller buffers.
@@ -172,9 +209,9 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Requires multiple distinct decisive samples before extending a heuristic to an ambiguous name.
+    /// Requires independent evidence after excluding the queried field and repeated basename features.
     @Test
-    public void archiveVotesAndDuplicatePrefixes(@TempDir Path directory) throws IOException {
+    public void jointEvidenceAndDuplicatePrefixes(@TempDir Path directory) throws IOException {
         Path file = directory.resolve("votes.zip");
         Sample target = new Sample("中.txt", "GB18030", null, false, 0);
         Files.write(file, archive(target,
@@ -291,7 +328,7 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Stops collecting after the field-count budget, while the normal parser still validates later records.
+    /// Samples by content rather than stopping at the field-count boundary in physical record order.
     @ParameterizedTest
     @ValueSource(ints = {254, 255})
     public void sampleBudgetBoundary(int fillerCount, @TempDir Path directory) throws IOException {
@@ -304,13 +341,12 @@ public final class ZipAutoMetadataDecoderTest {
         byte[] bytes = archive(samples.toArray(Sample[]::new));
         Path file = directory.resolve("budget.zip");
         Files.write(file, bytes);
-        String expected = fillerCount == 254 ? "é.txt"
-                : new String("é.txt".getBytes(Charset.forName("windows-1252")), Charset.forName("IBM437"));
+        String expected = "é.txt";
         try (var fs = ZipArkivoFileSystem.open(file)) {
             assertTrue(Files.exists(fs.getPath(expected)));
             assertTrue(Files.exists(fs.getPath("€résumé.txt")));
         }
-        // Corrupt the last central record, beyond the automatic decoder's sampling prefix.
+        // Corrupt the last central record; sampling must not bypass structural validation.
         int last = bytes.length - 22 - 46 - "€résumé.txt".getBytes(Charset.forName("windows-1252")).length
                 - unicodeExtra(0x7075, "€résumé.txt", Charset.forName("windows-1252")).length;
         bytes[last] = 0;
@@ -322,9 +358,9 @@ public final class ZipAutoMetadataDecoderTest {
         });
     }
 
-    /// Caps traversal even if all earlier entries are ASCII and consume no sample budget.
+    /// Finds late Unicode evidence without spending the sample budget on preceding ASCII entries.
     @Test
-    public void recordBudget(@TempDir Path directory) throws IOException {
+    public void evidenceAfterAsciiPrefix(@TempDir Path directory) throws IOException {
         ArrayList<Sample> samples = new ArrayList<>();
         samples.add(new Sample("é.txt", "windows-1252", null, false, 0));
         for (int index = 1; index < 4096; index++) {
@@ -334,12 +370,11 @@ public final class ZipAutoMetadataDecoderTest {
         Path file = directory.resolve("record-budget.zip");
         Files.write(file, archive(samples.toArray(Sample[]::new)));
         try (var fs = ZipArkivoFileSystem.open(file)) {
-            String fallback = new String("é.txt".getBytes(Charset.forName("windows-1252")), Charset.forName("IBM437"));
-            assertTrue(Files.exists(fs.getPath(fallback)));
+            assertTrue(Files.exists(fs.getPath("é.txt")));
         }
     }
 
-    /// Includes extra-field copies in the byte budget, independently of the sample-count limit.
+    /// Does not retain unrelated extra fields or charge them against the raw-name sampling budget.
     @ParameterizedTest
     @ValueSource(ints = {65400, 65500})
     public void sampleByteBudget(int extraLength) throws IOException {
@@ -356,9 +391,38 @@ public final class ZipAutoMetadataDecoderTest {
         var decoder = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT,
                 ByteBuffer.wrap(central.toByteArray()));
         byte[] raw = "é.txt".getBytes(Charset.forName("windows-1252"));
-        String expected = extraLength == 65400 ? "é.txt" : new String(raw, Charset.forName("IBM437"));
+        String expected = "é.txt";
         assertEquals(expected, decoder.decodePath(raw, 0, new byte[0],
                 ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 20, 0));
+    }
+
+    /// Keeps selection stable under entry reordering across both field-count and raw-byte sampling limits.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 768})
+    public void samplingIsIndependentOfRecordOrder(int padding) throws IOException {
+        var records = new ArrayList<byte[]>();
+        for (int index = 0; index < 300; index++) {
+            records.add(centralBytes(new Sample("a".repeat(padding) + index + "/软件安装说明.txt",
+                    "GB18030", null, false, 0)));
+        }
+        records.add(centralBytes(new Sample("图片视频下载.txt", "GB18030", null, false, 0)));
+        records.add(centralBytes(new Sample("€résumé.txt", "windows-1252", null, true, 3)));
+        var queries = List.of(new Sample("中.txt", "GB18030", null, false, 0),
+                new Sample("é.txt", "windows-1252", null, false, 3),
+                new Sample("こんにちは世界.txt", "windows-31j", null, false, 0));
+        var expected = new ArrayList<String>();
+        for (int round = 0; round < 3; round++) {
+            Collections.shuffle(records, new Random(437 + round));
+            var central = new ByteArrayOutputStream();
+            for (var record : records) central.write(record);
+            var decoder = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT,
+                    ByteBuffer.wrap(central.toByteArray()));
+            var actual = new ArrayList<String>();
+            for (var query : queries) actual.add(decoder.decodePath(query.name().getBytes(Charset.forName(query.encoding())),
+                    0, new byte[0], ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, query.creator() << 8 | 20, 0));
+            if (round == 0) expected.addAll(actual);
+            else assertEquals(expected, actual);
+        }
     }
 
     /// Extracts one independently generated central record for bounded-analysis tests.

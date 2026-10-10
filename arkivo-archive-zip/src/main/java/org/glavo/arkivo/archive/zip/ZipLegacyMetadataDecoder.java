@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+import org.glavo.arkivo.archive.zip.internal.ZipLegacyCodePages;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
 
@@ -55,22 +56,7 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
     static ZipLegacyMetadataDecoder forCodePages(Charset oemCharset, Charset ansiCharset) {
         ArchiveMetadataDecoder oem = ArchiveMetadataDecoder.forCharset(oemCharset);
         ArchiveMetadataDecoder ansi = ArchiveMetadataDecoder.forCharset(ansiCharset);
-        return context -> (usesOemCodePage(context) ? oem : ansi).decode(context.bytes());
-    }
-
-    /// Selects the OEM branch of the Info-ZIP legacy filename conversion rules.
-    private static boolean usesOemCodePage(Context context) {
-        int version = context.creatorVersion();
-        return switch (context.creatorSystem()) {
-            case UNKNOWN_HEADER_VALUE, 6 -> true;
-            case 0 -> !((version == 25 || version == 26 || version == 40)
-                    && (context.headerSource() == HeaderSource.LOCAL_FILE_HEADER
-                    || (context.externalAttributes() != UNKNOWN_HEADER_VALUE
-                    && (context.externalAttributes() & 0xffff_0000L) != 0)));
-            // Older tools used 11 for NTFS; current ZIP specifications assign NTFS to 10.
-            case 10, 11 -> version == 50;
-            default -> false;
-        };
+        return context -> (ZipLegacyCodePages.usesOem(context) ? oem : ansi).decode(context.bytes());
     }
 
     /// Decodes one complete legacy ZIP entry name or comment.

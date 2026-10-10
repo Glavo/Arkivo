@@ -37,7 +37,7 @@ class ZipMetadataScoringTest {
                 {"x-windows-949", "가", "한", "자료", "사용설명파일"},
                 {"UTF-8", "é", "中", "日本語", "자료"}
         };
-        System.out.println("charset,non_ascii_length,total,current_zip,reference_detector,field_correct,joint_correct,field_unknown,joint_unknown");
+        System.out.println("charset,non_ascii_length,total,zip_default,reference_detector,field_correct,joint_correct,field_unknown,joint_unknown");
         for (String[] group : groups) {
             var charset = Charset.forName(group[0]);
             var detector = new EncodingDetector();
@@ -58,20 +58,17 @@ class ZipMetadataScoringTest {
                     int bucket = stem.codePoints().filter(value -> value >= 128).count() <= 2 ? 0 : 1;
                     int[] row = counts[bucket];
                     row[0]++;
-                    String previous = ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(bytes);
+                    String automatic = ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(bytes);
                     String continuous = ReferenceEncodingDetector.detect(bytes).decode(bytes.duplicate()).toString();
                     @Nullable String field = decodeForEvaluation(detector, bytes, null);
                     @Nullable String joint = decodeForEvaluation(detector, bytes, evidence);
-                    if (previous.equals(name)) row[1]++;
+                    if (automatic.equals(name)) row[1]++;
                     if (continuous.equals(name)) row[2]++;
                     if (name.equals(field)) row[3]++;
                     if (name.equals(joint)) row[4]++;
                     if (field == null) row[5]++;
                     if (joint == null) row[6]++;
                     assertEquals(0, bytes.position());
-                    if (previous.equals(name) && !name.equals(field)) {
-                        System.out.println("REGRESSION " + group[0] + " " + name + " -> " + field);
-                    }
                 }
             }
             for (int bucket = 0; bucket < counts.length; bucket++) {

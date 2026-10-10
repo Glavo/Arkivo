@@ -26,6 +26,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.FilterInputStream;
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -123,7 +124,7 @@ final class ZipRsCorpusTest {
     @ParameterizedTest
     @MethodSource("ordinaryArchives")
     void readsIndexedArchives(String name) throws IOException {
-        var expected = ArchiveCorpusAssertions.readZipReference(fixture(name));
+        var expected = detectedNames(name, ArchiveCorpusAssertions.readZipReference(fixture(name)));
         try (var fileSystem = ZipArkivoFileSystem.open(fixture(name))) {
             ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), expected);
         }
@@ -133,7 +134,7 @@ final class ZipRsCorpusTest {
     @ParameterizedTest(name = "{0}, chunk={1}")
     @MethodSource("fragmentedArchives")
     void readsFragmentedArchives(String name, int chunk) throws IOException {
-        var expected = ArchiveCorpusAssertions.readZipReference(fixture(name));
+        var expected = detectedNames(name, ArchiveCorpusAssertions.readZipReference(fixture(name)));
         try (var reader = ZipArkivoStreamingReader.open(new ChunkedInput(fixture(name), chunk))) {
             assertEquals(expected, ArchiveCorpusAssertions.readStreaming(reader));
             assertFalse(reader.next());
@@ -154,8 +155,33 @@ final class ZipRsCorpusTest {
         assertEquals(expected.size() + 1, actual.size());
         assertEquals(expected, actual.stream().filter(entry -> !entry.path().equals("added.bin")).toList());
         try (var fileSystem = ZipArkivoFileSystem.open(copy)) {
-            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), actual);
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), detectedNames(name, actual));
         }
+    }
+
+    /// Confirms the mixed legacy encodings from the fixture's plaintext declarations and original filename bytes.
+    @ParameterizedTest
+    @CsvSource({"中文, GB18030, D6D0CEC4", "日文, SHIFT_JIS, 93FA95B6"})
+    void nonUtf8NamesMatchDeclaredContent(String name, String encoding, String rawHex) throws IOException {
+        byte[] raw = HexFormat.of().parseHex(rawHex);
+        assertArrayEquals(raw, name.getBytes(Charset.forName(encoding)));
+        try (var fs = ZipArkivoFileSystem.open(fixture("non_utf8.zip"))) {
+            var path = fs.getPath(name);
+            assertEquals("encoding " + encoding, Files.readString(path, StandardCharsets.US_ASCII).strip());
+            assertArrayEquals(raw, Files.readAttributes(path, ZipArkivoEntryAttributes.class).rawPath());
+        }
+    }
+
+    /// Replaces the reference parser's fixed CP437 spelling only for the two independently verified legacy names.
+    /// Their bodies identify GB18030 and Shift-JIS; content digests still come from the independent parser.
+    private static @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> detectedNames(
+            String fixture, List<ArchiveCorpusAssertions.EntryDigest> entries) {
+        if (!fixture.equals("non_utf8.zip")) return List.copyOf(entries);
+        return entries.stream().map(entry -> new ArchiveCorpusAssertions.EntryDigest(switch (entry.path()) {
+            case "╓╨╬─" -> "中文";
+            case "ô·ò╢" -> "日文";
+            default -> entry.path();
+        }, entry.directory(), entry.symbolicLink(), entry.size(), entry.crc32(), entry.sha256())).toList();
     }
 
     /// Verifies megabyte-scale binary Deflate64 and LZMA content against the separately licensed original file.

@@ -31,10 +31,6 @@ import java.util.zip.ZipOutputStream;
 @Measurement(iterations = 5, time = 1)
 @Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
 public class ZipMetadataBenchmark {
-    /// Selects the unchanged production policy or the trained candidate.
-    @Param({"baseline", "learned"})
-    public String implementation = "baseline";
-
     /// Selects one field, 512 fields, directory repetition, mixed encodings, or an 8192-entry ASCII index.
     @Param({"single", "batch", "prefix", "mixed", "ascii-index"})
     public String workload = "single";
@@ -54,7 +50,7 @@ public class ZipMetadataBenchmark {
     /// Generates deterministic fields and checks the index entry count without judging language-model accuracy.
     @Setup
     public void setup() throws IOException {
-        decoder = implementation.equals("learned") ? new ZipLearnedMetadataDecoder() : ZipAutoMetadataDecoder.DEFAULT;
+        decoder = ZipAutoMetadataDecoder.DEFAULT;
         String[] names = {"一覧表", "漢字", "資料", "写真", "報告書", "予定表", "説明", "映像"};
         fields = new byte[workload.equals("single") ? 1 : 512][];
         int size = 0;
@@ -115,7 +111,8 @@ public class ZipMetadataBenchmark {
             sink.consume(decoder.decode(ByteBuffer.wrap(fields[0])));
         } else {
             var prepared = ZipEntryNameDecoder.forCentralDirectory(decoder, central);
-            for (byte[] field : fields) sink.consume(prepared.decodePath(field, 0, new byte[0]));
+            for (byte[] field : fields) sink.consume(prepared.decodePath(field, 0, new byte[0],
+                    org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 20, 0));
         }
     }
 

@@ -33,8 +33,8 @@ class ZipMetadataCorpusTest {
     /// Uses the name asserted by Zip4j 2.11.5 ExtractZipFileIT.testExtractZipFileWithChineseCharsetGBK.
     @Test
     void sevenZipChineseName() throws Exception {
-        compare(fixture("zip4j", "src/test/resources/test-archives/testfile_with_chinese_filename_by_7zip.zip"),
-                "GBK", List.of("fff - 副本.txt"));
+        assertEquals(1, compare(fixture("zip4j", "src/test/resources/test-archives/testfile_with_chinese_filename_by_7zip.zip"),
+                "GBK", List.of("fff - 副本.txt")));
     }
 
     /// Keeps WinRAR's Unicode extra field authoritative even when raw legacy bytes lost the euro sign.
@@ -79,7 +79,7 @@ class ZipMetadataCorpusTest {
         }
         assertEquals(new java.util.HashSet<>(expectedNames), new java.util.HashSet<>(names));
         assertEquals(expectedNames.size(), names.size());
-        int previous = 0;
+        int defaults = 0;
         int isolated = 0;
         int joint = 0;
         var detector = new EncodingDetector();
@@ -88,17 +88,18 @@ class ZipMetadataCorpusTest {
             var input = rawNames.get(index);
             var others = new ArrayList<>(rawNames);
             others.remove(index);
-            String old = ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(input);
+            String automatic = ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(input);
             @Nullable String single = ZipMetadataScoringTest.decodeForEvaluation(detector, input, null);
             @Nullable String combined = ZipMetadataScoringTest.decodeForEvaluation(detector, input,
                     detector.prepare(others, EncodingDetector.Kind.NAME));
-            if (expected.equals(old)) previous++;
+            assertEquals(expected, automatic);
+            if (expected.equals(automatic)) defaults++;
             if (expected.equals(single)) isolated++;
             if (expected.equals(combined)) joint++;
             System.out.println(path.getFileName() + " expected=" + expected + " isolated=" + single + " joint=" + combined);
         }
-        System.out.printf(java.util.Locale.ROOT, "archive=%s,total=%d,current_zip=%d,field_scores=%d,joint_scores=%d%n",
-                path.getFileName(), names.size(), previous, isolated, joint);
+        System.out.printf(java.util.Locale.ROOT, "archive=%s,total=%d,zip_default=%d,field_scores=%d,joint_scores=%d%n",
+                path.getFileName(), names.size(), defaults, isolated, joint);
         return isolated;
     }
 }

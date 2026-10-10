@@ -8,26 +8,39 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.charset.Charset;
 import java.util.List;
+import java.util.Map;
 
 /// Freezes format-independent metadata evidence without retaining source fields.
-/// Rankings are ordinal support, not confidence estimates or an archive-wide encoding declaration.
+/// Scores aggregate bounded field evidence, not votes, probabilities, or an encoding declaration.
 ///
 /// @param kind role of the fields used to build this evidence
 /// @param candidates candidate support; copied on construction
 @NotNullByDefault
-record EncodingEvidence(EncodingDetector.Kind kind, @Unmodifiable List<Support> candidates) {
+public record EncodingEvidence(EncodingDetector.Kind kind, @Unmodifiable List<Support> candidates) {
     /// Copies candidate support into an immutable summary.
-    EncodingEvidence {
+    /// @param kind metadata role
+    /// @param candidates support records to copy
+    public EncodingEvidence {
         java.util.Objects.requireNonNull(kind);
         candidates = List.copyOf(candidates);
     }
 
-    /// Records ordinal support from distinct feature fingerprints.
+    /// Records relative scores from distinct feature fingerprints.
     ///
     /// @param charset candidate encoding
-    /// @param rank    sum of per-field wins minus losses against other valid candidates
+    /// @param score   sum of bounded relative field scores; higher values provide stronger support
     /// @param fields  number of contributing feature sets
+    /// @param contributions per-feature-set scores, retained to exclude the queried field's own evidence
     @NotNullByDefault
-    record Support(Charset charset, long rank, int fields) {
+    public record Support(Charset charset, long score, int fields,
+                          @Unmodifiable Map<EncodingScore, Long> contributions) {
+        /// Copies contributions without retaining any source bytes.
+        /// @param charset candidate encoding
+        /// @param score summed relative support
+        /// @param fields number of contributing feature sets
+        /// @param contributions per-feature-set scores to copy
+        public Support {
+            contributions = Map.copyOf(contributions);
+        }
     }
 }

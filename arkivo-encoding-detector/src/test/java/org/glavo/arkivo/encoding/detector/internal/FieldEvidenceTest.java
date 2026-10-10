@@ -61,6 +61,30 @@ class FieldEvidenceTest {
         assertNotEquals(StandardCharsets.UTF_8, detector.detect(invalid, EncodingDetector.Kind.NAME, context));
     }
 
+    /// Uses score vectors, excludes self-support, and requires genuinely distinct supporting fields.
+    @Test
+    void shortFieldsNeedIndependentSupport() {
+        var detector = new EncodingDetector();
+        var charset = Charset.forName("GB18030");
+        var kind = EncodingDetector.Kind.NAME;
+        var query = ByteBuffer.wrap("中.txt".getBytes(charset));
+        var first = ByteBuffer.wrap("软件安装说明.txt".getBytes(charset));
+        var second = ByteBuffer.wrap("图片视频下载.txt".getBytes(charset));
+        assertNull(detector.detect(query, kind));
+        assertNull(detector.detect(query, kind, detector.prepare(List.of(query, first, first), kind)));
+        assertEquals(charset, detector.detect(query, kind, detector.prepare(List.of(query, first, second), kind)));
+        var context = detector.prepare(List.of(first, second), kind);
+        assertEquals(charset, detector.detect(query, kind, context));
+        for (var candidate : context.candidates()) {
+            assertEquals(candidate.fields(), candidate.contributions().size());
+            assertEquals(candidate.score(), candidate.contributions().values().stream().mapToLong(Long::longValue).sum());
+            for (long contribution : candidate.contributions().values()) {
+                assertTrue(contribution <= 0 && contribution >= -64 * 256L);
+            }
+            assertThrows(UnsupportedOperationException.class, candidate.contributions()::clear);
+        }
+    }
+
     /// Checks all batch limits before deduplication; no oversized field is silently sampled.
     @Test
     void budgetsAndEmptyInput() {
