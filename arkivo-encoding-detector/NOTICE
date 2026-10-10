@@ -14,3 +14,9 @@ This port uses JDK charset decoders and rejects malformed or unmappable
 input for each candidate. It does not emulate encoding_rs decoding tables
 or the upstream allowances for unsupported Macintosh and vendor extensions.
 It uses the generic-domain selection rules, without browser domain hints.
+
+The independent-field scorer also includes IBM437, IBM850, and IBM852 byte
+classifications derived from JDK mappings. These reuse the Western and
+Central European pair scores; characters absent from the source models
+receive neutral classes. Field scores retain single-letter evidence and
+do not select a charset or apply the continuous detector's fallback rules.

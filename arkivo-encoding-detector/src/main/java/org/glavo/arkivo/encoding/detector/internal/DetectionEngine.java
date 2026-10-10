@@ -4,11 +4,17 @@
 package org.glavo.arkivo.encoding.detector.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
+import org.jetbrains.annotations.UnmodifiableView;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Objects;
 
-/// Maintains independent candidates and applies generic-domain chardetng selection.
+/// Scores independent encoding candidates and applies continuous-text selection.
 @NotNullByDefault
 public final class DetectionEngine {
     /// Candidates in upstream tie-breaking order.
@@ -48,6 +54,60 @@ public final class DetectionEngine {
     public DetectionEngine(boolean allowIso2022Jp) {
         if (!allowIso2022Jp) {
             candidates[1].score = Candidate.INVALID;
+        }
+    }
+
+    /// Scores one independent, complete field, including DOS candidates but excluding ISO-2022-JP.
+    /// Empty and ASCII-only fields return no evidence without loading the model tables.
+    /// Input position, limit, mark, and content are unchanged; input storage is not retained.
+    ///
+    /// Scores include negative and zero evidence and do not apply the prose scorer's minimum word length.
+    /// Rejected candidates are omitted; alternative models for one charset contribute their maximum score.
+    /// UTF-8 receives no unconditional preference here. Selection and fallback belong to the caller.
+    /// The returned list is immutable and follows candidate order, not score order.
+    ///
+    /// @param input complete field between position and limit
+    /// @return independent candidate scores; not a guarantee that an omitted charset cannot decode the field
+    /// @throws NullPointerException if input is null
+    static @Unmodifiable List<EncodingScore> scoreField(@UnmodifiableView ByteBuffer input) {
+        int start = input.position();
+        while (start < input.limit() && input.get(start) >= 0) {
+            start++;
+        }
+        if (start == input.limit()) {
+            return List.of();
+        }
+        var engine = new DetectionEngine(false);
+        var dos = new Candidate[DosModels.VALUES.length];
+        for (int i = 0; i < dos.length; i++) {
+            dos[i] = new LatinCandidate(DosModels.VALUES[i]);
+        }
+        // Match the continuous detector's initial ASCII context without connecting separate fields.
+        for (int index = Math.max(input.position(), start - 2); index < input.limit(); index++) {
+            int value = input.get(index) & 255;
+            engine.accept(value);
+            for (var candidate : dos) {
+                candidate.accept(value);
+            }
+        }
+        engine.finish();
+        for (var candidate : dos) {
+            candidate.finish();
+        }
+        var scores = new LinkedHashMap<Charset, EncodingScore>();
+        collectScores(engine.candidates, scores);
+        collectScores(dos, scores);
+        return List.copyOf(scores.values());
+    }
+
+    /// Combines models of the same charset without discarding short-word evidence.
+    private static void collectScores(Candidate[] candidates, LinkedHashMap<Charset, EncodingScore> scores) {
+        for (var candidate : candidates) {
+            if (candidate.score != Candidate.INVALID) {
+                var charset = Objects.requireNonNull(candidate.charset);
+                var value = new EncodingScore(charset, candidate.score);
+                scores.merge(charset, value, (left, right) -> left.score() >= right.score() ? left : right);
+            }
         }
     }
 

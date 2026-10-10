@@ -9,6 +9,8 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
+import java.nio.charset.CharacterCodingException;
+import java.util.Arrays;
 
 import static org.glavo.arkivo.encoding.detector.internal.Weights.IMPLAUSIBILITY_PENALTY;
 
@@ -50,6 +52,40 @@ record SingleByteData(String charsetName, byte @Unmodifiable [] lower, byte @Unm
             }
         }
         return result;
+    }
+
+    /// Reuses this model's classes and pair weights for another ASCII-compatible single-byte charset.
+    /// Characters absent from this model receive the neutral punctuation class, not a language score.
+    /// Unavailable charsets remain excluded by their empty validity masks.
+    SingleByteData remap(String name) {
+        byte[] mapped = new byte[128];
+        Arrays.fill(mapped, (byte) (ascii + nonAscii));
+        if (Charset.isSupported(name) && Charset.isSupported(charsetName)) {
+            var source = Charset.forName(charsetName).newDecoder();
+            var target = Charset.forName(name).newDecoder();
+            var classes = new java.util.HashMap<Character, Byte>();
+            for (int value = 0; value < 256; value++) {
+                try {
+                    var decoded = source.decode(ByteBuffer.wrap(new byte[]{(byte) value}));
+                    if (decoded.remaining() == 1 && classify(value) != 255) {
+                        classes.put(decoded.get(), (byte) classify(value));
+                    }
+                } catch (CharacterCodingException ignored) {
+                    // Undefined source bytes have no character class to transfer.
+                }
+            }
+            for (int value = 128; value < 256; value++) {
+                try {
+                    var decoded = target.decode(ByteBuffer.wrap(new byte[]{(byte) value}));
+                    if (decoded.remaining() == 1) {
+                        mapped[value - 128] = classes.getOrDefault(decoded.get(), (byte) (ascii + nonAscii));
+                    }
+                } catch (CharacterCodingException ignored) {
+                    // The validity mask rejects undefined bytes independently of the language model.
+                }
+            }
+        }
+        return new SingleByteData(name, lower, mapped, probabilities, ascii, nonAscii);
     }
 
     /// Classifies an unsigned byte.
