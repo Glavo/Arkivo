@@ -15,8 +15,9 @@ dependencies {
 }
 
 tasks.named<Test>("tier2Test") {
-    dependsOn(":arkivo-all:prepareJSZipTestCorpus", ":arkivo-all:prepareZip4jTestCorpus")
-    for (corpus in listOf("jszip", "zip4j")) {
+    dependsOn(":arkivo-all:prepareJSZipTestCorpus", ":arkivo-all:prepareZip4jTestCorpus",
+        ":arkivo-all:prepareGoTestCorpus", ":arkivo-all:prepareZipRsTestCorpus")
+    for (corpus in listOf("jszip", "zip4j", "go", "ziprs")) {
         val manifestFile = rootProject.file("gradle/test-data/$corpus.properties")
         val manifest = Properties().apply { manifestFile.inputStream().use(::load) }
         val directory = rootProject.layout.buildDirectory.dir("test-data/$corpus/${manifest.getProperty("version")}")
@@ -53,7 +54,7 @@ val downloadKalaModels = tasks.register<DownloadVerifiedFile>("downloadKalaModel
     })
 }
 val prepareKalaModels = tasks.register<Sync>("prepareKalaModels") {
-    description = "Extracts statistical models without adding Kala classes to the test classpath."
+    description = "Extracts statistical models for the metadata-specific scoring experiment."
     from(downloadKalaModels.flatMap { it.destination }.map { zipTree(it.asFile) }) {
         include("kala/encdet/internal/models.bin", "kala/encdet/internal/idf.bin")
         includeEmptyDirs = false
@@ -64,4 +65,8 @@ val prepareKalaModels = tasks.register<Sync>("prepareKalaModels") {
 }
 sourceSets.named("tier2Test") {
     resources.srcDir(prepareKalaModels)
+}
+
+dependencies {
+    "tier2TestImplementation"(files(downloadKalaModels.flatMap { it.destination }))
 }

@@ -22,21 +22,7 @@ class ZipMetadataScoringTest {
     /// Reports exact-text results and abstentions without assigning a charset to uncertain fields.
     @Test
     void compareShortNames() throws Exception {
-        String[][] groups = {
-                {"IBM437", "é", "ö", "résumé", "München"},
-                {"IBM850", "ø", "å", "smør", "données"},
-                {"IBM852", "ł", "ž", "Łódź", "žluťoučký"},
-                {"windows-1252", "é", "ö", "résumé", "München"},
-                {"windows-1250", "ł", "ž", "Łódź", "žluťoučký"},
-                {"windows-1251", "я", "ж", "файл", "Привет"},
-                {"IBM866", "я", "ж", "файл", "Привет"},
-                {"GB18030", "中", "档", "文件", "软件安装说明"},
-                {"Big5-HKSCS", "中", "檔", "檔案", "軟體安裝說明"},
-                {"windows-31j", "あ", "字", "日本語", "こんにちは世界"},
-                {"EUC-JP", "あ", "字", "日本語", "こんにちは世界"},
-                {"x-windows-949", "가", "한", "자료", "사용설명파일"},
-                {"UTF-8", "é", "中", "日本語", "자료"}
-        };
+        String[][] groups = shortNameGroups();
         System.out.println("charset,non_ascii_length,total,zip_default,reference_detector,field_correct,joint_correct,"
                 + "field_unknown,joint_unknown,kala_field_correct,kala_joint_correct,kala_field_unknown,kala_joint_unknown,"
                 + "kala_field_with_cp437_fallback");
@@ -91,6 +77,25 @@ class ZipMetadataScoringTest {
                         row[7], row[8], row[9], row[10], row[11]);
             }
         }
+    }
+
+    /// Returns fresh authored probes shared by the unchanged-model and projected-model comparisons.
+    static String[][] shortNameGroups() {
+        return new String[][]{
+                {"IBM437", "é", "ö", "résumé", "München"},
+                {"IBM850", "ø", "å", "smør", "données"},
+                {"IBM852", "ł", "ž", "Łódź", "žluťoučký"},
+                {"windows-1252", "é", "ö", "résumé", "München"},
+                {"windows-1250", "ł", "ž", "Łódź", "žluťoučký"},
+                {"windows-1251", "я", "ж", "файл", "Привет"},
+                {"IBM866", "я", "ж", "файл", "Привет"},
+                {"GB18030", "中", "档", "文件", "软件安装说明"},
+                {"Big5-HKSCS", "中", "檔", "檔案", "軟體安裝說明"},
+                {"windows-31j", "あ", "字", "日本語", "こんにちは世界"},
+                {"EUC-JP", "あ", "字", "日本語", "こんにちは世界"},
+                {"x-windows-949", "가", "한", "자료", "사용설명파일"},
+                {"UTF-8", "é", "中", "日本語", "자료"}
+        };
     }
 
     /// Decodes only an actual selection; uncertainty is measured separately and never silently replaced.
