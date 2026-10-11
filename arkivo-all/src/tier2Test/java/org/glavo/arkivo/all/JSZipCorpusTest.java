@@ -27,6 +27,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -216,6 +217,7 @@ final class JSZipCorpusTest {
         Path copy = directory.resolve("updated.zip");
         Files.copy(fixture(name), copy);
         var original = referenceEntries(referenceFixture(name));
+        var comments = referenceRawComments(referenceFixture(name)).iterator();
         byte[] added = {11, 23, 47};
         try (var fileSystem = ZipArkivoFileSystem.update(copy)) {
             Files.write(fileSystem.getPath("/added.bin"), added);
@@ -235,8 +237,8 @@ final class JSZipCorpusTest {
                 assertEquals(expected.getExternalAttributes(), actual.externalAttributes(), expected.getName());
                 assertEquals(expected.getInternalAttributes(), actual.internalAttributes(), expected.getName());
                 assertArrayEquals(expected.getRawName(), actual.rawPath(), expected.getName());
-                assertEquals(Objects.requireNonNullElse(expected.getComment(), ""),
-                        Objects.requireNonNullElse(actual.comment(), ""), expected.getName());
+                assertArrayEquals(comments.next(), Objects.requireNonNullElseGet(actual.rawComment(), () -> new byte[0]),
+                        expected.getName());
             }
         }
     }
@@ -251,8 +253,8 @@ final class JSZipCorpusTest {
                  var fileSystem = ZipArkivoFileSystem.open(copy)) {
                 assertEquals("file comment", reference.getComment());
                 assertEquals("entry comment", reference.getEntry("Hello.txt").getComment());
-                assertEquals("entry comment", Files.readAttributes(fileSystem.getPath("/Hello.txt"),
-                        ZipArkivoEntryAttributes.class).comment());
+                assertArrayEquals("entry comment".getBytes(StandardCharsets.US_ASCII),
+                        Files.readAttributes(fileSystem.getPath("/Hello.txt"), ZipArkivoEntryAttributes.class).rawComment());
             }
             if (pass == 0) {
                 try (var fileSystem = ZipArkivoFileSystem.update(copy)) {
@@ -264,6 +266,7 @@ final class JSZipCorpusTest {
 
     /// Compares encoded names and central metadata independently of body decoding.
     private static void assertIndexedMetadata(Path source, ZipArkivoFileSystem fileSystem) throws IOException {
+        var comments = referenceRawComments(source).iterator();
         try (var reference = org.apache.commons.compress.archivers.zip.ZipFile.builder()
                 .setPath(source).setCharset("IBM437").get()) {
             var entries = reference.getEntries();
@@ -280,10 +283,26 @@ final class JSZipCorpusTest {
                 assertEquals(expected.getInternalAttributes(), actual.internalAttributes(), expected.getName());
                 assertEquals(expected.getCompressedSize(), actual.compressedSize(), expected.getName());
                 assertEquals(expected.getCrc(), actual.crc32(), expected.getName());
-                assertEquals(Objects.requireNonNullElse(expected.getComment(), ""),
-                        Objects.requireNonNullElse(actual.comment(), ""), expected.getName());
+                assertArrayEquals(comments.next(), Objects.requireNonNullElseGet(actual.rawComment(), () -> new byte[0]),
+                        expected.getName());
             }
         }
+    }
+
+    /// Recovers the fixtures' original comment bytes without Unicode extra-field substitution.
+    /// UTF-8-flagged comments in these fixtures are valid UTF-8; other bytes round-trip through ISO-8859-1.
+    private static List<byte[]> referenceRawComments(Path source) throws IOException {
+        var comments = new ArrayList<byte[]>();
+        try (var reference = org.apache.commons.compress.archivers.zip.ZipFile.builder()
+                .setPath(source).setCharset(StandardCharsets.ISO_8859_1).setUseUnicodeExtraFields(false).get()) {
+            var entries = reference.getEntries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                var charset = (entry.getRawFlag() & 0x800) != 0 ? StandardCharsets.UTF_8 : StandardCharsets.ISO_8859_1;
+                comments.add(Objects.requireNonNullElse(entry.getComment(), "").getBytes(charset));
+            }
+        }
+        return comments;
     }
 
     /// Retains strict local/central name agreement even for an archive accepted by JSZip.

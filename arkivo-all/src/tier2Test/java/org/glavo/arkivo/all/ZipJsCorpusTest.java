@@ -24,6 +24,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.FilterInputStream;
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -230,12 +231,12 @@ final class ZipJsCorpusTest {
         }
     }
 
-    /// Decodes the original CP437 comment and preserves distinct DOS attribute combinations.
+    /// Preserves the original CP437 comment and preserves distinct DOS attribute combinations.
     @Test
     void retainsPkzipCommentsAndDosAttributes() throws IOException {
         try (var fileSystem = ZipArkivoFileSystem.open(fixture("lorem-204-comments.zip"))) {
             var attributes = Files.readAttributes(fileSystem.getPath("/LOREM.TXT"), ZipArkivoEntryAttributes.class);
-            assertEquals("Comentario: Café ñoño ▓▒░", attributes.comment());
+            assertArrayEquals("Comentario: Café ñoño ▓▒░".getBytes(Charset.forName("IBM437")), attributes.rawComment());
             assertEquals(25, Objects.requireNonNull(attributes.rawComment()).length);
         }
         try (var fileSystem = ZipArkivoFileSystem.open(fixture("lorem-204-attributes.zip"))) {

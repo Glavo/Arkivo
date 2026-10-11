@@ -967,13 +967,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             return path;
         }
 
-        /// Returns the decoded ZIP entry comment text, or `null` when no comment is present.
-        @Override
-        public @Nullable String comment() {
-            byte[] comment = rawComment;
-            return comment != null ? new String(comment, StandardCharsets.UTF_8) : null;
-        }
-
         /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.
         @Override
         public long compressedSize() {

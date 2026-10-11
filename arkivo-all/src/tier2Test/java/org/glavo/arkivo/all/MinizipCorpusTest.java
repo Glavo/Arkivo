@@ -283,8 +283,8 @@ final class MinizipCorpusTest {
         }
         try (var fileSystem = ZipArkivoFileSystem.open(copy)) {
             if (name.equals("comments.zip")) {
-                assertEquals("This is a file comment.",
-                        Files.readAttributes(fileSystem.getPath("/foo"), ZipArkivoEntryAttributes.class).comment());
+                assertArrayEquals("This is a file comment.".getBytes(StandardCharsets.US_ASCII),
+                        Files.readAttributes(fileSystem.getPath("/foo"), ZipArkivoEntryAttributes.class).rawComment());
             } else {
                 for (String mode : List.of("600", "604", "777")) {
                     String permissions = switch (mode) {

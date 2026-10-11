@@ -143,7 +143,7 @@ public final class ZipLegacyMetadataDecoderTest {
         var read = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(decoder);
         try (var fs = ZipArkivoFileSystem.open(file, read)) {
             var attributes = Files.readAttributes(fs.getPath("legacy-\u00e9.txt"), ZipArkivoEntryAttributes.class);
-            assertEquals("\u00e9", attributes.comment());
+            assertArrayEquals(new byte[]{(byte) 0xe9}, attributes.rawComment());
             assertEquals(0x81a4_0000L, attributes.externalAttributes());
         }
         try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive), read)) {
@@ -152,15 +152,15 @@ public final class ZipLegacyMetadataDecoderTest {
         }
         try (var fs = ZipArkivoFileSystem.update(file,
                 ZipArchiveOptions.UPDATE_DEFAULTS.withLegacyMetadataDecoder(decoder))) {
-            assertEquals("\u00e9", Files.readAttributes(fs.getPath("legacy-\u00e9.txt"),
-                    ZipArkivoEntryAttributes.class).comment());
+            assertArrayEquals(new byte[]{(byte) 0xe9}, Files.readAttributes(fs.getPath("legacy-\u00e9.txt"),
+                    ZipArkivoEntryAttributes.class).rawComment());
             Files.write(fs.getPath("new.txt"), new byte[]{4});
         }
         try (var fs = ZipArkivoFileSystem.open(file, read)) {
             assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath("legacy-\u00e9.txt")));
             assertArrayEquals(new byte[]{4}, Files.readAllBytes(fs.getPath("new.txt")));
-            assertEquals("\u00e9", Files.readAttributes(fs.getPath("legacy-\u00e9.txt"),
-                    ZipArkivoEntryAttributes.class).comment());
+            assertArrayEquals(new byte[]{(byte) 0xe9}, Files.readAttributes(fs.getPath("legacy-\u00e9.txt"),
+                    ZipArkivoEntryAttributes.class).rawComment());
         }
     }
 
@@ -172,7 +172,7 @@ public final class ZipLegacyMetadataDecoderTest {
         IntStream.range(0, 256).parallel().forEach(index -> {
             boolean oem = index % 2 == 0;
             var context = new ZipLegacyMetadataDecoder.Context(ByteBuffer.wrap(new byte[]{(byte) 0x82}),
-                    ZipLegacyMetadataDecoder.MetadataKind.ENTRY_COMMENT,
+                    ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                     ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 0, 20,
                     oem ? 20 : 10 << 8 | 20, 0, ByteBuffer.allocate(0));
             try {
@@ -213,10 +213,6 @@ public final class ZipLegacyMetadataDecoderTest {
             byte[] bytes = new byte[context.bytes().remaining()];
             context.bytes().get(bytes);
             seen.add(context.headerSource());
-            if (context.metadataKind() == ZipLegacyMetadataDecoder.MetadataKind.ENTRY_COMMENT) {
-                assertArrayEquals(new byte[]{(byte) 0xe9}, bytes);
-                return "decoded comment";
-            }
             assertEquals(ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             assertArrayEquals("legacy-\u00e9.txt".getBytes(StandardCharsets.ISO_8859_1), bytes);
             return "restored.txt";
@@ -225,7 +221,7 @@ public final class ZipLegacyMetadataDecoderTest {
         try (var fs = ZipArkivoFileSystem.open(file, options)) {
             var attributes = Files.readAttributes(fs.getPath("restored.txt"), ZipArkivoEntryAttributes.class);
             assertArrayEquals("legacy-\u00e9.txt".getBytes(StandardCharsets.ISO_8859_1), attributes.rawPath());
-            assertEquals("decoded comment", attributes.comment());
+            assertArrayEquals(new byte[]{(byte) 0xe9}, attributes.rawComment());
             assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath("restored.txt")));
         }
         try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive), options)) {

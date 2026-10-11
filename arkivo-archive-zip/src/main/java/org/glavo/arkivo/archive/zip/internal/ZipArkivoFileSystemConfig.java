@@ -98,7 +98,7 @@ public final class ZipArkivoFileSystemConfig {
     /// The maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
     private final long splitSize;
 
-    /// The decoder used for legacy ZIP entry names and comments.
+    /// The decoder used for legacy ZIP entry names.
     private final ArchiveMetadataDecoder legacyMetadataDecoder;
 
     /// The requested ZIP file system thread-safety strategy.
@@ -119,7 +119,7 @@ public final class ZipArkivoFileSystemConfig {
     /// @param passwordProvider the entry password provider, or `null` when unavailable
     /// @param defaultEncryption the encryption for new entries without an explicit override
     /// @param splitSize the maximum output volume size, or [#NO_SPLIT_SIZE]
-    /// @param legacyMetadataDecoder the decoder for names and comments without Unicode metadata
+    /// @param legacyMetadataDecoder the decoder for names without Unicode metadata
     /// @param threadSafety the synchronization strategy
     /// @param editStorageFactory the edit-storage factory, or `null` to select a default
     /// @param commitTarget the publication target override, or `null` to select a default
@@ -356,7 +356,7 @@ public final class ZipArkivoFileSystemConfig {
         return splitSize;
     }
 
-    /// Returns the decoder used for legacy ZIP entry names and comments.
+    /// Returns the decoder used for legacy ZIP entry names.
     ///
     /// @return the legacy metadata decoder
     public ArchiveMetadataDecoder legacyMetadataDecoder() {

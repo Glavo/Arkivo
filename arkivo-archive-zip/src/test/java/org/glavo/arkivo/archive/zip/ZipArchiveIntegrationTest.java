@@ -12,6 +12,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -2126,7 +2128,7 @@ public final class ZipArchiveIntegrationTest {
                         Files.readAttributes(fileSystem.getPath("/keep.txt"), ZipArkivoEntryAttributes.class);
                 assertArrayEquals(extraData, attributes.localExtraData());
                 assertArrayEquals(extraData, attributes.centralDirectoryExtraData());
-                assertEquals(entryComment, attributes.comment());
+                assertArrayEquals(entryComment.getBytes(StandardCharsets.UTF_8), attributes.rawComment());
             }
             try (ZipFile zipFile = new ZipFile(archivePath.toFile(), StandardCharsets.UTF_8)) {
                 assertEquals(archiveComment, zipFile.getComment());
@@ -3283,9 +3285,9 @@ public final class ZipArchiveIntegrationTest {
         }
     }
 
-    /// Verifies that ZIP entry comments are decoded with the configured fallback encoding.
+    /// Preserves entry comments without applying the configured name decoder.
     @Test
-    public void decodesEntryCommentWithFallbackEncoding() throws IOException {
+    public void preservesRawEntryComment() throws IOException {
         byte[] name = "comment.txt".getBytes(StandardCharsets.UTF_8);
         byte[] rawComment = "M\u00fcnchen".getBytes(Charset.forName("IBM437"));
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameExtraAndComment(
@@ -3300,12 +3302,11 @@ public final class ZipArchiveIntegrationTest {
                 Path file = fileSystem.getPath("/comment.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals("M\u00fcnchen", attributes.comment());
                 assertArrayEquals(rawComment, attributes.rawComment());
 
-                Map<String, Object> namedAttributes = Files.readAttributes(file, "zip:comment,rawComment");
-                assertEquals(Set.of("comment", "rawComment"), namedAttributes.keySet());
-                assertEquals("M\u00fcnchen", namedAttributes.get("comment"));
+                Map<String, Object> namedAttributes = Files.readAttributes(file, "zip:rawComment");
+                assertEquals(Set.of("rawComment"), namedAttributes.keySet());
+                assertThrows(IllegalArgumentException.class, () -> Files.readAttributes(file, "zip:comment"));
                 assertArrayEquals(rawComment, (byte[]) namedAttributes.get("rawComment"));
             }
         } finally {
@@ -3313,9 +3314,9 @@ public final class ZipArchiveIntegrationTest {
         }
     }
 
-    /// Verifies that a valid Info-ZIP Unicode Comment Extra Field overrides fallback comment decoding.
+    /// Retains Unicode Comment extra fields without replacing the original comment bytes.
     @Test
-    public void decodesUnicodeCommentExtraFieldBeforeFallback() throws IOException {
+    public void preservesUnicodeCommentExtraField() throws IOException {
         byte[] name = "unicode-comment.txt".getBytes(StandardCharsets.UTF_8);
         byte[] rawComment = "legacy".getBytes(Charset.forName("IBM437"));
         byte[] centralExtraData = unicodeExtraField(0x6375, rawComment, "Gr\u00fc\u00dfe");
@@ -3331,11 +3332,49 @@ public final class ZipArchiveIntegrationTest {
                 ZipArkivoEntryAttributes attributes =
                         Files.readAttributes(fileSystem.getPath("/unicode-comment.txt"), ZipArkivoEntryAttributes.class);
 
-                assertEquals("Gr\u00fc\u00dfe", attributes.comment());
+                assertArrayEquals(centralExtraData, attributes.centralDirectoryExtraData());
                 assertArrayEquals(rawComment, attributes.rawComment());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Keeps undecodable comments and Unicode Comment payloads opaque across body replacement and record copying.
+    @ParameterizedTest
+    @CsvSource({"0,false", "2048,false", "0,true", "2048,true"})
+    public void preservesUndecodableComments(int flags, boolean unicode) throws IOException {
+        byte[] rawComment = new byte[]{(byte) 0xff, (byte) 0xc0, 0, (byte) 0x81};
+        byte[] extra = unicode ? unicodeExtraField(0x6375, rawComment, "text") : new byte[0];
+        if (unicode) extra[extra.length - 1] = (byte) 0xff;
+        Path archive = createTemporaryArchiveContent(singleEntryZipWithRawNameExtraAndComment(
+                "comment.txt".getBytes(StandardCharsets.US_ASCII), flags, extra, rawComment));
+        try {
+            for (int pass = 0; pass < 3; pass++) {
+                try (var fs = ZipArkivoFileSystem.open(archive)) {
+                    var attributes = Files.readAttributes(fs.getPath("/comment.txt"), ZipArkivoEntryAttributes.class);
+                    assertArrayEquals(rawComment, attributes.rawComment());
+                    assertArrayEquals(extra, attributes.centralDirectoryExtraData());
+                    assertEquals(flags, attributes.generalPurposeFlags() & 2048);
+                    byte[] copy = Objects.requireNonNull(attributes.rawComment());
+                    copy[0] = 0;
+                    assertArrayEquals(rawComment, attributes.rawComment());
+                    if (pass > 0) assertArrayEquals(new byte[]{8, 9}, Files.readAllBytes(fs.getPath("/comment.txt")));
+                }
+                if (pass == 0) {
+                    try (var fs = ZipArkivoFileSystem.update(archive)) {
+                        Files.write(fs.getPath("/comment.txt"), new byte[]{8, 9});
+                        assertArrayEquals(rawComment,
+                                Files.readAttributes(fs.getPath("/comment.txt"), ZipArkivoEntryAttributes.class).rawComment());
+                    }
+                } else if (pass == 1) {
+                    try (var fs = ZipArkivoFileSystem.update(archive)) {
+                        Files.write(fs.getPath("/added.txt"), new byte[]{1});
+                    }
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archive);
         }
     }
 

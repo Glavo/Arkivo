@@ -478,7 +478,6 @@ final class ZipNamedAttributeContractTest {
                 "fileKey",
                 "rawPath",
                 "path",
-                "comment",
                 "compressedSize",
                 "crc32",
                 "generalPurposeFlags",

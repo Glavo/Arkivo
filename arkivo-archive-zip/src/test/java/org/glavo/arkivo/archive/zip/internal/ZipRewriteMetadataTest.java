@@ -26,6 +26,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
@@ -40,7 +41,6 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Checks metadata retained when existing ZIP entry bodies are replaced or extended.
@@ -123,7 +123,7 @@ final class ZipRewriteMetadataTest {
         }
     }
 
-    /// Rebuilds ZIP64 sizes and replaces legacy Unicode records when rewriting a Commons-generated archive.
+    /// Rebuilds ZIP64 sizes while preserving legacy names, comments, and their Unicode records.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void rewritesZip64AndLegacyNames(boolean stream, @TempDir Path directory) throws IOException {
@@ -143,30 +143,30 @@ final class ZipRewriteMetadataTest {
             output.closeArchiveEntry();
         }
         byte[] replacement = "replacement content".repeat(256).getBytes(StandardCharsets.UTF_8);
+        byte[] expectedLocalExtra;
+        byte[] expectedCentralExtra;
         try (var target = ZipArkivoFileSystem.update(archive)) {
             Path file = target.getPath("/" + name);
             var before = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
             assertNotNull(ZipExtraFields.find(before.localExtraData(), 0x0001));
             assertNotNull(ZipExtraFields.find(before.centralDirectoryExtraData(), 0x7075));
             assertNotNull(ZipExtraFields.find(before.centralDirectoryExtraData(), 0x6375));
-            assertEquals(comment, before.comment());
+            assertArrayEquals(comment.getBytes(Charset.forName("IBM437")), before.rawComment());
+            expectedLocalExtra = ZipExtraFields.remove(before.localExtraData(), 0x0001);
+            expectedCentralExtra = ZipExtraFields.remove(before.centralDirectoryExtraData(), 0x0001);
             replaceBody(file, replacement, stream);
         }
         try (var target = ZipArkivoFileSystem.open(archive)) {
             Path file = target.getPath("/" + name);
             var actual = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
             assertArrayEquals(replacement, Files.readAllBytes(file));
-            assertEquals(comment, actual.comment());
-            assertArrayEquals(name.getBytes(StandardCharsets.UTF_8), actual.rawPath());
-            assertArrayEquals(comment.getBytes(StandardCharsets.UTF_8), actual.rawComment());
-            for (byte[] extra : new byte[][]{actual.localExtraData(), actual.centralDirectoryExtraData()}) {
-                assertNull(ZipExtraFields.find(extra, 0x0001));
-                assertNull(ZipExtraFields.find(extra, 0x7075));
-                assertNull(ZipExtraFields.find(extra, 0x6375));
-                assertArrayEquals(extraField(0xcafe, new byte[]{7, 8, 9}), extra);
-            }
+            assertEquals(0, actual.generalPurposeFlags() & ZipConstants.UTF8_FLAG);
+            assertArrayEquals(name.getBytes(Charset.forName("IBM437")), actual.rawPath());
+            assertArrayEquals(comment.getBytes(Charset.forName("IBM437")), actual.rawComment());
+            assertArrayEquals(expectedLocalExtra, actual.localExtraData());
+            assertArrayEquals(expectedCentralExtra, actual.centralDirectoryExtraData());
         }
-        try (var reference = new java.util.zip.ZipFile(archive.toFile())) {
+        try (var reference = new java.util.zip.ZipFile(archive.toFile(), Charset.forName("IBM437"))) {
             var entry = reference.getEntry(name);
             assertNotNull(entry);
             assertEquals(comment, entry.getComment());
@@ -212,7 +212,7 @@ final class ZipRewriteMetadataTest {
             assertEquals(MODIFIED, actual.lastModifiedTime());
             assertEquals(ACCESSED, actual.lastAccessTime());
             assertEquals(CREATED, actual.creationTime());
-            assertEquals(COMMENT, actual.comment());
+            assertArrayEquals(COMMENT.getBytes(StandardCharsets.UTF_8), actual.rawComment());
             assertArrayEquals(replacement, Files.readAllBytes(file));
             for (byte[] extra : new byte[][]{actual.localExtraData(), actual.centralDirectoryExtraData()}) {
                 byte[] retained = ZipExtraFields.remove(extra, ZipConstants.WINZIP_AES_EXTRA_FIELD_ID);

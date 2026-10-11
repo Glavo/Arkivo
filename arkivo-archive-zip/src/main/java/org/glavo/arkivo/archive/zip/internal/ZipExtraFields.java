@@ -130,7 +130,7 @@ final class ZipExtraFields {
         return new Field(id, dataOffset, dataSize, dataOffset + dataSize);
     }
 
-    /// Returns whether Arkivo interprets the payload of the given extra field identifier.
+    /// Returns whether a known extra field must be complete rather than tolerated as an unknown trailing field.
     private static boolean isRecognizedFieldId(int id) {
         return id == ZipConstants.ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID
                 || id == ZipConstants.WINZIP_AES_EXTRA_FIELD_ID

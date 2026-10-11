@@ -36,9 +36,6 @@ public final class ZipEntryNameDecoderTest {
         assertEquals("\u00e9.txt", decoder.decodePath(legacy, 0,
                 unicodeExtraField(ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID, legacy, "\u00e9.txt"),
                 ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 25, 0x81a4_0000L));
-        assertEquals("\u00e9.txt", decoder.decodeComment(legacy, 0,
-                unicodeExtraField(ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID, legacy, "\u00e9.txt"),
-                ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 25, 0x81a4_0000L));
         assertThrows(CharacterCodingException.class, () -> decoder.decodePath(legacy,
                 ZipEntryNameDecoder.UTF_8_FLAG, new byte[0],
                 ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 25, 0x81a4_0000L));
@@ -176,14 +173,13 @@ public final class ZipEntryNameDecoderTest {
         });
         byte[] raw = {0, 'A', 0, 'B'};
         assertEquals("AB", decoder.decodePath(raw, 0, new byte[0]));
-        assertEquals("AB", decoder.decodeComment(raw, 0, new byte[0]));
-        assertEquals(2, calls.get());
+        assertEquals(1, calls.get());
         decoder = new ZipEntryNameDecoder(bytes -> {
             calls.incrementAndGet();
             return ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(bytes);
         });
         assertEquals("entry.txt", decoder.decodePath("entry.txt".getBytes(StandardCharsets.US_ASCII), 0, new byte[0]));
-        assertEquals(3, calls.get());
+        assertEquals(2, calls.get());
     }
 
     /// Built-in single-byte mappings and UTF-8 agree with strict charset decoding for every byte value.
@@ -199,11 +195,9 @@ public final class ZipEntryNameDecoderTest {
                     expected = charset.newDecoder().decode(ByteBuffer.wrap(raw)).toString();
                 } catch (CharacterCodingException exception) {
                     assertThrows(CharacterCodingException.class, () -> decoder.decodePath(raw, 0, new byte[0]));
-                    assertThrows(IOException.class, () -> decoder.decodeComment(raw, 0, new byte[0]));
                     continue;
                 }
                 assertEquals(expected, decoder.decodePath(raw, 0, new byte[0]));
-                assertEquals(expected, decoder.decodeComment(raw, 0, new byte[0]));
             }
         }
     }

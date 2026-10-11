@@ -9,7 +9,7 @@
 /// sequentially. Split output is published through transactional volume targets.
 ///
 /// The package exposes recognized compression and encryption identifiers, ZIP-specific entry attributes, raw extra
-/// fields and comments, and contextual decoding for legacy metadata without an authoritative Unicode representation.
+/// fields and comments, and contextual decoding for legacy names without an authoritative Unicode representation.
 @NotNullByDefault
 package org.glavo.arkivo.archive.zip;
 

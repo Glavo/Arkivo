@@ -171,7 +171,6 @@ final class StreamingWriterPendingAttributesContractTest {
             assertEquals("zip", zipView.name());
             assertZipType(defaults, "file.bin", true, false, false);
             assertArrayEquals("file.bin".getBytes(StandardCharsets.UTF_8), defaults.rawPath());
-            assertNull(defaults.comment());
             assertNull(defaults.rawComment());
             assertArrayEquals(new byte[0], defaults.localExtraData());
             assertArrayEquals(new byte[0], defaults.centralDirectoryExtraData());
@@ -216,7 +215,6 @@ final class StreamingWriterPendingAttributesContractTest {
             assertEquals(crc32, configured.crc32());
             assertEquals(0x1234, configured.internalAttributes());
             assertEquals(0x1234_5678L, configured.externalAttributes());
-            assertEquals("first comment", configured.comment());
             assertArrayEquals(new byte[]{0x34, 0x12, 0x01, 0x00, 0x55}, configured.localExtraData());
             assertArrayEquals(new byte[]{0x35, 0x12, 0x01, 0x00, 0x66}, configured.centralDirectoryExtraData());
             assertArrayEquals("first comment".getBytes(StandardCharsets.UTF_8), configured.rawComment());
@@ -250,7 +248,7 @@ final class StreamingWriterPendingAttributesContractTest {
             assertEquals(firstTime, configured.lastModifiedTime());
             assertEquals(0x1234, configured.internalAttributes());
             assertEquals(0x1234_5678L, configured.externalAttributes());
-            assertEquals("first comment", configured.comment());
+            assertArrayEquals("first comment".getBytes(StandardCharsets.UTF_8), configured.rawComment());
             assertEquals(firstTime, configuredPosix.lastModifiedTime());
             assertEquals(content.length, configuredPosix.size());
             assertEquals(permissions, configuredPosix.permissions());

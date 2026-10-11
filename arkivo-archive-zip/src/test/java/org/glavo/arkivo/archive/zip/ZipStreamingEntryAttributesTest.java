@@ -86,7 +86,6 @@ final class ZipStreamingEntryAttributesTest {
                     fileSystem.getPath("/dir/value.bin"),
                     ZipArkivoEntryAttributes.class
             );
-            assertEquals("central comment", attributes.comment());
             assertArrayEquals(CENTRAL_EXTRA_DATA, attributes.centralDirectoryExtraData());
             assertArrayEquals("central comment".getBytes(StandardCharsets.UTF_8), attributes.rawComment());
         }
@@ -116,7 +115,6 @@ final class ZipStreamingEntryAttributesTest {
     private static void assertRegularFileAttributes(ZipArkivoEntryAttributes attributes, long expectedCrc32) {
         assertEquals("dir/value.bin", attributes.path());
         assertArrayEquals("dir/value.bin".getBytes(StandardCharsets.UTF_8), attributes.rawPath());
-        assertNull(attributes.comment());
         assertEquals(PAYLOAD.length, attributes.compressedSize());
         assertEquals(expectedCrc32, attributes.crc32());
         assertEquals(1 << 11, attributes.generalPurposeFlags());

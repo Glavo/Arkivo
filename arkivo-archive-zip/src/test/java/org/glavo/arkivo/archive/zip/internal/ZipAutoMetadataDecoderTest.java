@@ -184,19 +184,19 @@ public final class ZipAutoMetadataDecoderTest {
         try (var fs = ZipArkivoFileSystem.update(file)) {
             var attributes = Files.readAttributes(fs.getPath("é.txt"), ZipArkivoEntryAttributes.class);
             assertEquals("é.txt", attributes.path());
-            assertEquals("é", attributes.comment());
+            assertArrayEquals(new byte[]{(byte) 0xe9}, attributes.rawComment());
             Files.write(fs.getPath("new.txt"), new byte[]{4});
         }
         try (var fs = ZipArkivoFileSystem.open(file)) {
             assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath("é.txt")));
-            assertEquals("é", Files.readAttributes(fs.getPath("é.txt"), ZipArkivoEntryAttributes.class).comment());
+            assertArrayEquals(new byte[]{(byte) 0xe9}, Files.readAttributes(fs.getPath("é.txt"), ZipArkivoEntryAttributes.class).rawComment());
             assertArrayEquals(new byte[]{4}, Files.readAllBytes(fs.getPath("new.txt")));
         }
     }
 
-    /// Shares the common legacy encoding across comments and creator systems.
+    /// Shares the common legacy name encoding across creator systems.
     @Test
-    public void archiveChoiceCrossesMetadataKindsAndCreators(@TempDir Path directory) throws IOException {
+    public void archiveChoiceCrossesCreators(@TempDir Path directory) throws IOException {
         Path file = directory.resolve("separate.zip");
         Files.write(file, archive(
                 new Sample("€résumé.txt", "windows-1252", null, true, 0),
@@ -204,7 +204,7 @@ public final class ZipAutoMetadataDecoderTest {
                 new Sample("other-é.txt", "windows-1252", null, false, 3)));
         try (var fs = ZipArkivoFileSystem.open(file)) {
             assertTrue(Files.exists(fs.getPath("é.txt")));
-            assertEquals("é", Files.readAttributes(fs.getPath("é.txt"), ZipArkivoEntryAttributes.class).comment());
+            assertArrayEquals(new byte[]{(byte) 0xe9}, Files.readAttributes(fs.getPath("é.txt"), ZipArkivoEntryAttributes.class).rawComment());
             assertTrue(Files.exists(fs.getPath("other-é.txt")));
         }
     }
@@ -469,13 +469,13 @@ public final class ZipAutoMetadataDecoderTest {
         assertEquals(storage.limit(), central.limit());
         assertEquals(ByteOrder.BIG_ENDIAN, central.order());
         central.reset();
-        assertEquals(2, prepared.decodedFields().size());
+        assertEquals(1, prepared.decodedFields().size());
         int nameOffset = prefix + 46;
         int commentOffset = nameOffset + "é.txt".getBytes(Charset.forName("windows-1252")).length;
         @Nullable String name = prepared.decodedFields().get(nameOffset);
         @Nullable String comment = prepared.decodedFields().get(commentOffset);
         assertEquals("é.txt", name);
-        assertEquals("é", comment);
+        assertNull(comment);
         storage.clear();
         while (storage.hasRemaining()) storage.put((byte) 0);
         assertSame(name, prepared.take(nameOffset));
@@ -496,17 +496,31 @@ public final class ZipAutoMetadataDecoderTest {
         assertEquals("é.txt", prepared.decode("é.txt".getBytes(StandardCharsets.UTF_8)));
     }
 
-    /// Comments supply the shared encoding when a non-ASCII name has no byte-pair evidence.
+    /// Comments do not influence the shared name encoding.
     @Test
-    public void commentEvidenceWithoutNamePairs() throws IOException {
+    public void commentsDoNotSupplyNameEvidence() throws IOException {
         for (var sample : List.of(
                 new Sample("é", "IBM437", "Comentario: Café ñoño ▓▒░", false, 0),
                 new Sample("é", "windows-1252", "Ceci est un résumé détaillé de l'installation du logiciel.", false, 0))) {
             var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT,
                     ByteBuffer.wrap(centralBytes(sample)), new java.util.HashMap<>());
-            assertEquals(sample.name(), prepared.decode(sample.name().getBytes(Charset.forName(sample.encoding()))));
-            assertEquals(sample.comment(), prepared.decode(
-                    java.util.Objects.requireNonNull(sample.comment()).getBytes(Charset.forName(sample.encoding()))));
+            byte[] rawName = sample.name().getBytes(Charset.forName(sample.encoding()));
+            assertEquals(new String(rawName, Charset.forName("IBM437")), prepared.decode(rawName));
+        }
+    }
+
+    /// Neither incompatible comment bytes nor their Unicode counterparts constrain the name encoding.
+    @Test
+    public void ignoresConflictingCommentEvidence(@TempDir Path directory) throws IOException {
+        Path file = directory.resolve("comment-conflict.zip");
+        Files.write(file, archive(
+                new Sample("€résumé.txt", "windows-1252", null, true, 0),
+                new Sample("é.txt", "windows-1252", null, false, 0),
+                new Sample("plain.txt", "IBM437", "ü", true, 0)));
+        try (var fs = ZipArkivoFileSystem.open(file)) {
+            assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath("é.txt")));
+            assertArrayEquals(new byte[]{(byte) 0x81},
+                    Files.readAttributes(fs.getPath("plain.txt"), ZipArkivoEntryAttributes.class).rawComment());
         }
     }
 

@@ -34,9 +34,9 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
     private static final Charset CP437 = Charset.forName("IBM437");
     /// Sentinel for a candidate that has not decoded every required field successfully.
     private static final double INVALID_SCORE = -1;
-    /// Maximum distinct sampled names, or comments when no name supplies evidence.
+    /// Maximum distinct sampled names.
     static final int MAX_SAMPLES = 256;
-    /// Maximum retained raw sample bytes per role.
+    /// Maximum retained raw name sample bytes.
     static final int MAX_SAMPLE_BYTES = 128 * 1024;
     /// Larger fields are validated but do not contribute statistical evidence.
     static final int MAX_FIELD_BYTES = EncodingDetector.MAX_EVIDENCE_FIELD_BYTES;
@@ -58,7 +58,6 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
         if (configured != DEFAULT) return configured;
         var detector = new EncodingDetector();
         var names = new Samples();
-        var comments = new Samples();
         var evidence = new Evidence();
         scan(centralDirectory, field -> {
             if (field.unicode != null) {
@@ -68,7 +67,7 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
                     else evidence.anchors.retainAll(matches);
                 }
             } else if (!EncodingDetector.isAscii(field.bytes)) {
-                (field.kind == EncodingDetector.Kind.NAME ? names : comments).accept(field.bytes);
+                names.accept(field.bytes);
             }
             if (!EncodingDetector.isAscii(field.bytes)) {
                 evidence.preferences |= switch (field.preference) {
@@ -83,7 +82,6 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
                 : evidence.preferences == 2 ? EncodingDetector.Preference.ANSI : EncodingDetector.Preference.NONE;
         if (evidence.anchors != null && evidence.anchors.isEmpty()) return new ZipAutoMetadataDecoder(CP437);
         var ranked = detector.rank(names.values(), EncodingDetector.Kind.NAME, preference);
-        if (ranked.isEmpty()) ranked = detector.rank(comments.values(), EncodingDetector.Kind.COMMENT, preference);
         var candidates = new ArrayList<EncodingDetector.Score>();
         if (evidence.anchors != null) {
             // Exact Unicode counterparts constrain the common encoding, not the output of their own entry.
@@ -130,7 +128,7 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
     }
 
     /// Collects decoded fields and returns their lowest character-quality multiplier, or -1 for invalid bytes.
-    /// Using the lowest multiplier prevents repeated names or comments from compounding a control penalty.
+    /// Using the lowest multiplier prevents repeated names from compounding a control penalty.
     /// Failed candidates leave no partial results; controls remain text rather than decoding errors.
     private static double decodeFields(ByteBuffer central, EncodingDetector detector, Charset charset,
                                        Map<Integer, String> decodedFields) throws IOException {
@@ -138,9 +136,9 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
         double[] quality = {1};
         boolean valid = scan(central, field -> {
             if (field.unicode != null || EncodingDetector.isAscii(field.bytes)) return true;
-            @Nullable String text = detector.decode(field.bytes, field.kind, charset);
+            @Nullable String text = detector.decode(field.bytes, EncodingDetector.Kind.NAME, charset);
             if (text == null) return false;
-            quality[0] = Math.min(quality[0], EncodingDetector.textQuality(text, field.kind));
+            quality[0] = Math.min(quality[0], EncodingDetector.textQuality(text, EncodingDetector.Kind.NAME));
             decodedFields.put(field.offset, text);
             return true;
         });
@@ -150,27 +148,26 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
 
     @Override
     public String decode(Context context) throws IOException {
-        return decode(context.bytes(), context.metadataKind(), context.versionMadeBy(), context.externalAttributes(),
+        return decode(context.bytes(), context.versionMadeBy(), context.externalAttributes(),
                 context.headerSource());
     }
 
     @Override
     public String decode(@UnmodifiableView ByteBuffer bytes) throws IOException {
-        return decode(bytes, MetadataKind.UNKNOWN, UNKNOWN_HEADER_VALUE, UNKNOWN_HEADER_VALUE, HeaderSource.UNKNOWN);
+        return decode(bytes, UNKNOWN_HEADER_VALUE, UNKNOWN_HEADER_VALUE, HeaderSource.UNKNOWN);
     }
 
     /// Decodes reader-owned bytes without retaining them or constructing a public context.
-    String decode(byte[] bytes, MetadataKind kind, int madeBy, long attributes, HeaderSource source) throws IOException {
-        return decode(ByteBuffer.wrap(bytes), kind, madeBy, attributes, source);
+    String decode(byte[] bytes, int madeBy, long attributes, HeaderSource source) throws IOException {
+        return decode(ByteBuffer.wrap(bytes), madeBy, attributes, source);
     }
 
     /// Uses the frozen choice without further guessing; a changed or inconsistent field fails strictly.
-    private String decode(ByteBuffer bytes, MetadataKind kind, int madeBy, long attributes, HeaderSource source)
+    private String decode(ByteBuffer bytes, int madeBy, long attributes, HeaderSource source)
             throws IOException {
         if (EncodingDetector.isAscii(bytes)) return StandardCharsets.US_ASCII.decode(bytes.duplicate()).toString();
         if (charset == null) {
-            @Nullable String decoded = new EncodingDetector().decode(bytes, kind == MetadataKind.ENTRY_COMMENT
-                    ? EncodingDetector.Kind.COMMENT : EncodingDetector.Kind.NAME,
+            @Nullable String decoded = new EncodingDetector().decode(bytes, EncodingDetector.Kind.NAME,
                     ZipLegacyCodePages.preference(madeBy, attributes, source));
             if (decoded != null) return decoded;
         }
@@ -197,21 +194,16 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
                     HeaderSource.CENTRAL_DIRECTORY);
             byte[] extra = new byte[extraLength];
             buffer.get(start + nameLength, extra);
-            for (var kind : EncodingDetector.Kind.values()) {
-                int length = kind == EncodingDetector.Kind.NAME ? nameLength : commentLength;
-                if (length == 0) continue;
-                int fieldOffset = kind == EncodingDetector.Kind.NAME ? start : start + nameLength + extraLength;
-                var bytes = buffer.slice(fieldOffset, length);
-                @Nullable String unicode = null;
-                if (extraLength != 0) {
-                    byte[] raw = new byte[length];
-                    bytes.get(0, raw);
-                    unicode = ZipEntryNameDecoder.decodeUnicodeExtraField(raw, extra,
-                            kind == EncodingDetector.Kind.NAME ? ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID
-                                    : ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID);
-                }
-                if (!visitor.visit(new Field(fieldOffset, bytes, kind, preference, unicode))) return false;
+            if (nameLength == 0) continue;
+            var bytes = buffer.slice(start, nameLength);
+            @Nullable String unicode = null;
+            if (extraLength != 0) {
+                byte[] raw = new byte[nameLength];
+                bytes.get(0, raw);
+                unicode = ZipEntryNameDecoder.decodeUnicodeExtraField(raw, extra,
+                        ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID);
             }
+            if (!visitor.visit(new Field(start, bytes, preference, unicode))) return false;
         }
         return true;
     }
@@ -226,11 +218,10 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
     /// Describes borrowed metadata and its optional authoritative Unicode counterpart.
     /// @param offset absolute field offset in the supplied central-directory buffer
     /// @param bytes complete raw bytes
-    /// @param kind name or comment
     /// @param preference producer code-page family
     /// @param unicode authoritative text, or null when legacy decoding is required
     @NotNullByDefault
-    private record Field(int offset, @UnmodifiableView ByteBuffer bytes, EncodingDetector.Kind kind,
+    private record Field(int offset, @UnmodifiableView ByteBuffer bytes,
                          EncodingDetector.Preference preference, @Nullable String unicode) {
     }
 

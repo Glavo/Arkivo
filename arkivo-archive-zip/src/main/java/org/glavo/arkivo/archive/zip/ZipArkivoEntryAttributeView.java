@@ -126,6 +126,9 @@ public interface ZipArkivoEntryAttributeView extends PosixFileAttributeView {
 
     /// Sets a defensive copy of the raw ZIP entry comment bytes, or clears the comment when `null`.
     ///
+    /// The bytes are stored without character-set conversion or text validation. This operation does not
+    /// change the entry's encoding flag or Unicode Comment extra field.
+    ///
     /// @param rawComment the raw comment bytes, or `null` to clear the comment
     /// @throws IllegalArgumentException if the comment is too long for an unsigned 16-bit ZIP length field
     /// @throws IllegalStateException if the streaming entry has already been committed

@@ -127,76 +127,6 @@ public final class ZipEntryNameDecoder {
         );
     }
 
-    /// Decodes a raw ZIP entry comment without additional header context, or returns `null` when none is present.
-    ///
-    /// @param rawComment the encoded comment bytes, or `null` when absent
-    /// @param generalPurposeFlags the unsigned 16-bit general purpose flags
-    /// @param extraData the encoded extra field records
-    /// @return the decoded comment, or `null` when absent
-    /// @throws NullPointerException if `extraData` is `null`
-    /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the comment
-    public @Nullable String decodeComment(
-            byte @Nullable [] rawComment,
-            int generalPurposeFlags,
-            byte[] extraData
-    ) throws IOException {
-        return decodeComment(
-                rawComment,
-                generalPurposeFlags,
-                extraData,
-                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
-                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
-                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
-                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
-        );
-    }
-
-    /// Decodes a raw ZIP entry comment with available header context, or returns `null` when none is present.
-    ///
-    /// @param rawComment the encoded comment bytes, or `null` when absent
-    /// @param generalPurposeFlags the unsigned 16-bit general purpose flags
-    /// @param extraData the encoded extra field records
-    /// @param headerSource the header that supplied the metadata
-    /// @param versionNeededToExtract the unsigned 16-bit extraction version, or the decoder's unknown sentinel
-    /// @param versionMadeBy the unsigned 16-bit creator version, or the decoder's unknown sentinel
-    /// @param externalAttributes the unsigned 32-bit external attributes, or the decoder's unknown sentinel
-    /// @return the decoded comment, or `null` when absent
-    /// @throws NullPointerException if `extraData` or `headerSource` is `null`
-    /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the comment
-    public @Nullable String decodeComment(
-            byte @Nullable [] rawComment,
-            int generalPurposeFlags,
-            byte[] extraData,
-            ZipLegacyMetadataDecoder.HeaderSource headerSource,
-            int versionNeededToExtract,
-            int versionMadeBy,
-            long externalAttributes
-    ) throws IOException {
-        if (rawComment == null || rawComment.length == 0) {
-            return null;
-        }
-
-        try {
-            String unicodeComment =
-                    decodeUnicodeExtraField(rawComment, extraData, UNICODE_COMMENT_EXTRA_FIELD_ID);
-            if (unicodeComment != null) {
-                return unicodeComment;
-            }
-            return decodeFallback(
-                    rawComment,
-                    generalPurposeFlags,
-                    extraData,
-                    ZipLegacyMetadataDecoder.MetadataKind.ENTRY_COMMENT,
-                    headerSource,
-                    versionNeededToExtract,
-                    versionMadeBy,
-                    externalAttributes
-            );
-        } catch (CharacterCodingException exception) {
-            throw new IOException("Failed to decode ZIP entry comment", exception);
-        }
-    }
-
     /// Decodes a complete Info-ZIP Unicode extra field value, or returns `null` when no valid field is present.
     ///
     /// A truncated unknown trailing field is ignored, while a truncated recognized field remains malformed.
@@ -266,7 +196,7 @@ public final class ZipEntryNameDecoder {
         }
 
         if (legacyMetadataDecoder instanceof ZipAutoMetadataDecoder automatic) {
-            return automatic.decode(rawValue, metadataKind, versionMadeBy, externalAttributes, headerSource);
+            return automatic.decode(rawValue, versionMadeBy, externalAttributes, headerSource);
         }
 
         String decoded;

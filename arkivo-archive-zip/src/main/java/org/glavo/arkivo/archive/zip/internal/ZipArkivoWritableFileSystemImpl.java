@@ -1634,7 +1634,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
         CentralEntry writtenEntry = writtenCentralEntry(entryName);
         if (writtenEntry != null) {
-            return EntryAttributes.written(writtenEntry, config);
+            return EntryAttributes.written(writtenEntry);
         }
 
         EntryAttributes existingEntry = existingEntryAttributes(entryName);
@@ -1750,7 +1750,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     private static void addZipAttributes(Map<String, Object> values, ZipArkivoEntryAttributes attributes) {
         values.put("rawPath", attributes.rawPath());
         values.put("path", attributes.path());
-        values.put("comment", attributes.comment());
         values.put("compressedSize", attributes.compressedSize());
         values.put("crc32", attributes.crc32());
         values.put("generalPurposeFlags", attributes.generalPurposeFlags());
@@ -1801,7 +1800,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             case "fileKey" -> requireBasicView(values, name, view, attributes.fileKey());
             case "rawPath" -> requireZipView(values, name, zipView, attributes.rawPath());
             case "path" -> requireZipView(values, name, zipView, attributes.path());
-            case "comment" -> requireZipView(values, name, zipView, attributes.comment());
             case "compressedSize" -> requireZipView(values, name, zipView, attributes.compressedSize());
             case "crc32" -> requireZipView(values, name, zipView, attributes.crc32());
             case "generalPurposeFlags" -> requireZipView(values, name, zipView, attributes.generalPurposeFlags());
@@ -2136,7 +2134,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Retains entry metadata while allowing the writer to regenerate body-dependent fields.
     private EntryMetadata replacementMetadata(ZipArkivoEntryAttributes previous) throws IOException {
-        @Nullable String comment = previous.comment();
         return new EntryMetadata(
                 DEFLATED_METHOD,
                 config.defaultEncryption(),
@@ -2148,16 +2145,15 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 ZipArkivoEntryAttributes.UNKNOWN_CRC32,
                 replacementExtraData(previous.localExtraData()),
                 replacementExtraData(previous.centralDirectoryExtraData()),
-                comment != null ? comment.getBytes(StandardCharsets.UTF_8) : null
-        );
+                previous.rawComment()
+        ).withNameEncoding(previous.rawPath(), (previous.generalPurposeFlags() & UTF8_FLAG) != 0);
     }
 
-    /// Removes size, encryption, and legacy-name records that cannot describe the rewritten UTF-8 entry.
+    /// Removes size and encryption records that must be regenerated for a replacement body.
     private static byte[] replacementExtraData(byte[] extraData) throws IOException {
         byte[] retained = ZipExtraFields.remove(extraData, ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID);
         retained = ZipExtraFields.remove(retained, ZipConstants.WINZIP_AES_EXTRA_FIELD_ID);
-        retained = ZipExtraFields.remove(retained, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID);
-        return ZipExtraFields.remove(retained, ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID);
+        return retained;
     }
 
     /// Validates open options for a complete-rewrite entry channel.
@@ -2339,7 +2335,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             boolean replacingExistingEntry = checkWritableFileEntry(entryName, options);
             byte @Nullable [] password = passwordForMetadata(entryName, metadata);
             try {
-                byte[] rawName = rawEntryName(entryName);
+                byte[] rawName = metadata.rawName(entryName);
                 int flags = metadata.generalPurposeFlags();
                 boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
                 byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader);
@@ -2443,7 +2439,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             }
             requireNoActiveEntry();
             requireNewEntry(entryName);
-            byte[] rawName = rawEntryName(entryName);
+            byte[] rawName = metadata.rawName(entryName);
             int flags = metadata.generalPurposeFlags() & ~DATA_DESCRIPTOR_FLAG;
             boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
             byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader);
@@ -2529,7 +2525,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
             byte @Nullable [] password = passwordForMetadata(entryName, metadata);
             try {
-                byte[] rawName = rawEntryName(entryName);
+                byte[] rawName = metadata.rawName(entryName);
                 requireNewEntry(entryName);
                 stageCompleteEntryContent(entryName, content);
                 int flags = metadata.generalPurposeFlags() & ~DATA_DESCRIPTOR_FLAG;
@@ -2863,7 +2859,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                         return entry;
                     }
                     requireTimestampUpdateSupported(
-                            EntryAttributes.written(entry, config),
+                            EntryAttributes.written(entry),
                             entry.dosTime,
                             lastModifiedTime
                     );
@@ -2903,7 +2899,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     );
                 },
                 entry -> {
-                    EntryAttributes attributes = EntryAttributes.written(entry, config);
+                    EntryAttributes attributes = EntryAttributes.written(entry);
                     return entry.withExternalAttributes(
                             ZipPosixSupport.UNIX_VERSION_MADE_BY,
                             externalAttributes(copiedPermissions, attributes)
@@ -4771,9 +4767,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// The decoded ZIP entry path text.
         private final String path;
 
-        /// The decoded ZIP entry comment text, or `null` when no comment is present.
-        private final @Nullable String comment;
-
         /// The compressed entry size.
         private final long compressedSize;
 
@@ -4821,7 +4814,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 String key,
                 byte[] rawPath,
                 String path,
-                @Nullable String comment,
                 long compressedSize,
                 long uncompressedSize,
                 long crc32,
@@ -4840,7 +4832,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             this.key = Objects.requireNonNull(key, "key");
             this.rawPath = Objects.requireNonNull(rawPath, "rawPath").clone();
             this.path = Objects.requireNonNull(path, "path");
-            this.comment = comment;
             this.compressedSize = compressedSize;
             this.uncompressedSize = uncompressedSize;
             this.crc32 = crc32;
@@ -4864,7 +4855,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     key,
                     new byte[0],
                     key,
-                    null,
                     UNKNOWN_SIZE,
                     0L,
                     UNKNOWN_CRC32,
@@ -4884,23 +4874,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         }
 
         /// Returns attributes for a newly written central directory entry.
-        private static EntryAttributes written(CentralEntry entry, ZipArkivoFileSystemConfig config) throws IOException {
+        private static EntryAttributes written(CentralEntry entry) throws IOException {
             byte[] centralDirectoryExtraData = entry.centralDirectoryExtraData();
             byte @Nullable [] rawComment = entry.rawComment.length > 0 ? entry.rawComment : null;
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyMetadataDecoder());
             return new EntryAttributes(
                     entryNameKey(entry.entryName),
                     entry.rawName,
                     entry.entryName,
-                    decoder.decodeComment(
-                            rawComment,
-                            entry.flags,
-                            centralDirectoryExtraData,
-                            ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
-                            entry.versionNeeded,
-                            entry.versionMadeBy,
-                            entry.externalAttributes
-                    ),
                     entry.compressedSize,
                     entry.uncompressedSize,
                     entry.crc32,
@@ -4979,15 +4959,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     snapshot.entryName(),
                     rawPath,
                     decodedPath,
-                    decoder.decodeComment(
-                            rawComment,
-                            flags,
-                            extraData,
-                            ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
-                            versionNeeded,
-                            versionMadeBy,
-                            externalAttributes
-                    ),
                     zip64.compressedSize(),
                     zip64.uncompressedSize(),
                     crc32,
@@ -5016,12 +4987,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         @Override
         public String path() {
             return path;
-        }
-
-        /// Returns the decoded ZIP entry comment text, or `null` when no comment is present.
-        @Override
-        public @Nullable String comment() {
-            return comment;
         }
 
         /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.
@@ -5476,6 +5441,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// The raw ZIP entry comment bytes.
         private final byte[] rawComment;
 
+        /// Original name bytes retained when replacing an entry body, or null for a new UTF-8 name.
+        private final byte @Nullable @Unmodifiable [] preservedName;
+
+        /// Whether the name and comment carry the UTF-8 general-purpose flag.
+        private final boolean utf8;
+
         /// Creates write metadata.
         EntryMetadata(
                 int method,
@@ -5500,13 +5471,21 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     externalAttributes,
                     expectedUncompressedSize,
                     expectedCrc32,
-                    localExtraData,
-                    centralDirectoryExtraData,
-                    rawComment
+                    withEncryptionExtraData(encryption, method, localExtraData),
+                    withEncryptionExtraData(encryption, method, centralDirectoryExtraData),
+                    rawComment,
+                    null,
+                    true
             );
         }
 
-        /// Creates write metadata with precomputed DOS timestamp fields.
+        /// Adds the AES record required for a newly configured encrypted entry.
+        private static byte[] withEncryptionExtraData(ZipEncryption encryption, int method, byte[] extraData) {
+            return ZipAesExtraField.isAesEncryption(encryption)
+                    ? ZipAesExtraField.forEncryption(encryption, method).appendTo(extraData) : extraData;
+        }
+
+        /// Copies prepared metadata without regenerating its encryption records or DOS timestamp fields.
         private EntryMetadata(
                 int method,
                 ZipEncryption encryption,
@@ -5519,8 +5498,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 long expectedCrc32,
                 byte[] localExtraData,
                 byte[] centralDirectoryExtraData,
-                byte @Nullable [] rawComment
+                byte @Nullable [] rawComment,
+                byte @Nullable [] preservedName,
+                boolean utf8
         ) {
+            this.preservedName = preservedName != null ? preservedName.clone() : null;
+            this.utf8 = utf8;
             this.method = method;
             this.encryption = Objects.requireNonNull(encryption, "encryption");
             this.dosTime = dosTime;
@@ -5530,17 +5513,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             this.externalAttributes = externalAttributes;
             this.expectedUncompressedSize = expectedUncompressedSize;
             this.expectedCrc32 = expectedCrc32;
-            byte[] requestedLocalExtraData = Objects.requireNonNull(localExtraData, "localExtraData").clone();
-            byte[] requestedCentralDirectoryExtraData =
+            this.localExtraData = Objects.requireNonNull(localExtraData, "localExtraData").clone();
+            this.centralDirectoryExtraData =
                     Objects.requireNonNull(centralDirectoryExtraData, "centralDirectoryExtraData").clone();
-            if (ZipAesExtraField.isAesEncryption(this.encryption)) {
-                ZipAesExtraField aes = ZipAesExtraField.forEncryption(this.encryption, method);
-                this.localExtraData = aes.appendTo(requestedLocalExtraData);
-                this.centralDirectoryExtraData = aes.appendTo(requestedCentralDirectoryExtraData);
-            } else {
-                this.localExtraData = requestedLocalExtraData;
-                this.centralDirectoryExtraData = requestedCentralDirectoryExtraData;
-            }
             this.rawComment = rawComment != null ? rawComment.clone() : new byte[0];
         }
 
@@ -5558,7 +5533,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     expectedCrc32,
                     localExtraData,
                     centralDirectoryExtraData,
-                    rawComment
+                    rawComment,
+                    preservedName,
+                    utf8
             );
         }
 
@@ -5577,8 +5554,22 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     expectedCrc32,
                     localExtraData,
                     centralDirectoryExtraData,
-                    rawComment
+                    rawComment,
+                    preservedName,
+                    utf8
             );
+        }
+
+        /// Returns a copy retaining the source name bytes and its language-encoding flag.
+        private EntryMetadata withNameEncoding(byte[] rawName, boolean utf8) {
+            return new EntryMetadata(method, encryption, dosTime, dosDate, versionMadeBy, internalAttributes,
+                    externalAttributes, expectedUncompressedSize, expectedCrc32, localExtraData,
+                    centralDirectoryExtraData, rawComment, rawName, utf8);
+        }
+
+        /// Returns the source name for body replacements, or UTF-8 bytes for a newly created entry.
+        private byte @Unmodifiable [] rawName(String entryName) throws IOException {
+            return preservedName != null ? preservedName : rawEntryName(entryName);
         }
 
         /// Returns default deflated file metadata.
@@ -5701,7 +5692,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
         /// Returns the ZIP general purpose flags for this entry.
         private int generalPurposeFlags() {
-            int flags = UTF8_FLAG;
+            int flags = utf8 ? UTF8_FLAG : 0;
             if (method == LZMA_METHOD) {
                 flags |= LZMA_EOS_MARKER_FLAG;
             }

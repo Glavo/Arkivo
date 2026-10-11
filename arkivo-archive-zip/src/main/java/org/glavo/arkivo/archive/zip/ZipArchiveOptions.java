@@ -29,16 +29,15 @@ import java.util.Objects;
 /// [ZipLegacyMetadataDecoder#forCodePages(Charset, Charset)] provides an opt-in creator-aware compatibility policy.
 @NotNullByDefault
 public final class ZipArchiveOptions {
-    /// The automatic decoder for names and comments without explicit Unicode metadata.
+    /// The automatic decoder for names without explicit Unicode metadata.
     ///
     /// ASCII values bypass statistical analysis. Indexed reading chooses one legacy encoding from bounded
-    /// central-directory samples and validates it against every undeclared name and entry comment before
-    /// building the path index. Names supply the scoring evidence; comments are used when no sampled
-    /// name supplies evidence. Lossless Unicode counterparts constrain the choice. Creator conventions
+    /// central-directory name samples and validates it against every undeclared name before
+    /// building the path index. Lossless Unicode counterparts constrain the choice. Creator conventions
     /// break scoring ties but do not establish a language. Mixed undeclared encodings are not inferred.
     /// Valid UTF-8 structure supplies bounded support, not an unconditional choice. ISO control characters
-    /// reduce a candidate's score without making its decoded text invalid; tabs and line endings in comments
-    /// are not penalized. Path validation remains the reader's responsibility.
+    /// reduce a candidate's score without making its decoded text invalid. Path validation remains the reader's
+    /// responsibility. Comments remain raw bytes and do not contribute to encoding detection.
     ///
     /// Streaming readers and direct calls analyze individual values without looking ahead or retaining
     /// previous-call evidence. Their results can differ from indexed reading. CP437 is used when no
@@ -99,7 +98,7 @@ public final class ZipArchiveOptions {
 
         /// Returns the configured legacy decoder or the ZIP default.
         ///
-        /// @return the effective decoder for non-Unicode names and comments
+        /// @return the effective decoder for non-Unicode names
         public ArchiveMetadataDecoder legacyMetadataDecoder() {
             @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
             return metadataDecoder != null ? metadataDecoder : DEFAULT_LEGACY_METADATA_DECODER;
@@ -115,7 +114,7 @@ public final class ZipArchiveOptions {
 
         /// Returns a copy with the legacy decoder.
         ///
-        /// @param value the replacement decoder for non-Unicode names and comments
+        /// @param value the replacement decoder for non-Unicode names
         /// @return a new configuration with the replacement decoder and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Read withLegacyMetadataDecoder(ArchiveMetadataDecoder value) {
@@ -205,7 +204,7 @@ public final class ZipArchiveOptions {
 
         /// Returns the configured legacy decoder or the ZIP default.
         ///
-        /// @return the effective decoder for non-Unicode names and comments
+        /// @return the effective decoder for non-Unicode names
         public ArchiveMetadataDecoder legacyMetadataDecoder() {
             @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
             return metadataDecoder != null ? metadataDecoder : DEFAULT_LEGACY_METADATA_DECODER;
@@ -230,7 +229,7 @@ public final class ZipArchiveOptions {
 
         /// Returns a copy with the legacy decoder.
         ///
-        /// @param value the replacement decoder for non-Unicode names and comments
+        /// @param value the replacement decoder for non-Unicode names
         /// @return a new configuration with the replacement decoder and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Update withLegacyMetadataDecoder(ArchiveMetadataDecoder value) {

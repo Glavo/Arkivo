@@ -734,7 +734,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     private static void addZipAttributes(Map<String, Object> values, ZipArkivoEntryAttributes attributes) {
         values.put("rawPath", attributes.rawPath());
         values.put("path", attributes.path());
-        values.put("comment", attributes.comment());
         values.put("compressedSize", attributes.compressedSize());
         values.put("crc32", attributes.crc32());
         values.put("generalPurposeFlags", attributes.generalPurposeFlags());
@@ -785,7 +784,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             case "fileKey" -> requireBasicView(values, name, view, attributes.fileKey());
             case "rawPath" -> requireZipView(values, name, zipView, attributes.rawPath());
             case "path" -> requireZipView(values, name, zipView, attributes.path());
-            case "comment" -> requireZipView(values, name, zipView, attributes.comment());
             case "compressedSize" -> requireZipView(values, name, zipView, attributes.compressedSize());
             case "crc32" -> requireZipView(values, name, zipView, attributes.crc32());
             case "generalPurposeFlags" -> requireZipView(values, name, zipView, attributes.generalPurposeFlags());
@@ -975,16 +973,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 } catch (java.nio.charset.CharacterCodingException exception) {
                     throw new IOException("Failed to decode ZIP entry name", exception);
                 }
-                @Nullable String decodedComment = prepared.take(variableOffset + nameLength + extraLength);
-                if (decodedComment == null) decodedComment = decoder.decodeComment(
-                        rawComment.length > 0 ? rawComment : null,
-                        flags,
-                        extraData,
-                        ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
-                        versionNeeded,
-                        versionMadeBy,
-                        externalAttributes
-                );
                 readLimits.acceptEntry(decodedPath, uncompressedSize);
 
                 String key = entryKey(decodedPath);
@@ -1017,7 +1005,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         storedLocalHeaderOffset,
                         new byte[0],
                         extraData,
-                        decodedComment,
                         rawComment.length > 0 ? rawComment : null,
                         lastModifiedTime,
                         entryMetadata,
@@ -1439,7 +1426,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     entry.key, entry.rawPath, entry.path, entry.compressedSize, entry.uncompressedSize, entry.crc32,
                     entry.generalPurposeFlags, entry.versionMadeBy, entry.versionNeededToExtract,
                     entry.internalAttributes, entry.externalAttributes, entry.method, offset, local.extraData,
-                    entry.centralDirectoryExtraData, entry.comment, entry.rawComment, entry.lastModifiedDosTime,
+                    entry.centralDirectoryExtraData, entry.rawComment, entry.lastModifiedDosTime,
                     ZipExtraFieldMetadata.resolve(local.extraData, entry.centralDirectoryExtraData,
                             entry.dosFallback), entry.directory, local.usesDataDescriptor(), entry.dosFallback);
             validateLocalRecord(channel, complete, local.dataOffset, end.actualCentralDirectoryOffset);
@@ -3033,9 +3020,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// The decoded path text.
         private final String path;
 
-        /// The decoded comment text, or `null` when absent.
-        private final @Nullable String comment;
-
         /// The compressed entry size.
         private final long compressedSize;
 
@@ -3107,7 +3091,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 long localHeaderOffset,
                 byte[] localExtraData,
                 byte[] centralDirectoryExtraData,
-                @Nullable String comment,
                 byte @Nullable [] rawComment,
                 int lastModifiedDosTime,
                 ZipExtraFieldMetadata.EntryMetadata entryMetadata,
@@ -3130,7 +3113,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             this.localHeaderOffset = localHeaderOffset;
             this.localExtraData = localExtraData;
             this.centralDirectoryExtraData = centralDirectoryExtraData;
-            this.comment = comment;
             this.rawComment = rawComment;
             this.lastModifiedDosTime = lastModifiedDosTime;
             this.entryMetadata = entryMetadata;
@@ -3197,13 +3179,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         public String path() {
             ZipEntryRecord record = entry;
             return record != null ? record.path : Objects.requireNonNull(syntheticDirectoryKey, "syntheticDirectoryKey");
-        }
-
-        /// Returns the decoded ZIP entry comment text, or `null` when no comment is present.
-        @Override
-        public @Nullable String comment() {
-            ZipEntryRecord record = entry;
-            return record != null ? record.comment : null;
         }
 
         /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.

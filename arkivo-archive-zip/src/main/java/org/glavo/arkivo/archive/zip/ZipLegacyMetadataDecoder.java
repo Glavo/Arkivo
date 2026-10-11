@@ -13,7 +13,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.Objects;
 
-/// Decodes legacy ZIP entry metadata using ZIP-specific header context.
+/// Decodes legacy ZIP entry names using ZIP-specific header context.
 ///
 /// ZIP readers invoke this decoder only when no usable Info-ZIP Unicode extra field or UTF-8 general-purpose flag
 /// supplies the encoding. Structural extra-field validation remains the reader's responsibility.
@@ -59,7 +59,7 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
         return context -> (ZipLegacyCodePages.usesOem(context) ? oem : ansi).decode(context.bytes());
     }
 
-    /// Decodes one complete legacy ZIP entry name or comment.
+    /// Decodes one complete legacy ZIP entry name.
     ///
     /// The context buffers are independent read-only views valid only for this call. An implementation may advance their
     /// positions while inspecting them but must not retain either buffer.
@@ -85,10 +85,7 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
         UNKNOWN,
 
         /// An entry path stored in a file header.
-        ENTRY_NAME,
-
-        /// An entry comment stored in a central directory header.
-        ENTRY_COMMENT
+        ENTRY_NAME
     }
 
     /// Identifies the ZIP header that supplied a metadata value.
@@ -109,7 +106,7 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
     /// Both buffers are independent read-only views. Their contents are valid only for the duration of the decoder
     /// call and must not be retained.
     ///
-    /// @param bytes the complete raw name or comment bytes
+    /// @param bytes the complete raw entry name bytes
     /// @param metadataKind the logical field being decoded
     /// @param headerSource the header that supplied the field
     /// @param generalPurposeFlags the unsigned general-purpose flags, or `UNKNOWN_HEADER_VALUE`

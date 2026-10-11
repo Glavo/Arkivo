@@ -37,11 +37,6 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes, ArchiveEn
     /// used to address the entry.
     String path();
 
-    /// Returns the decoded ZIP entry comment text, or `null` when no comment is present.
-    ///
-    /// @return the decoded comment, or `null` when absent
-    @Nullable String comment();
-
     /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.
     ///
     /// @return the compressed size, or [#UNKNOWN_SIZE] when unknown
@@ -114,8 +109,11 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes, ArchiveEn
     /// @return a newly allocated array containing the central-directory extra data
     byte @Unmodifiable [] centralDirectoryExtraData();
 
-    /// Returns a copy of the raw ZIP entry comment bytes, or `null` when no comment is present.
+    /// Returns a copy of the raw ZIP entry comment bytes, or `null` when absent or unavailable.
     ///
-    /// @return a newly allocated array containing the raw comment, or `null` when absent
+    /// Comments are not decoded or used for name-encoding detection. Streaming readers cannot obtain them
+    /// from local headers. Unicode Comment extra fields remain available in the raw extra data.
+    ///
+    /// @return a newly allocated array containing the raw comment, or `null` when absent or unavailable
     byte @Nullable @Unmodifiable [] rawComment();
 }

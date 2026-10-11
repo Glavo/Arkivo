@@ -101,7 +101,6 @@ final class ZipArkivoStreamingWriterAttributesTest {
             ZipArkivoEntryAttributes defaults = zipView.readAttributes();
             assertArrayEquals("dir/value.txt".getBytes(StandardCharsets.UTF_8), defaults.rawPath());
             assertEquals("dir/value.txt", defaults.path());
-            assertNull(defaults.comment());
             assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, defaults.compressedSize());
             assertEquals(ZipArkivoEntryAttributes.UNKNOWN_CRC32, defaults.crc32());
             assertEquals(1 << 11, defaults.generalPurposeFlags());
@@ -159,7 +158,6 @@ final class ZipArkivoStreamingWriterAttributesTest {
             rawComment[0] = 0;
 
             ZipArkivoEntryAttributes configured = zipView.readAttributes();
-            assertEquals("configured comment", configured.comment());
             assertEquals(42L, configured.size());
             assertEquals(0xfedc_ba98L, configured.crc32());
             assertEquals(ZipMethod.LZMA, configured.compressionMethod());
@@ -219,7 +217,7 @@ final class ZipArkivoStreamingWriterAttributesTest {
             zipView.setRawComment(null);
             zipView.setPermissions(Set.of());
 
-            assertEquals("configured comment", configured.comment());
+            assertArrayEquals("configured comment".getBytes(StandardCharsets.UTF_8), configured.rawComment());
             assertEquals(42L, configured.size());
             assertEquals(ZipMethod.LZMA, configured.compressionMethod());
             assertEquals(permissions, configured.permissions());

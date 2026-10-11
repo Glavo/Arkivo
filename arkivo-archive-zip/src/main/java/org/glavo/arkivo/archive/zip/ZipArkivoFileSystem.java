@@ -39,10 +39,10 @@ import java.util.Objects;
 /// seekable entry channels stage decoded bytes through the configured edit storage. General volume sources remain
 /// read-only through `open`; use `update` with an explicit transactional volume target for multi-volume mutation.
 ///
-/// Replacing an entry body retains its timestamps, permissions, Unix identifiers, and decoded comment. The replacement
-/// uses Deflate and the update options' default encryption method. ZIP64, encryption, and Unicode path/comment extra
-/// fields are regenerated or omitted as required by the new record; other extra fields are retained. Comments and names
-/// are encoded as UTF-8 in replacement records.
+/// Replacing an entry body retains its timestamps, permissions, Unix identifiers, raw name and comment bytes, and
+/// language-encoding flag. The replacement uses Deflate and the update options' default encryption method. ZIP64 and
+/// encryption extra fields are regenerated or omitted as required by the new record; other extra fields, including
+/// Unicode Path and Unicode Comment records, are retained. Comments are not decoded or used for name detection.
 ///
 /// Modification-time updates synchronize the DOS header and existing recognized timestamp extra fields without adding
 /// timestamp records. NTFS records store 100-nanosecond units; Unix records store whole seconds. A value outside the
