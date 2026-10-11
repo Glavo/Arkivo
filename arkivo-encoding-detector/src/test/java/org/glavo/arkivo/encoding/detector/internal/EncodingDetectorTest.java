@@ -27,6 +27,17 @@ import static org.junit.jupiter.api.Assertions.*;
 /// Verifies common-encoding scoring independently of ZIP declarations and fallback policy.
 @NotNullByDefault
 class EncodingDetectorTest {
+    /// Every installed inference candidate preserves all ASCII bytes used by the ZIP array shortcut.
+    @Test
+    void candidatesPreserveAscii() throws CharacterCodingException {
+        byte[] ascii = new byte[128];
+        for (int i = 0; i < ascii.length; i++) ascii[i] = (byte) i;
+        String expected = new String(ascii, StandardCharsets.US_ASCII);
+        for (Charset charset : BigramModels.INSTANCE.candidates.keySet()) {
+            assertEquals(expected, charset.newDecoder().decode(ByteBuffer.wrap(ascii)).toString(), charset.name());
+        }
+    }
+
     /// ASCII fields allocate neither candidate decoders nor a character workspace.
     @Test
     void asciiDoesNotAllocateWorkspace() throws Exception {

@@ -45,6 +45,37 @@ import static org.junit.jupiter.api.Assertions.*;
 /// Tests automatic decoding with independently encoded ZIP records and bounded archive evidence.
 @NotNullByDefault
 public final class ZipAutoMetadataDecoderTest {
+    /// Array decoding preserves every ASCII value, including controls, without modifying the source.
+    @Test
+    public void asciiArrayMatchesBufferDecoding() throws IOException {
+        byte[] raw = new byte[128];
+        for (int i = 0; i < raw.length; i++) raw[i] = (byte) i;
+        String expected = new String(raw, StandardCharsets.US_ASCII);
+        ArchiveMetadataDecoder decoder = ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER;
+        assertFalse(decoder instanceof ZipLegacyMetadataDecoder);
+        assertEquals(expected, decoder.decode(raw));
+        assertEquals(expected, decoder.decode(ByteBuffer.wrap(raw).asReadOnlyBuffer()));
+        assertArrayEquals(expected.getBytes(StandardCharsets.US_ASCII), raw);
+        assertEquals("", decoder.decode(new byte[0]));
+        assertThrows(NullPointerException.class, () -> decoder.decode((byte[]) null));
+    }
+
+    /// High bytes at either end bypass the ASCII shortcut, including a long all-ASCII prefix.
+    @Test
+    public void arrayAndBufferInferenceAgree() throws IOException {
+        for (int length : new int[]{1, 7, 4097}) {
+            for (int position : new int[]{0, length - 1}) {
+                byte[] raw = new byte[length];
+                Arrays.fill(raw, (byte) 'a');
+                raw[position] = (byte) 0xff;
+                byte[] original = raw.clone();
+                assertEquals(ZipAutoMetadataDecoder.DEFAULT.decode(ByteBuffer.wrap(raw)),
+                        ZipAutoMetadataDecoder.DEFAULT.decode(raw));
+                assertArrayEquals(original, raw);
+            }
+        }
+    }
+
     /// Recognizes unmarked Unicode and decisive legacy script samples through both public reading paths.
     @ParameterizedTest
     @CsvSource({
@@ -488,10 +519,31 @@ public final class ZipAutoMetadataDecoderTest {
     @Test
     public void frozenChoiceFailsStrictly() throws IOException {
         var central = centralBytes(new Sample("日本語😀.txt", "UTF-8", null, true, 0));
-        var prepared = ArchiveMetadataDecoder.forCharset(
-                ZipNameEncodingInference.select(ByteBuffer.wrap(central), new HashMap<>()));
-        assertThrows(java.nio.charset.CharacterCodingException.class, () -> prepared.decode(new byte[]{(byte) 0xFF}));
-        assertEquals("é.txt", prepared.decode("é.txt".getBytes(StandardCharsets.UTF_8)));
+        var decoder = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT,
+                ByteBuffer.wrap(central)).decoder();
+        assertThrows(java.nio.charset.CharacterCodingException.class,
+                () -> decoder.decodePath(new byte[]{(byte) 0xFF}, 0, new byte[0]));
+        assertEquals("é.txt", decoder.decodePath("é.txt".getBytes(StandardCharsets.UTF_8), 0, new byte[0]));
+    }
+
+    /// Frozen Unicode and legacy choices preserve ASCII and do not bypass explicit Unicode declarations.
+    @ParameterizedTest
+    @CsvSource({"UTF-8, 日本語😀.txt", "windows-1252, €résumé.txt", "IBM437, München.txt"})
+    public void frozenAsciiPreservesDeclarationPriority(String encoding, String name) throws IOException {
+        var central = centralBytes(new Sample(name, encoding, null, true, 0));
+        var decoder = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT,
+                ByteBuffer.wrap(central)).decoder();
+        byte[] raw = new byte[128];
+        for (int i = 0; i < raw.length; i++) raw[i] = (byte) i;
+        assertEquals(new String(raw, StandardCharsets.US_ASCII), decoder.decodePath(raw, 0, new byte[0]));
+        assertEquals("", decoder.decodePath(new byte[0], 0, new byte[0]));
+        byte[] replacement = "??.txt".getBytes(StandardCharsets.US_ASCII);
+        byte[] extra = unicodeExtra(0x7075, "中文.txt", StandardCharsets.US_ASCII);
+        assertEquals("中文.txt", decoder.decodePath(replacement, 0, extra));
+        extra[extra.length - 1] = (byte) 0xff;
+        assertThrows(IOException.class, () -> decoder.decodePath(replacement, 0, extra));
+        assertThrows(IOException.class,
+                () -> decoder.decodePath(new byte[]{(byte) 0xff}, ZipEntryNameDecoder.UTF_8_FLAG, new byte[0]));
     }
 
     /// Comments do not influence the shared name encoding.

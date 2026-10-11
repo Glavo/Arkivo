@@ -36,6 +36,9 @@ public final class ZipEntryNameDecoder {
     /// The decoder used when no authoritative Unicode charset is available.
     private final ArchiveMetadataDecoder legacyMetadataDecoder;
 
+    /// The inferred archive charset, or null for single-field inference and custom callbacks.
+    private final @Nullable Charset archiveCharset;
+
     /// Creates an entry name decoder.
     ///
     /// @param legacyMetadataDecoder the decoder consulted when no authoritative Unicode metadata is available
@@ -45,6 +48,13 @@ public final class ZipEntryNameDecoder {
                 legacyMetadataDecoder,
                 "legacyMetadataDecoder"
         );
+        this.archiveCharset = null;
+    }
+
+    /// Creates a frozen built-in strategy using an ASCII-compatible inference candidate.
+    private ZipEntryNameDecoder(Charset archiveCharset) {
+        this.legacyMetadataDecoder = ZipAutoMetadataDecoder.DEFAULT;
+        this.archiveCharset = archiveCharset;
     }
 
     /// Prepares a frozen decoder and temporary legacy text for index construction.
@@ -52,10 +62,10 @@ public final class ZipEntryNameDecoder {
     static Prepared forCentralDirectory(ArchiveMetadataDecoder configured, ByteBuffer centralDirectory)
             throws IOException {
         var decodedFields = new HashMap<Integer, String>();
-        ArchiveMetadataDecoder decoder = configured == ZipAutoMetadataDecoder.DEFAULT
-                ? ArchiveMetadataDecoder.forCharset(ZipNameEncodingInference.select(centralDirectory, decodedFields))
-                : configured;
-        return new Prepared(new ZipEntryNameDecoder(decoder), decodedFields);
+        ZipEntryNameDecoder decoder = configured == ZipAutoMetadataDecoder.DEFAULT
+                ? new ZipEntryNameDecoder(ZipNameEncodingInference.select(centralDirectory, decodedFields))
+                : new ZipEntryNameDecoder(configured);
+        return new Prepared(decoder, decodedFields);
     }
 
     /// Transfers already decoded fields to one index build without retaining them in the frozen decoder.
@@ -193,6 +203,11 @@ public final class ZipEntryNameDecoder {
     ) throws IOException {
         if ((generalPurposeFlags & UTF_8_FLAG) != 0) {
             return strictDecode(rawValue, StandardCharsets.UTF_8);
+        }
+
+        if (archiveCharset != null) {
+            @Nullable String ascii = ZipAutoMetadataDecoder.decodeAscii(rawValue);
+            return ascii != null ? ascii : strictDecode(rawValue, archiveCharset);
         }
 
         if (legacyMetadataDecoder instanceof ZipAutoMetadataDecoder automatic) {

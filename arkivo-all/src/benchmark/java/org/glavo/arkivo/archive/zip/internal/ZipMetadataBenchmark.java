@@ -31,8 +31,9 @@ import java.util.zip.ZipOutputStream;
 @Measurement(iterations = 5, time = 1)
 @Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
 public class ZipMetadataBenchmark {
-    /// Selects legacy or UTF-8 fields, directory repetition, mixed encodings, or an 8192-entry ASCII index.
-    @Param({"single", "batch", "utf8-single", "utf8-batch", "prefix", "mixed", "ascii-index"})
+    /// Selects legacy, UTF-8, or ASCII fields, directory repetition, mixed encodings, or an 8192-entry ASCII index.
+    @Param({"single", "batch", "utf8-single", "utf8-batch", "prefix", "mixed",
+            "ascii-single", "ascii-batch", "ascii-index"})
     public String workload = "single";
 
     /// Independent original bytes, generated outside the measurement.
@@ -56,6 +57,7 @@ public class ZipMetadataBenchmark {
         int size = 0;
         for (int index = 0; index < fields.length; index++) {
             String name = names[index % names.length] + index + ".txt";
+            if (workload.startsWith("ascii-")) name = "entry" + index + ".txt";
             Charset charset = Charset.forName(workload.startsWith("utf8-") ? "UTF-8" : "windows-31j");
             if (workload.equals("prefix")) name = "資料/" + name;
             if (workload.equals("mixed") && index % 2 == 1) {
@@ -89,7 +91,7 @@ public class ZipMetadataBenchmark {
             if (index() != 8192) throw new AssertionError("Incomplete ASCII index");
         } else {
             // Exclude first model loading from steady-state measurements.
-            decoder.decode(ByteBuffer.wrap(fields[0]));
+            decoder.decode(fields[0]);
         }
     }
 
@@ -108,7 +110,7 @@ public class ZipMetadataBenchmark {
         if (workload.equals("ascii-index")) {
             sink.consume(index());
         } else if (workload.endsWith("single")) {
-            sink.consume(decoder.decode(ByteBuffer.wrap(fields[0])));
+            sink.consume(decoder.decode(fields[0]));
         } else {
             var prepared = ZipEntryNameDecoder.forCentralDirectory(decoder, central);
             int offset = 0;
