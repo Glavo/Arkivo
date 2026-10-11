@@ -4,20 +4,14 @@
 import java.util.Properties
 import org.glavo.arkivo.gradle.DownloadVerifiedFile
 
-sourceSets.named("tier2Test") {
-    compileClasspath += sourceSets.test.get().output
-    runtimeClasspath += sourceSets.test.get().output
-}
-
 dependencies {
     "tier2TestImplementation"(project(":arkivo-archive-zip"))
-    "tier2TestImplementation"("org.apache.commons:commons-compress:1.28.0")
 }
 
 tasks.named<Test>("tier2Test") {
     dependsOn(":arkivo-all:prepareJSZipTestCorpus", ":arkivo-all:prepareZip4jTestCorpus",
-        ":arkivo-all:prepareGoTestCorpus", ":arkivo-all:prepareZipRsTestCorpus")
-    for (corpus in listOf("jszip", "zip4j", "go", "ziprs")) {
+        ":arkivo-all:prepareGoTestCorpus")
+    for (corpus in listOf("jszip", "zip4j", "go")) {
         val manifestFile = rootProject.file("gradle/test-data/$corpus.properties")
         val manifest = Properties().apply { manifestFile.inputStream().use(::load) }
         val directory = rootProject.layout.buildDirectory.dir("test-data/$corpus/${manifest.getProperty("version")}")
@@ -29,8 +23,11 @@ tasks.named<Test>("tier2Test") {
 
 tasks.withType<Jar>().configureEach {
     from("NOTICE") { into("META-INF") }
-    from("UPSTREAM.properties") { into("META-INF/chardetng") }
-    from(rootProject.file("LICENSES/Chardetng-MIT.txt")) { into("META-INF/LICENSES") }
+    from(rootProject.file("gradle/test-data/kala-encoding-detector.properties")) {
+        into("META-INF/kala")
+        rename { "UPSTREAM.properties" }
+    }
+    from(rootProject.file("LICENSES/Chardet-0BSD.txt")) { into("META-INF/LICENSES") }
 }
 
 val kalaManifestFile = rootProject.file("gradle/test-data/kala-encoding-detector.properties")
@@ -42,7 +39,7 @@ val testDataCacheDirectory = rootProject.layout.dir(rootProject.providers.provid
 })
 val downloadKalaModels = tasks.register<DownloadVerifiedFile>("downloadKalaModels") {
     group = "verification"
-    description = "Downloads the pinned Kala artifact for metadata scoring comparisons."
+    description = "Downloads the pinned Kala model source for generation and verification."
     sourceUrl.set(kalaManifest.getProperty("archiveUrl"))
     expectedSha256.set(kalaSha256)
     expectedSize.set(kalaManifest.getProperty("archiveSize").toLong())
@@ -54,7 +51,7 @@ val downloadKalaModels = tasks.register<DownloadVerifiedFile>("downloadKalaModel
     })
 }
 val prepareKalaModels = tasks.register<Sync>("prepareKalaModels") {
-    description = "Extracts statistical models for the metadata-specific scoring experiment."
+    description = "Extracts the pinned upstream models for generation and verification."
     from(downloadKalaModels.flatMap { it.destination }.map { zipTree(it.asFile) }) {
         include("kala/encdet/internal/models.bin", "kala/encdet/internal/idf.bin")
         includeEmptyDirs = false
@@ -67,6 +64,11 @@ sourceSets.named("tier2Test") {
     resources.srcDir(prepareKalaModels)
 }
 
-dependencies {
-    "tier2TestImplementation"(files(downloadKalaModels.flatMap { it.destination }))
+tasks.register<JavaExec>("generateMetadataModel") {
+    group = "verification"
+    description = "Reproduces the uncompressed metadata model resource under build without modifying checked-in files."
+    dependsOn(tasks.named("tier2TestClasses"))
+    classpath = sourceSets.named("tier2Test").get().runtimeClasspath
+    mainClass.set("org.glavo.arkivo.encoding.detector.internal.MetadataModelGenerator")
+    args(layout.buildDirectory.dir("metadata-model").get().asFile.absolutePath)
 }

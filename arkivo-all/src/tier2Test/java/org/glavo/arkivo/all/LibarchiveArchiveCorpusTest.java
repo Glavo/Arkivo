@@ -140,7 +140,11 @@ public final class LibarchiveArchiveCorpusTest {
                 ? ArchiveCorpusAssertions.readArReference(archive)
                 : archiveName.endsWith(".tar") ? ArchiveCorpusAssertions.readTarReference(archive)
                 : ArchiveCorpusAssertions.readZipReference(archive);
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive)) {
+        // Match the independent parser's fixed CP437 policy; this comparison tests bodies and records, not inference.
+        try (ArkivoFileSystem fileSystem = archiveName.endsWith(".ar") || archiveName.endsWith(".tar")
+                ? ArkivoFormats.openFileSystem(archive)
+                : ZipArkivoFileSystem.open(archive, ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
+                        org.glavo.arkivo.archive.ArchiveMetadataDecoder.forCharset(Charset.forName("IBM437"))))) {
             ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), expected);
         }
     }

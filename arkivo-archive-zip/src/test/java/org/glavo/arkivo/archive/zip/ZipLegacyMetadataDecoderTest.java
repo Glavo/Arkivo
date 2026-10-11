@@ -132,7 +132,8 @@ public final class ZipLegacyMetadataDecoderTest {
         Path file = directory.resolve("code-pages.zip");
         Files.write(file, archive);
         String oemName = new String("legacy-\u00e9.txt".getBytes(StandardCharsets.ISO_8859_1), Charset.forName("IBM437"));
-        try (var fs = ZipArkivoFileSystem.open(file)) {
+        try (var fs = ZipArkivoFileSystem.open(file, ZipArchiveOptions.READ_DEFAULTS
+                .withLegacyMetadataDecoder(ArchiveMetadataDecoder.forCharset(Charset.forName("IBM437"))))) {
             assertTrue(Files.exists(fs.getPath(oemName)));
         }
         try (var fs = ZipArkivoFileSystemProvider.instance().newFileSystem(file,

@@ -5,6 +5,7 @@
 package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.all.commonscompress.ArchiveCorpusAssertions;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -125,7 +126,8 @@ final class ZipRsCorpusTest {
     @MethodSource("ordinaryArchives")
     void readsIndexedArchives(String name) throws IOException {
         var expected = detectedNames(name, ArchiveCorpusAssertions.readZipReference(fixture(name)));
-        try (var fileSystem = ZipArkivoFileSystem.open(fixture(name))) {
+        try (var fileSystem = ZipArkivoFileSystem.open(fixture(name),
+                ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(metadataDecoder(name)))) {
             ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), expected);
         }
     }
@@ -135,7 +137,8 @@ final class ZipRsCorpusTest {
     @MethodSource("fragmentedArchives")
     void readsFragmentedArchives(String name, int chunk) throws IOException {
         var expected = detectedNames(name, ArchiveCorpusAssertions.readZipReference(fixture(name)));
-        try (var reader = ZipArkivoStreamingReader.open(new ChunkedInput(fixture(name), chunk))) {
+        try (var reader = ZipArkivoStreamingReader.open(new ChunkedInput(fixture(name), chunk),
+                ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(metadataDecoder(name)))) {
             assertEquals(expected, ArchiveCorpusAssertions.readStreaming(reader));
             assertFalse(reader.next());
         }
@@ -148,13 +151,15 @@ final class ZipRsCorpusTest {
         Path copy = directory.resolve("updated.zip");
         Files.copy(fixture(name), copy);
         var expected = ArchiveCorpusAssertions.readZipReference(copy);
-        try (var fileSystem = ZipArkivoFileSystem.update(copy)) {
+        try (var fileSystem = ZipArkivoFileSystem.update(copy,
+                ZipArchiveOptions.UPDATE_DEFAULTS.withLegacyMetadataDecoder(metadataDecoder(name)))) {
             Files.write(fileSystem.getPath("/added.bin"), new byte[]{1, 3, 7});
         }
         var actual = ArchiveCorpusAssertions.readZipReference(copy);
         assertEquals(expected.size() + 1, actual.size());
         assertEquals(expected, actual.stream().filter(entry -> !entry.path().equals("added.bin")).toList());
-        try (var fileSystem = ZipArkivoFileSystem.open(copy)) {
+        try (var fileSystem = ZipArkivoFileSystem.open(copy,
+                ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(metadataDecoder(name)))) {
             ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), detectedNames(name, actual));
         }
     }
@@ -165,11 +170,24 @@ final class ZipRsCorpusTest {
     void nonUtf8NamesMatchDeclaredContent(String name, String encoding, String rawHex) throws IOException {
         byte[] raw = HexFormat.of().parseHex(rawHex);
         assertArrayEquals(raw, name.getBytes(Charset.forName(encoding)));
-        try (var fs = ZipArkivoFileSystem.open(fixture("non_utf8.zip"))) {
+        try (var fs = ZipArkivoFileSystem.open(fixture("non_utf8.zip"),
+                ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(metadataDecoder("non_utf8.zip")))) {
             var path = fs.getPath(name);
             assertEquals("encoding " + encoding, Files.readString(path, StandardCharsets.US_ASCII).strip());
             assertArrayEquals(raw, Files.readAttributes(path, ZipArkivoEntryAttributes.class).rawPath());
         }
+    }
+
+    /// Uses the mixed fixture's own encoding declarations rather than requiring automatic mixed-code-page recovery.
+    private static ArchiveMetadataDecoder metadataDecoder(String fixture) {
+        if (!fixture.equals("non_utf8.zip")) return ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER;
+        return bytes -> {
+            if (bytes.equals(java.nio.ByteBuffer.wrap(HexFormat.of().parseHex("D6D0CEC4"))))
+                return Charset.forName("GB18030").newDecoder().decode(bytes.duplicate()).toString();
+            if (bytes.equals(java.nio.ByteBuffer.wrap(HexFormat.of().parseHex("93FA95B6"))))
+                return Charset.forName("Shift_JIS").newDecoder().decode(bytes.duplicate()).toString();
+            return StandardCharsets.US_ASCII.newDecoder().decode(bytes.duplicate()).toString();
+        };
     }
 
     /// Replaces the reference parser's fixed CP437 spelling only for the two independently verified legacy names.

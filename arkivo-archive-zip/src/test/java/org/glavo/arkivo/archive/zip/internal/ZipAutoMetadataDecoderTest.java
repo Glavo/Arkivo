@@ -31,6 +31,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -76,9 +77,9 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Keeps insufficient evidence deterministic, including malformed and short multibyte inputs.
+    /// Keeps inputs without usable pair evidence on the deterministic ZIP fallback.
     @ParameterizedTest
-    @ValueSource(strings = {"82", "E9", "FF", "C3", "C080", "E4B8", "81FF", "D6D0", "A4A4"})
+    @ValueSource(strings = {"82", "E9", "FF", "C3", "81FF"})
     public void ambiguousBytesUseCp437(String hex) throws IOException {
         byte[] raw = java.util.HexFormat.of().parseHex(hex);
         assertEquals(new String(raw, Charset.forName("IBM437")),
@@ -162,14 +163,14 @@ public final class ZipAutoMetadataDecoderTest {
             assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath(shortName)));
         }
         // A later central-directory anchor cannot influence an earlier streaming name.
-        String fallback = new String(shortName.getBytes(Charset.forName(encoding)), Charset.forName("IBM437"));
+        String independent;
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive(target)))) {
+            assertTrue(reader.next());
+            independent = reader.readAttributes().path();
+        }
         try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
             assertTrue(reader.next());
-            assertEquals(fallback, reader.readAttributes().path());
-        }
-        Files.write(file, archive(target));
-        try (var fs = ZipArkivoFileSystem.open(file)) {
-            assertTrue(Files.exists(fs.getPath(fallback)));
+            assertEquals(independent, reader.readAttributes().path());
         }
     }
 
@@ -193,9 +194,9 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Keeps names and comments independent and does not propagate creator-specific evidence to other hosts.
+    /// Shares the common legacy encoding across comments and creator systems.
     @Test
-    public void evidenceDoesNotCrossMetadataKindsOrCreators(@TempDir Path directory) throws IOException {
+    public void archiveChoiceCrossesMetadataKindsAndCreators(@TempDir Path directory) throws IOException {
         Path file = directory.resolve("separate.zip");
         Files.write(file, archive(
                 new Sample("€résumé.txt", "windows-1252", null, true, 0),
@@ -203,13 +204,12 @@ public final class ZipAutoMetadataDecoderTest {
                 new Sample("other-é.txt", "windows-1252", null, false, 3)));
         try (var fs = ZipArkivoFileSystem.open(file)) {
             assertTrue(Files.exists(fs.getPath("é.txt")));
-            String fallback = new String(new byte[]{(byte) 0xe9}, Charset.forName("IBM437"));
-            assertEquals(fallback, Files.readAttributes(fs.getPath("é.txt"), ZipArkivoEntryAttributes.class).comment());
-            assertTrue(Files.exists(fs.getPath("other-" + fallback + ".txt")));
+            assertEquals("é", Files.readAttributes(fs.getPath("é.txt"), ZipArkivoEntryAttributes.class).comment());
+            assertTrue(Files.exists(fs.getPath("other-é.txt")));
         }
     }
 
-    /// Requires independent evidence after excluding the queried field and repeated basename features.
+    /// Uses the shared encoding for short names even when repeated samples add no new features.
     @Test
     public void jointEvidenceAndDuplicatePrefixes(@TempDir Path directory) throws IOException {
         Path file = directory.resolve("votes.zip");
@@ -226,8 +226,7 @@ public final class ZipAutoMetadataDecoderTest {
                 new Sample("b/软件安装说明.txt", "GB18030", null, false, 0),
                 new Sample("c/软件安装说明.txt", "GB18030", null, false, 0)));
         try (var fs = ZipArkivoFileSystem.open(file)) {
-            String fallback = new String("中.txt".getBytes(Charset.forName("GB18030")), Charset.forName("IBM437"));
-            assertTrue(Files.exists(fs.getPath(fallback)));
+            assertTrue(Files.exists(fs.getPath("中.txt")));
         }
     }
 
@@ -272,7 +271,7 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Conflicting interpretations of the same raw directory prefix are not resolved by a majority elsewhere.
+    /// Does not maintain directory-specific guesses when legacy bytes have conflicting interpretations.
     @Test
     public void conflictingParentHints(@TempDir Path directory) throws IOException {
         String big5Parent = new String("中".getBytes(Charset.forName("GB18030")), Charset.forName("Big5"));
@@ -286,8 +285,9 @@ public final class ZipAutoMetadataDecoderTest {
         Path file = directory.resolve("prefix-conflict.zip");
         Files.write(file, archive(samples.toArray(Sample[]::new)));
         try (var fs = ZipArkivoFileSystem.open(file)) {
-            String fallback = new String("中".getBytes(Charset.forName("GB18030")), Charset.forName("IBM437"));
-            assertTrue(Files.isDirectory(fs.getPath(fallback)));
+            try (var roots = Files.list(fs.getPath("/"))) {
+                assertEquals(1, roots.filter(Files::isDirectory).count());
+            }
         }
     }
 
@@ -309,9 +309,9 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Allows a decisive individual name to override a majority encoding hint.
+    /// Mixed undeclared encodings have no recovery guarantee, but every field uses the same frozen choice.
     @Test
-    public void mixedEncodings(@TempDir Path directory) throws IOException {
+    public void mixedBytesDoNotTriggerPerEntryOverrides(@TempDir Path directory) throws Exception {
         Path file = directory.resolve("mixed.zip");
         Sample[] samples = {
                 new Sample("软件安装说明.txt", "GB18030", null, false, 0),
@@ -320,10 +320,20 @@ public final class ZipAutoMetadataDecoderTest {
                 new Sample("こんにちは世界.txt", "windows-31j", null, false, 0),
                 new Sample("é-世界.txt", "UTF-8", null, false, 0)
         };
-        Files.write(file, archive(samples));
+        byte[] bytes = archive(samples);
+        int start = ByteArrayAccess.readIntLittleEndian(bytes, bytes.length - 6);
+        var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT,
+                ByteBuffer.wrap(bytes).position(start).limit(bytes.length - 22), new java.util.HashMap<>());
+        var selected = ZipAutoMetadataDecoder.class.getDeclaredField("charset");
+        selected.setAccessible(true);
+        Charset charset = (Charset) selected.get(prepared);
+        assertNotNull(charset);
+        Files.write(file, bytes);
         try (var fs = ZipArkivoFileSystem.open(file)) {
             for (Sample sample : samples) {
-                assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath(sample.name())));
+                String expected = charset.newDecoder().decode(ByteBuffer.wrap(
+                        sample.name().getBytes(Charset.forName(sample.encoding())))).toString();
+                assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath(expected)));
             }
         }
     }
@@ -389,7 +399,7 @@ public final class ZipAutoMetadataDecoderTest {
         central.write(filler);
         central.write(centralBytes(new Sample("€résumé.txt", "windows-1252", null, true, 0)));
         var decoder = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT,
-                ByteBuffer.wrap(central.toByteArray()));
+                ByteBuffer.wrap(central.toByteArray())).decoder();
         byte[] raw = "é.txt".getBytes(Charset.forName("windows-1252"));
         String expected = "é.txt";
         assertEquals(expected, decoder.decodePath(raw, 0, new byte[0],
@@ -416,12 +426,87 @@ public final class ZipAutoMetadataDecoderTest {
             var central = new ByteArrayOutputStream();
             for (var record : records) central.write(record);
             var decoder = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT,
-                    ByteBuffer.wrap(central.toByteArray()));
+                    ByteBuffer.wrap(central.toByteArray())).decoder();
             var actual = new ArrayList<String>();
             for (var query : queries) actual.add(decoder.decodePath(query.name().getBytes(Charset.forName(query.encoding())),
                     0, new byte[0], ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, query.creator() << 8 | 20, 0));
             if (round == 0) expected.addAll(actual);
             else assertEquals(expected, actual);
+        }
+    }
+
+    /// Validates fields excluded from statistical sampling before freezing a shared encoding.
+    @Test
+    public void unsampledFieldsVetoInvalidArchiveChoices() throws IOException {
+        var central = new ByteArrayOutputStream();
+        central.write(centralBytes(new Sample("日本語😀.txt", "UTF-8", null, true, 0)));
+        central.write(centralBytes(new Sample("é.txt", "UTF-8", "é", false, 0)));
+        String longName = "a".repeat(ZipAutoMetadataDecoder.MAX_FIELD_BYTES + 1) + "ÿ.txt";
+        central.write(centralBytes(new Sample(longName, "windows-1252", null, false, 0)));
+        var decodedFields = new HashMap<Integer, String>();
+        decodedFields.put(-1, "stale");
+        var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT,
+                ByteBuffer.wrap(central.toByteArray()), decodedFields);
+        assertTrue(decodedFields.isEmpty());
+        byte[] raw = longName.getBytes(Charset.forName("windows-1252"));
+        assertEquals(new String(raw, Charset.forName("IBM437")), prepared.decode(raw));
+    }
+
+    /// Transfers validated text once by absolute field offset without retaining borrowed storage.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void preparedTextIsTransferredToIndex(boolean direct) throws IOException {
+        byte[] first = centralBytes(new Sample("é.txt", "windows-1252", "é", false, 0));
+        byte[] anchor = centralBytes(new Sample("€résumé.txt", "windows-1252", null, true, 0));
+        int prefix = 7;
+        var storage = direct ? ByteBuffer.allocateDirect(prefix + first.length + anchor.length)
+                : ByteBuffer.allocate(prefix + first.length + anchor.length);
+        storage.position(prefix).put(first).put(anchor).flip().position(prefix);
+        var central = storage.asReadOnlyBuffer().order(ByteOrder.BIG_ENDIAN);
+        central.mark();
+        var prepared = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT, central);
+        assertEquals(prefix, central.position());
+        assertEquals(storage.limit(), central.limit());
+        assertEquals(ByteOrder.BIG_ENDIAN, central.order());
+        central.reset();
+        assertEquals(2, prepared.decodedFields().size());
+        int nameOffset = prefix + 46;
+        int commentOffset = nameOffset + "é.txt".getBytes(Charset.forName("windows-1252")).length;
+        @Nullable String name = prepared.decodedFields().get(nameOffset);
+        @Nullable String comment = prepared.decodedFields().get(commentOffset);
+        assertEquals("é.txt", name);
+        assertEquals("é", comment);
+        storage.clear();
+        while (storage.hasRemaining()) storage.put((byte) 0);
+        assertSame(name, prepared.take(nameOffset));
+        assertSame(comment, prepared.take(commentOffset));
+        assertNull(prepared.take(nameOffset));
+        assertNull(prepared.take(commentOffset));
+        assertTrue(prepared.decodedFields().isEmpty());
+        assertEquals("é.txt", prepared.decoder().decodePath("é.txt".getBytes(Charset.forName("windows-1252")),
+                0, new byte[0]));
+    }
+
+    /// Frozen strategies cannot re-detect an inconsistent field supplied after preparation.
+    @Test
+    public void frozenChoiceFailsStrictly() throws IOException {
+        var central = centralBytes(new Sample("日本語😀.txt", "UTF-8", null, true, 0));
+        var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT, ByteBuffer.wrap(central), new java.util.HashMap<>());
+        assertThrows(java.nio.charset.CharacterCodingException.class, () -> prepared.decode(new byte[]{(byte) 0xFF}));
+        assertEquals("é.txt", prepared.decode("é.txt".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /// Comments supply the shared encoding when a non-ASCII name has no byte-pair evidence.
+    @Test
+    public void commentEvidenceWithoutNamePairs() throws IOException {
+        for (var sample : List.of(
+                new Sample("é", "IBM437", "Comentario: Café ñoño ▓▒░", false, 0),
+                new Sample("é", "windows-1252", "Ceci est un résumé détaillé de l'installation du logiciel.", false, 0))) {
+            var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT,
+                    ByteBuffer.wrap(centralBytes(sample)), new java.util.HashMap<>());
+            assertEquals(sample.name(), prepared.decode(sample.name().getBytes(Charset.forName(sample.encoding()))));
+            assertEquals(sample.comment(), prepared.decode(
+                    java.util.Objects.requireNonNull(sample.comment()).getBytes(Charset.forName(sample.encoding()))));
         }
     }
 
@@ -440,7 +525,7 @@ public final class ZipAutoMetadataDecoderTest {
         ByteBuffer buffer = ByteBuffer.wrap(bytes).position(central).limit(bytes.length - 22)
                 .asReadOnlyBuffer().order(ByteOrder.BIG_ENDIAN);
         buffer.mark();
-        var decoder = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT, buffer);
+        var decoder = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT, buffer).decoder();
         assertEquals(central, buffer.position());
         assertEquals(ByteOrder.BIG_ENDIAN, buffer.order());
         buffer.reset();
@@ -460,9 +545,13 @@ public final class ZipAutoMetadataDecoderTest {
         bytes[extra + 5] ^= 1;
         Path file = directory.resolve("crc.zip");
         Files.write(file, bytes);
-        try (var fs = ZipArkivoFileSystem.open(file)) {
-            String fallback = new String("é.txt".getBytes(Charset.forName("windows-1252")), Charset.forName("IBM437"));
-            assertTrue(Files.exists(fs.getPath(fallback)));
+        byte[] withoutExtra = archive(new Sample("é.txt", "windows-1252", null, false, 0),
+                new Sample("€résumé.txt", "windows-1252", null, false, 0));
+        Path other = directory.resolve("no-extra.zip");
+        Files.write(other, withoutExtra);
+        try (var fs = ZipArkivoFileSystem.open(file); var reference = ZipArkivoFileSystem.open(other);
+             var actual = Files.list(fs.getPath("/")); var expected = Files.list(reference.getPath("/"))) {
+            assertEquals(expected.map(Object::toString).sorted().toList(), actual.map(Object::toString).sorted().toList());
         }
     }
 
@@ -475,14 +564,16 @@ public final class ZipAutoMetadataDecoderTest {
             return "custom";
         };
         ByteBuffer malformed = ByteBuffer.wrap(new byte[]{1});
-        var decoder = ZipEntryNameDecoder.forCentralDirectory(configured, malformed);
+        var prepared = ZipEntryNameDecoder.forCentralDirectory(configured, malformed);
+        var decoder = prepared.decoder();
+        assertTrue(prepared.decodedFields().isEmpty());
         assertEquals(0, calls.get());
         assertEquals("custom", decoder.decodePath(new byte[]{(byte) 0xff}, 0, new byte[0]));
         assertEquals(1, calls.get());
         assertEquals(0, malformed.position());
     }
 
-    /// Leaves strict Unicode validation and unsafe-path rejection in the regular reader.
+    /// Leaves strict Unicode validation, unsafe-path rejection, and duplicate checks in the regular reader.
     @Test
     public void automaticDetectionDoesNotRepairDeclaredUtf8OrPaths(@TempDir Path directory) throws IOException {
         byte[] bytes = archive(new Sample("é.txt", "windows-1252", null, false, 0));
@@ -500,6 +591,13 @@ public final class ZipAutoMetadataDecoderTest {
             assertThrows(IOException.class, reader::next);
         }
         Files.write(file, archive(new Sample("../软件安装说明.txt", "GB18030", null, false, 0)));
+        assertThrows(IOException.class, () -> {
+            try (var fs = ZipArkivoFileSystem.open(file); var stream = Files.newDirectoryStream(fs.getPath("/"))) {
+                stream.iterator().hasNext();
+            }
+        });
+        Files.write(file, archive(new Sample("软件安装说明.txt", "GB18030", null, false, 0),
+                new Sample("软件安装说明.txt", "GB18030", null, false, 0)));
         assertThrows(IOException.class, () -> {
             try (var fs = ZipArkivoFileSystem.open(file); var stream = Files.newDirectoryStream(fs.getPath("/"))) {
                 stream.iterator().hasNext();

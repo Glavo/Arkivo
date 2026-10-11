@@ -3,112 +3,74 @@
 
 package org.glavo.arkivo.encoding.detector.internal;
 
-import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
+import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
-import org.junit.jupiter.api.Test;
+import org.jetbrains.annotations.Unmodifiable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Evaluates original raw ZIP names against explicit assertions from pinned upstream test sources.
-/// Corpus failures are reported without changing weights or weakening authoritative Unicode handling.
+/// Verifies metadata from real ZIP archives against names asserted by their upstream test suites.
 @NotNullByDefault
 class ZipMetadataCorpusTest {
-    /// Uses names and CP866 bytes asserted by JSZip 3.10.1 test/asserts/unicode.js.
-    @Test
-    void jszipRussianNames() throws Exception {
-        assertEquals(2, compare(fixture("jszip", "test/ref/local_encoding_in_name.zip"), "IBM866",
-                List.of("Новая папка/", "Новая папка/Новый текстовый документ.txt")));
-    }
-
-    /// Uses the name asserted by Zip4j 2.11.5 ExtractZipFileIT.testExtractZipFileWithChineseCharsetGBK.
-    @Test
-    void sevenZipChineseName() throws Exception {
-        assertEquals(1, compare(fixture("zip4j", "src/test/resources/test-archives/testfile_with_chinese_filename_by_7zip.zip"),
-                "GBK", List.of("fff - 副本.txt")));
-    }
-
-    /// Keeps WinRAR's Unicode extra field authoritative even when raw legacy bytes lost the euro sign.
-    /// JSZip 3.10.1 test/asserts/load.js specifies the resulting name independently of any detector.
-    @Test
-    void unicodeExtraFieldBypassesDetection() throws Exception {
-        var options = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(input -> {
-            fail("Authoritative Unicode name must not invoke the legacy detector");
+    /// Checks complete entry names through both streaming and indexed readers.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("fixtures")
+    void independentlySpecifiedNames(Fixture fixture) throws Exception {
+        Path file = Path.of(Objects.requireNonNull(
+                System.getProperty("arkivo." + fixture.corpus + ".testDataDirectory"))).resolve(fixture.relative);
+        var options = fixture.declared ? ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(input -> {
+            fail("Declared Unicode names must bypass legacy inference");
             return "";
-        });
-        try (var reader = ZipArkivoStreamingReader.open(fixture("jszip", "test/ref/winrar_utf8_in_name.zip"), options)) {
-            assertTrue(reader.next());
-            assertEquals("€15.txt", reader.readAttributes().path());
-            assertFalse(reader.next());
+        }) : ZipArchiveOptions.READ_DEFAULTS;
+        var expected = fixture.names.stream().sorted().toList();
+        var streamed = new ArrayList<String>();
+        try (var reader = ZipArkivoStreamingReader.open(file, options)) {
+            while (reader.next()) streamed.add(reader.readAttributes().path());
         }
-    }
-
-    /// Resolves a fixture directory prepared by the existing verified Gradle download tasks.
-    private static Path fixture(String corpus, String relative) {
-        return Path.of(Objects.requireNonNull(System.getProperty("arkivo." + corpus + ".testDataDirectory")))
-                .resolve(relative);
-    }
-
-    /// Reads raw central-directory names and returns the number correctly selected without context.
-    /// Expected names come from upstream assertions, not the reference parser or a detector.
-    private static int compare(Path path, String encoding, List<String> expectedNames) throws Exception {
-        var charset = Charset.forName(encoding);
-        var names = new ArrayList<String>();
-        var rawNames = new ArrayList<ByteBuffer>();
-        try (var archive = ZipFile.builder().setPath(path).setCharset(charset).get()) {
-            var entries = archive.getEntries();
-            while (entries.hasMoreElements()) {
-                var entry = entries.nextElement();
-                var bytes = ByteBuffer.wrap(entry.getRawName());
-                String name = charset.newDecoder().decode(bytes.duplicate()).toString();
-                if (expectedNames.contains(name)) {
-                    assertFalse(entry.getGeneralPurposeBit().usesUTF8ForNames());
-                    names.add(name);
-                    rawNames.add(bytes);
-                }
+        assertEquals(expected, streamed.stream().sorted().toList());
+        try (var archive = ZipArkivoFileSystem.open(file, options)) {
+            var root = archive.getPath("/");
+            try (var paths = Files.walk(root)) {
+                var indexed = paths.filter(path -> !path.equals(root))
+                        .map(path -> root.relativize(path).toString() + (Files.isDirectory(path) ? "/" : ""))
+                        .sorted().toList();
+                assertEquals(expected, indexed);
             }
         }
-        assertEquals(new java.util.HashSet<>(expectedNames), new java.util.HashSet<>(names));
-        assertEquals(expectedNames.size(), names.size());
-        int defaults = 0;
-        int isolated = 0;
-        int joint = 0;
-        int kalaIsolated = 0;
-        int kalaJoint = 0;
-        var detector = new EncodingDetector();
-        var kala = new KalaMetadataDetector();
-        for (int index = 0; index < names.size(); index++) {
-            String expected = names.get(index);
-            var input = rawNames.get(index);
-            var others = new ArrayList<>(rawNames);
-            others.remove(index);
-            String automatic = ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(input);
-            @Nullable String single = ZipMetadataScoringTest.decodeForEvaluation(detector, input, null);
-            @Nullable String combined = ZipMetadataScoringTest.decodeForEvaluation(detector, input,
-                    detector.prepare(others, EncodingDetector.Kind.NAME));
-            @Nullable String kalaSingle = ZipMetadataScoringTest.decodeForEvaluation(kala, input, null);
-            @Nullable String kalaCombined = ZipMetadataScoringTest.decodeForEvaluation(kala, input,
-                    kala.prepare(others, EncodingDetector.Kind.NAME));
-            assertEquals(expected, automatic);
-            if (expected.equals(automatic)) defaults++;
-            if (expected.equals(single)) isolated++;
-            if (expected.equals(combined)) joint++;
-            if (expected.equals(kalaSingle)) kalaIsolated++;
-            if (expected.equals(kalaCombined)) kalaJoint++;
-            System.out.println(path.getFileName() + " expected=" + expected + " isolated=" + single + " joint=" + combined
-                    + " kala_isolated=" + kalaSingle + " kala_joint=" + kalaCombined);
-        }
-        System.out.printf(java.util.Locale.ROOT, "archive=%s,total=%d,zip_default=%d,field_scores=%d,joint_scores=%d,kala_field=%d,kala_joint=%d%n",
-                path.getFileName(), names.size(), defaults, isolated, joint, kalaIsolated, kalaJoint);
-        return isolated;
+    }
+
+    /// Uses JSZip unicode/load assertions, Zip4j's GBK extraction assertion, and Go's UTF-8 ZIP fixtures.
+    static Stream<Fixture> fixtures() {
+        return Stream.of(
+                new Fixture("jszip", "test/ref/local_encoding_in_name.zip", List.of(
+                        "Новая папка/", "Новая папка/Новый текстовый документ.txt"), false),
+                new Fixture("zip4j", "src/test/resources/test-archives/testfile_with_chinese_filename_by_7zip.zip",
+                        List.of("fff - 副本.txt", "fff.txt"), false),
+                new Fixture("go", "src/archive/zip/testdata/utf8-7zip.zip", List.of("世界"), true),
+                new Fixture("go", "src/archive/zip/testdata/utf8-infozip.zip", List.of("世界"), true),
+                new Fixture("go", "src/archive/zip/testdata/utf8-osx.zip", List.of("世界"), false),
+                new Fixture("go", "src/archive/zip/testdata/utf8-winrar.zip", List.of("世界"), true),
+                new Fixture("go", "src/archive/zip/testdata/utf8-winzip.zip", List.of("世界"), true),
+                new Fixture("jszip", "test/ref/winrar_utf8_in_name.zip", List.of("€15.txt"), true));
+    }
+
+    /// Describes an independently specified complete archive.
+    /// @param corpus verified download identifier
+    /// @param relative path within the upstream source archive
+    /// @param names complete expected names
+    /// @param declared whether all names carry authoritative Unicode declarations
+    @NotNullByDefault
+    record Fixture(String corpus, String relative, @Unmodifiable List<String> names, boolean declared) {
     }
 }

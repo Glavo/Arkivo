@@ -111,8 +111,13 @@ public class ZipMetadataBenchmark {
             sink.consume(decoder.decode(ByteBuffer.wrap(fields[0])));
         } else {
             var prepared = ZipEntryNameDecoder.forCentralDirectory(decoder, central);
-            for (byte[] field : fields) sink.consume(prepared.decodePath(field, 0, new byte[0],
-                    org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 20, 0));
+            int offset = 0;
+            for (byte[] field : fields) {
+                @Nullable String text = prepared.take(offset + 46);
+                sink.consume(text != null ? text : prepared.decoder().decodePath(field, 0, new byte[0],
+                        org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 20, 0));
+                offset += 46 + field.length;
+            }
         }
     }
 

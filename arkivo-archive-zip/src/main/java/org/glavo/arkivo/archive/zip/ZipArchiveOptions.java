@@ -31,18 +31,17 @@ import java.util.Objects;
 public final class ZipArchiveOptions {
     /// The automatic decoder for names and comments without explicit Unicode metadata.
     ///
-    /// ASCII values bypass statistical analysis. Other values are strictly validated against candidate encodings
-    /// and ranked using character properties and small character-frequency tables. Creator-aware OEM/ANSI rules
-    /// break content-score ties without identifying a language or consulting the system code page.
-    /// Indexed readers take bounded, deterministic samples from the complete central directory, separately for
-    /// names, comments, and creator systems. Repeated features and the queried field's own contribution do not
-    /// amplify joint evidence. Valid Unicode counterparts and matching raw directory prefixes provide additional
-    /// hints. Ambiguous or conflicting evidence falls back to per-value detection and CP437.
+    /// ASCII values bypass statistical analysis. Indexed reading chooses one legacy encoding from bounded
+    /// central-directory samples and validates it against every undeclared name and entry comment before
+    /// building the path index. Names supply the statistical evidence; comments are used when no sampled
+    /// name supplies evidence. Lossless Unicode counterparts constrain the choice. Creator conventions
+    /// break statistical ties but do not establish a language. Mixed undeclared encodings are not inferred.
     ///
-    /// Forward-only readers and direct decoder calls analyze individual values without looking ahead.
-    /// Their results can differ from indexed reading. Detection is heuristic, does not consult the system locale,
-    /// and cannot reliably distinguish all legacy encodings. Use [ArchiveMetadataDecoder#forCharset(Charset)]
-    /// to select a known encoding. Explicit Unicode metadata is still decoded strictly by the reader.
+    /// Streaming readers and direct calls analyze individual values without looking ahead or retaining
+    /// previous-call evidence. Their results can differ from indexed reading. CP437 is used when no
+    /// candidate can be selected. Detection is heuristic and does not consult the system locale.
+    /// Use [ArchiveMetadataDecoder#forCharset(Charset)] to select a known encoding. Explicit Unicode
+    /// metadata remains authoritative and is decoded strictly by the reader.
     /// This decoder supports concurrent calls and does not retain caller buffers.
     public static final ArchiveMetadataDecoder DEFAULT_LEGACY_METADATA_DECODER =
             ZipAutoMetadataDecoder.DEFAULT;

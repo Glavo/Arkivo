@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.zip.internal.ZipAutoMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.openjdk.jmh.annotations.*;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.TimeUnit;
 
@@ -19,10 +20,11 @@ import java.util.concurrent.TimeUnit;
 @Measurement(iterations = 1)
 @Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
 public class ZipMetadataLoadBenchmark {
-    /// Loads the shared small tables and strictly decodes a short UTF-8 field once.
+    /// Loads the shared tables and strictly decodes a short UTF-8 field once.
     /// @return decoded text, consumed by JMH
+    /// @throws IOException if the metadata cannot be decoded
     @Benchmark
-    public String load() {
+    public String load() throws IOException {
         return ZipAutoMetadataDecoder.DEFAULT.decode(ByteBuffer.wrap(new byte[]{(byte) 0xc3, (byte) 0xa9}));
     }
 }

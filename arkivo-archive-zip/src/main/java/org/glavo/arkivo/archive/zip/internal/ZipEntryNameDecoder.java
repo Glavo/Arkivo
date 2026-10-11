@@ -14,6 +14,8 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
@@ -45,11 +47,25 @@ public final class ZipEntryNameDecoder {
         );
     }
 
-    /// Creates an indexed decoder with frozen archive evidence when automatic decoding is selected.
+    /// Prepares a frozen decoder and temporary legacy text for index construction.
     /// Custom decoders are neither sampled nor called during preparation. The buffer is not modified or retained.
-    static ZipEntryNameDecoder forCentralDirectory(ArchiveMetadataDecoder configured, ByteBuffer centralDirectory)
+    static Prepared forCentralDirectory(ArchiveMetadataDecoder configured, ByteBuffer centralDirectory)
             throws IOException {
-        return new ZipEntryNameDecoder(ZipAutoMetadataDecoder.prepare(configured, centralDirectory));
+        var decodedFields = new HashMap<Integer, String>();
+        var decoder = ZipAutoMetadataDecoder.prepare(configured, centralDirectory, decodedFields);
+        return new Prepared(new ZipEntryNameDecoder(decoder), decodedFields);
+    }
+
+    /// Transfers already decoded fields to one index build without retaining them in the frozen decoder.
+    /// This temporary result is not safe for concurrent use.
+    /// @param decoder reusable decoder containing only the frozen strategy
+    /// @param decodedFields mutable, exclusively owned text indexed by absolute central-directory field offset
+    @NotNullByDefault
+    record Prepared(ZipEntryNameDecoder decoder, Map<Integer, String> decodedFields) {
+        /// Removes and returns a prepared field, or null if ordinary decoding is required.
+        @Nullable String take(int offset) {
+            return decodedFields.isEmpty() ? null : decodedFields.remove(offset);
+        }
     }
 
     /// Decodes a raw ZIP entry path without additional header context.

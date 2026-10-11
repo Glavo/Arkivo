@@ -6,17 +6,14 @@ package org.glavo.arkivo.archive.zip.internal;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.glavo.arkivo.encoding.detector.internal.EncodingDetector;
-import org.glavo.arkivo.encoding.detector.internal.EncodingEvidence;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
-import org.jetbrains.annotations.Unmodifiable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
-import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -26,40 +23,144 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
-/// Decodes undeclared ZIP names and comments using strict charset validation and bounded field evidence.
-/// Instances retain only immutable archive summaries. Calls do not share mutable decoding state.
+/// Decodes undeclared ZIP metadata with one frozen legacy encoding per indexed archive.
+/// Direct and streaming calls use independent single-field inference. Format declarations are handled
+/// by the caller before this strategy. Instances retain no archive buffers or mutable scoring state.
 @NotNullByDefault
 public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
     /// Stateless strategy for direct and forward-only reads.
-    public static final ZipAutoMetadataDecoder DEFAULT = new ZipAutoMetadataDecoder(Map.of());
-    /// Fallback when different decoded texts remain ambiguous.
+    public static final ZipAutoMetadataDecoder DEFAULT = new ZipAutoMetadataDecoder(null);
+    /// ZIP fallback for absent, contradictory, or indistinguishable evidence.
     private static final Charset CP437 = Charset.forName("IBM437");
-    /// Maximum retained fields per metadata kind, after exact deduplication.
+    /// Maximum distinct sampled names, or comments when no name supplies evidence.
     static final int MAX_SAMPLES = 256;
-    /// Maximum sampled raw bytes per metadata kind.
+    /// Maximum retained raw sample bytes per role.
     static final int MAX_SAMPLE_BYTES = 128 * 1024;
-    /// Long fields are validated and decoded but do not influence other entries.
+    /// Larger fields are validated but do not contribute statistical evidence.
     static final int MAX_FIELD_BYTES = EncodingDetector.MAX_EVIDENCE_FIELD_BYTES;
-    /// Maximum copied directory prefixes across all creator groups.
-    private static final int MAX_PARENTS = 64;
-    /// Maximum copied directory-prefix bytes across all creator groups.
-    private static final int MAX_PARENT_BYTES = 16 * 1024;
-    /// Evidence grouped by creator system and logical metadata role, not by inferred language.
-    private final @Unmodifiable Map<Integer, Group> groups;
+    /// Frozen archive selection, or null for independent single-field inference.
+    private final @Nullable Charset charset;
 
-    /// Freezes archive summaries without retaining borrowed central-directory storage.
-    private ZipAutoMetadataDecoder(Map<Integer, Group> groups) {
-        this.groups = Map.copyOf(groups);
+    /// Stores only a charset, never a decoder or borrowed archive storage.
+    private ZipAutoMetadataDecoder(@Nullable Charset charset) {
+        this.charset = charset;
     }
 
-    /// Prepares the default strategy; custom decoders are neither invoked nor inspected.
-    /// Samples the complete central directory without reading local headers or entry content.
-    static ArchiveMetadataDecoder prepare(ArchiveMetadataDecoder configured, ByteBuffer centralDirectory) throws IOException {
+    /// Selects and validates one encoding before path indexing; custom strategies are returned untouched.
+    /// Only central-directory bytes are read. Successful legacy decodes are transferred by absolute field offset
+    /// to the caller's temporary index-building map, which is cleared before selection and on candidate failure.
+    /// The frozen strategy retains neither this map nor its strings. Explicit Unicode fields are handled by the reader.
+    static ArchiveMetadataDecoder prepare(ArchiveMetadataDecoder configured, ByteBuffer centralDirectory,
+                                          Map<Integer, String> decodedFields) throws IOException {
+        decodedFields.clear();
         if (configured != DEFAULT) return configured;
-        ByteBuffer buffer = centralDirectory.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         var detector = new EncodingDetector();
-        var names = new Sampler(buffer, true, detector);
-        var comments = new Sampler(buffer, false, detector);
+        var names = new Samples();
+        var comments = new Samples();
+        var evidence = new Evidence();
+        scan(centralDirectory, field -> {
+            if (field.unicode != null) {
+                var matches = detector.matching(field.bytes, field.unicode);
+                if (!matches.isEmpty()) {
+                    if (evidence.anchors == null) evidence.anchors = new HashSet<>(matches);
+                    else evidence.anchors.retainAll(matches);
+                }
+            } else if (!EncodingDetector.isAscii(field.bytes)) {
+                (field.kind == EncodingDetector.Kind.NAME ? names : comments).accept(field.bytes);
+            }
+            if (!EncodingDetector.isAscii(field.bytes)) {
+                evidence.preferences |= switch (field.preference) {
+                    case NONE -> 0;
+                    case OEM -> 1;
+                    case ANSI -> 2;
+                };
+            }
+            return true;
+        });
+        var preference = evidence.preferences == 1 ? EncodingDetector.Preference.OEM
+                : evidence.preferences == 2 ? EncodingDetector.Preference.ANSI : EncodingDetector.Preference.NONE;
+        if (evidence.anchors != null && evidence.anchors.isEmpty()) return new ZipAutoMetadataDecoder(CP437);
+        var ranked = detector.rank(names.values(), EncodingDetector.Kind.NAME, preference);
+        if (ranked.isEmpty()) ranked = detector.rank(comments.values(), EncodingDetector.Kind.COMMENT, preference);
+        var candidates = new ArrayList<Charset>();
+        if (evidence.anchors != null) {
+            // Exact Unicode counterparts constrain the common encoding, not the output of their own entry.
+            for (var score : ranked) if (evidence.anchors.contains(score.charset())) candidates.add(score.charset());
+            evidence.anchors.stream().sorted().filter(value -> !candidates.contains(value)).forEach(candidates::add);
+        } else {
+            for (var score : ranked) candidates.add(score.charset());
+        }
+        for (var candidate : candidates) {
+            if (!decodeFields(centralDirectory, detector, candidate, decodedFields)) continue;
+            // With no counterpart, a statistical tie between different outputs remains unresolved.
+            if (evidence.anchors == null) {
+                double score = 0;
+                for (var value : ranked) if (value.charset().equals(candidate)) score = value.similarity();
+                for (var alternative : ranked) {
+                    if (alternative.similarity() != score || alternative.charset().equals(candidate)
+                            || preference.accepts(candidate) && !preference.accepts(alternative.charset())) continue;
+                    Charset other = alternative.charset();
+                    var alternativeFields = new HashMap<Integer, String>();
+                    if (decodeFields(centralDirectory, detector, other, alternativeFields)
+                            && !alternativeFields.equals(decodedFields)) {
+                        decodedFields.clear();
+                        return new ZipAutoMetadataDecoder(CP437);
+                    }
+                }
+            }
+            return new ZipAutoMetadataDecoder(candidate);
+        }
+        decodedFields.clear();
+        return new ZipAutoMetadataDecoder(CP437);
+    }
+
+    /// Collects each successful legacy field once; failed candidates leave no partial results.
+    private static boolean decodeFields(ByteBuffer central, EncodingDetector detector, Charset charset,
+                                        Map<Integer, String> decodedFields) throws IOException {
+        decodedFields.clear();
+        boolean valid = scan(central, field -> {
+            if (field.unicode != null || EncodingDetector.isAscii(field.bytes)) return true;
+            @Nullable String text = detector.decode(field.bytes, field.kind, charset);
+            if (text == null) return false;
+            decodedFields.put(field.offset, text);
+            return true;
+        });
+        if (!valid) decodedFields.clear();
+        return valid;
+    }
+
+    @Override
+    public String decode(Context context) throws IOException {
+        return decode(context.bytes(), context.metadataKind(), context.versionMadeBy(), context.externalAttributes(),
+                context.headerSource());
+    }
+
+    @Override
+    public String decode(@UnmodifiableView ByteBuffer bytes) throws IOException {
+        return decode(bytes, MetadataKind.UNKNOWN, UNKNOWN_HEADER_VALUE, UNKNOWN_HEADER_VALUE, HeaderSource.UNKNOWN);
+    }
+
+    /// Decodes reader-owned bytes without retaining them or constructing a public context.
+    String decode(byte[] bytes, MetadataKind kind, int madeBy, long attributes, HeaderSource source) throws IOException {
+        return decode(ByteBuffer.wrap(bytes), kind, madeBy, attributes, source);
+    }
+
+    /// Uses the frozen choice without further guessing; a changed or inconsistent field fails strictly.
+    private String decode(ByteBuffer bytes, MetadataKind kind, int madeBy, long attributes, HeaderSource source)
+            throws IOException {
+        if (EncodingDetector.isAscii(bytes)) return StandardCharsets.US_ASCII.decode(bytes.duplicate()).toString();
+        if (charset == null) {
+            @Nullable String decoded = new EncodingDetector().decode(bytes, kind == MetadataKind.ENTRY_COMMENT
+                    ? EncodingDetector.Kind.COMMENT : EncodingDetector.Kind.NAME,
+                    ZipLegacyCodePages.preference(madeBy, attributes, source));
+            if (decoded != null) return decoded;
+        }
+        return (charset == null ? CP437 : charset).newDecoder().decode(bytes.duplicate()).toString();
+    }
+
+    /// Visits complete central fields without changing the caller's buffer; false stops a validation pass.
+    private static boolean scan(ByteBuffer central, FieldVisitor visitor) throws IOException {
+        var buffer = central.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         while (buffer.hasRemaining()) {
             int offset = buffer.position();
             if (buffer.remaining() < 46 || buffer.getInt(offset) != ZipConstants.CENTRAL_DIRECTORY_HEADER_SIGNATURE)
@@ -75,224 +176,95 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
             int madeBy = Short.toUnsignedInt(buffer.getShort(offset + 4));
             var preference = ZipLegacyCodePages.preference(madeBy, Integer.toUnsignedLong(buffer.getInt(offset + 38)),
                     HeaderSource.CENTRAL_DIRECTORY);
-            names.accept(start, nameLength, madeBy >>> 8, preference, start + nameLength, extraLength);
-            comments.accept(start + nameLength + extraLength, commentLength, madeBy >>> 8, preference,
-                    start + nameLength, extraLength);
-        }
-        var result = new HashMap<Integer, Group>();
-        int[] parentBudget = {MAX_PARENTS, MAX_PARENT_BYTES};
-        names.collect(result, parentBudget);
-        comments.collect(result, parentBudget);
-        return result.isEmpty() ? DEFAULT : new ZipAutoMetadataDecoder(result);
-    }
-
-    @Override
-    public String decode(Context context) {
-        return decode(context.bytes(), context.metadataKind(), context.versionMadeBy(), context.externalAttributes(),
-                context.headerSource());
-    }
-
-    @Override
-    public String decode(@UnmodifiableView ByteBuffer bytes) {
-        return decode(bytes, MetadataKind.UNKNOWN, UNKNOWN_HEADER_VALUE, UNKNOWN_HEADER_VALUE, HeaderSource.UNKNOWN);
-    }
-
-    /// Decodes reader-owned bytes without constructing a public context or retaining its storage.
-    String decode(byte[] bytes, MetadataKind kind, int madeBy, long attributes, HeaderSource source) {
-        return decode(ByteBuffer.wrap(bytes), kind, madeBy, attributes, source);
-    }
-
-    /// Resolves local evidence before archive hints; all chosen charsets must decode the complete field strictly.
-    private String decode(ByteBuffer bytes, MetadataKind metadataKind, int madeBy, long attributes, HeaderSource source) {
-        if (EncodingDetector.isAscii(bytes)) return StandardCharsets.US_ASCII.decode(bytes.duplicate()).toString();
-        var kind = metadataKind == MetadataKind.ENTRY_COMMENT ? EncodingDetector.Kind.COMMENT : EncodingDetector.Kind.NAME;
-        int creator = madeBy == UNKNOWN_HEADER_VALUE ? UNKNOWN_HEADER_VALUE : madeBy >>> 8;
-        @Nullable Group group = groups.get(creator * 2 + (kind == EncodingDetector.Kind.COMMENT ? 1 : 0));
-        var preference = ZipLegacyCodePages.preference(madeBy, attributes, source);
-        var detector = new EncodingDetector();
-        @Nullable Charset selected = detector.detect(bytes, kind, null, preference);
-        if (selected != null) return decodeStrict(bytes, selected);
-        if (group != null) {
-            @Nullable Charset anchored = detector.agreement(bytes, group.anchors);
-            if (anchored != null) return decodeStrict(bytes, anchored);
-            if (kind == EncodingDetector.Kind.NAME) {
-                @Nullable List<Charset> parents = group.parent(bytes);
-                if (parents != null) {
-                    @Nullable Charset local = detector.agreement(bytes, parents);
-                    return decodeStrict(bytes, local == null ? CP437 : local);
+            byte[] extra = new byte[extraLength];
+            buffer.get(start + nameLength, extra);
+            for (var kind : EncodingDetector.Kind.values()) {
+                int length = kind == EncodingDetector.Kind.NAME ? nameLength : commentLength;
+                if (length == 0) continue;
+                int fieldOffset = kind == EncodingDetector.Kind.NAME ? start : start + nameLength + extraLength;
+                var bytes = buffer.slice(fieldOffset, length);
+                @Nullable String unicode = null;
+                if (extraLength != 0) {
+                    byte[] raw = new byte[length];
+                    bytes.get(0, raw);
+                    unicode = ZipEntryNameDecoder.decodeUnicodeExtraField(raw, extra,
+                            kind == EncodingDetector.Kind.NAME ? ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID
+                                    : ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID);
                 }
+                if (!visitor.visit(new Field(fieldOffset, bytes, kind, preference, unicode))) return false;
             }
-            if (!group.conflictingAnchors) selected = detector.detect(bytes, kind, group.evidence, preference);
         }
-        return decodeStrict(bytes, selected == null ? CP437 : selected);
+        return true;
     }
 
-    /// Materializes only a validated selection; CP437 maps every byte.
-    private static String decodeStrict(ByteBuffer bytes, Charset charset) {
-        try {
-            return charset.newDecoder().decode(bytes.duplicate()).toString();
-        } catch (CharacterCodingException exception) {
-            throw new IllegalStateException("Selected charset cannot decode validated metadata", exception);
-        }
-    }
-
-    /// Selects the smallest stable content hashes, borrowing central-directory storage only during preparation.
+    /// Receives a field valid only during the current preparation pass.
     @NotNullByDefault
-    private static final class Sampler {
-        /// Borrowed complete directory view.
-        private final ByteBuffer buffer;
-        /// Whether this sampler gathers names rather than comments.
-        private final boolean name;
-        /// Shared call-local decoding workspace.
-        private final EncodingDetector detector;
-        /// Samples ordered by content and creator; physical offsets never break ties.
-        private final TreeMap<Sample, Sample> samples;
+    private interface FieldVisitor {
+        /// Returns whether scanning should continue.
+        boolean visit(Field field) throws IOException;
+    }
 
-        /// Creates an independent budget for one logical metadata kind.
-        private Sampler(ByteBuffer buffer, boolean name, EncodingDetector detector) {
-            this.buffer = buffer;
-            this.name = name;
-            this.detector = detector;
-            samples = new TreeMap<>((left, right) -> {
-                int result = Long.compareUnsigned(left.hash, right.hash);
-                if (result == 0) result = Integer.compare(left.creator, right.creator);
-                if (result == 0) result = left.preference.compareTo(right.preference);
-                return result != 0 ? result : buffer.slice(left.offset, left.length).compareTo(buffer.slice(right.offset, right.length));
-            });
-        }
+    /// Describes borrowed metadata and its optional authoritative Unicode counterpart.
+    /// @param offset absolute field offset in the supplied central-directory buffer
+    /// @param bytes complete raw bytes
+    /// @param kind name or comment
+    /// @param preference producer code-page family
+    /// @param unicode authoritative text, or null when legacy decoding is required
+    @NotNullByDefault
+    private record Field(int offset, @UnmodifiableView ByteBuffer bytes, EncodingDetector.Kind kind,
+                         EncodingDetector.Preference preference, @Nullable String unicode) {
+    }
 
-        /// Retains a bounded non-ASCII field and merges duplicate Unicode evidence symmetrically.
-        private void accept(int offset, int length, int creator, EncodingDetector.Preference preference,
-                            int extraOffset, int extraLength) throws IOException {
-            if (length == 0 || length > MAX_FIELD_BYTES) return;
-            ByteBuffer bytes = buffer.slice(offset, length);
-            if (EncodingDetector.isAscii(bytes)) return;
-            long hash = 0xcbf29ce484222325L ^ creator;
-            for (int index = 0; index < length; index++) hash = (hash ^ (bytes.get(index) & 255)) * 0x100000001b3L;
-            var sample = new Sample(offset, length, creator, hash, preference);
-            @Nullable Sample retained = samples.get(sample);
-            if (retained == null) {
-                if (samples.size() == MAX_SAMPLES && samples.comparator().compare(sample, samples.lastKey()) >= 0) return;
-                samples.put(sample, sample);
-                if (samples.size() > MAX_SAMPLES) samples.pollLastEntry();
-                retained = sample;
-            }
-            if (extraLength != 0) {
-                byte[] raw = new byte[length];
-                buffer.get(offset, raw);
-                byte[] extra = new byte[extraLength];
-                buffer.get(extraOffset, extra);
-                @Nullable String unicode = ZipEntryNameDecoder.decodeUnicodeExtraField(raw, extra,
-                        name ? ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID : ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID);
-                if (unicode != null) {
-                    var matches = detector.matching(bytes, unicode);
-                    // A lossy legacy spelling does not prove anything about other entries' code pages.
-                    if (!matches.isEmpty()) {
-                        retained.anchored = true;
-                        retained.anchors.addAll(matches);
-                    }
-                }
-            }
-        }
+    /// Holds temporary global counterpart constraints and compatibility hints.
+    @NotNullByDefault
+    private static final class Evidence {
+        /// Intersection of lossless counterpart matches, or null if no counterpart supplied evidence.
+        private @Nullable Set<Charset> anchors;
+        /// Bit set of observed OEM and ANSI preferences.
+        private int preferences;
 
-        /// Freezes each creator's score vector and bounded directory hints in canonical sample order.
-        private void collect(Map<Integer, Group> result, int[] budget) {
-            var fields = new TreeMap<Integer, List<ByteBuffer>>();
-            var anchors = new HashMap<Integer, Set<Charset>>();
-            var parents = new HashMap<Integer, Map<ByteBuffer, Set<Charset>>>();
-            int size = 0;
-            var kind = name ? EncodingDetector.Kind.NAME : EncodingDetector.Kind.COMMENT;
-            for (var sample : samples.values()) {
-                if (sample.length > MAX_SAMPLE_BYTES - size) break;
-                size += sample.length;
-                int key = sample.creator * 2 + (name ? 0 : 1);
-                ByteBuffer bytes = buffer.slice(sample.offset, sample.length);
-                fields.computeIfAbsent(key, ignored -> new ArrayList<>()).add(bytes);
-                if (sample.anchored) anchors.merge(key, new HashSet<>(sample.anchors), (left, right) -> {
-                    left.retainAll(right);
-                    return left;
-                });
-                if (!name) continue;
-                @Nullable Charset selected = detector.detect(bytes, kind, null, sample.preference);
-                List<Charset> candidates = sample.anchored ? List.copyOf(sample.anchors)
-                        : selected == null ? List.of() : List.of(selected);
-                if (candidates.isEmpty()) continue;
-                var directory = parents.computeIfAbsent(key, ignored -> new HashMap<>());
-                boolean nonAscii = false;
-                for (int index = 0; index < bytes.remaining(); index++) {
-                    byte value = bytes.get(index);
-                    nonAscii |= value < 0;
-                    // Slash cannot occur inside a character in the candidate set; backslash can.
-                    if (value != '/' || !nonAscii) continue;
-                    ByteBuffer prefix = bytes.slice(0, index + 1);
-                    @Nullable Set<Charset> prior = directory.get(prefix);
-                    if (prior == null && budget[0] > 0 && prefix.remaining() <= budget[1]) {
-                        byte[] owned = new byte[prefix.remaining()];
-                        prefix.get(owned);
-                        budget[0]--;
-                        budget[1] -= owned.length;
-                        prior = new HashSet<>();
-                        directory.put(ByteBuffer.wrap(owned).asReadOnlyBuffer(), prior);
-                    }
-                    if (prior != null) prior.addAll(candidates);
-                }
-            }
-            fields.forEach((key, values) -> {
-                var directory = new HashMap<ByteBuffer, List<Charset>>();
-                parents.getOrDefault(key, Map.of()).forEach((prefix, candidates) ->
-                        directory.put(prefix, candidates.stream().sorted().toList()));
-                result.put(key, new Group(detector.prepare(values, kind),
-                        anchors.getOrDefault(key, Set.of()).stream().sorted().toList(),
-                        anchors.containsKey(key) && anchors.get(key).isEmpty(), Map.copyOf(directory)));
-            });
+        /// Creates empty evidence for one preparation call.
+        private Evidence() {
         }
     }
 
-    /// Retains borrowed coordinates and validated counterpart candidates until preparation finishes.
+    /// Selects content-ranked, distinct fields independently of central-directory order.
     @NotNullByDefault
-    private static final class Sample {
-        /// Complete field offset in the borrowed directory.
-        private final int offset;
-        /// Raw byte length.
-        private final int length;
-        /// Creator-system group.
-        private final int creator;
-        /// Stable sample rank.
-        private final long hash;
-        /// Legacy code-page family inferred only from compatibility rules.
-        private final EncodingDetector.Preference preference;
-        /// Whether a Unicode counterpart has an exact representation in at least one candidate.
-        private boolean anchored;
-        /// Union of duplicate fields' exact counterpart matches.
-        private final Set<Charset> anchors = new HashSet<>();
+    private static final class Samples {
+        /// Borrowed samples ordered by stable unsigned hash, then signed byte content.
+        private final TreeMap<ByteBuffer, ByteBuffer> fields = new TreeMap<>((left, right) -> {
+            int order = Long.compareUnsigned(hash(left), hash(right));
+            return order == 0 ? left.compareTo(right) : order;
+        });
 
-        /// Stores coordinates without copying raw name bytes.
-        private Sample(int offset, int length, int creator, long hash, EncodingDetector.Preference preference) {
-            this.offset = offset;
-            this.length = length;
-            this.creator = creator;
-            this.hash = hash;
-            this.preference = preference;
+        /// Creates an empty bounded sampler.
+        private Samples() {
         }
-    }
 
-    /// Stores immutable evidence without central-directory aliases.
-    /// @param evidence bounded field-score summary
-    /// @param anchors candidates consistent with the sampled Unicode counterparts
-    /// @param conflictingAnchors whether counterpart evidence disproves a common legacy encoding
-    /// @param parents privately owned read-only raw prefixes and their candidate sets
-    @NotNullByDefault
-    private record Group(EncodingEvidence evidence, @Unmodifiable List<Charset> anchors, boolean conflictingAnchors,
-                         @Unmodifiable Map<@UnmodifiableView ByteBuffer, @Unmodifiable List<Charset>> parents) {
-        /// Returns the longest retained raw prefix's candidates, or null when none was sampled.
-        private @Nullable List<Charset> parent(ByteBuffer bytes) {
-            for (int index = bytes.limit() - 1; index >= bytes.position(); index--) {
-                if (bytes.get(index) == '/') {
-                    @Nullable var found = parents.get(bytes.slice(bytes.position(), index - bytes.position() + 1));
-                    if (found != null) return found;
-                }
+        /// Retains a field only if it falls within the count and per-field limits.
+        private void accept(ByteBuffer bytes) {
+            if (bytes.remaining() > MAX_FIELD_BYTES || bytes.remaining() == 0) return;
+            fields.putIfAbsent(bytes, bytes);
+            if (fields.size() > MAX_SAMPLES) fields.pollLastEntry();
+        }
+
+        /// Borrows the deterministically budgeted samples for immediate scoring.
+        private List<ByteBuffer> values() {
+            var values = new ArrayList<ByteBuffer>();
+            int total = 0;
+            for (var value : fields.values()) {
+                if (value.remaining() > MAX_SAMPLE_BYTES - total) continue;
+                total += value.remaining();
+                values.add(value);
             }
-            return null;
+            return values;
+        }
+
+        /// Hashes unchanged raw bytes, including digits that may belong to multibyte sequences.
+        private static long hash(ByteBuffer bytes) {
+            long result = 0xcbf29ce484222325L;
+            for (int i = bytes.position(); i < bytes.limit(); i++) result = (result ^ (bytes.get(i) & 255)) * 0x100000001b3L;
+            return result;
         }
     }
 }

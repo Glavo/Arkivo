@@ -6,7 +6,6 @@ package org.glavo.arkivo.encoding.detector.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
-import org.jetbrains.annotations.UnmodifiableView;
 
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -14,290 +13,187 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.TreeMap;
 
-/// Analyzes complete archive metadata fields using reusable, bounded decoding workspaces.
-/// No caller buffer is changed or retained. Instances are not safe for concurrent use; immutable
-/// evidence summaries can be shared. Every operation starts independent field state, including after
-/// an earlier field failed validation. ASCII-only input does not initialize statistical models.
-///
-/// This class neither processes format declarations nor supplies a fallback charset. A selected encoding
-/// is heuristic, not an assertion about the producer. Names and comments use separate evidence profiles.
+/// Infers a common encoding from bounded archive metadata samples.
+/// Fields contribute independent byte-pair profiles; decoder state never crosses field boundaries.
+/// Buffers are borrowed only during a call and their state is preserved. Instances reuse mutable
+/// workspaces and are not safe for concurrent use. Model data is immutable and shared lazily.
 @NotNullByDefault
 public final class EncodingDetector {
-    /// Maximum supplied fields per context batch, before deduplication.
+    /// Maximum fields in one statistical batch.
     public static final int MAX_EVIDENCE_FIELDS = 512;
-    /// Maximum raw bytes in one context sample.
+    /// Maximum bytes in a sampled field; validation accepts longer fields.
     public static final int MAX_EVIDENCE_FIELD_BYTES = 4096;
-    /// Maximum total raw bytes in a context batch, before deduplication.
+    /// Maximum total bytes in a statistical batch.
     public static final int MAX_EVIDENCE_BYTES = 256 * 1024;
-    /// Sentinel returned by a decoded cursor at end of field.
-    private static final int END = -1;
-    /// Output storage shared across sequential candidate evaluations.
-    private final CharBuffer output = CharBuffer.allocate(1024);
-    /// Second output buffer used only for exact equivalence comparisons.
-    private final CharBuffer comparison = CharBuffer.allocate(1024);
-    /// Lazily initialized candidate workspaces; no per-field decoder allocation is required.
-    private @Nullable
-    @Unmodifiable List<MetadataScorer> scorers;
 
-    /// Identifies the metadata role, independently of the archive format.
+    /// Selects path-component or continuous-comment feature boundaries.
     @NotNullByDefault
     public enum Kind {
-        /// Basename evidence with decoded path, extension, and numeric boundaries.
+        /// Uses the last non-ASCII path component.
         NAME,
-        /// Continuous comment evidence without path segmentation.
+        /// Uses continuous comment bytes.
         COMMENT
     }
 
-    /// Creates an independent metadata workspace without loading statistical tables.
-    public EncodingDetector() {
-    }
-
-    /// Supplies a producer's code-page family only when content evidence is tied.
+    /// Breaks equal statistical scores using known producer code-page conventions.
     @NotNullByDefault
     public enum Preference {
-        /// No producer information is available.
+        /// Does not prefer a code-page family.
         NONE,
-        /// Prefer DOS code pages among equally supported single-byte candidates.
+        /// Prefers DOS code pages.
         OEM,
-        /// Prefer Windows code pages among equally supported single-byte candidates.
+        /// Prefers Windows single-byte code pages.
         ANSI;
 
-        /// Tests the supported single-byte families; East Asian code pages remain neutral.
-        private boolean accepts(Charset charset) {
+        /// Tests family membership without inferring a language.
+        /// @param charset candidate encoding
+        /// @return whether the candidate belongs to the preferred family
+        public boolean accepts(Charset charset) {
             String name = charset.name();
             return this == OEM ? name.startsWith("IBM")
                     : this == ANSI && (name.startsWith("windows-125") || name.equals("x-windows-874"));
         }
     }
 
-    /// Returns immutable scores for all candidates that strictly decode the complete field.
-    /// Empty or ASCII-only fields return an empty list. Non-positive scores describe absent or contrary
-    /// evidence, not malformed bytes. Candidate alternatives for one charset are merged by quality.
-    /// At most 4096 scalars per comment or path component are scored; all bytes are validated.
-    /// Names use the last component containing non-ASCII text, so repeated parent prefixes do not
-    /// outweigh a non-ASCII basename. Scores are in charset-name order, not confidence order.
-    ///
-    /// @param input complete field between position and limit; mark and content are preserved
-    /// @param kind  metadata role
-    /// @return scores without references to caller storage
-    /// @throws NullPointerException if an argument is null
-    @Unmodifiable
-    public List<EncodingScore> analyze(@UnmodifiableView ByteBuffer input, Kind kind) {
-        Objects.requireNonNull(kind);
-        if (isAscii(input)) return List.of();
-        var scores = new TreeMap<Charset, EncodingScore>();
-        for (var scorer : scorers()) {
-            @Nullable var value = scorer.score(input, kind, output);
-            if (value != null) {
-                scores.merge(value.charset(), value, (left, right) -> left.compareQuality(right) >= 0 ? left : right);
-            }
-        }
-        return List.copyOf(scores.values());
-    }
-
-    /// Selects an encoding from one complete field without historical context or a fallback.
-    /// Equivalent to [#detect(ByteBuffer, Kind, EncodingEvidence)] with null evidence.
-    ///
-    /// @param input complete field; state and content are preserved
-    /// @param kind metadata role
-    /// @return heuristic selection, or null when evidence is insufficient
-    public @Nullable Charset detect(@UnmodifiableView ByteBuffer input, Kind kind) {
-        return detect(input, kind, null);
-    }
-
-    /// Selects a strictly valid encoding, or null when the retained evidence is insufficient or tied.
-    /// ASCII-only fields return US-ASCII. Positive candidates are ranked by character plausibility and mean
-    /// feature score. Legacy selections require multiple non-ASCII scalars or supporting context. Equal
-    /// quality outputs are compared exactly, without normalization; equivalent outputs are not ambiguous.
-    /// Context can break a quality tie or resolve a short field, but cannot override a stronger
-    /// multi-character local result or admit a locally invalid candidate. No numeric confidence is returned.
-    ///
-    /// @param input   complete field; buffer state and content are preserved
-    /// @param kind    role of the current field
-    /// @param context optional immutable context of the same role
-    /// @return heuristic selection, or null; format-specific fallback belongs to the caller
-    /// @throws NullPointerException     if input or kind is null
-    /// @throws IllegalArgumentException if context belongs to a different role
-    public @Nullable Charset detect(@UnmodifiableView ByteBuffer input, Kind kind, @Nullable EncodingEvidence context) {
-        return detect(input, kind, context, Preference.NONE);
-    }
-
-    /// Selects an encoding with an optional producer-family tie breaker; it never establishes a language.
-    /// The preference cannot admit an invalid encoding or override stronger content evidence.
-    ///
-    /// @param input complete field; state and content are preserved
-    /// @param kind metadata role
-    /// @param context optional immutable evidence for the same role
-    /// @param preference producer-family hint, applied only to tied candidates
-    /// @return heuristic selection, or null when evidence is insufficient
-    /// @throws IllegalArgumentException if the context belongs to a different role
-    public @Nullable Charset detect(@UnmodifiableView ByteBuffer input, Kind kind,
-                                    @Nullable EncodingEvidence context, Preference preference) {
-        Objects.requireNonNull(kind);
-        Objects.requireNonNull(preference);
-        if (context != null && context.kind() != kind) throw new IllegalArgumentException("Metadata role mismatch");
-        if (isAscii(input)) return StandardCharsets.US_ASCII;
-        if (hasByteSweep(input)) return null;
-        var scores = analyze(input, kind).stream()
-                .filter(value -> value.strength() > 0 && value.evidence() > 0 && value.controls() == 0).toList();
-        if (scores.isEmpty()) return null;
-        var best = scores.get(0);
-        for (var score : scores) if (score.compareQuality(best) > 0) best = score;
-        var choices = new ArrayList<EncodingScore>();
-        // A single multibyte character can look like several unrelated single-byte letters.
-        boolean decisive = best.nonAscii() >= 2 && best.evidence() >= 2
-                && scores.stream().noneMatch(value -> value.nonAscii() == 1);
-        for (var score : scores) if (!decisive || score.compareQuality(best) == 0) choices.add(score);
-        if (decisive) {
-            var preferred = prefer(choices, preference);
-            if (sameOutputs(input, preferred)) return preferred.get(0).charset();
-        }
-        long highest = best.strength();
-        if (context == null || context.candidates().isEmpty()) return best.charset().equals(StandardCharsets.UTF_8)
-                && sameOutputs(input, scores.stream().filter(value -> value.strength() == highest).toList())
-                ? StandardCharsets.UTF_8 : null;
-        long strongestScore = 0;
-        int strongestFields = 0;
-        var supported = new ArrayList<EncodingScore>();
-        for (var choice : choices) {
-            for (var support : context.candidates()) {
-                if (!support.charset().equals(choice.charset())) continue;
-                boolean own = support.contributions().containsKey(choice);
-                int fields = support.fields() - (own ? 1 : 0);
-                if (fields < 2) continue;
-                long value = support.score() - support.contributions().getOrDefault(choice, 0L);
-                int order = strongestFields == 0 ? 1 : Long.compare(value * strongestFields, strongestScore * fields);
-                if (order > 0) {
-                    strongestScore = value;
-                    strongestFields = fields;
-                    supported.clear();
-                }
-                if (order >= 0) supported.add(choice);
-            }
-        }
-        supported = prefer(supported, preference);
-        return !supported.isEmpty() && sameOutputs(input, supported) ? supported.get(0).charset() : null;
-    }
-
-    /// Returns the highest content score from a nonempty list.
-    private static EncodingScore bestScore(List<EncodingScore> scores) {
-        var best = scores.get(0);
-        for (var score : scores) if (score.compareQuality(best) > 0) best = score;
-        return best;
-    }
-
-    /// Restricts an already tied set only when a producer-family candidate is present.
-    private static ArrayList<EncodingScore> prefer(List<EncodingScore> choices, Preference preference) {
-        var preferred = new ArrayList<EncodingScore>();
-        for (var choice : choices) if (preference.accepts(choice.charset())) preferred.add(choice);
-        return preferred.isEmpty() ? new ArrayList<>(choices) : preferred;
-    }
-
-    /// Returns installed candidates whose strict decoding equals the complete supplied Unicode text.
-    /// No temporary candidate strings are constructed and neither input is retained.
-    /// ASCII-only input returns an empty list because it supplies no encoding evidence.
-    ///
-    /// @param input complete field; state and content are preserved
-    /// @param text authoritative decoded counterpart
-    /// @return matching candidates in charset-name order
-    public @Unmodifiable List<Charset> matching(ByteBuffer input, String text) {
-        var result = new ArrayList<Charset>();
-        for (var score : analyze(input, Kind.NAME)) {
-            var cursor = cursor(input, score.charset(), output);
-            int index = 0;
-            while (index < text.length() && cursor.read() == text.charAt(index)) index++;
-            if (index == text.length() && cursor.read() == END) result.add(score.charset());
-        }
-        return List.copyOf(result);
-    }
-
-    /// Returns one candidate if all supplied candidates strictly produce the same complete text.
-    /// Returns null for an empty list, an unavailable candidate, invalid bytes, or different outputs.
-    /// Candidates must come from this detector's candidate set. Input is neither changed nor retained;
-    /// comparisons use bounded character buffers instead of materializing candidate strings.
-    ///
-    /// @param input complete field; state and content are preserved
-    /// @param candidates supported encodings to compare
-    /// @return one candidate producing the shared text, or null
-    public @Nullable Charset agreement(ByteBuffer input, List<Charset> candidates) {
-        if (candidates.isEmpty()) return null;
-        if (isAscii(input)) return candidates.get(0);
-        var valid = analyze(input, Kind.NAME);
-        var choices = new ArrayList<EncodingScore>();
-        for (var charset : candidates) {
-            @Nullable EncodingScore selected = null;
-            for (var score : valid) if (score.charset().equals(charset)) selected = score;
-            if (selected == null) return null;
-            if (!choices.contains(selected)) choices.add(selected);
-        }
-        return sameOutputs(input, choices) ? choices.get(0).charset() : null;
-    }
-
-    /// Builds bounded score-vector context without connecting decoder state across fields.
-    /// Batches exceeding any MAX_EVIDENCE limit are rejected, not sampled. Fields are processed in byte
-    /// order for deterministic results. Exact byte duplicates and repeated per-candidate feature signatures
-    /// contribute once; signatures reduce repetition but do not prove text equality. Name signatures ignore
-    /// numbered suffixes and ASCII extensions at scoring boundaries. Comments are collected separately.
-    /// Rejected candidates in one field remain eligible for other fields. The summary retains no input.
-    ///
-    /// @param inputs complete fields, unchanged and borrowed only for this call
-    /// @param kind   metadata role; callers must group names and comments separately
-    /// @return immutable per-candidate relative scores
-    /// @throws NullPointerException     if the list, kind, or an element is null
-    /// @throws IllegalArgumentException if a batch limit is exceeded
-    public EncodingEvidence prepare(List<? extends ByteBuffer> inputs, Kind kind) {
-        Objects.requireNonNull(kind);
-        if (inputs.size() > MAX_EVIDENCE_FIELDS) throw new IllegalArgumentException("Too many metadata fields");
-        int bytes = 0;
-        var fields = new ArrayList<ByteBuffer>(inputs.size());
-        for (var input : inputs) {
-            if (input.remaining() > MAX_EVIDENCE_FIELD_BYTES)
-                throw new IllegalArgumentException("Metadata field too large");
-            bytes += input.remaining();
-            fields.add(input.asReadOnlyBuffer());
-        }
-        if (bytes > MAX_EVIDENCE_BYTES) throw new IllegalArgumentException("Metadata batch too large");
-        fields.sort(ByteBuffer::compareTo);
-        var support = new TreeMap<Charset, Map<EncodingScore, Long>>();
-        @Nullable ByteBuffer previous = null;
-        for (var field : fields) {
-            if (field.equals(previous)) continue;
-            previous = field;
-            if (hasByteSweep(field)) continue;
-            var scores = analyze(field, kind);
-            if (scores.isEmpty()) continue;
-            long maximum = bestScore(scores).strength();
-            for (var score : scores) {
-                if (score.evidence() == 0) continue;
-                // Clip contrary evidence so one exceptional field does not veto the archive.
-                long relative = Math.max(-64 * 256L, score.strength() - maximum);
-                support.computeIfAbsent(score.charset(), ignored -> new HashMap<>()).putIfAbsent(score, relative);
-            }
-        }
-        var candidates = new ArrayList<EncodingEvidence.Support>();
-        support.forEach((charset, values) -> candidates.add(new EncodingEvidence.Support(charset,
-                values.values().stream().mapToLong(Long::longValue).sum(), values.size(), values)));
-        return new EncodingEvidence(kind, candidates);
-    }
-
-    /// Tests bytes without consuming the field or loading models.
-    ///
-    /// @param input bytes between position and limit
-    /// @return whether every byte is in the range 0 through 127
+    /// Tests the complete field without loading statistical data or changing its buffer state.
+    /// @param input borrowed remaining bytes
+    /// @return whether every byte is below 128
     public static boolean isAscii(ByteBuffer input) {
         for (int i = input.position(); i < input.limit(); i++) if (input.get(i) < 0) return false;
         return true;
     }
 
-    /// Excludes byte-table runs from language inference without declaring them malformed.
-    /// Eight consecutive ascending or descending high bytes identify a code-page sweep, not useful
-    /// linguistic evidence. Such runs can otherwise masquerade as alphabetic text in several encodings.
+    /// Ranks installed candidates from pooled samples; this does not validate unsampled archive fields.
+    /// Zero-score candidates are omitted. Equal scores use the supplied family preference, then charset
+    /// name order. Callers must validate a candidate against every field before freezing an archive choice.
+    /// @param fields borrowed complete samples within the MAX_EVIDENCE limits
+    /// @param kind field role
+    /// @param preference tie-breaking producer convention
+    /// @return immutable descending score list, empty when samples supply no statistical evidence
+    /// @throws IllegalArgumentException if the sample count or byte budgets are exceeded
+    public @Unmodifiable List<Score> rank(List<? extends ByteBuffer> fields, Kind kind, Preference preference) {
+        Objects.requireNonNull(preference);
+        var profile = prepare(fields, kind);
+        if (profile.pairs.length == 0) return List.of();
+        var scores = new ArrayList<Score>();
+        for (var candidate : candidates()) {
+            double best = 0;
+            for (var model : candidate.models) {
+                best = Math.max(best, model.score(profile.pairs, profile.frequencies, profile.norm));
+            }
+            if (best > 0) scores.add(new Score(candidate.charset, best));
+        }
+        scores.sort(Comparator.comparingDouble(Score::similarity).reversed()
+                .thenComparing(score -> !preference.accepts(score.charset))
+                .thenComparing(score -> score.charset.name()));
+        return List.copyOf(scores);
+    }
+
+    /// Infers an encoding and decodes one complete field without previous-call evidence.
+    /// ASCII fields are decoded directly without loading the statistical model.
+    /// @param input borrowed bytes; position, limit, mark, and content are preserved
+    /// @param kind field role
+    /// @param preference producer convention used only for equal scores
+    /// @return decoded text, or null for no evidence or distinct equally supported outputs
+    public @Nullable String decode(ByteBuffer input, Kind kind, Preference preference) {
+        Objects.requireNonNull(kind);
+        Objects.requireNonNull(preference);
+        if (isAscii(input)) return StandardCharsets.US_ASCII.decode(input.duplicate()).toString();
+        var ranked = rank(List.of(input.remaining() <= MAX_EVIDENCE_FIELD_BYTES ? input
+                : input.slice(input.position(), MAX_EVIDENCE_FIELD_BYTES)), kind, preference);
+        @Nullable Score selected = null;
+        @Nullable String text = null;
+        for (var score : ranked) {
+            if (selected != null && (score.similarity < selected.similarity
+                    || preference.accepts(selected.charset) && !preference.accepts(score.charset))) break;
+            @Nullable String decoded = decode(input, kind, score.charset);
+            if (decoded == null) continue;
+            if (selected == null) {
+                selected = score;
+                text = decoded;
+            } else if (!decoded.equals(text)) return null;
+        }
+        return text;
+    }
+
+    /// Strictly decodes every byte and rejects controls unsuitable for the metadata role.
+    /// Validation and text construction share one decoder pass, including the unscored tail.
+    /// @param input complete borrowed field; its state and content are preserved
+    /// @param kind field role
+    /// @param charset installed model candidate
+    /// @return decoded text, or null for malformed input, unmappable bytes, or disallowed controls
+    /// @throws IllegalArgumentException if the charset is not an installed model candidate
+    public @Nullable String decode(ByteBuffer input, Kind kind, Charset charset) {
+        Objects.requireNonNull(kind);
+        var text = new StringBuilder(Math.min(input.remaining(), output.capacity()));
+        return decode(input, kind, decoder(charset), text, null) ? text.toString() : null;
+    }
+
+    /// Finds candidates whose strict decoding equals an authoritative Unicode counterpart.
+    /// @param input borrowed legacy bytes
+    /// @param text authoritative text, compared without normalization
+    /// @return immutable matching candidates, empty for ASCII or lossy legacy spellings
+    public @Unmodifiable List<Charset> matching(ByteBuffer input, String text) {
+        if (isAscii(input)) return List.of();
+        var matches = new ArrayList<Charset>();
+        for (var candidate : candidates()) {
+            if (decode(input, Kind.COMMENT, candidate.decoder, null, text)) matches.add(candidate.charset);
+        }
+        return List.copyOf(matches);
+    }
+
+    /// Maximum raw bytes used for a field's statistical profile; validation is never truncated.
+    static final int MAX_PROFILE_BYTES = 4096;
+    /// Unsigned pair occurrences admitted per field.
+    private static final int REPETITION_LIMIT = 2;
+    /// Reusable character storage for strict validation and output comparison.
+    private final CharBuffer output = CharBuffer.allocate(1024);
+    /// Lazily initialized installed candidates; ASCII does not allocate them or load models.
+    private @Nullable @Unmodifiable List<Candidate> candidates;
+
+    /// Creates a workspace without loading model data.
+    public EncodingDetector() {
+    }
+
+    /// Pools independent capped field profiles; exact and statistically identical duplicates count once.
+    /// The batch limits match the production evidence builder. The immutable result owns its arrays
+    /// and retains neither buffers nor decoders. Integer accumulation is independent of input order.
+    private Profile prepare(List<? extends ByteBuffer> fields, Kind kind) {
+        Objects.requireNonNull(kind);
+        if (fields.size() > EncodingDetector.MAX_EVIDENCE_FIELDS)
+            throw new IllegalArgumentException("Too many metadata fields");
+        int bytes = 0;
+        for (var field : fields) {
+            if (field.remaining() > EncodingDetector.MAX_EVIDENCE_FIELD_BYTES)
+                throw new IllegalArgumentException("Metadata field too large");
+            bytes += field.remaining();
+        }
+        if (bytes > EncodingDetector.MAX_EVIDENCE_BYTES) throw new IllegalArgumentException("Metadata batch too large");
+        var distinct = new HashSet<Profile>();
+        for (var field : fields) {
+            if (!EncodingDetector.isAscii(field) && !hasByteSweep(field)) {
+                Profile profile = profile(field, kind);
+                if (profile.pairs.length != 0) distinct.add(profile);
+            }
+        }
+        if (distinct.isEmpty()) return Profile.EMPTY;
+        if (distinct.size() == 1) return distinct.iterator().next();
+        // A single bounded batch workspace replaces one dense frequency table per filename.
+        int[] frequencies = new int[BigramModels.DIMENSIONS];
+        for (var profile : distinct) {
+            for (int i = 0; i < profile.pairs.length; i++) frequencies[profile.pairs[i]] += profile.frequencies[i];
+        }
+        return Profile.fromDense(frequencies);
+    }
+
+    /// Excludes runs of at least eight consecutive high byte values from linguistic evidence.
+    /// Such encoding-table samples remain subject to full validation but cannot establish a language.
     private static boolean hasByteSweep(ByteBuffer input) {
         int ascending = 1;
         int descending = 1;
@@ -311,90 +207,159 @@ public final class EncodingDetector {
         return false;
     }
 
-    /// Allocates installed candidates once per detector; model tables are shared and immutable.
-    private @Unmodifiable List<MetadataScorer> scorers() {
-        if (scorers == null) {
-            var values = new ArrayList<MetadataScorer>();
-            add(values, "UTF-8", MetadataScorer.Family.UTF8);
-            add(values, "GB18030", MetadataScorer.Family.CHINESE);
-            add(values, "Big5-HKSCS", MetadataScorer.Family.BIG5);
-            add(values, "windows-31j", MetadataScorer.Family.JAPANESE);
-            add(values, "EUC-JP", MetadataScorer.Family.JAPANESE);
-            add(values, "x-windows-949", MetadataScorer.Family.KOREAN);
-            for (var group : List.of(Models.SINGLE_BYTE_DATA, DosModels.VALUES)) {
-                for (var model : group) {
-                    if (Charset.isSupported(model.charsetName())) values.add(new MetadataScorer(
-                            Charset.forName(model.charsetName()), model, MetadataScorer.Family.SINGLE_BYTE));
+    /// Builds a sorted sparse IDF-weighted profile without touching the caller's position or mark.
+    /// Names use the last slash-delimited component with non-ASCII bytes. Backslash is not a raw
+    /// separator because it can be a trail byte in several candidate encodings.
+    private static Profile profile(ByteBuffer input, Kind kind) {
+        Objects.requireNonNull(kind);
+        int start = input.position();
+        int end = input.limit();
+        if (kind == Kind.NAME) {
+            int component = start;
+            int selectedStart = start;
+            int selectedEnd = end;
+            boolean nonAscii = false;
+            for (int index = start;; index++) {
+                if (index == end || input.get(index) == '/') {
+                    if (nonAscii) {
+                        selectedStart = component;
+                        selectedEnd = index;
+                    }
+                    if (index == end) break;
+                    component = index + 1;
+                    nonAscii = false;
+                } else if (input.get(index) < 0) {
+                    nonAscii = true;
                 }
             }
-            scorers = List.copyOf(values);
+            start = selectedStart;
+            end = selectedEnd;
         }
-        return scorers;
+        end = start + Math.min(end - start, MAX_PROFILE_BYTES);
+        char[] pairs = new char[Math.max(0, end - start - 1)];
+        int count = 0;
+        for (int index = start + 1; index < end; index++) {
+            int pair = ((input.get(index - 1) & 255) << 8) | (input.get(index) & 255);
+            // Names omit pairs consisting entirely of ASCII bytes.
+            if (kind == Kind.COMMENT || (pair & 0x8080) != 0) pairs[count++] = (char) pair;
+        }
+        if (count == 0) return Profile.EMPTY;
+        Arrays.sort(pairs, 0, count);
+        var models = BigramModels.INSTANCE;
+        int[] frequencies = new int[count];
+        int distinct = 0;
+        long squared = 0;
+        for (int i = 0; i < count;) {
+            char pair = pairs[i];
+            int next = i + 1;
+            while (next < count && pairs[next] == pair) next++;
+            int value = models.idf(pair) * Math.min(REPETITION_LIMIT, next - i);
+            if (value != 0) {
+                pairs[distinct] = pair;
+                frequencies[distinct++] = value;
+                squared += (long) value * value;
+            }
+            i = next;
+        }
+        return new Profile(Arrays.copyOf(pairs, distinct), Arrays.copyOf(frequencies, distinct), Math.sqrt(squared));
     }
 
-    /// Adds a multibyte candidate only when its JDK charset is available.
-    private static void add(List<MetadataScorer> values, String name, MetadataScorer.Family family) {
-        if (Charset.isSupported(name)) values.add(new MetadataScorer(Charset.forName(name), null, family));
-    }
-
-    /// Tests decoded output equality exactly, without constructing a String per candidate.
-    private boolean sameOutputs(ByteBuffer input, List<EncodingScore> choices) {
-        for (int i = 1; i < choices.size(); i++) {
-            var first = cursor(input, choices.get(0).charset(), output);
-            var second = cursor(input, choices.get(i).charset(), comparison);
-            while (true) {
-                int left = first.read();
-                if (left != second.read()) return false;
-                if (left == END) break;
+    /// Decodes once, either appending text or comparing it with an authoritative counterpart.
+    /// A failed comparison or validation discards the current candidate; decoder state is reset on every call.
+    private boolean decode(ByteBuffer input, Kind kind, CharsetDecoder decoder,
+                           @Nullable StringBuilder text, @Nullable String expected) {
+        decoder.reset();
+        var bytes = input.duplicate();
+        int index = 0;
+        boolean decoding = true;
+        while (true) {
+            output.clear();
+            var result = decoding ? decoder.decode(bytes, output, true) : decoder.flush(output);
+            if (result.isError()) return false;
+            output.flip();
+            for (int i = 0; i < output.limit(); i++) {
+                char value = output.get(i);
+                if (Character.isISOControl(value) && !(kind == Kind.COMMENT
+                        && (value == '\t' || value == '\n' || value == '\r'))) return false;
+                if (expected != null && (index >= expected.length() || value != expected.charAt(index++))) return false;
+            }
+            if (text != null) text.append(output);
+            if (result.isUnderflow()) {
+                if (!decoding) return expected == null || index == expected.length();
+                decoding = false;
             }
         }
-        return true;
     }
 
-    /// Borrows a candidate decoder for output comparison after scoring has completed.
-    private TextCursor cursor(ByteBuffer input, Charset charset, CharBuffer buffer) {
-        for (var scorer : scorers()) {
-            if (scorer.charset.equals(charset)) return new TextCursor(input, scorer.decoder, buffer);
+    /// Creates strict JDK decoders for the installed model candidates once per workspace.
+    private @Unmodifiable List<Candidate> candidates() {
+        if (candidates == null) {
+            var result = new ArrayList<Candidate>();
+            BigramModels.INSTANCE.candidates.forEach((charset, models) ->
+                    result.add(new Candidate(charset, charset.newDecoder(), models)));
+            candidates = List.copyOf(result);
         }
-        throw new IllegalArgumentException("Charset is not a scored candidate");
+        return candidates;
     }
 
-    /// Reads UTF-16 units through fixed storage; used only while comparing candidate outputs.
+    /// Returns the reusable decoder for a scored candidate.
+    private CharsetDecoder decoder(Charset charset) {
+        for (var candidate : candidates()) if (candidate.charset.equals(charset)) return candidate.decoder;
+        throw new IllegalArgumentException("Unknown candidate");
+    }
+
+    /// Describes a candidate's strongest language-model similarity; validity is checked separately.
+    /// @param charset installed candidate
+    /// @param similarity cosine score against the original model scale, not a correctness probability
     @NotNullByDefault
-    private static final class TextCursor {
-        /// Borrowed input view, retained only by this call-local cursor.
-        private final ByteBuffer input;
-        /// Borrowed reusable decoder.
-        private final CharsetDecoder decoder;
-        /// Borrowed output workspace.
-        private final CharBuffer buffer;
-        /// Whether decoding has reached its final underflow.
-        private boolean flushing;
-        /// Whether decoder flushing has finished.
-        private boolean finished;
+    public record Score(Charset charset, double similarity) {
+    }
 
-        /// Starts an independent complete-field decoding pass.
-        TextCursor(ByteBuffer input, CharsetDecoder decoder, CharBuffer buffer) {
-            this.input = input.duplicate();
-            this.decoder = decoder.reset();
-            this.buffer = buffer;
-            buffer.clear().limit(0);
+    /// Retains one decoder and shared model variants.
+    /// @param charset candidate encoding
+    /// @param decoder mutable field-local decoding state
+    /// @param models immutable language variants
+    @NotNullByDefault
+    private record Candidate(Charset charset, CharsetDecoder decoder, @Unmodifiable List<BigramModels.Model> models) {
+    }
+
+    /// Stores sparse IDF-weighted counts, with value equality for duplicate evidence suppression.
+    /// Arrays belong exclusively to this profile and must not be modified.
+    /// @param pairs sorted byte-pair indices
+    /// @param frequencies corresponding positive weighted counts
+    /// @param norm L2 norm of weighted counts
+    @NotNullByDefault
+    private record Profile(char @Unmodifiable [] pairs, int @Unmodifiable [] frequencies, double norm) {
+        /// Shared empty evidence, requiring no model initialization.
+        static final Profile EMPTY = new Profile(new char[0], new int[0], 0);
+
+        /// Copies the nonzero coordinates of a batch workspace in ascending order.
+        static Profile fromDense(int[] dense) {
+            int count = 0;
+            for (int value : dense) if (value != 0) count++;
+            char[] pairs = new char[count];
+            int[] values = new int[count];
+            long squared = 0;
+            int index = 0;
+            for (int i = 0; i < dense.length; i++) {
+                if (dense[i] != 0) {
+                    pairs[index] = (char) i;
+                    values[index++] = dense[i];
+                    squared += (long) dense[i] * dense[i];
+                }
+            }
+            return new Profile(pairs, values, Math.sqrt(squared));
         }
 
-        /// Returns a UTF-16 unit or END; input must remain unchanged since validation.
-        int read() {
-            while (!buffer.hasRemaining()) {
-                if (finished) return END;
-                buffer.clear();
-                var result = flushing ? decoder.flush(buffer) : decoder.decode(input, buffer, true);
-                if (result.isError()) throw new IllegalStateException("Validated metadata changed during selection");
-                if (result.isUnderflow()) {
-                    if (flushing) finished = true;
-                    else flushing = true;
-                }
-                buffer.flip();
-            }
-            return buffer.get();
+        @Override
+        public boolean equals(@Nullable Object other) {
+            return other instanceof Profile profile && Arrays.equals(pairs, profile.pairs)
+                    && Arrays.equals(frequencies, profile.frequencies);
+        }
+
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(pairs) * 31 + Arrays.hashCode(frequencies);
         }
     }
 }

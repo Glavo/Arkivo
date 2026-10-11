@@ -20,7 +20,7 @@ data class ArkivoPublicationMetadata(
 val publicationMetadata = mapOf(
     "arkivo-encoding-detector" to ArkivoPublicationMetadata(
         "Arkivo Character Encoding Detection",
-        "Provides internal pure Java character encoding detection based on chardetng."
+        "Provides internal pure Java character encoding detection for archive metadata."
     ),
     "arkivo-all" to ArkivoPublicationMetadata(
         "Arkivo",

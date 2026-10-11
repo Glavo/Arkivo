@@ -913,8 +913,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             readFully(channel, endRecord.actualCentralDirectoryOffset, centralDirectory);
             centralDirectory.flip();
 
-            ZipEntryNameDecoder decoder = ZipEntryNameDecoder.forCentralDirectory(
-                    config.legacyMetadataDecoder(), centralDirectory);
+            var prepared = ZipEntryNameDecoder.forCentralDirectory(config.legacyMetadataDecoder(), centralDirectory);
+            ZipEntryNameDecoder decoder = prepared.decoder();
 
             while (centralDirectory.hasRemaining()) {
                 int offset = centralDirectory.position();
@@ -961,9 +961,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 localHeaderOffset = zip64.localHeaderOffset();
                 localHeaderDiskNumber = zip64.localHeaderDiskNumber();
 
-                String decodedPath;
+                @Nullable String decodedPath = prepared.take(variableOffset);
                 try {
-                    decodedPath = decoder.decodePath(
+                    if (decodedPath == null) decodedPath = decoder.decodePath(
                             rawPath,
                             flags,
                             extraData,
@@ -975,7 +975,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 } catch (java.nio.charset.CharacterCodingException exception) {
                     throw new IOException("Failed to decode ZIP entry name", exception);
                 }
-                String decodedComment = decoder.decodeComment(
+                @Nullable String decodedComment = prepared.take(variableOffset + nameLength + extraLength);
+                if (decodedComment == null) decodedComment = decoder.decodeComment(
                         rawComment.length > 0 ? rawComment : null,
                         flags,
                         extraData,
@@ -1187,7 +1188,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             SeekableByteChannel channel
     ) throws IOException {
         ByteBuffer buffer = centralDirectory.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-        ZipEntryNameDecoder decoder = ZipEntryNameDecoder.forCentralDirectory(legacyMetadataDecoder, centralDirectory);
+        var prepared = ZipEntryNameDecoder.forCentralDirectory(legacyMetadataDecoder, centralDirectory);
+        ZipEntryNameDecoder decoder = prepared.decoder();
         ArrayList<CentralDirectoryEntrySnapshot> entries = new ArrayList<>();
         while (buffer.hasRemaining()) {
             int offset = buffer.position();
@@ -1211,9 +1213,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             byte[] rawPath = readBytes(buffer, variableOffset, nameLength);
             byte[] extraData = readBytes(buffer, variableOffset + nameLength, extraLength);
             ZipExtraFields.validateForReading(extraData);
-            String decodedPath;
+            @Nullable String decodedPath = prepared.take(variableOffset);
             try {
-                decodedPath = decoder.decodePath(
+                if (decodedPath == null) decodedPath = decoder.decodePath(
                         rawPath,
                         flags,
                         extraData,
