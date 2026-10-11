@@ -15,8 +15,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /// Infers a common encoding from bounded archive metadata samples.
@@ -82,13 +84,13 @@ public final class EncodingDetector {
         var profile = prepare(fields, kind);
         if (profile.pairs.length == 0) return List.of();
         var scores = new ArrayList<Score>();
-        for (var candidate : candidates()) {
+        BigramModels.INSTANCE.candidates.forEach((charset, models) -> {
             double best = 0;
-            for (var model : candidate.models) {
+            for (var model : models) {
                 best = Math.max(best, model.score(profile.pairs, profile.frequencies, profile.norm));
             }
-            if (best > 0) scores.add(new Score(candidate.charset, best));
-        }
+            if (best > 0) scores.add(new Score(charset, best));
+        });
         scores.sort(Comparator.comparingDouble(Score::similarity).reversed()
                 .thenComparing(score -> !preference.accepts(score.charset))
                 .thenComparing(score -> score.charset.name()));
@@ -131,7 +133,7 @@ public final class EncodingDetector {
     /// @throws IllegalArgumentException if the charset is not an installed model candidate
     public @Nullable String decode(ByteBuffer input, Kind kind, Charset charset) {
         Objects.requireNonNull(kind);
-        var text = new StringBuilder(Math.min(input.remaining(), output.capacity()));
+        var text = new StringBuilder(Math.min(input.remaining(), OUTPUT_CAPACITY));
         return decode(input, kind, decoder(charset), text, null) ? text.toString() : null;
     }
 
@@ -142,8 +144,8 @@ public final class EncodingDetector {
     public @Unmodifiable List<Charset> matching(ByteBuffer input, String text) {
         if (isAscii(input)) return List.of();
         var matches = new ArrayList<Charset>();
-        for (var candidate : candidates()) {
-            if (decode(input, Kind.COMMENT, candidate.decoder, null, text)) matches.add(candidate.charset);
+        for (var charset : BigramModels.INSTANCE.candidates.keySet()) {
+            if (decode(input, Kind.COMMENT, decoder(charset), null, text)) matches.add(charset);
         }
         return List.copyOf(matches);
     }
@@ -152,10 +154,12 @@ public final class EncodingDetector {
     static final int MAX_PROFILE_BYTES = 4096;
     /// Unsigned pair occurrences admitted per field.
     private static final int REPETITION_LIMIT = 2;
-    /// Reusable character storage for strict validation and output comparison.
-    private final CharBuffer output = CharBuffer.allocate(1024);
-    /// Lazily initialized installed candidates; ASCII does not allocate them or load models.
-    private @Nullable @Unmodifiable List<Candidate> candidates;
+    /// Maximum characters retained between decoder calls.
+    private static final int OUTPUT_CAPACITY = 1024;
+    /// Reusable character storage, allocated only when validating a candidate.
+    private @Nullable CharBuffer output;
+    /// Decoders created only for candidates that have been validated by this instance.
+    private @Nullable Map<Charset, CharsetDecoder> decoders;
 
     /// Creates a workspace without loading model data.
     public EncodingDetector() {
@@ -269,21 +273,23 @@ public final class EncodingDetector {
     private boolean decode(ByteBuffer input, Kind kind, CharsetDecoder decoder,
                            @Nullable StringBuilder text, @Nullable String expected) {
         decoder.reset();
+        @Nullable CharBuffer buffer = output;
+        if (buffer == null) output = buffer = CharBuffer.allocate(OUTPUT_CAPACITY);
         var bytes = input.duplicate();
         int index = 0;
         boolean decoding = true;
         while (true) {
-            output.clear();
-            var result = decoding ? decoder.decode(bytes, output, true) : decoder.flush(output);
+            buffer.clear();
+            var result = decoding ? decoder.decode(bytes, buffer, true) : decoder.flush(buffer);
             if (result.isError()) return false;
-            output.flip();
-            for (int i = 0; i < output.limit(); i++) {
-                char value = output.get(i);
+            buffer.flip();
+            for (int i = 0; i < buffer.limit(); i++) {
+                char value = buffer.get(i);
                 if (Character.isISOControl(value) && !(kind == Kind.COMMENT
                         && (value == '\t' || value == '\n' || value == '\r'))) return false;
                 if (expected != null && (index >= expected.length() || value != expected.charAt(index++))) return false;
             }
-            if (text != null) text.append(output);
+            if (text != null) text.append(buffer);
             if (result.isUnderflow()) {
                 if (!decoding) return expected == null || index == expected.length();
                 decoding = false;
@@ -291,21 +297,11 @@ public final class EncodingDetector {
         }
     }
 
-    /// Creates strict JDK decoders for the installed model candidates once per workspace.
-    private @Unmodifiable List<Candidate> candidates() {
-        if (candidates == null) {
-            var result = new ArrayList<Candidate>();
-            BigramModels.INSTANCE.candidates.forEach((charset, models) ->
-                    result.add(new Candidate(charset, charset.newDecoder(), models)));
-            candidates = List.copyOf(result);
-        }
-        return candidates;
-    }
-
-    /// Returns the reusable decoder for a scored candidate.
+    /// Creates a strict decoder on first use and reuses it for subsequent fields.
     private CharsetDecoder decoder(Charset charset) {
-        for (var candidate : candidates()) if (candidate.charset.equals(charset)) return candidate.decoder;
-        throw new IllegalArgumentException("Unknown candidate");
+        if (!BigramModels.INSTANCE.candidates.containsKey(charset)) throw new IllegalArgumentException("Unknown candidate");
+        if (decoders == null) decoders = new HashMap<>();
+        return decoders.computeIfAbsent(charset, Charset::newDecoder);
     }
 
     /// Describes a candidate's strongest language-model similarity; validity is checked separately.
@@ -313,14 +309,6 @@ public final class EncodingDetector {
     /// @param similarity cosine score against the original model scale, not a correctness probability
     @NotNullByDefault
     public record Score(Charset charset, double similarity) {
-    }
-
-    /// Retains one decoder and shared model variants.
-    /// @param charset candidate encoding
-    /// @param decoder mutable field-local decoding state
-    /// @param models immutable language variants
-    @NotNullByDefault
-    private record Candidate(Charset charset, CharsetDecoder decoder, @Unmodifiable List<BigramModels.Model> models) {
     }
 
     /// Stores sparse IDF-weighted counts, with value equality for duplicate evidence suppression.

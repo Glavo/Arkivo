@@ -4,6 +4,7 @@
 package org.glavo.arkivo.encoding.detector.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.net.URL;
@@ -14,7 +15,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -22,17 +26,53 @@ import static org.junit.jupiter.api.Assertions.*;
 /// Verifies common-encoding scoring independently of ZIP declarations and fallback policy.
 @NotNullByDefault
 class EncodingDetectorTest {
-    /// ASCII fields neither allocate candidate decoders nor initialize model-dependent state.
+    /// ASCII fields allocate neither candidate decoders nor a character workspace.
     @Test
-    void asciiDoesNotAllocateCandidates() throws Exception {
+    void asciiDoesNotAllocateWorkspace() throws Exception {
         var detector = new EncodingDetector();
         var bytes = StandardCharsets.US_ASCII.encode("dir/file.txt");
         assertEquals("dir/file.txt", detector.decode(bytes, EncodingDetector.Kind.NAME,
                 EncodingDetector.Preference.NONE));
         assertTrue(detector.rank(List.of(bytes), EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE).isEmpty());
-        var candidates = EncodingDetector.class.getDeclaredField("candidates");
-        candidates.setAccessible(true);
-        assertNull(candidates.get(detector));
+        for (String field : List.of("decoders", "output")) {
+            var storage = EncodingDetector.class.getDeclaredField(field);
+            storage.setAccessible(true);
+            assertNull(storage.get(detector));
+        }
+    }
+
+    /// Scoring reads shared models; decoding allocates only the selected candidates and reuses their state.
+    @Test
+    void candidatesAreAllocatedOnDemand() throws Exception {
+        var detector = new EncodingDetector();
+        var decoders = EncodingDetector.class.getDeclaredField("decoders");
+        decoders.setAccessible(true);
+        var output = EncodingDetector.class.getDeclaredField("output");
+        output.setAccessible(true);
+        assertFalse(detector.rank(List.of(utf8("日本語.txt")), EncodingDetector.Kind.NAME,
+                EncodingDetector.Preference.NONE).isEmpty());
+        assertNull(decoders.get(detector));
+        assertNull(output.get(detector));
+        assertThrows(IllegalArgumentException.class, () -> detector.decode(
+                utf8("é"), EncodingDetector.Kind.NAME, StandardCharsets.UTF_16));
+        assertNull(decoders.get(detector));
+        assertNull(output.get(detector));
+        assertEquals("é", detector.decode(utf8("é"), EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
+        var created = (Map<?, ?>) Objects.requireNonNull(decoders.get(detector));
+        assertEquals(Set.of(StandardCharsets.UTF_8), created.keySet());
+        @Nullable Object utf8 = created.get(StandardCharsets.UTF_8);
+        @Nullable Object characters = output.get(detector);
+        assertNotNull(utf8);
+        assertNotNull(characters);
+        assertNull(detector.decode(ByteBuffer.wrap(new byte[]{(byte) 0xff}), EncodingDetector.Kind.NAME,
+                StandardCharsets.UTF_8));
+        assertEquals("日本語", detector.decode(utf8("日本語"), EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
+        assertSame(utf8, created.get(StandardCharsets.UTF_8));
+        assertSame(characters, output.get(detector));
+        var latin = Charset.forName("windows-1252");
+        assertEquals("é", detector.decode(latin.encode("é"), EncodingDetector.Kind.NAME, latin));
+        assertEquals(Set.of(StandardCharsets.UTF_8, latin), created.keySet());
+        assertSame(characters, output.get(detector));
     }
 
     /// ASCII detection succeeds in an isolated loader without the model resource.
