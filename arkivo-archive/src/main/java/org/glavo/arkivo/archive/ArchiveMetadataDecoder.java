@@ -19,6 +19,11 @@ import java.util.Objects;
 /// decoder unless another decoder is configured. A configured decoder determines the complete conversion policy,
 /// including any fallback or replacement; readers do not retry a failed conversion with another charset.
 ///
+/// Each invocation supplies one complete field, not a fragment of a text stream. This interface does not expose an
+/// archive boundary, field ordering, or a preparation phase. A decoder shared by readers must not rely on calls
+/// belonging to the same archive. A format's built-in policy may separately analyze archive metadata before selecting
+/// the decoder used for individual fields; a custom implementation receives only its individual decoding calls.
+///
 /// Format-defined Unicode fields bypass this decoder. Decoding does not exempt the resulting text from the format's
 /// name validation, path normalization, or duplicate-entry checks.
 ///

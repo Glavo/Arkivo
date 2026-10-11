@@ -32,7 +32,6 @@ public final class CPIOMetadataDecoderTest {
         byte[] archive = writeArchive(content);
         AtomicBoolean observed = new AtomicBoolean();
         CPIOMetadataDecoder metadataDecoder = context -> {
-            assertEquals(CPIOMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             assertEquals(CPIODialect.NEW_ASCII_CRC, context.dialect());
             assertNull(context.binaryByteOrder());
             assertEquals(1L, context.inode());
@@ -68,7 +67,6 @@ public final class CPIOMetadataDecoderTest {
         source.mark();
         CPIOMetadataDecoder metadataDecoder = context -> {
             assertTrue(context.bytes().isReadOnly());
-            assertEquals(CPIOMetadataDecoder.MetadataKind.UNKNOWN, context.metadataKind());
             assertNull(context.dialect());
             assertNull(context.binaryByteOrder());
             assertEquals(CPIOMetadataDecoder.UNKNOWN_INODE, context.inode());
@@ -90,7 +88,6 @@ public final class CPIOMetadataDecoderTest {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{3, 4});
         CPIOMetadataDecoder.Context context = new CPIOMetadataDecoder.Context(
                 source,
-                CPIOMetadataDecoder.MetadataKind.ENTRY_NAME,
                 CPIODialect.OLD_BINARY,
                 CPIOBinaryByteOrder.LITTLE_ENDIAN,
                 7L,
@@ -153,7 +150,6 @@ public final class CPIOMetadataDecoderTest {
     ) {
         return new CPIOMetadataDecoder.Context(
                 ByteBuffer.allocate(0),
-                CPIOMetadataDecoder.MetadataKind.ENTRY_NAME,
                 dialect,
                 binaryByteOrder,
                 inode,

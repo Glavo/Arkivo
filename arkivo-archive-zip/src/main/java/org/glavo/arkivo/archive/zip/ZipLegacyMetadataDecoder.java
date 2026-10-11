@@ -78,16 +78,6 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
         return Objects.requireNonNull(decode(Context.unknown(bytes)), "decoded metadata");
     }
 
-    /// Identifies the logical ZIP metadata field being decoded.
-    @NotNullByDefault
-    enum MetadataKind {
-        /// The metadata kind is unavailable.
-        UNKNOWN,
-
-        /// An entry path stored in a file header.
-        ENTRY_NAME
-    }
-
     /// Identifies the ZIP header that supplied a metadata value.
     @NotNullByDefault
     enum HeaderSource {
@@ -107,7 +97,6 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
     /// call and must not be retained.
     ///
     /// @param bytes the complete raw entry name bytes
-    /// @param metadataKind the logical field being decoded
     /// @param headerSource the header that supplied the field
     /// @param generalPurposeFlags the unsigned general-purpose flags, or `UNKNOWN_HEADER_VALUE`
     /// @param versionNeededToExtract the unsigned version-needed value, or `UNKNOWN_HEADER_VALUE`
@@ -117,7 +106,6 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
     @NotNullByDefault
     record Context(
             @UnmodifiableView ByteBuffer bytes,
-            MetadataKind metadataKind,
             HeaderSource headerSource,
             int generalPurposeFlags,
             int versionNeededToExtract,
@@ -128,7 +116,6 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
         /// Creates a ZIP legacy metadata context.
         public Context {
             bytes = readOnly(bytes, "bytes");
-            Objects.requireNonNull(metadataKind, "metadataKind");
             Objects.requireNonNull(headerSource, "headerSource");
             requireUnsignedShortOrUnknown(
                     generalPurposeFlags,
@@ -170,7 +157,6 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
         private static Context unknown(ByteBuffer bytes) {
             return new Context(
                     bytes,
-                    MetadataKind.UNKNOWN,
                     HeaderSource.UNKNOWN,
                     UNKNOWN_HEADER_VALUE,
                     UNKNOWN_HEADER_VALUE,

@@ -2937,7 +2937,6 @@ public final class RarArchiveIntegrationTest {
         String path = "旧目录.txt";
         byte[] archive = RarTestArchiveFixtures.rar4StoredArchive(path.getBytes(gb18030), false);
         RarLegacyMetadataDecoder metadataDecoder = context -> {
-            assertEquals(RarLegacyMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             assertEquals(3, context.hostOperatingSystem());
             assertEquals(29, context.extractionVersion());
             assertEquals(0x8000, context.headerFlags());

@@ -52,7 +52,9 @@ public final class ZipEntryNameDecoder {
     static Prepared forCentralDirectory(ArchiveMetadataDecoder configured, ByteBuffer centralDirectory)
             throws IOException {
         var decodedFields = new HashMap<Integer, String>();
-        var decoder = ZipAutoMetadataDecoder.prepare(configured, centralDirectory, decodedFields);
+        ArchiveMetadataDecoder decoder = configured == ZipAutoMetadataDecoder.DEFAULT
+                ? ArchiveMetadataDecoder.forCharset(ZipNameEncodingInference.select(centralDirectory, decodedFields))
+                : configured;
         return new Prepared(new ZipEntryNameDecoder(decoder), decodedFields);
     }
 
@@ -119,7 +121,6 @@ public final class ZipEntryNameDecoder {
                 rawPath,
                 generalPurposeFlags,
                 extraData,
-                ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                 headerSource,
                 versionNeededToExtract,
                 versionMadeBy,
@@ -185,7 +186,6 @@ public final class ZipEntryNameDecoder {
             byte[] rawValue,
             int generalPurposeFlags,
             byte[] extraData,
-            ZipLegacyMetadataDecoder.MetadataKind metadataKind,
             ZipLegacyMetadataDecoder.HeaderSource headerSource,
             int versionNeededToExtract,
             int versionMadeBy,
@@ -203,7 +203,6 @@ public final class ZipEntryNameDecoder {
         if (legacyMetadataDecoder instanceof ZipLegacyMetadataDecoder zipDecoder) {
             decoded = zipDecoder.decode(new ZipLegacyMetadataDecoder.Context(
                     ByteBuffer.wrap(rawValue),
-                    metadataKind,
                     headerSource,
                     generalPurposeFlags,
                     versionNeededToExtract,

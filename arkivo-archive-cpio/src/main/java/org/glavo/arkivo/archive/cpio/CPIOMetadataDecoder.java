@@ -12,7 +12,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
-/// Decodes CPIO metadata using the surrounding entry header when it is already available.
+/// Decodes CPIO entry names using the surrounding header when it is already available.
 ///
 /// The default CPIO decoder uses UTF-8. Custom decoders supply the final text without an implicit charset fallback.
 @FunctionalInterface
@@ -27,7 +27,7 @@ public interface CPIOMetadataDecoder extends ArchiveMetadataDecoder {
     /// The sentinel used when the entry body size is unavailable.
     long UNKNOWN_ENTRY_SIZE = -1L;
 
-    /// Decodes one complete CPIO metadata value.
+    /// Decodes one complete CPIO entry name.
     ///
     /// The context and its byte-buffer view are valid only for this invocation and must not be retained.
     ///
@@ -44,23 +44,12 @@ public interface CPIOMetadataDecoder extends ArchiveMetadataDecoder {
         return Objects.requireNonNull(decode(Context.unknown(bytes)), "decoded metadata");
     }
 
-    /// Identifies the logical CPIO metadata field being decoded.
-    @NotNullByDefault
-    enum MetadataKind {
-        /// The metadata kind is unavailable.
-        UNKNOWN,
-
-        /// An archive entry path.
-        ENTRY_NAME
-    }
-
     /// Provides raw bytes and available CPIO header metadata to a decoder.
     ///
     /// The byte buffer is an independent read-only view valid only for the duration of the decoder call and must not
     /// be retained.
     ///
-    /// @param bytes the complete raw metadata bytes
-    /// @param metadataKind the logical field being decoded
+    /// @param bytes the complete raw entry name bytes
     /// @param dialect the surrounding header dialect, or `null` when unavailable
     /// @param binaryByteOrder the old binary word byte order, or `null` for ASCII or unknown input
     /// @param inode the entry inode, or `UNKNOWN_INODE`
@@ -69,7 +58,6 @@ public interface CPIOMetadataDecoder extends ArchiveMetadataDecoder {
     @NotNullByDefault
     record Context(
             @UnmodifiableView ByteBuffer bytes,
-            MetadataKind metadataKind,
             @Nullable CPIODialect dialect,
             @Nullable CPIOBinaryByteOrder binaryByteOrder,
             long inode,
@@ -79,7 +67,6 @@ public interface CPIOMetadataDecoder extends ArchiveMetadataDecoder {
         /// Creates a CPIO metadata context.
         public Context {
             bytes = Objects.requireNonNull(bytes, "bytes").asReadOnlyBuffer();
-            metadataKind = Objects.requireNonNull(metadataKind, "metadataKind");
             if (dialect == CPIODialect.OLD_BINARY != (binaryByteOrder != null)) {
                 throw new IllegalArgumentException("binaryByteOrder must be present exactly for OLD_BINARY");
             }
@@ -98,7 +85,6 @@ public interface CPIOMetadataDecoder extends ArchiveMetadataDecoder {
         private static Context unknown(ByteBuffer bytes) {
             return new Context(
                     bytes,
-                    MetadataKind.UNKNOWN,
                     null,
                     null,
                     UNKNOWN_INODE,

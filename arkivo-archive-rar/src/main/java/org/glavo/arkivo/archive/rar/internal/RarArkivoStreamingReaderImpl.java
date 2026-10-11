@@ -2042,7 +2042,6 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (legacyMetadataDecoder instanceof RarLegacyMetadataDecoder rarDecoder) {
             decoded = rarDecoder.decode(new RarLegacyMetadataDecoder.Context(
                     ByteBuffer.wrap(nameBytes),
-                    RarLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                     rawHostOs,
                     extractionVersion,
                     headerFlags,

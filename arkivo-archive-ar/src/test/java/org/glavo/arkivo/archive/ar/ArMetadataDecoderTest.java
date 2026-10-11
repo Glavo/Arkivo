@@ -26,7 +26,6 @@ public final class ArMetadataDecoderTest {
         ArMetadataDecoder metadataDecoder = context -> {
             assertTrue(context.bytes().isReadOnly());
             assertEquals(2, context.bytes().remaining());
-            assertEquals(ArMetadataDecoder.MetadataKind.UNKNOWN, context.metadataKind());
             assertEquals(ArMetadataDecoder.Source.UNKNOWN, context.source());
             assertNull(context.headerIdentifier());
             assertEquals(ArMetadataDecoder.UNKNOWN_MEMBER_SIZE, context.memberSize());
@@ -47,7 +46,6 @@ public final class ArMetadataDecoderTest {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{4, 5, 6});
         ArMetadataDecoder.Context context = new ArMetadataDecoder.Context(
                 source,
-                ArMetadataDecoder.MetadataKind.ENTRY_NAME,
                 ArMetadataDecoder.Source.BSD_LONG_NAME,
                 "#1/3",
                 6L
@@ -56,7 +54,6 @@ public final class ArMetadataDecoderTest {
         assertTrue(context.bytes().isReadOnly());
         context.bytes().position(1);
         assertEquals(0, source.position());
-        assertEquals(ArMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
         assertEquals(ArMetadataDecoder.Source.BSD_LONG_NAME, context.source());
         assertEquals("#1/3", context.headerIdentifier());
         assertEquals(6L, context.memberSize());
@@ -65,7 +62,6 @@ public final class ArMetadataDecoderTest {
                 IllegalArgumentException.class,
                 () -> new ArMetadataDecoder.Context(
                         ByteBuffer.allocate(0),
-                        ArMetadataDecoder.MetadataKind.ENTRY_NAME,
                         ArMetadataDecoder.Source.HEADER_IDENTIFIER,
                         null,
                         ArMetadataDecoder.UNKNOWN_MEMBER_SIZE - 1L

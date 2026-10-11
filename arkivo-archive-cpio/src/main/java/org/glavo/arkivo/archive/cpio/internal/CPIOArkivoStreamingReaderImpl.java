@@ -410,7 +410,6 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
         if (metadataDecoder instanceof CPIOMetadataDecoder cpioDecoder) {
             decoded = cpioDecoder.decode(new CPIOMetadataDecoder.Context(
                     ByteBuffer.wrap(nameBytes),
-                    CPIOMetadataDecoder.MetadataKind.ENTRY_NAME,
                     header.dialect(),
                     header.binaryByteOrder(),
                     header.inode(),

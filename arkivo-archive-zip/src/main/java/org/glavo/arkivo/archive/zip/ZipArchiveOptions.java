@@ -39,6 +39,9 @@ public final class ZipArchiveOptions {
     /// reduce a candidate's score without making its decoded text invalid. Path validation remains the reader's
     /// responsibility. Comments remain raw bytes and do not contribute to encoding detection.
     ///
+    /// Archive-wide inference applies when this instance is configured directly. A custom decoder, including a
+    /// wrapper that delegates to this instance, receives individual fields without an archive-preparation phase.
+    ///
     /// Streaming readers and direct calls analyze individual values without looking ahead or retaining
     /// previous-call evidence. Their results can differ from indexed reading. CP437 is used when no
     /// candidate can be selected. Detection is heuristic and does not consult the system locale.

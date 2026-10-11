@@ -378,7 +378,6 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             if (metadataDecoder instanceof ArMetadataDecoder arDecoder) {
                 decoded = arDecoder.decode(new ArMetadataDecoder.Context(
                         ByteBuffer.wrap(nameBytes),
-                        ArMetadataDecoder.MetadataKind.ENTRY_NAME,
                         nameSource,
                         headerIdentifier,
                         memberSize

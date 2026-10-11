@@ -72,7 +72,7 @@ public final class ZipLegacyMetadataDecoderTest {
         var decoder = ZipLegacyMetadataDecoder.forCodePages(Charset.forName("IBM437"),
                 Charset.forName("windows-1252"));
         var context = new ZipLegacyMetadataDecoder.Context(ByteBuffer.wrap(new byte[]{(byte) 0x82}),
-                ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME, source, 0, 63,
+                source, 0, 63,
                 system << 8 | version, attributes, ByteBuffer.allocate(0));
         assertEquals(oem ? "\u00e9" : "\u201a", decoder.decode(context));
     }
@@ -85,7 +85,7 @@ public final class ZipLegacyMetadataDecoderTest {
         assertEquals("\u041f\u0440\u0438\u0432\u0435\u0442", decoder.decode(bytes));
         for (var source : ZipLegacyMetadataDecoder.HeaderSource.values()) {
             var context = new ZipLegacyMetadataDecoder.Context(ByteBuffer.wrap(bytes),
-                    ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME, source, 0, 3 << 8 | 25,
+                    source, 0, 3 << 8 | 25,
                     -1, 0xffff_ffffL, ByteBuffer.wrap(new byte[]{0x55, 0x58, 0, 0}));
             assertEquals("\u041f\u0440\u0438\u0432\u0435\u0442", decoder.decode(context));
         }
@@ -103,7 +103,6 @@ public final class ZipLegacyMetadataDecoderTest {
                 ByteBuffer.allocate(5).position(2).slice()}) {
             bytes.put(new byte[]{0, (byte) 0xe9, 0}).position(1).limit(2).mark();
             var context = new ZipLegacyMetadataDecoder.Context(bytes.asReadOnlyBuffer(),
-                    ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                     ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 0, 20, 10 << 8 | 20,
                     0, ByteBuffer.wrap(new byte[]{0, 1}).position(1));
             context.bytes().mark();
@@ -172,7 +171,6 @@ public final class ZipLegacyMetadataDecoderTest {
         IntStream.range(0, 256).parallel().forEach(index -> {
             boolean oem = index % 2 == 0;
             var context = new ZipLegacyMetadataDecoder.Context(ByteBuffer.wrap(new byte[]{(byte) 0x82}),
-                    ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                     ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 0, 20,
                     oem ? 20 : 10 << 8 | 20, 0, ByteBuffer.allocate(0));
             try {
@@ -197,7 +195,7 @@ public final class ZipLegacyMetadataDecoderTest {
     /// Creates an otherwise unknown context with the supplied external attributes.
     private static ZipLegacyMetadataDecoder.Context contextWithAttributes(long attributes) {
         return new ZipLegacyMetadataDecoder.Context(ByteBuffer.allocate(0),
-                ZipLegacyMetadataDecoder.MetadataKind.UNKNOWN, ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
                 -1, -1, -1, attributes, ByteBuffer.allocate(0));
     }
 
@@ -213,7 +211,6 @@ public final class ZipLegacyMetadataDecoderTest {
             byte[] bytes = new byte[context.bytes().remaining()];
             context.bytes().get(bytes);
             seen.add(context.headerSource());
-            assertEquals(ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             assertArrayEquals("legacy-\u00e9.txt".getBytes(StandardCharsets.ISO_8859_1), bytes);
             return "restored.txt";
         };
@@ -300,7 +297,6 @@ public final class ZipLegacyMetadataDecoderTest {
         ZipLegacyMetadataDecoder metadataDecoder = context -> {
             assertTrue(context.bytes().isReadOnly());
             assertEquals(2, context.bytes().remaining());
-            assertEquals(ZipLegacyMetadataDecoder.MetadataKind.UNKNOWN, context.metadataKind());
             assertEquals(ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN, context.headerSource());
             assertEquals(ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, context.generalPurposeFlags());
             assertEquals(ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, context.versionNeededToExtract());
@@ -322,7 +318,6 @@ public final class ZipLegacyMetadataDecoderTest {
     public void centralDirectoryContext() {
         ZipLegacyMetadataDecoder.Context context = new ZipLegacyMetadataDecoder.Context(
                 ByteBuffer.wrap(new byte[]{1, 2}),
-                ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                 ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                 0x0002,
                 20,
@@ -377,7 +372,6 @@ public final class ZipLegacyMetadataDecoderTest {
     ) {
         return new ZipLegacyMetadataDecoder.Context(
                 ByteBuffer.allocate(0),
-                ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                 ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                 generalPurposeFlags,
                 versionNeededToExtract,

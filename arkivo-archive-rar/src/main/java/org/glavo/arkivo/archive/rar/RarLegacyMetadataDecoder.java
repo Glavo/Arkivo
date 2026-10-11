@@ -11,7 +11,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
-/// Decodes legacy RAR4 metadata that does not carry an encoded Unicode value.
+/// Decodes legacy RAR4 entry names that do not carry an encoded Unicode value.
 ///
 /// RAR5 metadata has an authoritative UTF-8 encoding and bypasses this decoder.
 /// The default RAR4 legacy decoder uses UTF-8. Custom decoders supply the final text without an implicit charset fallback.
@@ -24,7 +24,7 @@ public interface RarLegacyMetadataDecoder extends ArchiveMetadataDecoder {
     /// The sentinel used when RAR4 file attributes are unavailable.
     long UNKNOWN_FILE_ATTRIBUTES = -1L;
 
-    /// Decodes one complete RAR4 legacy metadata value.
+    /// Decodes one complete legacy RAR4 entry name.
     ///
     /// The supplied context and its byte-buffer view are valid only for this invocation and must not be retained.
     /// Changing the buffer position does not affect archive parsing.
@@ -42,23 +42,12 @@ public interface RarLegacyMetadataDecoder extends ArchiveMetadataDecoder {
         return Objects.requireNonNull(decode(Context.unknown(bytes)), "decoded metadata");
     }
 
-    /// Identifies the logical RAR4 metadata field being decoded.
-    @NotNullByDefault
-    enum MetadataKind {
-        /// The metadata kind is unavailable.
-        UNKNOWN,
-
-        /// An archive entry path.
-        ENTRY_NAME
-    }
-
     /// Provides raw bytes and available RAR4 file-header metadata to a decoder.
     ///
     /// The byte buffer is an independent read-only view valid only for the duration of the decoder call and must not
     /// be retained.
     ///
-    /// @param bytes the complete raw legacy metadata bytes
-    /// @param metadataKind the logical field being decoded
+    /// @param bytes the complete raw legacy entry name bytes
     /// @param hostOperatingSystem the unsigned raw RAR4 host OS, or `UNKNOWN_HEADER_VALUE`
     /// @param extractionVersion the unsigned extraction version, or `UNKNOWN_HEADER_VALUE`
     /// @param headerFlags the unsigned file-header flags, or `UNKNOWN_HEADER_VALUE`
@@ -66,7 +55,6 @@ public interface RarLegacyMetadataDecoder extends ArchiveMetadataDecoder {
     @NotNullByDefault
     record Context(
             @UnmodifiableView ByteBuffer bytes,
-            MetadataKind metadataKind,
             int hostOperatingSystem,
             int extractionVersion,
             int headerFlags,
@@ -75,7 +63,6 @@ public interface RarLegacyMetadataDecoder extends ArchiveMetadataDecoder {
         /// Creates a RAR4 metadata context.
         public Context {
             bytes = Objects.requireNonNull(bytes, "bytes").asReadOnlyBuffer();
-            metadataKind = Objects.requireNonNull(metadataKind, "metadataKind");
             hostOperatingSystem = requireUnsignedByteOrUnknown(hostOperatingSystem, "hostOperatingSystem");
             extractionVersion = requireUnsignedByteOrUnknown(extractionVersion, "extractionVersion");
             if (headerFlags < UNKNOWN_HEADER_VALUE || headerFlags > 0xffff) {
@@ -92,7 +79,6 @@ public interface RarLegacyMetadataDecoder extends ArchiveMetadataDecoder {
         private static Context unknown(ByteBuffer bytes) {
             return new Context(
                     bytes,
-                    MetadataKind.UNKNOWN,
                     UNKNOWN_HEADER_VALUE,
                     UNKNOWN_HEADER_VALUE,
                     UNKNOWN_HEADER_VALUE,

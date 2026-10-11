@@ -1017,7 +1017,6 @@ public final class ArArchiveIntegrationTest {
         byte[] identifier = (path + "/").getBytes(gb18030);
         byte[] archive = archiveWithRawIdentifier(identifier, new byte[0]);
         ArMetadataDecoder metadataDecoder = context -> {
-            assertEquals(ArMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             assertEquals(ArMetadataDecoder.Source.HEADER_IDENTIFIER, context.source());
             assertNull(context.headerIdentifier());
             assertEquals(0L, context.memberSize());
@@ -1170,7 +1169,6 @@ public final class ArArchiveIntegrationTest {
         );
         int[] calls = new int[2];
         ArMetadataDecoder metadataDecoder = context -> {
-            assertEquals(ArMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             if (context.source() == ArMetadataDecoder.Source.BSD_LONG_NAME) {
                 calls[0]++;
                 assertEquals("#1/" + bsdPathBytes.length, context.headerIdentifier());

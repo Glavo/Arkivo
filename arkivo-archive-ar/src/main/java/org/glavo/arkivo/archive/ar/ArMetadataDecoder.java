@@ -21,7 +21,7 @@ public interface ArMetadataDecoder extends ArchiveMetadataDecoder {
     /// The sentinel used when the containing member size is unavailable.
     long UNKNOWN_MEMBER_SIZE = -1L;
 
-    /// Decodes one complete AR metadata value.
+    /// Decodes one complete AR member name.
     ///
     /// The context and its byte-buffer view are valid only for this invocation and must not be retained.
     ///
@@ -36,16 +36,6 @@ public interface ArMetadataDecoder extends ArchiveMetadataDecoder {
     @Override
     default String decode(@UnmodifiableView ByteBuffer bytes) throws IOException {
         return Objects.requireNonNull(decode(Context.unknown(bytes)), "decoded metadata");
-    }
-
-    /// Identifies the logical AR metadata field being decoded.
-    @NotNullByDefault
-    enum MetadataKind {
-        /// The metadata kind is unavailable.
-        UNKNOWN,
-
-        /// An archive member path.
-        ENTRY_NAME
     }
 
     /// Identifies the AR name representation that supplied a value.
@@ -70,14 +60,12 @@ public interface ArMetadataDecoder extends ArchiveMetadataDecoder {
     /// be retained.
     ///
     /// @param bytes the complete raw member-name bytes
-    /// @param metadataKind the logical field being decoded
     /// @param source the AR name representation that supplied the bytes
     /// @param headerIdentifier the structural ASCII header identifier for an extended name, or `null`
     /// @param memberSize the complete stored member size, or `UNKNOWN_MEMBER_SIZE`
     @NotNullByDefault
     record Context(
             @UnmodifiableView ByteBuffer bytes,
-            MetadataKind metadataKind,
             Source source,
             @Nullable String headerIdentifier,
             long memberSize
@@ -85,7 +73,6 @@ public interface ArMetadataDecoder extends ArchiveMetadataDecoder {
         /// Creates an AR metadata context.
         public Context {
             bytes = Objects.requireNonNull(bytes, "bytes").asReadOnlyBuffer();
-            metadataKind = Objects.requireNonNull(metadataKind, "metadataKind");
             source = Objects.requireNonNull(source, "source");
             if (memberSize < UNKNOWN_MEMBER_SIZE) {
                 throw new IllegalArgumentException("memberSize must be UNKNOWN_MEMBER_SIZE or non-negative");
@@ -96,7 +83,6 @@ public interface ArMetadataDecoder extends ArchiveMetadataDecoder {
         private static Context unknown(ByteBuffer bytes) {
             return new Context(
                     bytes,
-                    MetadataKind.UNKNOWN,
                     Source.UNKNOWN,
                     null,
                     UNKNOWN_MEMBER_SIZE

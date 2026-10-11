@@ -322,11 +322,8 @@ public final class ZipAutoMetadataDecoderTest {
         };
         byte[] bytes = archive(samples);
         int start = ByteArrayAccess.readIntLittleEndian(bytes, bytes.length - 6);
-        var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT,
-                ByteBuffer.wrap(bytes).position(start).limit(bytes.length - 22), new java.util.HashMap<>());
-        var selected = ZipAutoMetadataDecoder.class.getDeclaredField("charset");
-        selected.setAccessible(true);
-        Charset charset = (Charset) selected.get(prepared);
+        Charset charset = ZipNameEncodingInference.select(
+                ByteBuffer.wrap(bytes).position(start).limit(bytes.length - 22), new HashMap<>());
         assertNotNull(charset);
         Files.write(file, bytes);
         try (var fs = ZipArkivoFileSystem.open(file)) {
@@ -441,12 +438,12 @@ public final class ZipAutoMetadataDecoderTest {
         var central = new ByteArrayOutputStream();
         central.write(centralBytes(new Sample("日本語😀.txt", "UTF-8", null, true, 0)));
         central.write(centralBytes(new Sample("é.txt", "UTF-8", "é", false, 0)));
-        String longName = "a".repeat(ZipAutoMetadataDecoder.MAX_FIELD_BYTES + 1) + "ÿ.txt";
+        String longName = "a".repeat(ZipNameEncodingInference.MAX_FIELD_BYTES + 1) + "ÿ.txt";
         central.write(centralBytes(new Sample(longName, "windows-1252", null, false, 0)));
         var decodedFields = new HashMap<Integer, String>();
         decodedFields.put(-1, "stale");
-        var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT,
-                ByteBuffer.wrap(central.toByteArray()), decodedFields);
+        var prepared = ArchiveMetadataDecoder.forCharset(ZipNameEncodingInference.select(
+                ByteBuffer.wrap(central.toByteArray()), decodedFields));
         assertTrue(decodedFields.isEmpty());
         byte[] raw = longName.getBytes(Charset.forName("windows-1252"));
         assertEquals(new String(raw, Charset.forName("IBM437")), prepared.decode(raw));
@@ -491,7 +488,8 @@ public final class ZipAutoMetadataDecoderTest {
     @Test
     public void frozenChoiceFailsStrictly() throws IOException {
         var central = centralBytes(new Sample("日本語😀.txt", "UTF-8", null, true, 0));
-        var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT, ByteBuffer.wrap(central), new java.util.HashMap<>());
+        var prepared = ArchiveMetadataDecoder.forCharset(
+                ZipNameEncodingInference.select(ByteBuffer.wrap(central), new HashMap<>()));
         assertThrows(java.nio.charset.CharacterCodingException.class, () -> prepared.decode(new byte[]{(byte) 0xFF}));
         assertEquals("é.txt", prepared.decode("é.txt".getBytes(StandardCharsets.UTF_8)));
     }
@@ -502,8 +500,8 @@ public final class ZipAutoMetadataDecoderTest {
         for (var sample : List.of(
                 new Sample("é", "IBM437", "Comentario: Café ñoño ▓▒░", false, 0),
                 new Sample("é", "windows-1252", "Ceci est un résumé détaillé de l'installation du logiciel.", false, 0))) {
-            var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT,
-                    ByteBuffer.wrap(centralBytes(sample)), new java.util.HashMap<>());
+            var prepared = ArchiveMetadataDecoder.forCharset(ZipNameEncodingInference.select(
+                    ByteBuffer.wrap(centralBytes(sample)), new java.util.HashMap<>()));
             byte[] rawName = sample.name().getBytes(Charset.forName(sample.encoding()));
             assertEquals(new String(rawName, Charset.forName("IBM437")), prepared.decode(rawName));
         }
@@ -558,8 +556,8 @@ public final class ZipAutoMetadataDecoderTest {
         central.write(centralBytes(new Sample("日本語😀\u0001.txt", "UTF-8", null, true, 3)));
         central.write(centralBytes(new Sample("é\u0085.txt", "UTF-8", null, false, 3)));
         var fields = new HashMap<Integer, String>();
-        var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT,
-                ByteBuffer.wrap(central.toByteArray()), fields);
+        var prepared = ArchiveMetadataDecoder.forCharset(ZipNameEncodingInference.select(
+                ByteBuffer.wrap(central.toByteArray()), fields));
         assertEquals(List.of("é\u0085.txt"), List.copyOf(fields.values()));
         assertEquals("é\u0085.txt", prepared.decode("é\u0085.txt".getBytes(StandardCharsets.UTF_8)));
     }
@@ -625,6 +623,48 @@ public final class ZipAutoMetadataDecoderTest {
         assertEquals("custom", decoder.decodePath(new byte[]{(byte) 0xff}, 0, new byte[0]));
         assertEquals(1, calls.get());
         assertEquals(0, malformed.position());
+    }
+
+    /// Wrapping the default decoder delegates individual fields without enabling archive preparation.
+    @Test
+    public void wrappedDefaultRemainsSingleField() throws IOException {
+        AtomicInteger calls = new AtomicInteger();
+        ArchiveMetadataDecoder wrapper = bytes -> {
+            calls.incrementAndGet();
+            return ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(bytes);
+        };
+        ByteBuffer malformed = ByteBuffer.wrap(new byte[]{1});
+        var prepared = ZipEntryNameDecoder.forCentralDirectory(wrapper, malformed);
+        assertTrue(prepared.decodedFields().isEmpty());
+        assertEquals(0, calls.get());
+        byte[] raw = "日本語😀.txt".getBytes(StandardCharsets.UTF_8);
+        assertEquals("日本語😀.txt", prepared.decoder().decodePath(raw, 0, new byte[0]));
+        assertEquals(1, calls.get());
+        assertEquals(0, malformed.position());
+    }
+
+    /// Independent archive preparations and frozen field decoders share no mutable charset state.
+    @Test
+    public void concurrentArchiveChoicesRemainIndependent() throws IOException {
+        byte[] unicode = centralBytes(new Sample("日本語😀.txt", "UTF-8", null, true, 0));
+        byte[] legacy = centralBytes(new Sample("€résumé.txt", "windows-1252", null, true, 0));
+        var utf8 = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT, ByteBuffer.wrap(unicode));
+        var windows = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT, ByteBuffer.wrap(legacy));
+        byte[] utf8Name = "é.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] windowsName = "é.txt".getBytes(Charset.forName("windows-1252"));
+        IntStream.range(0, 64).parallel().forEach(index -> {
+            try {
+                byte[] central = index % 2 == 0 ? unicode : legacy;
+                byte[] name = index % 2 == 0 ? utf8Name : windowsName;
+                var prepared = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT,
+                        ByteBuffer.wrap(central));
+                assertEquals("é.txt", prepared.decoder().decodePath(name, 0, new byte[0]));
+                assertEquals("é.txt", utf8.decoder().decodePath(utf8Name, 0, new byte[0]));
+                assertEquals("é.txt", windows.decoder().decodePath(windowsName, 0, new byte[0]));
+            } catch (IOException exception) {
+                throw new AssertionError(exception);
+            }
+        });
     }
 
     /// Leaves strict Unicode validation, unsafe-path rejection, and duplicate checks in the regular reader.

@@ -23,7 +23,6 @@ public final class RarLegacyMetadataDecoderTest {
         source.mark();
         RarLegacyMetadataDecoder metadataDecoder = context -> {
             assertTrue(context.bytes().isReadOnly());
-            assertEquals(RarLegacyMetadataDecoder.MetadataKind.UNKNOWN, context.metadataKind());
             assertEquals(RarLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, context.hostOperatingSystem());
             assertEquals(RarLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, context.extractionVersion());
             assertEquals(RarLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, context.headerFlags());
@@ -44,7 +43,6 @@ public final class RarLegacyMetadataDecoderTest {
         ByteBuffer source = ByteBuffer.wrap(new byte[]{3, 4});
         RarLegacyMetadataDecoder.Context context = new RarLegacyMetadataDecoder.Context(
                 source,
-                RarLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                 0xff,
                 0xff,
                 0xffff,
@@ -84,7 +82,6 @@ public final class RarLegacyMetadataDecoderTest {
                 IllegalArgumentException.class,
                 () -> new RarLegacyMetadataDecoder.Context(
                         ByteBuffer.allocate(0),
-                        RarLegacyMetadataDecoder.MetadataKind.ENTRY_NAME,
                         hostOperatingSystem,
                         extractionVersion,
                         headerFlags,

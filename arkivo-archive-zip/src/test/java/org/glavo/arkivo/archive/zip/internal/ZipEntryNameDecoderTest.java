@@ -124,7 +124,6 @@ public final class ZipEntryNameDecoderTest {
     public void zipDecoderReceivesCentralDirectoryContext() throws Exception {
         Charset gb18030 = Charset.forName("GB18030");
         ZipLegacyMetadataDecoder metadataDecoder = context -> {
-            assertEquals(ZipLegacyMetadataDecoder.MetadataKind.ENTRY_NAME, context.metadataKind());
             assertEquals(
                     ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY,
                     context.headerSource()
