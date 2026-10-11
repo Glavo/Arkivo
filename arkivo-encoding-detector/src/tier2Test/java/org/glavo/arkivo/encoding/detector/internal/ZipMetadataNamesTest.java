@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /// Verifies joint decoding of short, independently specified names in generated ZIP archives.
 @NotNullByDefault
 class ZipMetadataNamesTest {
-    /// Covers 208 short-name variants without deriving expected text from another detector.
+    /// Covers 312 name variants, including shared directories and long ASCII prefixes.
     @ParameterizedTest(name = "{0}")
     @MethodSource("shortNameGroups")
     void shortNamesWithArchiveEvidence(String encoding, String first, String second, String third, String fourth,
@@ -36,7 +36,8 @@ class ZipMetadataNamesTest {
         Path file = directory.resolve("names.zip");
         for (int index = 0; index < stems.size(); index++) {
             String stem = stems.get(index);
-            for (String name : List.of(stem, stem + ".txt", "dir/" + stem + "_001.txt", "dir/" + stem + "_999.bin")) {
+            for (String name : List.of(stem, stem + ".txt", "dir/" + stem + "_001.txt", "dir/" + stem + "_999.bin",
+                    "dir-" + first + "/" + stem + ".txt", "a".repeat(4097) + "/" + stem + ".txt")) {
                 var names = new ArrayList<String>();
                 for (int other = 0; other < stems.size(); other++) if (other != index) names.add(stems.get(other));
                 names.add(name);

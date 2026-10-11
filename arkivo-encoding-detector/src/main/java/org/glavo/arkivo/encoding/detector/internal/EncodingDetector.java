@@ -29,15 +29,15 @@ import java.util.Objects;
 public final class EncodingDetector {
     /// Maximum fields in one statistical batch.
     public static final int MAX_EVIDENCE_FIELDS = 512;
-    /// Maximum bytes in a sampled field; validation accepts longer fields.
-    public static final int MAX_EVIDENCE_FIELD_BYTES = 4096;
+    /// Maximum bytes in one batch field; single-field decoding accepts longer fields.
+    public static final int MAX_EVIDENCE_FIELD_BYTES = 65535;
     /// Maximum total bytes in a statistical batch.
     public static final int MAX_EVIDENCE_BYTES = 256 * 1024;
 
     /// Selects path-component or continuous-comment feature boundaries.
     @NotNullByDefault
     public enum Kind {
-        /// Uses the last non-ASCII path component.
+        /// Pools distinct non-ASCII path components without pairs across separators.
         NAME,
         /// Uses continuous comment bytes.
         COMMENT
@@ -84,12 +84,12 @@ public final class EncodingDetector {
         return rank(fields, kind, preference, true);
     }
 
-    /// Allows an incomplete final UTF-8 sequence only when the single supplied field is a sampled prefix.
+    /// Ranks full fields; single-field decoding bounds profile storage rather than truncating input bytes.
     private @Unmodifiable List<Score> rank(List<? extends ByteBuffer> fields, Kind kind, Preference preference,
-                                          boolean complete) {
+                                          boolean checkLimits) {
         Objects.requireNonNull(preference);
         var utf8 = new Utf8Evidence();
-        var profile = prepare(fields, kind, utf8, complete);
+        var profile = prepare(fields, kind, utf8, checkLimits);
         if (profile.pairs.length == 0 && (!utf8.valid || utf8.count == 0)) return List.of();
         var scores = new ArrayList<Score>();
         BigramModels.INSTANCE.candidates.forEach((charset, models) -> {
@@ -120,9 +120,7 @@ public final class EncodingDetector {
         Objects.requireNonNull(kind);
         Objects.requireNonNull(preference);
         if (isAscii(input)) return StandardCharsets.US_ASCII.decode(input.duplicate()).toString();
-        boolean complete = input.remaining() <= MAX_EVIDENCE_FIELD_BYTES;
-        var ranked = rank(List.of(complete ? input : input.slice(input.position(), MAX_EVIDENCE_FIELD_BYTES)),
-                kind, preference, complete);
+        var ranked = rank(List.of(input), kind, preference, false);
         @Nullable Score selected = null;
         @Nullable String text = null;
         double best = NO_SCORE;
@@ -189,8 +187,8 @@ public final class EncodingDetector {
         return List.copyOf(matches);
     }
 
-    /// Maximum raw bytes used for a field's statistical profile; validation is never truncated.
-    static final int MAX_PROFILE_BYTES = 4096;
+    /// Maximum retained pair coordinates per component and total distinct coordinates admitted per field.
+    static final int MAX_PROFILE_PAIRS = 4096;
     /// Unsigned pair occurrences admitted per field.
     private static final int REPETITION_LIMIT = 2;
     /// Maximum characters retained between decoder calls.
@@ -208,32 +206,66 @@ public final class EncodingDetector {
     public EncodingDetector() {
     }
 
-    /// Pools independent capped field profiles; exact and statistically identical duplicates count once.
+    /// Pools capped field or path-component profiles; statistically identical contributions count once.
     /// The batch limits match the production evidence builder. The immutable result owns its arrays
     /// and retains neither buffers nor decoders. Integer accumulation is independent of input order.
-    private Profile prepare(List<? extends ByteBuffer> fields, Kind kind, Utf8Evidence utf8, boolean complete) {
+    private Profile prepare(List<? extends ByteBuffer> fields, Kind kind, Utf8Evidence utf8, boolean checkLimits) {
         Objects.requireNonNull(kind);
-        if (fields.size() > EncodingDetector.MAX_EVIDENCE_FIELDS)
-            throw new IllegalArgumentException("Too many metadata fields");
-        int bytes = 0;
-        for (var field : fields) {
-            if (field.remaining() > EncodingDetector.MAX_EVIDENCE_FIELD_BYTES)
-                throw new IllegalArgumentException("Metadata field too large");
-            bytes += field.remaining();
+        if (checkLimits) {
+            if (fields.size() > MAX_EVIDENCE_FIELDS)
+                throw new IllegalArgumentException("Too many metadata fields");
+            int bytes = 0;
+            for (var field : fields) {
+                if (field.remaining() > MAX_EVIDENCE_FIELD_BYTES)
+                    throw new IllegalArgumentException("Metadata field too large");
+                bytes += field.remaining();
+            }
+            if (bytes > MAX_EVIDENCE_BYTES) throw new IllegalArgumentException("Metadata batch too large");
         }
-        if (bytes > EncodingDetector.MAX_EVIDENCE_BYTES) throw new IllegalArgumentException("Metadata batch too large");
         var distinct = new HashSet<Profile>();
         for (var field : fields) {
             if (!EncodingDetector.isAscii(field)) {
-                utf8.accept(field, complete);
+                utf8.accept(field);
                 if (hasByteSweep(field)) continue;
-                Profile profile = profile(field, kind);
-                if (profile.pairs.length != 0) distinct.add(profile);
+                if (kind == Kind.COMMENT) {
+                    Profile profile = profile(field, field.position(), field.limit(), kind, MAX_PROFILE_PAIRS);
+                    if (profile.pairs.length != 0) distinct.add(profile);
+                    continue;
+                }
+                int start = field.position();
+                int budget = MAX_PROFILE_PAIRS;
+                boolean nonAscii = false;
+                for (int index = start; index <= field.limit() && budget > 0; index++) {
+                    if (index == field.limit() || field.get(index) == '/') {
+                        if (nonAscii) {
+                            Profile profile = profile(field, start, index, kind, budget);
+                            if (profile.pairs.length != 0) distinct.add(profile);
+                            budget -= Math.max(1, profile.pairs.length);
+                        }
+                        if (index == field.limit()) break;
+                        start = index + 1;
+                        nonAscii = false;
+                    } else if (field.get(index) < 0) {
+                        nonAscii = true;
+                    }
+                }
             }
         }
         if (distinct.isEmpty()) return Profile.EMPTY;
         if (distinct.size() == 1) return distinct.iterator().next();
-        // A single bounded batch workspace replaces one dense frequency table per filename.
+        int coordinates = 0;
+        for (var profile : distinct) coordinates += profile.pairs.length;
+        // Use less than one dense table's storage for sparse batches, without boxed counters.
+        if (coordinates < BigramModels.DIMENSIONS / 2) {
+            long[] packed = new long[coordinates];
+            int index = 0;
+            for (var profile : distinct) {
+                for (int i = 0; i < profile.pairs.length; i++) {
+                    packed[index++] = (long) profile.pairs[i] << 32 | profile.frequencies[i];
+                }
+            }
+            return Profile.fromPacked(packed);
+        }
         int[] frequencies = new int[BigramModels.DIMENSIONS];
         for (var profile : distinct) {
             for (int i = 0; i < profile.pairs.length; i++) frequencies[profile.pairs[i]] += profile.frequencies[i];
@@ -257,37 +289,12 @@ public final class EncodingDetector {
     }
 
     /// Builds a sorted sparse IDF-weighted profile without touching the caller's position or mark.
-    /// Names use the last slash-delimited component with non-ASCII bytes. Backslash is not a raw
-    /// separator because it can be a trail byte in several candidate encodings.
-    private static Profile profile(ByteBuffer input, Kind kind) {
-        Objects.requireNonNull(kind);
-        int start = input.position();
-        int end = input.limit();
-        if (kind == Kind.NAME) {
-            int component = start;
-            int selectedStart = start;
-            int selectedEnd = end;
-            boolean nonAscii = false;
-            for (int index = start;; index++) {
-                if (index == end || input.get(index) == '/') {
-                    if (nonAscii) {
-                        selectedStart = component;
-                        selectedEnd = index;
-                    }
-                    if (index == end) break;
-                    component = index + 1;
-                    nonAscii = false;
-                } else if (input.get(index) < 0) {
-                    nonAscii = true;
-                }
-            }
-            start = selectedStart;
-            end = selectedEnd;
-        }
-        end = start + Math.min(end - start, MAX_PROFILE_BYTES);
-        char[] pairs = new char[Math.max(0, end - start - 1)];
+    /// ASCII-only pairs do not consume a name's profile budget, even in a long component. Backslash
+    /// remains a byte, since it can be a trail byte in several candidate encodings.
+    private static Profile profile(ByteBuffer input, int start, int end, Kind kind, int budget) {
+        char[] pairs = new char[Math.min(budget, Math.max(0, end - start - 1))];
         int count = 0;
-        for (int index = start + 1; index < end; index++) {
+        for (int index = start + 1; index < end && count < pairs.length; index++) {
             int pair = ((input.get(index - 1) & 255) << 8) | (input.get(index) & 255);
             // Names omit pairs consisting entirely of ASCII bytes.
             if (kind == Kind.COMMENT || (pair & 0x8080) != 0) pairs[count++] = (char) pair;
@@ -371,7 +378,7 @@ public final class EncodingDetector {
         }
 
         /// Checks RFC 3629 byte ranges, resetting sequence state at every field boundary.
-        private void accept(ByteBuffer bytes, boolean complete) {
+        private void accept(ByteBuffer bytes) {
             if (!valid) return;
             int remaining = 0;
             int scalar = 0;
@@ -413,7 +420,7 @@ public final class EncodingDetector {
                     }
                 }
             }
-            if (complete && remaining != 0) valid = false;
+            if (remaining != 0) valid = false;
         }
     }
 
@@ -426,6 +433,30 @@ public final class EncodingDetector {
     private record Profile(char @Unmodifiable [] pairs, int @Unmodifiable [] frequencies, double norm) {
         /// Shared empty evidence, requiring no model initialization.
         static final Profile EMPTY = new Profile(new char[0], new int[0], 0);
+
+        /// Sorts and merges owned packed pairs and weights without allocating a dense table.
+        static Profile fromPacked(long[] packed) {
+            Arrays.sort(packed);
+            int count = 0;
+            for (int index = 0; index < packed.length;) {
+                long pair = packed[index] & 0xffff_ffff_0000_0000L;
+                int sum = (int) packed[index++];
+                while (index < packed.length && (packed[index] & 0xffff_ffff_0000_0000L) == pair) {
+                    sum += (int) packed[index++];
+                }
+                packed[count++] = pair | sum;
+            }
+            char[] pairs = new char[count];
+            int[] values = new int[count];
+            long squared = 0;
+            for (int index = 0; index < count; index++) {
+                pairs[index] = (char) (packed[index] >>> 32);
+                int value = (int) packed[index];
+                values[index] = value;
+                squared += (long) value * value;
+            }
+            return new Profile(pairs, values, Math.sqrt(squared));
+        }
 
         /// Copies the nonzero coordinates of a batch workspace in ascending order.
         static Profile fromDense(int[] dense) {

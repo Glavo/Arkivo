@@ -108,6 +108,30 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
+    /// Long ASCII prefixes leave non-ASCII evidence available to both streaming and indexed readers.
+    @ParameterizedTest
+    @CsvSource({"UTF-8, 日本語こんにちは世界.txt", "GB18030, 软件安装说明.txt",
+            "windows-31j, 日本語こんにちは世界.txt"})
+    public void longNamesInBothReaders(String encoding, String suffix, @TempDir Path directory) throws IOException {
+        Path file = directory.resolve("long-names.zip");
+        for (String separator : List.of("", "/")) {
+            String name = "a".repeat(5000) + separator + suffix;
+            byte[] bytes = archive(new Sample(name, encoding, null, false, 3));
+            Files.write(file, bytes);
+            try (var fs = ZipArkivoFileSystem.open(file)) {
+                assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath(name)));
+            }
+            try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+                assertTrue(reader.next());
+                assertEquals(name, reader.readAttributes().path());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(new byte[]{1, 2, 3}, input.readAllBytes());
+                }
+                assertFalse(reader.next());
+            }
+        }
+    }
+
     /// Keeps inputs without usable pair evidence on the deterministic ZIP fallback.
     @ParameterizedTest
     @ValueSource(strings = {"82", "E9", "FF", "C3", "81FF"})
@@ -277,6 +301,21 @@ public final class ZipAutoMetadataDecoderTest {
                 new Sample("╒.txt", "IBM437", null, false, 0)));
         try (var fs = ZipArkivoFileSystem.open(file)) {
             assertTrue(Files.exists(fs.getPath("╒.txt")));
+        }
+    }
+
+    /// A Unicode counterpart shared by several code pages does not settle their other differing mappings.
+    @Test
+    public void ambiguousAnchorDoesNotSelectArbitraryCharset() throws IOException {
+        byte[] anchor = centralBytes(new Sample("é", "windows-1252", null, true, 3));
+        byte[] undecided = centralBytes(new Sample("£", "windows-1252", null, false, 3));
+        for (boolean reversed : new boolean[]{false, true}) {
+            var central = ByteBuffer.allocate(anchor.length + undecided.length);
+            central.put(reversed ? undecided : anchor).put(reversed ? anchor : undecided).flip();
+            var decoded = new HashMap<Integer, String>();
+            assertEquals(ZipAutoMetadataDecoder.CP437, ZipNameEncodingInference.select(central, decoded));
+            assertTrue(decoded.isEmpty());
+            assertEquals(0, central.position());
         }
     }
 
@@ -463,13 +502,54 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Validates fields excluded from statistical sampling before freezing a shared encoding.
+    /// An invalid field outside the statistical sample still vetoes an otherwise valid common encoding.
     @Test
-    public void unsampledFieldsVetoInvalidArchiveChoices() throws IOException {
+    public void unsampledFieldStillRequiresStrictDecoding() throws IOException {
+        var central = new ByteArrayOutputStream();
+        central.write(centralBytes(new Sample("日本語😀", "UTF-8", null, true, 3)));
+        long greatestHash = 0;
+        for (int index = 0; index < ZipNameEncodingInference.MAX_SAMPLES; index++) {
+            String name = "日本語😀-" + index + ".txt";
+            long hash = sampleHash(name.getBytes(StandardCharsets.UTF_8));
+            if (Long.compareUnsigned(hash, greatestHash) > 0) greatestHash = hash;
+            central.write(centralBytes(new Sample(name, "UTF-8", null, false, 3)));
+        }
+        var fields = new HashMap<Integer, String>();
+        assertEquals(StandardCharsets.UTF_8, ZipNameEncodingInference.select(
+                ByteBuffer.wrap(central.toByteArray()), fields));
+        assertEquals(ZipNameEncodingInference.MAX_SAMPLES, fields.size());
+
+        // The additional field sorts after every retained sample, so it supplies no statistical evidence.
+        var charset = Charset.forName("windows-1252");
+        String rejected = "";
+        for (int index = 0; index < 100000; index++) {
+            String name = "ÿ-" + index + ".txt";
+            if (Long.compareUnsigned(sampleHash(name.getBytes(charset)), greatestHash) > 0) {
+                rejected = name;
+                break;
+            }
+        }
+        assertFalse(rejected.isEmpty(), "A deterministically excluded field is required");
+        central.write(centralBytes(new Sample(rejected, charset.name(), null, false, 3)));
+        assertEquals(ZipAutoMetadataDecoder.CP437, ZipNameEncodingInference.select(
+                ByteBuffer.wrap(central.toByteArray()), fields));
+        assertTrue(fields.isEmpty());
+    }
+
+    /// Computes the unsigned sample-order hash for independently constructed raw names.
+    private static long sampleHash(byte[] bytes) {
+        long hash = 0xcbf29ce484222325L;
+        for (byte value : bytes) hash = (hash ^ (value & 255)) * 0x100000001b3L;
+        return hash;
+    }
+
+    /// Frozen archive choices are validated against every byte of long fields.
+    @Test
+    public void longFieldsVetoInvalidArchiveChoices() throws IOException {
         var central = new ByteArrayOutputStream();
         central.write(centralBytes(new Sample("日本語😀.txt", "UTF-8", null, true, 0)));
         central.write(centralBytes(new Sample("é.txt", "UTF-8", "é", false, 0)));
-        String longName = "a".repeat(ZipNameEncodingInference.MAX_FIELD_BYTES + 1) + "ÿ.txt";
+        String longName = "a".repeat(5000) + "ÿ.txt";
         central.write(centralBytes(new Sample(longName, "windows-1252", null, false, 0)));
         var decodedFields = new HashMap<Integer, String>();
         decodedFields.put(-1, "stale");

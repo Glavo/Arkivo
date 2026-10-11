@@ -14,12 +14,13 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
+import java.util.TreeSet;
 
 /// Infers one legacy name encoding from central-directory evidence before index construction.
 /// Sampling and validation are confined to this call; the result does not retain archive buffers.
@@ -46,6 +47,7 @@ final class ZipNameEncodingInference {
         decodedFields.clear();
         var detector = new EncodingDetector();
         var names = new Samples();
+        var legacyFields = new LegacyFields();
         var evidence = new Evidence();
         scan(centralDirectory, field -> {
             if (field.unicode != null) {
@@ -56,6 +58,7 @@ final class ZipNameEncodingInference {
                 }
             } else if (!EncodingDetector.isAscii(field.bytes)) {
                 names.accept(field.bytes);
+                legacyFields.add(field.offset, field.bytes.remaining());
             }
             if (!EncodingDetector.isAscii(field.bytes)) {
                 evidence.preferences |= switch (field.preference) {
@@ -64,7 +67,6 @@ final class ZipNameEncodingInference {
                     case ANSI -> 2;
                 };
             }
-            return true;
         });
         var preference = evidence.preferences == 1 ? EncodingDetector.Preference.OEM
                 : evidence.preferences == 2 ? EncodingDetector.Preference.ANSI : EncodingDetector.Preference.NONE;
@@ -89,7 +91,7 @@ final class ZipNameEncodingInference {
             // The character multiplier never exceeds one; lower raw scores cannot overtake the winner.
             if (candidate.similarity() < best) break;
             if (fields == selectedFields) fields = new HashMap<>();
-            double quality = decodeFields(centralDirectory, detector, candidate.charset(), fields);
+            double quality = legacyFields.decode(centralDirectory, detector, candidate.charset(), fields);
             if (quality < 0) continue;
             double adjusted = candidate.similarity() * quality;
             if (selected == null || adjusted > best || adjusted == best
@@ -98,7 +100,7 @@ final class ZipNameEncodingInference {
                 selectedFields = fields;
                 best = adjusted;
                 ambiguous = false;
-            } else if (evidence.anchors == null && adjusted == best
+            } else if (adjusted == best
                     && preference.accepts(candidate.charset()) == preference.accepts(selected)
                     && !fields.equals(selectedFields)) {
                 ambiguous = true;
@@ -115,27 +117,8 @@ final class ZipNameEncodingInference {
         return ZipAutoMetadataDecoder.CP437;
     }
 
-    /// Collects decoded fields and returns their lowest character-quality multiplier, or -1 for invalid bytes.
-    /// Using the lowest multiplier prevents repeated names from compounding a control penalty.
-    /// Failed candidates leave no partial results; controls remain text rather than decoding errors.
-    private static double decodeFields(ByteBuffer central, EncodingDetector detector, Charset charset,
-                                       Map<Integer, String> decodedFields) throws IOException {
-        decodedFields.clear();
-        double[] quality = {1};
-        boolean valid = scan(central, field -> {
-            if (field.unicode != null || EncodingDetector.isAscii(field.bytes)) return true;
-            @Nullable String text = detector.decode(field.bytes, EncodingDetector.Kind.NAME, charset);
-            if (text == null) return false;
-            quality[0] = Math.min(quality[0], EncodingDetector.textQuality(text, EncodingDetector.Kind.NAME));
-            decodedFields.put(field.offset, text);
-            return true;
-        });
-        if (!valid) decodedFields.clear();
-        return valid ? quality[0] : INVALID_SCORE;
-    }
-
-    /// Visits complete central fields without changing the caller's buffer; false stops a validation pass.
-    private static boolean scan(ByteBuffer central, FieldVisitor visitor) throws IOException {
+    /// Visits complete central fields once without changing the caller's buffer.
+    private static void scan(ByteBuffer central, FieldVisitor visitor) throws IOException {
         var buffer = central.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         while (buffer.hasRemaining()) {
             int offset = buffer.position();
@@ -152,27 +135,26 @@ final class ZipNameEncodingInference {
             int madeBy = Short.toUnsignedInt(buffer.getShort(offset + 4));
             var preference = ZipLegacyCodePages.preference(madeBy, Integer.toUnsignedLong(buffer.getInt(offset + 38)),
                     ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY);
-            byte[] extra = new byte[extraLength];
-            buffer.get(start + nameLength, extra);
             if (nameLength == 0) continue;
             var bytes = buffer.slice(start, nameLength);
             @Nullable String unicode = null;
             if (extraLength != 0) {
+                byte[] extra = new byte[extraLength];
+                buffer.get(start + nameLength, extra);
                 byte[] raw = new byte[nameLength];
                 bytes.get(0, raw);
                 unicode = ZipEntryNameDecoder.decodeUnicodeExtraField(raw, extra,
                         ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID);
             }
-            if (!visitor.visit(new Field(start, bytes, preference, unicode))) return false;
+            visitor.visit(new Field(start, bytes, preference, unicode));
         }
-        return true;
     }
 
     /// Receives a field valid only during the current preparation pass.
     @NotNullByDefault
     private interface FieldVisitor {
-        /// Returns whether scanning should continue.
-        boolean visit(Field field) throws IOException;
+        /// Collects evidence and decoding ranges from one borrowed central-directory field.
+        void visit(Field field) throws IOException;
     }
 
     /// Describes borrowed metadata and its optional authoritative Unicode counterpart.
@@ -183,6 +165,47 @@ final class ZipNameEncodingInference {
     @NotNullByDefault
     private record Field(int offset, @UnmodifiableView ByteBuffer bytes,
                          EncodingDetector.Preference preference, @Nullable String unicode) {
+    }
+
+    /// Stores only ranges requiring legacy decoding; extra fields are parsed once during collection.
+    @NotNullByDefault
+    private static final class LegacyFields {
+        /// Packed absolute offsets and lengths, allocated only for non-ASCII legacy names.
+        private long[] ranges = new long[0];
+        /// Number of occupied ranges, in central-directory order.
+        private int size;
+
+        /// Creates an empty range list for one preparation call.
+        private LegacyFields() {
+        }
+
+        /// Appends a range without retaining the central-directory buffer or its views.
+        private void add(int offset, int length) {
+            if (size == ranges.length) ranges = Arrays.copyOf(ranges, Math.max(16, size * 2));
+            ranges[size++] = (long) offset << 32 | length;
+        }
+
+        /// Decodes every range and returns the lowest character-quality multiplier, or -1 on failure.
+        /// Failed candidates leave no partial results. The source buffer's state is preserved.
+        private double decode(ByteBuffer central, EncodingDetector detector, Charset charset,
+                              Map<Integer, String> decodedFields) {
+            decodedFields.clear();
+            double quality = 1;
+            var bytes = central.duplicate();
+            for (int index = 0; index < size; index++) {
+                long range = ranges[index];
+                int offset = (int) (range >>> 32);
+                bytes.limit(offset + (int) range).position(offset);
+                @Nullable String text = detector.decode(bytes, EncodingDetector.Kind.NAME, charset);
+                if (text == null) {
+                    decodedFields.clear();
+                    return INVALID_SCORE;
+                }
+                quality = Math.min(quality, EncodingDetector.textQuality(text, EncodingDetector.Kind.NAME));
+                decodedFields.put(offset, text);
+            }
+            return quality;
+        }
     }
 
     /// Holds temporary global counterpart constraints and compatibility hints.
@@ -202,10 +225,7 @@ final class ZipNameEncodingInference {
     @NotNullByDefault
     private static final class Samples {
         /// Borrowed samples ordered by stable unsigned hash, then signed byte content.
-        private final TreeMap<ByteBuffer, ByteBuffer> fields = new TreeMap<>((left, right) -> {
-            int order = Long.compareUnsigned(hash(left), hash(right));
-            return order == 0 ? left.compareTo(right) : order;
-        });
+        private final TreeSet<Sample> fields = new TreeSet<>();
 
         /// Creates an empty bounded sampler.
         private Samples() {
@@ -214,15 +234,16 @@ final class ZipNameEncodingInference {
         /// Retains a field only if it falls within the count and per-field limits.
         private void accept(ByteBuffer bytes) {
             if (bytes.remaining() > MAX_FIELD_BYTES || bytes.remaining() == 0) return;
-            fields.putIfAbsent(bytes, bytes);
-            if (fields.size() > MAX_SAMPLES) fields.pollLastEntry();
+            fields.add(new Sample(hash(bytes), bytes));
+            if (fields.size() > MAX_SAMPLES) fields.pollLast();
         }
 
         /// Borrows the deterministically budgeted samples for immediate scoring.
         private List<ByteBuffer> values() {
             var values = new ArrayList<ByteBuffer>();
             int total = 0;
-            for (var value : fields.values()) {
+            for (var sample : fields) {
+                var value = sample.bytes;
                 if (value.remaining() > MAX_SAMPLE_BYTES - total) continue;
                 total += value.remaining();
                 values.add(value);
@@ -235,6 +256,18 @@ final class ZipNameEncodingInference {
             long result = 0xcbf29ce484222325L;
             for (int i = bytes.position(); i < bytes.limit(); i++) result = (result ^ (bytes.get(i) & 255)) * 0x100000001b3L;
             return result;
+        }
+
+        /// Borrows one sample with a hash calculated only once.
+        /// @param hash stable unsigned content hash
+        /// @param bytes complete field, borrowed until preparation finishes
+        @NotNullByDefault
+        private record Sample(long hash, @UnmodifiableView ByteBuffer bytes) implements Comparable<Sample> {
+            @Override
+            public int compareTo(Sample other) {
+                int order = Long.compareUnsigned(hash, other.hash);
+                return order == 0 ? bytes.compareTo(other.bytes) : order;
+            }
         }
     }
 }

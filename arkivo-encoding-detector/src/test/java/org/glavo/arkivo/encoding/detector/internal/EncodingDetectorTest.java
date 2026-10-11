@@ -27,6 +27,33 @@ import static org.junit.jupiter.api.Assertions.*;
 /// Verifies common-encoding scoring independently of ZIP declarations and fallback policy.
 @NotNullByDefault
 class EncodingDetectorTest {
+    /// Sparse aggregation has exactly the same coordinates, frequencies, and norm as dense aggregation.
+    @Test
+    void sparseAndDenseProfilesAgree() throws Exception {
+        var profile = Class.forName(EncodingDetector.class.getName() + "$Profile");
+        var sparse = profile.getDeclaredMethod("fromPacked", long[].class);
+        var dense = profile.getDeclaredMethod("fromDense", int[].class);
+        var norm = profile.getDeclaredMethod("norm");
+        sparse.setAccessible(true);
+        dense.setAccessible(true);
+        norm.setAccessible(true);
+        var random = new Random(437);
+        for (int count : new int[]{0, 1, 64, 32767, 32768, 65536}) {
+            long[] packed = new long[count];
+            int[] frequencies = new int[65536];
+            for (int index = 0; index < count; index++) {
+                int pair = random.nextInt(frequencies.length);
+                int weight = 1 + random.nextInt(510);
+                packed[index] = (long) pair << 32 | weight;
+                frequencies[pair] += weight;
+            }
+            Object expected = Objects.requireNonNull(dense.invoke(null, (Object) frequencies));
+            Object actual = Objects.requireNonNull(sparse.invoke(null, (Object) packed));
+            assertEquals(expected, actual);
+            assertEquals(norm.invoke(expected), norm.invoke(actual));
+        }
+    }
+
     /// Every installed inference candidate preserves all ASCII bytes used by the ZIP array shortcut.
     @Test
     void candidatesPreserveAscii() throws CharacterCodingException {
@@ -202,10 +229,45 @@ class EncodingDetectorTest {
         var detector = new EncodingDetector();
         assertThrows(IllegalArgumentException.class, () -> detector.rank(Collections.nCopies(513, utf8("é")),
                 EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
-        assertThrows(IllegalArgumentException.class, () -> detector.rank(List.of(ByteBuffer.allocate(4097)),
+        assertThrows(IllegalArgumentException.class, () -> detector.rank(
+                List.of(ByteBuffer.allocate(EncodingDetector.MAX_EVIDENCE_FIELD_BYTES + 1)),
                 EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
         assertThrows(IllegalArgumentException.class, () -> detector.rank(Collections.nCopies(65, ByteBuffer.allocate(4096)),
                 EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
+    }
+
+    /// Long ASCII prefixes do not hide informative bytes in either a leaf or a later path component.
+    @Test
+    void longAsciiPrefixesPreserveEvidence() {
+        var detector = new EncodingDetector();
+        for (String encoding : List.of("UTF-8", "GB18030", "windows-31j")) {
+            String suffix = encoding.equals("GB18030") ? "软件安装说明.txt" : "日本語こんにちは世界.txt";
+            for (String separator : List.of("", "/")) {
+                String name = "a".repeat(5000) + separator + suffix;
+                var bytes = ByteBuffer.wrap(name.getBytes(Charset.forName(encoding))).asReadOnlyBuffer();
+                bytes.mark();
+                assertEquals(name, detector.decode(bytes, EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
+                assertEquals(0, bytes.position());
+                bytes.reset();
+                assertFalse(detector.rank(List.of(bytes), EncodingDetector.Kind.NAME,
+                        EncodingDetector.Preference.NONE).isEmpty());
+            }
+        }
+    }
+
+    /// Shared directories contribute once, and path boundaries never create cross-component pairs.
+    @Test
+    void componentsSupplyIndependentDeduplicatedEvidence() {
+        var detector = new EncodingDetector();
+        var separate = List.of(utf8("日本語"), utf8("資料"), utf8("写真.txt"));
+        var expected = detector.rank(separate, EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE);
+        assertEquals(expected, detector.rank(List.of(utf8("日本語/資料/写真.txt")),
+                EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
+        assertEquals(expected, detector.rank(List.of(utf8("日本語/資料/写真.txt"), utf8("日本語/資料/"),
+                        utf8("ascii/日本語/資料/写真.txt")), EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
+        var disconnected = ByteBuffer.wrap(new byte[]{(byte) 0xc3, '/', (byte) 0xa9});
+        assertTrue(detector.rank(List.of(disconnected), EncodingDetector.Kind.NAME,
+                EncodingDetector.Preference.NONE).isEmpty());
     }
 
     /// Creates independent UTF-8 test bytes.
@@ -258,9 +320,9 @@ class EncodingDetectorTest {
         assertEquals(expected, detector.rank(names, EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
     }
 
-    /// A sampled prefix ending inside a UTF-8 sequence does not reject a valid complete input.
+    /// Multibyte sequences remain intact after long ASCII prefixes.
     @Test
-    void utf8SampleBoundaryIsNotFieldBoundary() {
+    void utf8SequencesAcrossLongPrefixes() {
         var detector = new EncodingDetector();
         for (String suffix : List.of("é", "中", "😀")) {
             for (int split = 1; split < suffix.getBytes(StandardCharsets.UTF_8).length; split++) {
@@ -270,6 +332,20 @@ class EncodingDetectorTest {
                 assertNull(detector.decode(broken, EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
             }
         }
+    }
+
+    /// Pair limits bound statistics without skipping malformed bytes in a long field's tail.
+    @Test
+    void profileBudgetDoesNotTruncateStructuralValidation() {
+        var detector = new EncodingDetector();
+        String name = "日本語".repeat(5000) + "😀.txt";
+        var valid = utf8(name);
+        assertEquals(name, detector.decode(valid, EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
+        var broken = ByteBuffer.allocate(valid.remaining() + 1).put(valid.duplicate()).put((byte) 0xff).flip();
+        assertFalse(detector.rank(List.of(broken), EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE)
+                .stream().anyMatch(score -> score.charset().equals(StandardCharsets.UTF_8)));
+        assertNull(detector.decode(broken, EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
+        assertEquals(name, detector.decode(valid, EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
     }
 
     /// Controls reduce support without becoming decoding errors or invalidating exact Unicode counterparts.
