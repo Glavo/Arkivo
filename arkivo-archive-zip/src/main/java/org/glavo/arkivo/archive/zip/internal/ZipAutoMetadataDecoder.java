@@ -32,6 +32,8 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
     public static final ZipAutoMetadataDecoder DEFAULT = new ZipAutoMetadataDecoder(null);
     /// ZIP fallback for absent, contradictory, or indistinguishable evidence.
     private static final Charset CP437 = Charset.forName("IBM437");
+    /// Sentinel for a candidate that has not decoded every required field successfully.
+    private static final double INVALID_SCORE = -1;
     /// Maximum distinct sampled names, or comments when no name supplies evidence.
     static final int MAX_SAMPLES = 256;
     /// Maximum retained raw sample bytes per role.
@@ -82,51 +84,68 @@ public final class ZipAutoMetadataDecoder implements ZipLegacyMetadataDecoder {
         if (evidence.anchors != null && evidence.anchors.isEmpty()) return new ZipAutoMetadataDecoder(CP437);
         var ranked = detector.rank(names.values(), EncodingDetector.Kind.NAME, preference);
         if (ranked.isEmpty()) ranked = detector.rank(comments.values(), EncodingDetector.Kind.COMMENT, preference);
-        var candidates = new ArrayList<Charset>();
+        var candidates = new ArrayList<EncodingDetector.Score>();
         if (evidence.anchors != null) {
             // Exact Unicode counterparts constrain the common encoding, not the output of their own entry.
-            for (var score : ranked) if (evidence.anchors.contains(score.charset())) candidates.add(score.charset());
-            evidence.anchors.stream().sorted().filter(value -> !candidates.contains(value)).forEach(candidates::add);
+            for (var score : ranked) if (evidence.anchors.contains(score.charset())) candidates.add(score);
+            evidence.anchors.stream().sorted()
+                    .filter(value -> candidates.stream().noneMatch(score -> score.charset().equals(value)))
+                    .forEach(value -> candidates.add(new EncodingDetector.Score(value, 0)));
         } else {
-            for (var score : ranked) candidates.add(score.charset());
+            candidates.addAll(ranked);
         }
+        @Nullable Charset selected = null;
+        @Nullable Map<Integer, String> selectedFields = null;
+        Map<Integer, String> fields = decodedFields;
+        double best = INVALID_SCORE;
+        boolean ambiguous = false;
         for (var candidate : candidates) {
-            if (!decodeFields(centralDirectory, detector, candidate, decodedFields)) continue;
-            // With no counterpart, a statistical tie between different outputs remains unresolved.
-            if (evidence.anchors == null) {
-                double score = 0;
-                for (var value : ranked) if (value.charset().equals(candidate)) score = value.similarity();
-                for (var alternative : ranked) {
-                    if (alternative.similarity() != score || alternative.charset().equals(candidate)
-                            || preference.accepts(candidate) && !preference.accepts(alternative.charset())) continue;
-                    Charset other = alternative.charset();
-                    var alternativeFields = new HashMap<Integer, String>();
-                    if (decodeFields(centralDirectory, detector, other, alternativeFields)
-                            && !alternativeFields.equals(decodedFields)) {
-                        decodedFields.clear();
-                        return new ZipAutoMetadataDecoder(CP437);
-                    }
-                }
+            // The character multiplier never exceeds one; lower raw scores cannot overtake the winner.
+            if (candidate.similarity() < best) break;
+            if (fields == selectedFields) fields = new HashMap<>();
+            double quality = decodeFields(centralDirectory, detector, candidate.charset(), fields);
+            if (quality < 0) continue;
+            double adjusted = candidate.similarity() * quality;
+            if (selected == null || adjusted > best || adjusted == best
+                    && preference.accepts(candidate.charset()) && !preference.accepts(selected)) {
+                selected = candidate.charset();
+                selectedFields = fields;
+                best = adjusted;
+                ambiguous = false;
+            } else if (evidence.anchors == null && adjusted == best
+                    && preference.accepts(candidate.charset()) == preference.accepts(selected)
+                    && !fields.equals(selectedFields)) {
+                ambiguous = true;
             }
-            return new ZipAutoMetadataDecoder(candidate);
+        }
+        if (selected != null && !ambiguous) {
+            if (selectedFields != decodedFields) {
+                decodedFields.clear();
+                decodedFields.putAll(java.util.Objects.requireNonNull(selectedFields));
+            }
+            return new ZipAutoMetadataDecoder(selected);
         }
         decodedFields.clear();
         return new ZipAutoMetadataDecoder(CP437);
     }
 
-    /// Collects each successful legacy field once; failed candidates leave no partial results.
-    private static boolean decodeFields(ByteBuffer central, EncodingDetector detector, Charset charset,
-                                        Map<Integer, String> decodedFields) throws IOException {
+    /// Collects decoded fields and returns their lowest character-quality multiplier, or -1 for invalid bytes.
+    /// Using the lowest multiplier prevents repeated names or comments from compounding a control penalty.
+    /// Failed candidates leave no partial results; controls remain text rather than decoding errors.
+    private static double decodeFields(ByteBuffer central, EncodingDetector detector, Charset charset,
+                                       Map<Integer, String> decodedFields) throws IOException {
         decodedFields.clear();
+        double[] quality = {1};
         boolean valid = scan(central, field -> {
             if (field.unicode != null || EncodingDetector.isAscii(field.bytes)) return true;
             @Nullable String text = detector.decode(field.bytes, field.kind, charset);
             if (text == null) return false;
+            quality[0] = Math.min(quality[0], EncodingDetector.textQuality(text, field.kind));
             decodedFields.put(field.offset, text);
             return true;
         });
         if (!valid) decodedFields.clear();
-        return valid;
+        return valid ? quality[0] : INVALID_SCORE;
     }
 
     @Override

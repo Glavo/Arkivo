@@ -33,9 +33,12 @@ public final class ZipArchiveOptions {
     ///
     /// ASCII values bypass statistical analysis. Indexed reading chooses one legacy encoding from bounded
     /// central-directory samples and validates it against every undeclared name and entry comment before
-    /// building the path index. Names supply the statistical evidence; comments are used when no sampled
+    /// building the path index. Names supply the scoring evidence; comments are used when no sampled
     /// name supplies evidence. Lossless Unicode counterparts constrain the choice. Creator conventions
-    /// break statistical ties but do not establish a language. Mixed undeclared encodings are not inferred.
+    /// break scoring ties but do not establish a language. Mixed undeclared encodings are not inferred.
+    /// Valid UTF-8 structure supplies bounded support, not an unconditional choice. ISO control characters
+    /// reduce a candidate's score without making its decoded text invalid; tabs and line endings in comments
+    /// are not penalized. Path validation remains the reader's responsibility.
     ///
     /// Streaming readers and direct calls analyze individual values without looking ahead or retaining
     /// previous-call evidence. Their results can differ from indexed reading. CP437 is used when no

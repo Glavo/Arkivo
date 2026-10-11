@@ -11,6 +11,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -118,7 +119,7 @@ class EncodingDetectorTest {
         }
     }
 
-    /// Strict validation includes unscored tails and controls in parent path components.
+    /// Strict validation includes unscored tails; valid controls are preserved rather than rejected.
     @Test
     void completeValidationAndRecovery() {
         var detector = new EncodingDetector();
@@ -127,7 +128,7 @@ class EncodingDetectorTest {
         malformed.put(prefix.getBytes(StandardCharsets.UTF_8)).put((byte) 0xFF).flip();
         assertNull(detector.decode(malformed, EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
         for (String text : List.of(prefix + "\u0001", "bad\u0001/é.txt", "é/bad\u0001.txt"))
-            assertNull(detector.decode(utf8(text), EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
+            assertEquals(text, detector.decode(utf8(text), EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
         assertEquals(prefix + "\n\t", detector.decode(utf8(prefix + "\n\t"), EncodingDetector.Kind.COMMENT, StandardCharsets.UTF_8));
         assertEquals("日本語😀.txt", detector.decode(utf8("日本語😀.txt"), EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
     }
@@ -214,5 +215,134 @@ class EncodingDetectorTest {
         for (int i = 0; i < sweep.length; i++) sweep[i] = (byte) (0x80 + i);
         assertTrue(detector.rank(List.of(ByteBuffer.wrap(sweep)), EncodingDetector.Kind.NAME,
                 EncodingDetector.Preference.NONE).isEmpty());
+    }
+
+    /// UTF-8 syntax excludes overlong forms, surrogate encodings, out-of-range scalars and incomplete fields.
+    @Test
+    void utf8StructureRejectsMalformedFields() {
+        var detector = new EncodingDetector();
+        for (String hex : List.of("80", "c0af", "c1bf", "c2", "e08080", "eda080", "f0808080",
+                "f4908080", "f5808080", "ff", "e282", "e228a1")) {
+            var field = ByteBuffer.wrap(java.util.HexFormat.of().parseHex(hex));
+            assertNull(detector.decode(field, EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
+            assertFalse(detector.rank(List.of(utf8("日本語"), field), EncodingDetector.Kind.NAME,
+                    EncodingDetector.Preference.NONE).stream().anyMatch(score -> score.charset().equals(StandardCharsets.UTF_8)), hex);
+        }
+        assertFalse(detector.rank(List.of(utf8("日本語"), ByteBuffer.wrap(new byte[]{(byte) 0xc3}),
+                        ByteBuffer.wrap(new byte[]{(byte) 0xa9})), EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE)
+                .stream().anyMatch(score -> score.charset().equals(StandardCharsets.UTF_8)));
+    }
+
+    /// Structural support includes supplementary and uncommon characters, independently of model vocabulary.
+    @Test
+    void utf8StructureSupportsShortNames() {
+        var detector = new EncodingDetector();
+        for (String name : List.of("😀", "𠮷", "é", "😀𠮷.txt")) {
+            assertEquals(name, detector.decode(utf8(name), EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE), name);
+        }
+        var names = new ArrayList<>(List.of(utf8("😀"), utf8("𠮷"), utf8("é")));
+        var expected = detector.rank(names, EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE);
+        names.addAll(Collections.nCopies(100, utf8("😀")));
+        Collections.reverse(names);
+        assertEquals(expected, detector.rank(names, EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
+    }
+
+    /// A sampled prefix ending inside a UTF-8 sequence does not reject a valid complete input.
+    @Test
+    void utf8SampleBoundaryIsNotFieldBoundary() {
+        var detector = new EncodingDetector();
+        for (String suffix : List.of("é", "中", "😀")) {
+            for (int split = 1; split < suffix.getBytes(StandardCharsets.UTF_8).length; split++) {
+                String name = "日本語" + "a".repeat(4096 - 9 - split) + suffix;
+                assertEquals(name, detector.decode(utf8(name), EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
+                var broken = ByteBuffer.allocate(utf8(name).remaining() + 1).put(utf8(name)).put((byte) 0xff).flip();
+                assertNull(detector.decode(broken, EncodingDetector.Kind.NAME, StandardCharsets.UTF_8));
+            }
+        }
+    }
+
+    /// Controls reduce support without becoming decoding errors or invalidating exact Unicode counterparts.
+    @Test
+    void characterQualityIsSoftAndRoleAware() {
+        var detector = new EncodingDetector();
+        assertEquals(1, EncodingDetector.textQuality("é\ue000\u200d\u0301😀", EncodingDetector.Kind.NAME));
+        assertEquals(1, EncodingDetector.textQuality("é\t\r\n", EncodingDetector.Kind.COMMENT));
+        assertEquals(0.25, EncodingDetector.textQuality("é\t\r\n", EncodingDetector.Kind.NAME));
+        assertEquals(0.5, EncodingDetector.textQuality("é\u0085", EncodingDetector.Kind.COMMENT));
+        assertEquals(0.2, EncodingDetector.textQuality("\u0001".repeat(100), EncodingDetector.Kind.NAME));
+        String name = "日本語\n.txt";
+        assertEquals(name, detector.decode(utf8(name), EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
+        assertTrue(detector.matching(utf8(name), name).contains(StandardCharsets.UTF_8));
+        assertEquals("a\n.txt", detector.decode(utf8("a\n.txt"), EncodingDetector.Kind.NAME, EncodingDetector.Preference.NONE));
+    }
+
+    /// Structural filtering agrees with the JDK at scalar boundaries and on deterministic arbitrary bytes.
+    @Test
+    void utf8StructureMatchesStrictDecoder() {
+        var fields = new ArrayList<ByteBuffer>();
+        for (int scalar : new int[]{0x80, 0x7ff, 0x800, 0xd7ff, 0xe000, 0xffff, 0x10000, 0x10ffff}) {
+            var encoded = utf8(new String(Character.toChars(scalar)));
+            fields.add(encoded);
+            for (int length = 1; length < encoded.remaining(); length++) fields.add(encoded.slice(0, length));
+        }
+        var random = new Random(3629);
+        for (int index = 0; index < 512; index++) {
+            byte[] bytes = new byte[1 + random.nextInt(16)];
+            random.nextBytes(bytes);
+            fields.add(ByteBuffer.wrap(bytes));
+        }
+        var reference = StandardCharsets.UTF_8.newDecoder();
+        var detector = new EncodingDetector();
+        for (var field : fields) {
+            boolean valid;
+            try {
+                reference.decode(field.duplicate());
+                valid = true;
+            } catch (CharacterCodingException exception) {
+                valid = false;
+            }
+            var buffer = ByteBuffer.allocateDirect(field.remaining() + 2).position(1).put(field.duplicate()).flip().position(1);
+            var view = buffer.asReadOnlyBuffer();
+            view.mark();
+            boolean ranked = detector.rank(List.of(utf8("日本語😀"), view), EncodingDetector.Kind.NAME,
+                    EncodingDetector.Preference.NONE).stream().anyMatch(score -> score.charset().equals(StandardCharsets.UTF_8));
+            assertEquals(valid, ranked, () -> java.util.HexFormat.of().formatHex(field.array(), field.arrayOffset() + field.position(),
+                    field.arrayOffset() + field.limit()));
+            assertEquals(1, view.position());
+            assertEquals(field.remaining() + 1, view.limit());
+            view.reset();
+        }
+    }
+
+    /// Lazy candidate evaluation has the same result as checking every ranked candidate after character penalties.
+    @Test
+    void adjustedSelectionMatchesExhaustiveScoring() {
+        var detector = new EncodingDetector();
+        for (String encoding : List.of("UTF-8", "windows-1252", "IBM437", "ISO-8859-1")) {
+            for (String name : List.of("résumé.txt", "é\u0085.txt", "café\n.txt", "\u0001é\u0002.txt")) {
+                var bytes = Charset.forName(encoding).encode(name);
+                for (var kind : EncodingDetector.Kind.values()) {
+                    for (var preference : EncodingDetector.Preference.values()) {
+                        double best = -1;
+                        boolean preferred = false;
+                        var outputs = new java.util.HashSet<String>();
+                        for (var score : detector.rank(List.of(bytes), kind, preference)) {
+                            @Nullable String text = detector.decode(bytes, kind, score.charset());
+                            if (text == null) continue;
+                            double adjusted = score.similarity() * EncodingDetector.textQuality(text, kind);
+                            boolean accepts = preference.accepts(score.charset());
+                            if (adjusted > best || adjusted == best && accepts && !preferred) {
+                                best = adjusted;
+                                preferred = accepts;
+                                outputs.clear();
+                                outputs.add(text);
+                            } else if (adjusted == best && accepts == preferred) outputs.add(text);
+                        }
+                        @Nullable String expected = outputs.size() == 1 ? outputs.iterator().next() : null;
+                        assertEquals(expected, detector.decode(bytes, kind, preference), encoding + ": " + name);
+                    }
+                }
+            }
+        }
     }
 }

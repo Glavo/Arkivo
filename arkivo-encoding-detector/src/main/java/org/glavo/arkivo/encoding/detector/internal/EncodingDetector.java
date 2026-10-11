@@ -43,7 +43,7 @@ public final class EncodingDetector {
         COMMENT
     }
 
-    /// Breaks equal statistical scores using known producer code-page conventions.
+    /// Breaks equal scores using known producer code-page conventions.
     @NotNullByDefault
     public enum Preference {
         /// Does not prefer a code-page family.
@@ -71,24 +71,37 @@ public final class EncodingDetector {
         return true;
     }
 
-    /// Ranks installed candidates from pooled samples; this does not validate unsampled archive fields.
+    /// Ranks installed candidates using pooled byte pairs and bounded UTF-8 structural evidence.
+    /// Malformed UTF-8 samples exclude UTF-8; other candidates and unsampled fields require strict decoding.
     /// Zero-score candidates are omitted. Equal scores use the supplied family preference, then charset
     /// name order. Callers must validate a candidate against every field before freezing an archive choice.
     /// @param fields borrowed complete samples within the MAX_EVIDENCE limits
     /// @param kind field role
     /// @param preference tie-breaking producer convention
-    /// @return immutable descending score list, empty when samples supply no statistical evidence
+    /// @return immutable descending score list, empty when samples supply no scoring evidence
     /// @throws IllegalArgumentException if the sample count or byte budgets are exceeded
     public @Unmodifiable List<Score> rank(List<? extends ByteBuffer> fields, Kind kind, Preference preference) {
+        return rank(fields, kind, preference, true);
+    }
+
+    /// Allows an incomplete final UTF-8 sequence only when the single supplied field is a sampled prefix.
+    private @Unmodifiable List<Score> rank(List<? extends ByteBuffer> fields, Kind kind, Preference preference,
+                                          boolean complete) {
         Objects.requireNonNull(preference);
-        var profile = prepare(fields, kind);
-        if (profile.pairs.length == 0) return List.of();
+        var utf8 = new Utf8Evidence();
+        var profile = prepare(fields, kind, utf8, complete);
+        if (profile.pairs.length == 0 && (!utf8.valid || utf8.count == 0)) return List.of();
         var scores = new ArrayList<Score>();
         BigramModels.INSTANCE.candidates.forEach((charset, models) -> {
+            boolean isUtf8 = charset.equals(StandardCharsets.UTF_8);
+            if (isUtf8 && !utf8.valid) return;
             double best = 0;
-            for (var model : models) {
-                best = Math.max(best, model.score(profile.pairs, profile.frequencies, profile.norm));
+            if (profile.norm != 0) {
+                for (var model : models) {
+                    best = Math.max(best, model.score(profile.pairs, profile.frequencies, profile.norm));
+                }
             }
+            if (isUtf8) best += UTF8_STRUCTURE_WEIGHT * utf8.count;
             if (best > 0) scores.add(new Score(charset, best));
         });
         scores.sort(Comparator.comparingDouble(Score::similarity).reversed()
@@ -107,34 +120,60 @@ public final class EncodingDetector {
         Objects.requireNonNull(kind);
         Objects.requireNonNull(preference);
         if (isAscii(input)) return StandardCharsets.US_ASCII.decode(input.duplicate()).toString();
-        var ranked = rank(List.of(input.remaining() <= MAX_EVIDENCE_FIELD_BYTES ? input
-                : input.slice(input.position(), MAX_EVIDENCE_FIELD_BYTES)), kind, preference);
+        boolean complete = input.remaining() <= MAX_EVIDENCE_FIELD_BYTES;
+        var ranked = rank(List.of(complete ? input : input.slice(input.position(), MAX_EVIDENCE_FIELD_BYTES)),
+                kind, preference, complete);
         @Nullable Score selected = null;
         @Nullable String text = null;
+        double best = NO_SCORE;
+        boolean ambiguous = false;
         for (var score : ranked) {
-            if (selected != null && (score.similarity < selected.similarity
-                    || preference.accepts(selected.charset) && !preference.accepts(score.charset))) break;
+            // Character penalties can only lower a score, so unadjusted scores bound the remaining work.
+            if (score.similarity < best) break;
             @Nullable String decoded = decode(input, kind, score.charset);
             if (decoded == null) continue;
-            if (selected == null) {
+            double adjusted = score.similarity * textQuality(decoded, kind);
+            if (selected == null || adjusted > best || adjusted == best
+                    && preference.accepts(score.charset) && !preference.accepts(selected.charset)) {
                 selected = score;
                 text = decoded;
-            } else if (!decoded.equals(text)) return null;
+                best = adjusted;
+                ambiguous = false;
+            } else if (adjusted == best && preference.accepts(score.charset) == preference.accepts(selected.charset)
+                    && !decoded.equals(text)) ambiguous = true;
         }
-        return text;
+        return ambiguous ? null : text;
     }
 
-    /// Strictly decodes every byte and rejects controls unsuitable for the metadata role.
+    /// Strictly decodes every byte without imposing filename or character-category restrictions.
     /// Validation and text construction share one decoder pass, including the unscored tail.
     /// @param input complete borrowed field; its state and content are preserved
     /// @param kind field role
     /// @param charset installed model candidate
-    /// @return decoded text, or null for malformed input, unmappable bytes, or disallowed controls
+    /// @return decoded text, or null for malformed input or unmappable bytes
     /// @throws IllegalArgumentException if the charset is not an installed model candidate
     public @Nullable String decode(ByteBuffer input, Kind kind, Charset charset) {
         Objects.requireNonNull(kind);
         var text = new StringBuilder(Math.min(input.remaining(), OUTPUT_CAPACITY));
-        return decode(input, kind, decoder(charset), text, null) ? text.toString() : null;
+        return decode(input, decoder(charset), text, null) ? text.toString() : null;
+    }
+
+    /// Returns a bounded score multiplier for decoded controls, not a text-validity decision.
+    /// Each ISO control halves or further reduces support through {@code 1 / (1 + count)}, counting at
+    /// most four controls. Tabs and line endings are not penalized in comments. Other character categories,
+    /// including private-use characters, combining marks and format characters, are not penalized.
+    /// @param text complete decoded field
+    /// @param kind field role
+    /// @return a multiplier from 0.2 through 1, inclusive
+    public static double textQuality(String text, Kind kind) {
+        Objects.requireNonNull(kind);
+        int controls = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char value = text.charAt(i);
+            if (Character.isISOControl(value) && !(kind == Kind.COMMENT
+                    && (value == '\t' || value == '\n' || value == '\r')) && ++controls == 4) break;
+        }
+        return 1.0 / (1 + controls);
     }
 
     /// Finds candidates whose strict decoding equals an authoritative Unicode counterpart.
@@ -145,7 +184,7 @@ public final class EncodingDetector {
         if (isAscii(input)) return List.of();
         var matches = new ArrayList<Charset>();
         for (var charset : BigramModels.INSTANCE.candidates.keySet()) {
-            if (decode(input, Kind.COMMENT, decoder(charset), null, text)) matches.add(charset);
+            if (decode(input, decoder(charset), null, text)) matches.add(charset);
         }
         return List.copyOf(matches);
     }
@@ -156,6 +195,10 @@ public final class EncodingDetector {
     private static final int REPETITION_LIMIT = 2;
     /// Maximum characters retained between decoder calls.
     private static final int OUTPUT_CAPACITY = 1024;
+    /// Sentinel for the absence of a successfully decoded candidate.
+    private static final double NO_SCORE = -1;
+    /// Additive support per distinct non-ASCII UTF-8 scalar, capped at four scalars.
+    private static final double UTF8_STRUCTURE_WEIGHT = 0.05;
     /// Reusable character storage, allocated only when validating a candidate.
     private @Nullable CharBuffer output;
     /// Decoders created only for candidates that have been validated by this instance.
@@ -168,7 +211,7 @@ public final class EncodingDetector {
     /// Pools independent capped field profiles; exact and statistically identical duplicates count once.
     /// The batch limits match the production evidence builder. The immutable result owns its arrays
     /// and retains neither buffers nor decoders. Integer accumulation is independent of input order.
-    private Profile prepare(List<? extends ByteBuffer> fields, Kind kind) {
+    private Profile prepare(List<? extends ByteBuffer> fields, Kind kind, Utf8Evidence utf8, boolean complete) {
         Objects.requireNonNull(kind);
         if (fields.size() > EncodingDetector.MAX_EVIDENCE_FIELDS)
             throw new IllegalArgumentException("Too many metadata fields");
@@ -181,7 +224,9 @@ public final class EncodingDetector {
         if (bytes > EncodingDetector.MAX_EVIDENCE_BYTES) throw new IllegalArgumentException("Metadata batch too large");
         var distinct = new HashSet<Profile>();
         for (var field : fields) {
-            if (!EncodingDetector.isAscii(field) && !hasByteSweep(field)) {
+            if (!EncodingDetector.isAscii(field)) {
+                utf8.accept(field, complete);
+                if (hasByteSweep(field)) continue;
                 Profile profile = profile(field, kind);
                 if (profile.pairs.length != 0) distinct.add(profile);
             }
@@ -270,7 +315,7 @@ public final class EncodingDetector {
 
     /// Decodes once, either appending text or comparing it with an authoritative counterpart.
     /// A failed comparison or validation discards the current candidate; decoder state is reset on every call.
-    private boolean decode(ByteBuffer input, Kind kind, CharsetDecoder decoder,
+    private boolean decode(ByteBuffer input, CharsetDecoder decoder,
                            @Nullable StringBuilder text, @Nullable String expected) {
         decoder.reset();
         @Nullable CharBuffer buffer = output;
@@ -283,11 +328,10 @@ public final class EncodingDetector {
             var result = decoding ? decoder.decode(bytes, buffer, true) : decoder.flush(buffer);
             if (result.isError()) return false;
             buffer.flip();
-            for (int i = 0; i < buffer.limit(); i++) {
-                char value = buffer.get(i);
-                if (Character.isISOControl(value) && !(kind == Kind.COMMENT
-                        && (value == '\t' || value == '\n' || value == '\r'))) return false;
-                if (expected != null && (index >= expected.length() || value != expected.charAt(index++))) return false;
+            if (expected != null) {
+                for (int i = 0; i < buffer.limit(); i++) {
+                    if (index >= expected.length() || buffer.get(i) != expected.charAt(index++)) return false;
+                }
             }
             if (text != null) text.append(buffer);
             if (result.isUnderflow()) {
@@ -304,11 +348,73 @@ public final class EncodingDetector {
         return decoders.computeIfAbsent(charset, Charset::newDecoder);
     }
 
-    /// Describes a candidate's strongest language-model similarity; validity is checked separately.
+    /// Describes a candidate's statistical and structural support before decoded-character penalties.
     /// @param charset installed candidate
-    /// @param similarity cosine score against the original model scale, not a correctness probability
+    /// @param similarity language-model cosine score plus bounded structural support, not a probability
     @NotNullByDefault
     public record Score(Charset charset, double similarity) {
+    }
+
+    /// Validates independent UTF-8 fields and counts at most four distinct non-ASCII scalars.
+    /// Repeated characters, fields and directory prefixes cannot increase the structural support.
+    @NotNullByDefault
+    private static final class Utf8Evidence {
+        /// Distinct scalars retained only until the support cap is reached.
+        private final int[] scalars = new int[4];
+        /// Number of distinct retained scalars.
+        private int count;
+        /// Whether all fields seen so far satisfy UTF-8 syntax.
+        private boolean valid = true;
+
+        /// Creates an empty per-call structural accumulator.
+        private Utf8Evidence() {
+        }
+
+        /// Checks RFC 3629 byte ranges, resetting sequence state at every field boundary.
+        private void accept(ByteBuffer bytes, boolean complete) {
+            if (!valid) return;
+            int remaining = 0;
+            int scalar = 0;
+            int lower = 0x80;
+            int upper = 0xbf;
+            for (int i = bytes.position(); i < bytes.limit(); i++) {
+                int value = bytes.get(i) & 255;
+                if (remaining == 0) {
+                    if (value < 0x80) continue;
+                    if (value >= 0xc2 && value <= 0xdf) {
+                        remaining = 1;
+                        scalar = value & 0x1f;
+                    } else if (value >= 0xe0 && value <= 0xef) {
+                        remaining = 2;
+                        scalar = value & 0x0f;
+                        lower = value == 0xe0 ? 0xa0 : 0x80;
+                        upper = value == 0xed ? 0x9f : 0xbf;
+                    } else if (value >= 0xf0 && value <= 0xf4) {
+                        remaining = 3;
+                        scalar = value & 7;
+                        lower = value == 0xf0 ? 0x90 : 0x80;
+                        upper = value == 0xf4 ? 0x8f : 0xbf;
+                    } else {
+                        valid = false;
+                        return;
+                    }
+                } else {
+                    if (value < lower || value > upper) {
+                        valid = false;
+                        return;
+                    }
+                    scalar = scalar << 6 | value & 0x3f;
+                    lower = 0x80;
+                    upper = 0xbf;
+                    if (--remaining == 0 && count < scalars.length) {
+                        int index = 0;
+                        while (index < count && scalars[index] != scalar) index++;
+                        if (index == count) scalars[count++] = scalar;
+                    }
+                }
+            }
+            if (complete && remaining != 0) valid = false;
+        }
     }
 
     /// Stores sparse IDF-weighted counts, with value equality for duplicate evidence suppression.

@@ -31,8 +31,8 @@ import java.util.zip.ZipOutputStream;
 @Measurement(iterations = 5, time = 1)
 @Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
 public class ZipMetadataBenchmark {
-    /// Selects one field, 512 fields, directory repetition, mixed encodings, or an 8192-entry ASCII index.
-    @Param({"single", "batch", "prefix", "mixed", "ascii-index"})
+    /// Selects legacy or UTF-8 fields, directory repetition, mixed encodings, or an 8192-entry ASCII index.
+    @Param({"single", "batch", "utf8-single", "utf8-batch", "prefix", "mixed", "ascii-index"})
     public String workload = "single";
 
     /// Independent original bytes, generated outside the measurement.
@@ -52,11 +52,11 @@ public class ZipMetadataBenchmark {
     public void setup() throws IOException {
         decoder = ZipAutoMetadataDecoder.DEFAULT;
         String[] names = {"一覧表", "漢字", "資料", "写真", "報告書", "予定表", "説明", "映像"};
-        fields = new byte[workload.equals("single") ? 1 : 512][];
+        fields = new byte[workload.endsWith("single") ? 1 : 512][];
         int size = 0;
         for (int index = 0; index < fields.length; index++) {
             String name = names[index % names.length] + index + ".txt";
-            Charset charset = Charset.forName("windows-31j");
+            Charset charset = Charset.forName(workload.startsWith("utf8-") ? "UTF-8" : "windows-31j");
             if (workload.equals("prefix")) name = "資料/" + name;
             if (workload.equals("mixed") && index % 2 == 1) {
                 name = "документ" + index + ".txt";
@@ -107,7 +107,7 @@ public class ZipMetadataBenchmark {
     public void run(Blackhole sink) throws IOException {
         if (workload.equals("ascii-index")) {
             sink.consume(index());
-        } else if (workload.equals("single")) {
+        } else if (workload.endsWith("single")) {
             sink.consume(decoder.decode(ByteBuffer.wrap(fields[0])));
         } else {
             var prepared = ZipEntryNameDecoder.forCentralDirectory(decoder, central);

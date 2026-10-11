@@ -510,6 +510,46 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
+    /// Controls remain lossless metadata in both streaming inference and the frozen archive strategy.
+    @Test
+    public void controlCharactersDoNotInvalidateUtf8(@TempDir Path directory) throws IOException {
+        var samples = new Sample[]{
+                new Sample("日本語\n.txt", "UTF-8", "日本語\t\n", false, 3),
+                new Sample("😀.txt", "UTF-8", null, false, 3),
+                new Sample("a\n.txt", "UTF-8", null, false, 3)};
+        byte[] bytes = archive(samples);
+        Path file = directory.resolve("controls.zip");
+        Files.write(file, bytes);
+        try (var fs = ZipArkivoFileSystem.open(file)) {
+            for (var sample : samples) assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath(sample.name())));
+        }
+        for (var sample : samples) assertEquals(sample.name(), ZipAutoMetadataDecoder.DEFAULT.decode(
+                sample.name().getBytes(StandardCharsets.UTF_8)));
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            for (var sample : samples) {
+                assertTrue(reader.next());
+                assertEquals(sample.name(), reader.readAttributes().path());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(new byte[]{1, 2, 3}, input.readAllBytes());
+                }
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// An authoritative counterpart containing controls still constrains undeclared names losslessly.
+    @Test
+    public void unicodeCounterpartWithControls() throws IOException {
+        var central = new ByteArrayOutputStream();
+        central.write(centralBytes(new Sample("日本語😀\u0001.txt", "UTF-8", null, true, 3)));
+        central.write(centralBytes(new Sample("é\u0085.txt", "UTF-8", null, false, 3)));
+        var fields = new HashMap<Integer, String>();
+        var prepared = ZipAutoMetadataDecoder.prepare(ZipAutoMetadataDecoder.DEFAULT,
+                ByteBuffer.wrap(central.toByteArray()), fields);
+        assertEquals(List.of("é\u0085.txt"), List.copyOf(fields.values()));
+        assertEquals("é\u0085.txt", prepared.decode("é\u0085.txt".getBytes(StandardCharsets.UTF_8)));
+    }
+
     /// Extracts one independently generated central record for bounded-analysis tests.
     private static byte[] centralBytes(Sample sample) throws IOException {
         byte[] bytes = archive(sample);
