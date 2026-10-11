@@ -202,7 +202,7 @@ final class ArchiveReadLimitsTest {
                         ArkivoReadLimitException.class,
                         () -> readCurrentEntry(reader)
                 );
-                assertLimit(exception, ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, 5L, 7L, "second.bin");
+                assertLimit(exception, ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, 5L, 6L, "second.bin");
             }
         } finally {
             Files.deleteIfExists(fixture.path());

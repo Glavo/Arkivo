@@ -181,6 +181,10 @@ public final class ArkivoReadLimitTracker {
 
     /// Wraps one decoded body whose logical size was unknown when its entry metadata was accepted.
     ///
+    /// Reads request at most the smaller remaining entry or total allowance plus one byte to distinguish EOF from
+    /// excess input. A read that exceeds a limit may place that probe byte in the caller's array before throwing.
+    /// This bounds the requested decoded bytes, not any internal buffering performed by the underlying decoder.
+    ///
     /// @param path the archive-local entry path used in limit failures
     /// @param input the decoded stream whose ownership remains with the returned wrapper
     /// @return a stream that accounts for reads and skips against entry-size limits
@@ -288,7 +292,20 @@ public final class ArkivoReadLimitTracker {
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             requireWithinLimits();
-            int read = super.read(bytes, offset, length);
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            if (length == 0) {
+                return 0;
+            }
+            long allowance = Long.MAX_VALUE;
+            if (maximumEntrySize != UNLIMITED) {
+                allowance = maximumEntrySize - observedSize;
+            }
+            if (maximumTotalEntrySize != UNLIMITED) {
+                allowance = Math.min(allowance, maximumTotalEntrySize - totalEntrySize);
+            }
+            // Add the probe byte only when the allowance is smaller than the int-sized request.
+            int requested = allowance < length ? (int) (allowance + 1L) : length;
+            int read = super.read(bytes, offset, requested);
             if (read > 0) {
                 account(read);
             }

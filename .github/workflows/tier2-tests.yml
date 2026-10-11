@@ -24,6 +24,7 @@ on:
       - "arkivo-archive-tar/**"
       - "arkivo-archive-zip/**"
       - "arkivo-base/**"
+      - "arkivo-encoding-detector/**"
       - "arkivo-checksum/**"
       - "arkivo-checksum-xxhash/**"
       - "arkivo-codec/**"

@@ -226,6 +226,82 @@ public final class ArkivoReadLimitTrackerTest {
         }
     }
 
+    /// Verifies oversized reads and skips stop at the first byte beyond the smaller remaining size allowance.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void boundsUnknownSizeReadsAndSkips(boolean skip) throws IOException {
+        for (boolean totalLimit : new boolean[]{false, true}) {
+            ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
+                    -1L, totalLimit ? 100L : 3L, totalLimit ? 5L : 100L
+            );
+            tracker.acceptEntry("known.bin", 2L);
+            tracker.acceptEntry("unknown.bin", -1L);
+            ByteArrayInputStream source = new ByteArrayInputStream(new byte[16_384]);
+            try (InputStream input = tracker.trackUnknownEntrySize("unknown.bin", source)) {
+                assertEquals(0, input.read());
+                ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> {
+                    if (skip) {
+                        input.skip(Long.MAX_VALUE);
+                    } else {
+                        input.read(new byte[16_384], 7, 16_000);
+                    }
+                });
+                assertLimit(failure, totalLimit ? ArkivoReadLimitKind.TOTAL_ENTRY_SIZE
+                        : ArkivoReadLimitKind.ENTRY_SIZE, totalLimit ? 5L : 3L,
+                        totalLimit ? 6L : 4L, "unknown.bin");
+                assertEquals(16_380, source.available());
+                assertThrows(ArkivoReadLimitException.class, () -> input.read(new byte[16_384]));
+                assertEquals(16_380, source.available());
+            }
+        }
+    }
+
+    /// Verifies an exact size limit permits EOF and empty reads, but only one byte is consumed on overflow.
+    @ParameterizedTest
+    @ValueSource(longs = {0L, 3L, Long.MAX_VALUE})
+    public void probesUnknownSizeBoundariesWithoutOverflow(long maximum) throws IOException {
+        int contentSize = maximum == Long.MAX_VALUE ? 3 : (int) maximum;
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, maximum, maximum);
+        tracker.acceptEntry("entry.bin", -1L);
+        try (InputStream input = tracker.trackUnknownEntrySize(
+                "entry.bin", new ByteArrayInputStream(new byte[contentSize])
+        )) {
+            assertArrayEquals(new byte[contentSize], input.readAllBytes());
+            assertEquals(0, input.read(new byte[1], 0, 0));
+            assertEquals(-1, input.read(new byte[1]));
+        }
+        tracker.requireWithinLimits();
+
+        if (maximum != Long.MAX_VALUE) {
+            tracker.acceptEntry("overflow.bin", -1L);
+            ByteArrayInputStream source = new ByteArrayInputStream(new byte[10]);
+            try (InputStream input = tracker.trackUnknownEntrySize("overflow.bin", source)) {
+                ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class,
+                        () -> input.read(new byte[10]));
+                assertLimit(failure, maximum == 0L ? ArkivoReadLimitKind.ENTRY_SIZE
+                        : ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, maximum, maximum + 1L, "overflow.bin");
+                assertEquals(9, source.available());
+            }
+        }
+    }
+
+    /// Verifies capping a read does not conceal an invalid caller range or modify bytes outside that range.
+    @Test
+    public void validatesOriginalReadRangeBeforeCapping() throws IOException {
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, 0L, -1L);
+        tracker.acceptEntry("entry.bin", -1L);
+        ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{42, 43});
+        try (InputStream input = tracker.trackUnknownEntrySize("entry.bin", source)) {
+            byte[] target = {7, 7, 7};
+            assertThrows(IndexOutOfBoundsException.class, () -> input.read(target, 2, 2));
+            assertEquals(2, source.available());
+            assertArrayEquals(new byte[]{7, 7, 7}, target);
+            assertThrows(ArkivoReadLimitException.class, () -> input.read(target, 1, 2));
+            assertArrayEquals(new byte[]{7, 42, 7}, target);
+            assertEquals(1, source.available());
+        }
+    }
+
     /// Verifies interleaved entry bodies keep separate per-entry counts and share the archive's total budget.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
