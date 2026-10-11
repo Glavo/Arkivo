@@ -149,6 +149,64 @@ public final class LibarchiveArchiveCorpusTest {
         }
     }
 
+    /// Infers legacy names from the unmodified archive before building its path index.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyZipNames")
+    void infersIndexedZipNames(String fixture, String encoding, List<String> names, long size,
+                              @TempDir Path directory) throws IOException {
+        Path archive = decodeFixture(fixture, "legacy.zip", directory);
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            Path root = fileSystem.getPath("/");
+            try (var paths = Files.walk(root)) {
+                assertEquals(names.stream().sorted().toList(), paths.filter(Files::isRegularFile)
+                        .map(path -> root.relativize(path).toString()).sorted().toList());
+            }
+            for (String name : names) {
+                Path entry = fileSystem.getPath(name);
+                var attributes = Files.readAttributes(entry, ZipArkivoEntryAttributes.class);
+                assertLegacyZipName(name, encoding, size, attributes);
+                assertEquals(size, Files.readAllBytes(entry).length);
+            }
+        }
+    }
+
+    /// Infers each local-header name without central-directory or preceding-entry evidence.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("legacyZipNames")
+    void infersStreamingZipNames(String fixture, String encoding, List<String> names, long size) throws IOException {
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(decodeFixtureBytes(fixture)))) {
+            for (String name : names) {
+                assertTrue(reader.next());
+                assertLegacyZipName(name, encoding, size, reader.readAttributes(ZipArkivoEntryAttributes.class));
+                try (var input = reader.openInputStream()) {
+                    assertEquals(size, input.readAllBytes().length);
+                }
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Supplies names and sizes from libarchive 3.8.7's test_read_format_zip_filename.c UTF-8 assertions.
+    private static Stream<Arguments> legacyZipNames() {
+        return Stream.of(
+                Arguments.of("test_read_format_zip_filename_cp932.zip.uu", "windows-31j",
+                        List.of("表だよ/一覧表.txt", "表だよ/漢字.txt"), 5L),
+                Arguments.of("test_read_format_zip_filename_cp866.zip.uu", "IBM866",
+                        List.of("ПРИВЕТ", "привет"), 6L),
+                Arguments.of("test_read_format_zip_filename_koi8r.zip.uu", "KOI8-R",
+                        List.of("привет", "ПРИВЕТ"), 6L));
+    }
+
+    /// Checks inferred text and independently encoded bytes without supplying the charset to the reader.
+    private static void assertLegacyZipName(String name, String encoding, long size,
+                                           ZipArkivoEntryAttributes attributes) {
+        assertEquals(name, attributes.path());
+        assertArrayEquals(name.getBytes(Charset.forName(encoding)), attributes.rawPath());
+        assertEquals(0, attributes.generalPurposeFlags() & 0x800);
+        assertTrue(attributes.isRegularFile());
+        assertEquals(size, attributes.size());
+    }
+
     /// Reads padded local extra fields but rejects the fixture's damaged central-directory terminator.
     @Test
     void readsPaddedLocalFieldsBeforeRejectingDamagedTerminator(@TempDir Path directory) throws IOException {
