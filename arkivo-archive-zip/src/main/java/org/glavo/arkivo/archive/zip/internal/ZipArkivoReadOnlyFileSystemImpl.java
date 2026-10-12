@@ -568,7 +568,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             DirectoryStream.Filter<? super Path> filter
     ) throws IOException {
         Objects.requireNonNull(filter, "filter");
-        String key = pathKey(directory);
+        String key = pathKey(ArkivoFileSystemProviderSupport.resolveReadPath(directory));
         ZipIndex loadedIndex = index();
         if (!loadedIndex.directories.contains(key)) {
             throw new NoSuchFileException(directory.toString());
@@ -576,7 +576,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
         ArrayList<Path> paths = new ArrayList<>();
         for (String child : loadedIndex.children.getOrDefault(key, List.of())) {
-            paths.add(getPath("/" + child));
+            paths.add(directory.resolve(getPath(child).getFileName()));
         }
         return new FixedDirectoryStream<>(paths, filter);
     }

@@ -1421,14 +1421,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         try (Operation ignored = beginReadOperation()) {
             requireReadableFileSystem();
             Objects.requireNonNull(filter, "filter");
-            String pathText = requireExistingPath(directory);
+            String pathText = requireExistingPath(ArkivoFileSystemProviderSupport.resolveReadPath(directory));
             SevenZipEntryMetadata metadata = entries.get(pathText);
             if (metadata != null && !metadata.directory()) {
                 throw new java.nio.file.NotDirectoryException(directory.toString());
             }
-            return manageDirectoryStream(
-                    new FixedDirectoryStream<>(children.getOrDefault(pathText, List.of()), filter)
-            );
+            List<Path> paths = new ArrayList<>();
+            for (Path child : children.getOrDefault(pathText, List.of())) {
+                paths.add(directory.resolve(child.getFileName()));
+            }
+            return manageDirectoryStream(new FixedDirectoryStream<>(paths, filter));
         }
     }
 
@@ -1442,6 +1444,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// @throws IOException if the path does not exist or a requested mode is denied
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
+            if (isReadOnly() || updateMode) {
+                path = ArkivoFileSystemProviderSupport.resolveReadPath(path);
+            }
             if (updateMode) {
                 requireExistingPath(path);
                 for (AccessMode mode : modes) {
@@ -1491,9 +1496,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// @param <V> the requested attribute-view interface
     /// @param path the path to which the view is bound
     /// @param type the basic, owner, POSIX, or 7z attribute-view type
-    /// @param options options controlling whether the provider entry point resolves a symbolic link before binding
-    /// @return a new view bound to `path`, or `null` when the type is unsupported, the path is absent, or a forward-only
-    ///         writer cannot expose indexed attributes
+    /// @param options options controlling whether view operations follow the final symbolic link
+    /// @return a new view bound to `path`, or `null` when the type is unsupported or a forward-only
+    ///         writer cannot expose indexed attributes; a 7z-specific view is also unavailable when
+    ///         the path cannot be resolved to an archive entry, including the synthetic root
     public <V extends FileAttributeView> @Nullable V getFileAttributeView(
             Path path,
             Class<V> type,
@@ -1506,12 +1512,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
             ArkivoFileSystemProviderSupport.AttributeViewPath viewPath =
                     ArkivoFileSystemProviderSupport.attributeViewPath(path, options);
-            String pathText;
-            try {
-                pathText = requireExistingPath(path);
-            } catch (IOException exception) {
-                return null;
-            }
             if (type == BasicFileAttributeView.class) {
                 return type.cast(new BasicAttributeView(viewPath));
             }
@@ -1521,7 +1521,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             if (type == PosixFileAttributeView.class) {
                 return type.cast(new PosixAttributeView(viewPath));
             }
-            if (type == SevenZipArkivoEntryAttributeView.class && entries.containsKey(pathText)) {
+            if (type == SevenZipArkivoEntryAttributeView.class) {
+                try {
+                    if (!entries.containsKey(requireExistingPath(viewPath.resolve()))) {
+                        return null;
+                    }
+                } catch (IOException exception) {
+                    return null;
+                }
                 return type.cast(new SevenZipAttributeView(viewPath));
             }
             return null;

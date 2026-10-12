@@ -616,7 +616,9 @@ final class AbstractArkivoPathTest {
                 throw new NoSuchFileException(normalizedPath);
             }
             return type.cast(symbolicLinks.containsKey(normalizedPath)
-                    ? TestBasicFileAttributes.SYMBOLIC_LINK : TestBasicFileAttributes.INSTANCE);
+                    ? TestBasicFileAttributes.SYMBOLIC_LINK
+                    : normalizedPath.equals("/") || existingPaths.stream().anyMatch(p -> p.startsWith(normalizedPath + "/"))
+                    ? TestBasicFileAttributes.DIRECTORY : TestBasicFileAttributes.INSTANCE);
         }
 
         /// Rejects string-based attribute lookup.
@@ -657,6 +659,8 @@ final class AbstractArkivoPathTest {
     private enum TestBasicFileAttributes implements BasicFileAttributes {
         /// Shared immutable attribute instance.
         INSTANCE,
+        /// Immutable attributes identifying a directory.
+        DIRECTORY,
         /// Immutable attributes identifying a symbolic link.
         SYMBOLIC_LINK;
 
@@ -687,10 +691,10 @@ final class AbstractArkivoPathTest {
             return this == INSTANCE;
         }
 
-        /// Returns that the synthetic path is not a directory.
+        /// Returns whether the synthetic path is a directory.
         @Override
         public boolean isDirectory() {
-            return false;
+            return this == DIRECTORY;
         }
 
         /// Returns whether these attributes identify a symbolic link.
@@ -740,6 +744,16 @@ final class AbstractArkivoPathTest {
         @Override
         protected TestPath createPath(boolean absolute, List<String> names) {
             return new TestPath(getFileSystem(), absolute, names);
+        }
+
+        @Override
+        protected BasicFileAttributes readEntryAttributes() throws IOException {
+            return getFileSystem().provider.readAttributes(this, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        }
+
+        @Override
+        protected Path readLinkTarget() throws IOException {
+            return getFileSystem().provider.readSymbolicLink(this);
         }
 
         /// Returns the test provider URI scheme.

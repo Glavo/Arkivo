@@ -165,7 +165,7 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
             DirectoryStream.Filter<? super Path> filter
     ) throws IOException {
         return sevenZipFileSystem(directory).newDirectoryStream(
-                ArkivoFileSystemProviderSupport.resolveReadPath(directory),
+                directory,
                 filter
         );
     }
@@ -266,7 +266,8 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Reads a symbolic link target from a 7z archive path.
     @Override
     public Path readSymbolicLink(Path link) throws IOException {
-        return sevenZipFileSystem(link).readSymbolicLink(link);
+        return sevenZipFileSystem(link).readSymbolicLink(
+                ArkivoFileSystemProviderSupport.resolveReadPath(link, LinkOption.NOFOLLOW_LINKS));
     }
 
     /// Sets a named file attribute for an update-mode 7z archive path.

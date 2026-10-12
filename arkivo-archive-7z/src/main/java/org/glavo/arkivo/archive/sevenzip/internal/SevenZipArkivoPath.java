@@ -8,8 +8,10 @@ import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 
 /// Represents a path inside a 7z Arkivo file system.
@@ -39,6 +41,16 @@ final class SevenZipArkivoPath extends AbstractArkivoPath<SevenZipArkivoFileSyst
     @Override
     protected SevenZipArkivoPath createPath(boolean absolute, List<String> names) {
         return new SevenZipArkivoPath(getFileSystem(), absolute, names);
+    }
+
+    @Override
+    protected BasicFileAttributes readEntryAttributes() throws IOException {
+        return ((SevenZipArkivoFileSystemImpl) getFileSystem()).readAttributes(this, BasicFileAttributes.class);
+    }
+
+    @Override
+    protected Path readLinkTarget() throws IOException {
+        return ((SevenZipArkivoFileSystemImpl) getFileSystem()).readSymbolicLink(this);
     }
 
     /// Returns the 7z URI scheme.

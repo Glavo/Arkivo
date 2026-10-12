@@ -1071,7 +1071,7 @@ public final class ZipArchiveIntegrationTest {
             for (Path child : stream) {
                 children.add(child.toString());
             }
-            assertEquals(Set.of("/dir/channel.bin", "/dir/hello.txt", "/dir/link"), Set.copyOf(children));
+            assertEquals(Set.of("/dir-link/channel.bin", "/dir-link/hello.txt", "/dir-link/link"), Set.copyOf(children));
         }
         assertEquals(true, Files.isSameFile(file, link));
         assertEquals(true, Files.isSameFile(file, fileSystem.getPath("/dir-link/hello.txt")));

@@ -7,8 +7,10 @@ import org.glavo.arkivo.archive.internal.AbstractArkivoPath;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 
 /// Represents a path inside a RAR Arkivo file system.
@@ -43,6 +45,16 @@ final class RarArkivoPath extends AbstractArkivoPath<RarArkivoFileSystemImpl> {
     @Override
     protected RarArkivoPath createPath(boolean absolute, List<String> names) {
         return new RarArkivoPath(getFileSystem(), absolute, names);
+    }
+
+    @Override
+    protected BasicFileAttributes readEntryAttributes() throws IOException {
+        return getFileSystem().readAttributes(this, BasicFileAttributes.class);
+    }
+
+    @Override
+    protected Path readLinkTarget() throws IOException {
+        return getFileSystem().readSymbolicLink(this);
     }
 
     /// Returns the RAR URI scheme.

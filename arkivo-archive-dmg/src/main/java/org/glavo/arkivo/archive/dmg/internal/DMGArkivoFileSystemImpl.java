@@ -372,13 +372,13 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
     ) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             Objects.requireNonNull(filter, "filter");
-            HFSPlusNode node = requireNode(directory);
+            HFSPlusNode node = requireNode(ArkivoFileSystemProviderSupport.resolveReadPath(directory));
             if (!node.isDirectory()) {
                 throw new NotDirectoryException(directory.toString());
             }
             ArrayList<Path> entries = new ArrayList<>(node.childPaths().size());
             for (String child : node.childPaths()) {
-                entries.add(getPath("/" + child));
+                entries.add(directory.resolve(getPath(child).getFileName()));
             }
             return manageDirectoryStream(new FixedDirectoryStream<>(entries, filter));
         }

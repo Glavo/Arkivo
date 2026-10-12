@@ -148,7 +148,7 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
         return readFileSystem(directory).newDirectoryStream(
-                ArkivoFileSystemProviderSupport.resolveReadPath(directory),
+                directory,
                 filter
         );
     }
@@ -246,7 +246,8 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     /// Reads a symbolic link target from an AR archive path.
     @Override
     public Path readSymbolicLink(Path link) throws IOException {
-        return readFileSystem(link).readSymbolicLink(link);
+        return readFileSystem(link).readSymbolicLink(
+                ArkivoFileSystemProviderSupport.resolveReadPath(link, LinkOption.NOFOLLOW_LINKS));
     }
 
     /// Sets a supported member attribute in update mode.

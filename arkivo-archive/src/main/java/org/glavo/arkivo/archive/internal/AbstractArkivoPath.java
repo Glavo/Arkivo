@@ -13,6 +13,7 @@ import java.net.URISyntaxException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemLoopException;
 import java.nio.file.LinkOption;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.NotLinkException;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
@@ -20,6 +21,7 @@ import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -87,6 +89,18 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     ///
     /// @return the backing archive URI, or {@code null} if no stable URI exists
     protected abstract @Nullable URI archiveUri();
+
+    /// Reads this entry without resolving links or invoking the provider's path-resolution entry points.
+    ///
+    /// @return the entry's basic attributes
+    /// @throws IOException if this entry cannot be read
+    protected abstract BasicFileAttributes readEntryAttributes() throws IOException;
+
+    /// Reads this link's stored target without resolving any path components.
+    ///
+    /// @return the stored target path
+    /// @throws IOException if this entry is not a link or its target cannot be read
+    protected abstract Path readLinkTarget() throws IOException;
 
     /// Returns this path as the concrete path type owned by the expected file system.
     ///
@@ -326,7 +340,10 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
         return absolute ? this : createPath(true, names);
     }
 
-    /// Resolves this path to a checked normalized absolute path.
+    /// Returns an absolute path to the existing entry using the requested symbolic-link policy.
+    ///
+    /// Following links resolves each target before processing subsequent `..` components. With `NOFOLLOW_LINKS`,
+    /// link names are retained and a link followed by `..` is not cancelled.
     @Override
     public final Path toRealPath(LinkOption... options) throws IOException {
         Objects.requireNonNull(options, "options");
@@ -338,70 +355,90 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             }
         }
 
-        AbstractArkivoPath<F> unresolved = requireCompatiblePath(toAbsolutePath().normalize());
-        if (noFollowLinks) {
-            fileSystem.provider().readAttributes(
-                    unresolved,
-                    BasicFileAttributes.class,
-                    LinkOption.NOFOLLOW_LINKS
-            );
-            return unresolved;
-        }
+        return noFollowLinks ? realPathWithoutFollowingLinks() : resolvePath(true);
+    }
 
+    /// Resolves parent links and optionally the final link, processing each parent component after its predecessor.
+    ///
+    /// @param followFinalLink whether the final entry is replaced by its link target
+    /// @return a checked absolute path suitable for direct entry lookup
+    /// @throws IOException if a component is absent, a parent is not a directory, or a link cannot be resolved
+    final AbstractArkivoPath<F> resolvePath(boolean followFinalLink) throws IOException {
+        ArrayDeque<String> pending = new ArrayDeque<>(names);
+        ArrayList<String> resolved = new ArrayList<>();
+        @Nullable BasicFileAttributes attributes = null;
         int symbolicLinkCount = 0;
-        while (true) {
-            boolean restart = false;
-            for (int index = 0; index < unresolved.getNameCount(); index++) {
-                Path candidate = index + 1 == unresolved.names.size()
-                        ? unresolved : createPath(true, unresolved.names.subList(0, index + 1));
-                BasicFileAttributes attributes = fileSystem.provider().readAttributes(
-                        candidate,
-                        BasicFileAttributes.class,
-                        LinkOption.NOFOLLOW_LINKS
-                );
-                if (!attributes.isSymbolicLink()) {
-                    continue;
+        while (!pending.isEmpty()) {
+            if (attributes != null && !attributes.isDirectory()) {
+                throw new NotDirectoryException(createPath(true, resolved).toString());
+            }
+            String name = pending.removeFirst();
+            if (name.equals(".")) {
+                continue;
+            }
+            if (name.equals("..")) {
+                if (!resolved.isEmpty()) {
+                    resolved.remove(resolved.size() - 1);
                 }
-                final Path target;
+                attributes = null;
+                continue;
+            }
+            resolved.add(name);
+            AbstractArkivoPath<F> candidate = createPath(true, resolved);
+            attributes = candidate.readEntryAttributes();
+            if (attributes.isSymbolicLink() && (followFinalLink || !pending.isEmpty())) {
+                final AbstractArkivoPath<F> target;
                 try {
-                    target = fileSystem.provider().readSymbolicLink(candidate);
+                    target = requireCompatiblePath(candidate.readLinkTarget());
                 } catch (NotLinkException exception) {
-                    // A writable file system may replace the link after the attribute lookup.
-                    fileSystem.provider().readAttributes(
-                            candidate,
-                            BasicFileAttributes.class,
-                            LinkOption.NOFOLLOW_LINKS
-                    );
+                    // The link may have been replaced after its attributes were read.
+                    attributes = candidate.readEntryAttributes();
                     continue;
                 }
-
-                symbolicLinkCount++;
-                if (symbolicLinkCount > MAXIMUM_SYMBOLIC_LINKS) {
+                if (++symbolicLinkCount > MAXIMUM_SYMBOLIC_LINKS) {
                     throw new FileSystemLoopException(toString());
                 }
-
-                Path replacement = target.isAbsolute()
-                        ? target
-                        : Objects.requireNonNull(candidate.getParent(), "symbolic link parent").resolve(target);
-                if (index + 1 < unresolved.getNameCount()) {
-                    replacement = replacement.resolve(unresolved.subpath(index + 1, unresolved.getNameCount()));
+                resolved.remove(resolved.size() - 1);
+                if (target.absolute) {
+                    resolved.clear();
                 }
-                unresolved = requireCompatiblePath(replacement.toAbsolutePath().normalize());
-                restart = true;
-                break;
-            }
-
-            if (!restart) {
-                if (unresolved.names.isEmpty()) {
-                    fileSystem.provider().readAttributes(
-                            unresolved,
-                            BasicFileAttributes.class,
-                            LinkOption.NOFOLLOW_LINKS
-                    );
+                for (int index = target.names.size() - 1; index >= 0; index--) {
+                    pending.addFirst(target.names.get(index));
                 }
-                return unresolved;
+                attributes = null;
             }
         }
+        AbstractArkivoPath<F> result = createPath(true, resolved);
+        if (attributes == null) {
+            result.readEntryAttributes();
+        }
+        return equals(result) ? this : result;
+    }
+
+    /// Checks existence while retaining link names and parent components that cannot safely be cancelled.
+    private AbstractArkivoPath<F> realPathWithoutFollowingLinks() throws IOException {
+        ArrayList<String> retained = new ArrayList<>();
+        for (String name : names) {
+            if (name.equals(".") || name.equals("..")) {
+                AbstractArkivoPath<F> prefix = createPath(true, retained);
+                if (!prefix.resolvePath(true).readEntryAttributes().isDirectory()) {
+                    throw new NotDirectoryException(prefix.toString());
+                }
+                if (name.equals("..") && !retained.isEmpty()) {
+                    if (!retained.get(retained.size() - 1).equals("..")
+                            && !prefix.resolvePath(false).readEntryAttributes().isSymbolicLink()) {
+                        retained.remove(retained.size() - 1);
+                    } else {
+                        retained.add(name);
+                    }
+                }
+            } else {
+                retained.add(name);
+            }
+        }
+        AbstractArkivoPath<F> result = createPath(true, retained);
+        result.resolvePath(false);
+        return equals(result) ? this : result;
     }
 
     /// Rejects watch registration because archive file systems do not support watch services.

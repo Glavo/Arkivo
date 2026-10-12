@@ -7,8 +7,10 @@ import org.glavo.arkivo.archive.internal.AbstractArkivoPath;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 
 /// Implements immutable slash-separated paths inside one DMG file system.
@@ -43,6 +45,16 @@ final class DMGArkivoPath extends AbstractArkivoPath<DMGArkivoFileSystemImpl> {
     @Override
     protected AbstractArkivoPath<DMGArkivoFileSystemImpl> createPath(boolean absolute, List<String> names) {
         return new DMGArkivoPath(getFileSystem(), absolute, names);
+    }
+
+    @Override
+    protected BasicFileAttributes readEntryAttributes() throws IOException {
+        return getFileSystem().readAttributes(this, BasicFileAttributes.class);
+    }
+
+    @Override
+    protected Path readLinkTarget() throws IOException {
+        return getFileSystem().readSymbolicLink(this);
     }
 
     /// Returns the DMG provider URI scheme.

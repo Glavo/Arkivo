@@ -1474,13 +1474,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         lock();
         try {
             checkOpen();
-            String directoryName = entryName(directory);
+            String directoryName = entryName(ArkivoFileSystemProviderSupport.resolveReadPath(directory));
             if (!readZipAttributesLocked(directory, directoryName).isDirectory()) {
                 throw new NoSuchFileException(directory.toString());
             }
 
             for (String child : visibleChildNames(directoryName)) {
-                paths.add(getPath("/" + child));
+                paths.add(directory.resolve(getPath(child).getFileName()));
             }
         } finally {
             unlock();

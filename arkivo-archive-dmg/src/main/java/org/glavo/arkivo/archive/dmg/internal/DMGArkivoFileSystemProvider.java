@@ -176,7 +176,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
             DirectoryStream.Filter<? super Path> filter
     ) throws IOException {
         return readFileSystem(directory).newDirectoryStream(
-                ArkivoFileSystemProviderSupport.resolveReadPath(directory),
+                directory,
                 filter
         );
     }
@@ -230,7 +230,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     /// Checks read-only access to a DMG entry.
     @Override
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
-        readFileSystem(path).checkAccess(path, modes);
+        readFileSystem(path).checkAccess(ArkivoFileSystemProviderSupport.resolveReadPath(path), modes);
     }
 
     /// Returns a standard attribute view for a DMG entry.
@@ -274,7 +274,8 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     /// Reads an HFS Plus symbolic-link target.
     @Override
     public Path readSymbolicLink(Path link) throws IOException {
-        return readFileSystem(link).readSymbolicLink(link);
+        return readFileSystem(link).readSymbolicLink(
+                ArkivoFileSystemProviderSupport.resolveReadPath(link, LinkOption.NOFOLLOW_LINKS));
     }
 
     /// Rejects attribute mutation because DMG support is read-only.

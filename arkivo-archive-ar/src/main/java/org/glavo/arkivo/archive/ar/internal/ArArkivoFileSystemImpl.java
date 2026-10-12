@@ -935,14 +935,14 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     ) throws IOException {
         requireReadableFileSystem();
         Objects.requireNonNull(filter, "filter");
-        Node node = requireNode(directory);
+        Node node = requireNode(ArkivoFileSystemProviderSupport.resolveReadPath(directory));
         if (!node.directory()) {
             throw new FileSystemException(directory.toString(), null, "AR entry is not a directory");
         }
 
         ArrayList<Path> paths = new ArrayList<>();
         for (String childPath : node.children().values()) {
-            paths.add(rootPath.resolve(childPath));
+            paths.add(directory.resolve(rootPath.resolve(childPath).getFileName()));
         }
         return new FixedDirectoryStream<>(paths, filter);
     }
@@ -960,6 +960,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Checks access while the caller holds the shared operation lock.
     private void checkAccessLocked(Path path, AccessMode... modes) throws IOException {
+        if (readOnly || updateMode) {
+            path = ArkivoFileSystemProviderSupport.resolveReadPath(path);
+        }
         if (updateMode) {
             requireNode(path);
             return;

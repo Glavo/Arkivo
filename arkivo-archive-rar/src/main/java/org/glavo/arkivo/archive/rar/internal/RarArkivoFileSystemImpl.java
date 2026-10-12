@@ -456,14 +456,14 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             throws IOException {
         try (Operation ignored = beginReadOperation()) {
             Objects.requireNonNull(filter, "filter");
-            Node node = requireNode(directory);
+            Node node = requireNode(ArkivoFileSystemProviderSupport.resolveReadPath(directory));
             if (!node.directory()) {
                 throw new FileSystemException(directory.toString(), null, "RAR entry is not a directory");
             }
 
             ArrayList<Path> paths = new ArrayList<>();
             for (String childPath : node.children().values()) {
-                paths.add(rootPath.resolve(childPath));
+                paths.add(directory.resolve(rootPath.resolve(childPath).getFileName()));
             }
             return manageDirectoryStream(new FixedDirectoryStream<>(paths, filter));
         }

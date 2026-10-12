@@ -8,7 +8,10 @@ import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 
 /// Represents a path inside a ZIP Arkivo file system.
@@ -38,6 +41,16 @@ final class ZipArkivoPath extends AbstractArkivoPath<ZipArkivoFileSystem> {
     @Override
     protected ZipArkivoPath createPath(boolean absolute, List<String> names) {
         return new ZipArkivoPath(getFileSystem(), absolute, names);
+    }
+
+    @Override
+    protected BasicFileAttributes readEntryAttributes() throws IOException {
+        return ((ZipFileSystemOperations) getFileSystem()).readAttributes(this, BasicFileAttributes.class);
+    }
+
+    @Override
+    protected Path readLinkTarget() throws IOException {
+        return ((ZipFileSystemOperations) getFileSystem()).readSymbolicLink(this);
     }
 
     /// Returns the ZIP URI scheme.

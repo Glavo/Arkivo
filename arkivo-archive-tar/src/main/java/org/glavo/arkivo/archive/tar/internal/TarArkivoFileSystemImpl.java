@@ -1170,14 +1170,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     ) throws IOException {
         requireReadableFileSystem();
         Objects.requireNonNull(filter, "filter");
-        Node node = requireNode(directory);
+        Node node = requireNode(ArkivoFileSystemProviderSupport.resolveReadPath(directory));
         if (!node.directory()) {
             throw new FileSystemException(directory.toString(), null, "TAR entry is not a directory");
         }
 
         ArrayList<Path> paths = new ArrayList<>();
         for (String childPath : node.children().values()) {
-            paths.add(rootPath.resolve(childPath));
+            paths.add(directory.resolve(rootPath.resolve(childPath).getFileName()));
         }
         return new FixedDirectoryStream<>(paths, filter);
     }
@@ -1201,6 +1201,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Checks access while the caller holds the shared operation lock.
     private void checkAccessLocked(Path path, AccessMode... modes) throws IOException {
+        if (readOnly || updateMode) {
+            path = ArkivoFileSystemProviderSupport.resolveReadPath(path);
+        }
         if (updateMode) {
             requireNode(path);
             return;

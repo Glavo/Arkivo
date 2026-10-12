@@ -149,7 +149,7 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
         return readFileSystem(directory).newDirectoryStream(
-                ArkivoFileSystemProviderSupport.resolveReadPath(directory),
+                directory,
                 filter
         );
     }
@@ -203,7 +203,7 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
     /// Checks access to a RAR archive path.
     @Override
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
-        readFileSystem(path).checkAccess(path, modes);
+        readFileSystem(path).checkAccess(ArkivoFileSystemProviderSupport.resolveReadPath(path), modes);
     }
 
     /// Returns a file attribute view for a RAR archive path.
@@ -240,7 +240,8 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
     /// Reads a symbolic link target from a RAR archive path.
     @Override
     public Path readSymbolicLink(Path link) throws IOException {
-        return readFileSystem(link).readSymbolicLink(link);
+        return readFileSystem(link).readSymbolicLink(
+                ArkivoFileSystemProviderSupport.resolveReadPath(link, LinkOption.NOFOLLOW_LINKS));
     }
 
     /// RAR file systems are read-only.

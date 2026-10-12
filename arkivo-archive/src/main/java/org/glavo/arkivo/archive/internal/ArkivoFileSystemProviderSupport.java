@@ -56,13 +56,13 @@ public final class ArkivoFileSystemProviderSupport {
         return Objects.requireNonNull(path, "path").toRealPath();
     }
 
-    /// Resolves a path for an input-stream operation unless `NOFOLLOW_LINKS` is requested.
+    /// Resolves a path for an input-stream operation, leaving the final link unfollowed with `NOFOLLOW_LINKS`.
     ///
     /// Unsupported options are left for the concrete provider to reject without performing an early path lookup.
     ///
     /// @param path the lexical input path
     /// @param options the input-stream open options
-    /// @return the real path when links should be followed, otherwise the unchanged lexical path
+    /// @return the resolved read path, or the lexical path for unsupported options
     /// @throws IOException if required symbolic-link resolution fails
     public static Path resolveReadPath(Path path, OpenOption... options) throws IOException {
         Objects.requireNonNull(path, "path");
@@ -76,17 +76,17 @@ public final class ArkivoFileSystemProviderSupport {
                 return path;
             }
         }
-        return followLinks ? path.toRealPath() : path;
+        return resolvePath(path, followLinks);
     }
 
-    /// Resolves a path for a read-only byte-channel operation unless `NOFOLLOW_LINKS` is requested.
+    /// Resolves a read-only byte-channel path, leaving the final link unfollowed with `NOFOLLOW_LINKS`.
     ///
     /// Channels with write, creation, or provider-specific options retain their lexical path so mutation semantics are
     /// decided by the concrete archive file system.
     ///
     /// @param path the lexical byte-channel path
     /// @param options the byte-channel open options
-    /// @return the real path for a pure following read, otherwise the unchanged lexical path
+    /// @return the resolved read path, or the lexical path for write, creation, or provider-specific options
     /// @throws IOException if required symbolic-link resolution fails
     public static Path resolveReadChannelPath(Path path, Set<? extends OpenOption> options) throws IOException {
         Objects.requireNonNull(path, "path");
@@ -100,25 +100,34 @@ public final class ArkivoFileSystemProviderSupport {
                 return path;
             }
         }
-        return followLinks ? path.toRealPath() : path;
+        return resolvePath(path, followLinks);
     }
 
-    /// Resolves a path for an attribute read unless `NOFOLLOW_LINKS` is requested.
+    /// Resolves parent links and follows the final link unless `NOFOLLOW_LINKS` is requested.
     ///
     /// @param path the lexical attribute path
     /// @param options the symbolic-link traversal options
-    /// @return the real path when links should be followed, otherwise the unchanged lexical path
+    /// @return the checked archive path with parent links resolved, or the unchanged non-archive path for no-follow reads
     /// @throws IOException if required symbolic-link resolution fails
     public static Path resolveReadPath(Path path, LinkOption... options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
+        boolean followLinks = true;
         for (LinkOption option : options) {
             Objects.requireNonNull(option, "option");
             if (option == LinkOption.NOFOLLOW_LINKS) {
-                return path;
+                followLinks = false;
             }
         }
-        return path.toRealPath();
+        return resolvePath(path, followLinks);
+    }
+
+    /// Resolves archive path components without conflating terminal-link lookup with no-follow real-path spelling.
+    private static Path resolvePath(Path path, boolean followFinalLink) throws IOException {
+        if (path instanceof AbstractArkivoPath<?> archivePath) {
+            return archivePath.resolvePath(followFinalLink);
+        }
+        return followFinalLink ? path.toRealPath() : path;
     }
 
     /// Creates a lazily resolved path for a file attribute view.
@@ -155,10 +164,10 @@ public final class ArkivoFileSystemProviderSupport {
 
         /// Resolves the path for one attribute-view operation.
         ///
-        /// @return the real path when {@link #followLinks()} is true, otherwise the lexical {@link #path()}
+        /// @return the entry path with parent links resolved and the configured terminal-link policy applied
         /// @throws IOException if required symbolic-link resolution fails
         public Path resolve() throws IOException {
-            return followLinks ? path.toRealPath() : path;
+            return resolvePath(path, followLinks);
         }
     }
 

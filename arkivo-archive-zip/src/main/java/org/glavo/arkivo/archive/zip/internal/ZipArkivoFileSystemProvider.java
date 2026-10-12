@@ -165,8 +165,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Opens a directory stream for a path inside a ZIP archive file system.
     @Override
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter) throws IOException {
-        Path readDirectory = ArkivoFileSystemProviderSupport.resolveReadPath(directory);
-        return operations(directory).newDirectoryStream(readDirectory, filter);
+        return operations(directory).newDirectoryStream(directory, filter);
     }
 
     /// Creates a directory inside a writable ZIP archive file system.
@@ -227,7 +226,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Checks access to a ZIP archive path.
     @Override
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
-        operations(path).checkAccess(path, modes);
+        operations(path).checkAccess(ArkivoFileSystemProviderSupport.resolveReadPath(path), modes);
     }
 
     /// Returns a file attribute view for a ZIP archive path.
@@ -253,7 +252,8 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Reads a symbolic link target from a ZIP archive path.
     @Override
     public Path readSymbolicLink(Path link) throws IOException {
-        return operations(link).readSymbolicLink(link);
+        return operations(link).readSymbolicLink(
+                ArkivoFileSystemProviderSupport.resolveReadPath(link, LinkOption.NOFOLLOW_LINKS));
     }
 
     /// Sets a named file attribute for a ZIP archive path.
