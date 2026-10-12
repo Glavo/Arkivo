@@ -7,23 +7,31 @@ import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.FileSystemLoopException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -40,6 +48,159 @@ final class ArchivePathResolutionTest {
     private static Stream<Arguments> configurations() {
         return Stream.of("ar", "tar", "zip", "7z")
                 .flatMap(format -> Stream.of(false, true).map(update -> Arguments.of(format, update)));
+    }
+
+    /// Crosses writable formats with operations that must resolve parents before selecting an entry.
+    private static Stream<Arguments> mutations() {
+        return Stream.of("ar", "tar", "zip", "7z").flatMap(format ->
+                Stream.of("stream", "channel", "delete", "move", "directory", "link")
+                        .map(operation -> Arguments.of(format, operation)));
+    }
+
+    /// Changes only the component-resolved target and retains that result after committing the archive.
+    @ParameterizedTest
+    @MethodSource("mutations")
+    void resolvesMutationParents(String format, String operation, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, true, directory)) {
+            Path target = fs.getPath("/alias/../value.txt");
+            Path created = fs.getPath("/alias/../created");
+            switch (operation) {
+                case "stream" -> Files.writeString(target, "CHANGED");
+                case "channel" -> {
+                    try (var channel = Files.newByteChannel(target,
+                            StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                        channel.write(ByteBuffer.wrap("CHANGED".getBytes(StandardCharsets.UTF_8)));
+                    }
+                }
+                case "delete" -> Files.delete(target);
+                case "move" -> Files.move(target, created);
+                case "directory" -> Files.createDirectory(created);
+                case "link" -> Files.createSymbolicLink(created, fs.getPath("value.txt"));
+                default -> throw new AssertionError(operation);
+            }
+            assertMutationResult(fs, operation);
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, directory.resolve("paths." + format))) {
+            assertMutationResult(fs, operation);
+        }
+    }
+
+    /// Checks both the intended mutation and the unaffected lexical neighbor.
+    private static void assertMutationResult(ArkivoFileSystem fs, String operation) throws IOException {
+        assertEquals("ROOT", Files.readString(fs.getPath("/value.txt")));
+        assertFalse(Files.exists(fs.getPath("/created"), LinkOption.NOFOLLOW_LINKS));
+        Path value = fs.getPath("/real/value.txt");
+        Path created = fs.getPath("/real/created");
+        switch (operation) {
+            case "stream", "channel" -> assertEquals("CHANGED", Files.readString(value));
+            case "delete" -> assertFalse(Files.exists(value));
+            case "move" -> {
+                assertFalse(Files.exists(value));
+                assertEquals("REAL", Files.readString(created));
+            }
+            case "directory" -> assertTrue(Files.isDirectory(created));
+            case "link" -> {
+                assertTrue(Files.isSymbolicLink(created));
+                assertEquals("REAL", Files.readString(created));
+            }
+            default -> throw new AssertionError(operation);
+        }
+    }
+
+    /// Follows terminal links for file bodies but preserves them for exclusive creation, moves, and deletion.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void appliesMutationLinkPolicies(String format, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, true, directory)) {
+            Path link = fs.getPath("/real/filelink");
+            Files.writeString(link, "TARGET");
+            assertTrue(Files.isSymbolicLink(link));
+            assertEquals("TARGET", Files.readString(fs.getPath("/real/value.txt")));
+            Path broken = fs.getPath("/broken");
+            assertThrows(FileAlreadyExistsException.class,
+                    () -> Files.newOutputStream(broken, StandardOpenOption.CREATE_NEW).close());
+            Files.writeString(broken, "CREATED");
+            assertTrue(Files.isSymbolicLink(broken));
+            assertEquals("CREATED", Files.readString(fs.getPath("/absent")));
+            Files.move(link, fs.getPath("/moved-link"));
+            assertTrue(Files.isSymbolicLink(fs.getPath("/moved-link")));
+            Files.delete(fs.getPath("/moved-link"));
+            assertEquals("TARGET", Files.readString(fs.getPath("/real/value.txt")));
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.writeString(fs.getPath("/missing/../value.txt"), "BAD"));
+            assertThrows(NotDirectoryException.class,
+                    () -> Files.delete(fs.getPath("/value.txt/../value.txt")));
+            assertThrows(FileSystemLoopException.class,
+                    () -> Files.writeString(fs.getPath("/cycle/../value.txt"), "BAD"));
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, directory.resolve("paths." + format))) {
+            assertEquals("ROOT", Files.readString(fs.getPath("/value.txt")));
+            assertEquals("TARGET", Files.readString(fs.getPath("/real/value.txt")));
+            assertTrue(Files.isSymbolicLink(fs.getPath("/broken")));
+            assertEquals("CREATED", Files.readString(fs.getPath("/absent")));
+            assertFalse(Files.exists(fs.getPath("/real/filelink"), LinkOption.NOFOLLOW_LINKS));
+            assertFalse(Files.exists(fs.getPath("/moved-link"), LinkOption.NOFOLLOW_LINKS));
+        }
+    }
+
+    /// Retains implicit-parent creation after resolving existing links without cancelling missing parents.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar"})
+    void createsImplicitParentsBelowResolvedLinks(String format, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, true, directory)) {
+            Files.writeString(fs.getPath("/alias/../new-parent/child"), "CREATED");
+            Files.createDirectory(fs.getPath("/alias/../new-directory/child"));
+            Files.createSymbolicLink(fs.getPath("/alias/../new-links/link"), fs.getPath("../value.txt"));
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.writeString(fs.getPath("/missing/nested/../../value.txt"), "BAD"));
+            assertFalse(Files.exists(fs.getPath("/missing")));
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, directory.resolve("paths." + format))) {
+            assertEquals("CREATED", Files.readString(fs.getPath("/real/new-parent/child")));
+            assertTrue(Files.isDirectory(fs.getPath("/real/new-directory/child")));
+            assertEquals("REAL", Files.readString(fs.getPath("/real/new-links/link")));
+            assertFalse(Files.exists(fs.getPath("/new-parent")));
+            assertFalse(Files.exists(fs.getPath("/new-directory")));
+            assertFalse(Files.exists(fs.getPath("/new-links")));
+            assertEquals("ROOT", Files.readString(fs.getPath("/value.txt")));
+        }
+    }
+
+    /// Resolves both hard-link paths while retaining TAR's restriction to regular-file targets.
+    @Test
+    void resolvesTarHardLinkParents(@TempDir Path directory) throws IOException {
+        try (var fs = open("tar", true, directory)) {
+            Files.createLink(fs.getPath("/alias/../hard"), fs.getPath("/alias/../value.txt"));
+            assertEquals("REAL", Files.readString(fs.getPath("/real/hard")));
+            assertFalse(Files.exists(fs.getPath("/hard")));
+            assertThrows(FileSystemException.class,
+                    () -> Files.createLink(fs.getPath("/rejected"), fs.getPath("/real/filelink")));
+        }
+        try (var fs = ArkivoFormats.openFileSystem("tar", directory.resolve("paths.tar"))) {
+            assertEquals("REAL", Files.readString(fs.getPath("/real/hard")));
+            assertEquals("ROOT", Files.readString(fs.getPath("/value.txt")));
+            assertFalse(Files.exists(fs.getPath("/rejected")));
+        }
+    }
+
+    /// Keeps dot components and symbolic-link lookup semantics when paths round-trip through provider URIs.
+    @ParameterizedTest
+    @MethodSource("configurations")
+    void preservesUriPathComponents(String format, boolean update, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, update, directory);
+             var registered = fs.provider().newFileSystem(fs.getPath("/").toUri(), Map.of())) {
+            for (String name : List.of("/alias/../value.txt", "alias/.././value.txt", "/dirlink/./value.txt")) {
+                Path path = fs.getPath(name);
+                Path restored = fs.provider().getPath(path.toUri());
+                assertEquals(registered, restored.getFileSystem());
+                assertEquals(path.toAbsolutePath().toString(), restored.toString());
+                assertEquals("REAL", Files.readString(restored));
+            }
+            Path missing = fs.getPath("/missing/../value.txt");
+            Path restored = fs.provider().getPath(missing.toUri());
+            assertEquals(missing.toString(), restored.toString());
+            assertThrows(NoSuchFileException.class, () -> Files.readString(restored));
+        }
     }
 
     /// Expands links before processing parent components, including parent components in link targets.

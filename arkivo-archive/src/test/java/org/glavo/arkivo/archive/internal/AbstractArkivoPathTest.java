@@ -227,6 +227,8 @@ final class AbstractArkivoPathTest {
                 path.toUri().toASCIIString()
         );
         assertEquals("arkivo+test:file:///tmp/archive%20name.zip!/", fileSystem.getPath("/").toUri().toString());
+        assertEquals("arkivo+test:file:///tmp/archive%20name.zip!/alias/.././a%20b/%23hash/%C3%A9",
+                fileSystem.getPath("alias/.././a b/#hash/é").toUri().toASCIIString());
         assertThrows(UnsupportedOperationException.class, () -> new TestFileSystem(null).getPath("entry").toUri());
     }
 

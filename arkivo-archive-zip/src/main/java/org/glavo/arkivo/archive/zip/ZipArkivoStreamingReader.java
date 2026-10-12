@@ -26,6 +26,9 @@ import java.util.Objects;
 /// password lookup, CRC validation, or authentication. An unopened body with a data descriptor must instead be decoded
 /// to locate its end and is validated while being consumed. After `next()` returns `false`, no current entry exists.
 ///
+/// Exceeding an entry-size or total-entry-size limit prevents further cursor advancement. Closing the entry or reader
+/// then releases resources without draining the rejected body or validating its remaining data descriptor.
+///
 /// A successfully returned reader owns the supplied stream, channel, or volume source and every volume channel it
 /// opens. Reader close releases them; closing an entry body does not close the reader. The cursor is stateful, and its
 /// configured thread-safety strategy does not make a single cursor position independently consumable by multiple

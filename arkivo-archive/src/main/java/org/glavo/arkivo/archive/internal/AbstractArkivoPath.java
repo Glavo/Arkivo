@@ -13,6 +13,7 @@ import java.net.URISyntaxException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemLoopException;
 import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.NotDirectoryException;
 import java.nio.file.NotLinkException;
 import java.nio.file.Path;
@@ -323,14 +324,14 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
         return createPath(false, relativeNames);
     }
 
-    /// Converts this path to an archive URI.
+    /// Converts this path to an absolute archive URI without normalizing its name elements or resolving links.
     @Override
     public final URI toUri() {
         @Nullable URI sourceUri = archiveUri();
         if (sourceUri == null) {
             throw new UnsupportedOperationException("Archive paths without a source URI cannot be converted to URIs");
         }
-        AbstractArkivoPath<F> absolutePath = requireCompatiblePath(toAbsolutePath().normalize());
+        AbstractArkivoPath<F> absolutePath = requireCompatiblePath(toAbsolutePath());
         return URI.create(uriScheme() + ":" + sourceUri.toASCIIString() + "!/" + uriPath(absolutePath.names));
     }
 
@@ -364,6 +365,20 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// @return a checked absolute path suitable for direct entry lookup
     /// @throws IOException if a component is absent, a parent is not a directory, or a link cannot be resolved
     final AbstractArkivoPath<F> resolvePath(boolean followFinalLink) throws IOException {
+        return resolvePath(followFinalLink, false, false);
+    }
+
+    /// Resolves existing components and optionally retains a missing suffix for formats that synthesize parents.
+    /// Missing parent components are accepted only when the remaining suffix has no `.` or `..` elements.
+    ///
+    /// @param followFinalLink whether to resolve the final symbolic link
+    /// @param allowMissingFinal whether the final entry, or a final link's target, may be absent
+    /// @param allowMissingParents whether missing parent names may be retained for subsequent creation
+    /// @return an absolute path with resolved parents
+    /// @throws IOException if a required component is absent, a parent is not a directory, or link resolution fails
+    final AbstractArkivoPath<F> resolvePath(
+            boolean followFinalLink, boolean allowMissingFinal, boolean allowMissingParents
+    ) throws IOException {
         ArrayDeque<String> pending = new ArrayDeque<>(names);
         ArrayList<String> resolved = new ArrayList<>();
         @Nullable BasicFileAttributes attributes = null;
@@ -385,7 +400,18 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             }
             resolved.add(name);
             AbstractArkivoPath<F> candidate = createPath(true, resolved);
-            attributes = candidate.readEntryAttributes();
+            try {
+                attributes = candidate.readEntryAttributes();
+            } catch (NoSuchFileException exception) {
+                if (allowMissingFinal && pending.isEmpty()) {
+                    return equals(candidate) ? this : candidate;
+                }
+                if (allowMissingParents && !pending.contains(".") && !pending.contains("..")) {
+                    resolved.addAll(pending);
+                    return createPath(true, resolved);
+                }
+                throw exception;
+            }
             if (attributes.isSymbolicLink() && (followFinalLink || !pending.isEmpty())) {
                 final AbstractArkivoPath<F> target;
                 try {

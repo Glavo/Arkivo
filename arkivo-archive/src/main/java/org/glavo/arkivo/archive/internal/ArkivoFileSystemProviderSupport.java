@@ -130,6 +130,38 @@ public final class ArkivoFileSystemProviderSupport {
         return followFinalLink ? path.toRealPath() : path;
     }
 
+    /// Resolves an archive mutation path without requiring a new final entry to exist.
+    ///
+    /// @param path the archive path to resolve
+    /// @param followFinalLink whether the operation follows the final symbolic link
+    /// @return an absolute path with existing parent components resolved
+    /// @throws IOException if required components do not exist or cannot be resolved
+    /// @throws ProviderMismatchException if the path is not an Arkivo path
+    public static Path resolveMutationPath(Path path, boolean followFinalLink)
+            throws IOException {
+        return resolveMutationPath(path, followFinalLink, false);
+    }
+
+    /// Resolves a mutation path for a format that may create implicit parent directories.
+    ///
+    /// This method does not create entries. When a parent is missing, the unresolved suffix must contain no `.` or `..`
+    /// elements. Existing parents and symbolic links are resolved before returning the target path.
+    ///
+    /// @param path the archive path to resolve
+    /// @param followFinalLink whether to follow the terminal symbolic link
+    /// @param createParents whether missing parent names may be returned for subsequent creation
+    /// @return the absolute target path, with every existing parent resolved
+    /// @throws IOException if a required component cannot be resolved
+    /// @throws ProviderMismatchException if the path is not an Arkivo path
+    public static Path resolveMutationPath(Path path, boolean followFinalLink, boolean createParents)
+            throws IOException {
+        Objects.requireNonNull(path, "path");
+        if (!(path instanceof AbstractArkivoPath<?> archivePath)) {
+            throw new ProviderMismatchException();
+        }
+        return archivePath.resolvePath(followFinalLink, true, createParents);
+    }
+
     /// Creates a lazily resolved path for a file attribute view.
     ///
     /// Attribute-view lookup cannot report `IOException`, so symbolic links are resolved only when an operation is

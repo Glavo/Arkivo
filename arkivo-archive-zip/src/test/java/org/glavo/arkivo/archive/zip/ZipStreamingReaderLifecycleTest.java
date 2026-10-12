@@ -3,9 +3,14 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -15,6 +20,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.Random;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,6 +32,89 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies streaming ZIP reader cleanup and failure-preservation behavior.
 @NotNullByDefault
 final class ZipStreamingReaderLifecycleTest {
+    /// Stops consuming compressed input after a size limit fails, including nested close-time cleanup.
+    @ParameterizedTest
+    @ValueSource(strings = {"read", "close", "next", "reader-close", "next-unopened"})
+    void stopsDrainingAfterSizeLimitFailure(String operation) throws IOException {
+        byte[] content = new byte[256 * 1024];
+        new Random(17L).nextBytes(content);
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive)) {
+            try (var output = writer.beginFile("large.bin").openOutputStream()) {
+                output.write(content);
+            }
+        }
+        for (boolean total : new boolean[]{false, true}) {
+            ArchiveReadLimits limits = total
+                    ? ArchiveReadLimits.builder().maximumTotalEntrySize(8L).build()
+                    : ArchiveReadLimits.builder().maximumEntrySize(8L).build();
+            ByteArrayInputStream source = new ByteArrayInputStream(archive.toByteArray());
+            ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(source,
+                    new ZipArchiveOptions.Read(ArchiveReadOptions.DEFAULT.withLimits(limits)));
+            try {
+                assertTrue(reader.next());
+                if (operation.equals("next-unopened")) {
+                    assertThrows(ArkivoReadLimitException.class, reader::next);
+                } else {
+                    InputStream input = reader.openInputStream();
+                    assertThrows(ArkivoReadLimitException.class, () -> {
+                        switch (operation) {
+                            case "read" -> input.readAllBytes();
+                            case "close" -> input.close();
+                            case "next" -> reader.next();
+                            case "reader-close" -> reader.close();
+                            default -> throw new AssertionError(operation);
+                        }
+                    });
+                    int remaining = source.available();
+                    try {
+                        input.close();
+                    } catch (ArkivoReadLimitException expected) {
+                    }
+                    assertEquals(remaining, source.available(), "Entry close must not consume input after rejection");
+                }
+                assertTrue(source.available() > content.length / 2, "Limit failure must not drain the entry");
+                int remaining = source.available();
+                reader.close();
+                reader.close();
+                assertEquals(remaining, source.available());
+            } finally {
+                reader.close();
+            }
+        }
+    }
+
+    /// Keeps a size-limit failure primary while allowing a failed source close to be retried without further reads.
+    @Test
+    void retriesSourceCloseWithoutDrainingRejectedEntry() throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (var writer = ZipArkivoStreamingWriter.open(archive)) {
+            try (var output = writer.beginFile("large.bin").openOutputStream()) {
+                byte[] bytes = new byte[64 * 1024];
+                new Random(19L).nextBytes(bytes);
+                output.write(bytes);
+            }
+        }
+        var source = new CloseFailingOnceInputStream(archive.toByteArray());
+        var options = new ZipArchiveOptions.Read(ArchiveReadOptions.DEFAULT
+                .withLimits(ArchiveReadLimits.builder().maximumEntrySize(8L).build()));
+        try (var reader = ZipArkivoStreamingReader.open(source, options)) {
+            assertTrue(reader.next());
+            var input = reader.openInputStream();
+            assertThrows(ArkivoReadLimitException.class, input::readAllBytes);
+            int remaining = source.available();
+            ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, reader::close);
+            assertTrue(java.util.Arrays.stream(failure.getSuppressed())
+                    .anyMatch(exception -> "close failed".equals(exception.getMessage())));
+            assertEquals(remaining, source.available());
+            reader.close();
+            reader.close();
+            assertEquals(2, source.closeCount());
+            assertTrue(source.closed());
+            assertEquals(remaining, source.available());
+        }
+    }
+
     /// Verifies reader close preserves entry validation failure when source close also fails.
     @Test
     void closePreservesEntryFailureWhenSourceCloseFails() throws IOException {

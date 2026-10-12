@@ -1923,7 +1923,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             lock();
             try {
                 checkOpen();
+                path = resolveMutationPath(path, !containsOpenOption(options, StandardOpenOption.CREATE_NEW));
                 String name = regularEntryName(path);
+                requireFileBodyEntry(name);
                 EntryMetadata metadata = rewriteSnapshot != null && visibleEntry(name)
                         ? replacementMetadata(readZipAttributesLocked(path, name))
                         : EntryMetadata.deflated(config.defaultEncryption());
@@ -2045,7 +2047,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 throw new IllegalArgumentException("ZIP update entry channel requires READ, WRITE, or APPEND");
             }
 
+            path = resolveMutationPath(path, !options.contains(StandardOpenOption.CREATE_NEW));
             String entryName = regularEntryName(path);
+            requireFileBodyEntry(entryName);
             boolean existing = visibleEntry(entryName);
             boolean create = options.contains(StandardOpenOption.CREATE)
                     || options.contains(StandardOpenOption.CREATE_NEW);
@@ -2055,10 +2059,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             if (existing && options.contains(StandardOpenOption.CREATE_NEW)) {
                 throw new FileAlreadyExistsException(path.toString());
             }
-            if (!existing && visibleDirectory(entryName)) {
-                throw new FileSystemException(path.toString(), null, "ZIP entry is a directory");
-            }
-
             boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
             EntryMetadata initialMetadata = applyInitialAttributes(
                     EntryMetadata.deflated(config.defaultEncryption()),
@@ -2433,6 +2433,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 throw new UnsupportedOperationException("ZIP directory entries cannot be encrypted");
             }
 
+            directory = resolveMutationPath(directory, false);
             String entryName = directoryEntryName(directory);
             if (entryName.isEmpty()) {
                 return;
@@ -2507,6 +2508,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             if (metadata.method != STORED_METHOD) {
                 throw new UnsupportedOperationException("In-memory ZIP entries must use the stored method");
             }
+            path = resolveMutationPath(path, false);
             String entryName = regularEntryName(path);
             requireNoActiveEntry();
             checkNewEntry(entryName);
@@ -2617,6 +2619,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         try {
             checkOpen();
             requireNoActiveEntry();
+            path = resolveMutationPath(path, false);
             String entryName = entryName(path);
             if (entryName.isEmpty()) {
                 throw new DirectoryNotEmptyException(path.toString());
@@ -2666,6 +2669,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 }
             }
 
+            source = resolveMutationPath(source, false);
+            target = resolveMutationPath(target, false);
             String sourceName = entryName(source);
             String targetName = entryName(target);
             if (sourceName.isEmpty() || targetName.isEmpty()) {
@@ -3088,22 +3093,29 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         }
     }
 
-    /// Checks that the entry name has not already been written.
+    /// Rejects occupied entry names, allowing only directory records to materialize an implicit directory.
     private void checkNewEntry(String entryName) throws IOException {
         String key = entryNameKey(entryName);
-        if (visibleWrittenEntry(key) || visibleExistingEntry(key)) {
+        if (visibleWrittenEntry(key) || visibleExistingEntry(key)
+                || !entryName.endsWith("/") && visibleDirectory(key)) {
             throw new java.nio.file.FileAlreadyExistsException(entryName);
         }
     }
 
     /// Checks whether an entry body can replace a visible entry in this output session.
     private boolean checkWritableFileEntry(String entryName, OpenOption... options) throws IOException {
+        requireFileBodyEntry(entryName);
         boolean writtenEntry = visibleWrittenEntry(entryName);
         if (writtenEntry && rewriteSnapshot == null) {
             throw new java.nio.file.FileAlreadyExistsException(entryName);
         }
         boolean existingEntry = writtenEntry || visibleExistingEntry(entryName);
         if (!existingEntry) {
+            if (options.length > 0
+                    && !containsOpenOption(options, StandardOpenOption.CREATE)
+                    && !containsOpenOption(options, StandardOpenOption.CREATE_NEW)) {
+                throw new NoSuchFileException(entryName);
+            }
             return false;
         }
         if (!replaceExistingEntries) {
@@ -3301,6 +3313,24 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             throw new IllegalArgumentException("ZIP symbolic link target must not be empty");
         }
         return text;
+    }
+
+    /// Resolves update parents before selecting a mutation target, optionally following the terminal link.
+    /// Missing terminal entries remain available for the operation's own creation checks.
+    private Path resolveMutationPath(Path path, boolean followFinalLink) throws IOException {
+        if (path.getFileSystem() != this) {
+            throw new java.nio.file.ProviderMismatchException();
+        }
+        return rewriteSnapshot == null ? path
+                : ArkivoFileSystemProviderSupport.resolveMutationPath(path, followFinalLink);
+    }
+
+    /// Rejects body writes to explicit and synthetic directories before any output or staging is created.
+    private void requireFileBodyEntry(String entryName) throws IOException {
+        if (visibleDirectory(entryName)
+                || visibleEntry(entryName) && readZipAttributesLocked(getPath("/" + entryName), entryName).isDirectory()) {
+            throw new FileSystemException(entryName, null, "ZIP entry is a directory");
+        }
     }
 
     /// Returns a regular file entry name for the given path.

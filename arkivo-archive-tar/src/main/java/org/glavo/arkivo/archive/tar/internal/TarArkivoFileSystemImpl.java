@@ -933,6 +933,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         requireWritableFileSystem();
         if (updateMode) {
             String entryPath = prepareUpdateEntry(link);
+            existing = ArkivoFileSystemProviderSupport.resolveMutationPath(existing, false);
             Node target = requireNode(existing);
             if (!target.attributes().isRegularFile() || target.directory()) {
                 throw new FileSystemException(existing.toString(), null, "TAR hard link target is not a regular file");
@@ -978,6 +979,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private void deleteLocked(Path path) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
+        path = ArkivoFileSystemProviderSupport.resolveMutationPath(path, false);
         String entryPath = normalizedNodePath(path);
         if (entryPath.isEmpty()) {
             throw new FileSystemException(path.toString(), null, "The TAR root cannot be deleted");
@@ -1028,6 +1030,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             }
         }
 
+        source = ArkivoFileSystemProviderSupport.resolveMutationPath(source, false);
+        target = ArkivoFileSystemProviderSupport.resolveMutationPath(target, false);
         String sourcePath = normalizedNodePath(source);
         String targetPath = normalizedNodePath(target);
         if (sourcePath.isEmpty() || targetPath.isEmpty()) {
@@ -1715,6 +1719,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             throw new FileSystemException(path.toString(), null, "Another TAR entry update channel is already open");
         }
 
+        path = ArkivoFileSystemProviderSupport.resolveMutationPath(
+                path,
+                !options.contains(StandardOpenOption.CREATE_NEW),
+                options.contains(StandardOpenOption.CREATE) || options.contains(StandardOpenOption.CREATE_NEW)
+        );
         String entryPath = normalizedNodePath(path);
         if (entryPath.isEmpty()) {
             throw new FileSystemException(path.toString(), null, "The TAR root cannot be opened as a file");
@@ -1813,6 +1822,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private String prepareUpdateEntry(Path path) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
+        path = ArkivoFileSystemProviderSupport.resolveMutationPath(path, false, true);
         String entryPath = normalizedNodePath(path);
         if (entryPath.isEmpty() || nodes.containsKey(entryPath)) {
             throw new FileAlreadyExistsException(path.toString());

@@ -1094,6 +1094,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     private void deleteLocked(Path path) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
+        path = ArkivoFileSystemProviderSupport.resolveMutationPath(path, false);
         String pathText = requireExistingPath(path);
         if ("/".equals(pathText)) {
             throw new java.nio.file.FileSystemException(path.toString(), null, "The 7z root cannot be deleted");
@@ -1149,6 +1150,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
         }
 
+        source = ArkivoFileSystemProviderSupport.resolveMutationPath(source, false);
+        target = ArkivoFileSystemProviderSupport.resolveMutationPath(target, false);
         String sourcePath = requireExistingPath(source);
         String targetPath = normalizedPathText(target);
         if ("/".equals(sourcePath) || "/".equals(targetPath)) {
@@ -2253,6 +2256,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             throw new IllegalArgumentException("7z entry update channel requires READ, WRITE, or APPEND");
         }
 
+        path = ArkivoFileSystemProviderSupport.resolveMutationPath(path, !options.contains(StandardOpenOption.CREATE_NEW));
         String pathText = normalizedPathText(path);
         if ("/".equals(pathText)) {
             throw new java.nio.file.FileSystemException(path.toString(), null, "The 7z root is a directory");
@@ -2384,6 +2388,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     private String prepareUpdateEntry(Path path) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
+        path = ArkivoFileSystemProviderSupport.resolveMutationPath(path, false);
         String pathText = normalizedPathText(path);
         if ("/".equals(pathText) || entries.containsKey(pathText) || children.containsKey(pathText)) {
             throw new FileAlreadyExistsException(path.toString());

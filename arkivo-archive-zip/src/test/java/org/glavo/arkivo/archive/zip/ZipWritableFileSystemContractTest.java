@@ -6,6 +6,8 @@ package org.glavo.arkivo.archive.zip;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -23,7 +25,9 @@ import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.DosFileAttributeView;
@@ -53,6 +57,155 @@ final class ZipWritableFileSystemContractTest {
     /// Temporary directory used for path-backed ZIP archives.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Treats implicit directories as occupied link names while still allowing explicit directory records.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsLinksOverImplicitDirectories(boolean update) throws IOException {
+        Path archive = temporaryDirectory.resolve("implicit-directory.zip");
+        if (update) {
+            try (var fs = ZipArkivoFileSystem.create(archive)) {
+                Files.writeString(fs.getPath("/implicit/child"), "child");
+            }
+        }
+        try (var fs = update ? ZipArkivoFileSystem.update(archive) : ZipArkivoFileSystem.create(archive)) {
+            if (!update) {
+                Files.writeString(fs.getPath("/implicit/child"), "child");
+            }
+            Path directory = fs.getPath("/implicit");
+            assertThrows(FileAlreadyExistsException.class,
+                    () -> Files.createSymbolicLink(directory, fs.getPath("target")));
+            assertTrue(Files.isDirectory(directory));
+            assertTrue(Files.exists(directory.resolve("child")));
+            Files.createDirectory(directory);
+            Files.writeString(fs.getPath("/valid"), "valid");
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            assertTrue(Files.isDirectory(fs.getPath("/implicit")));
+            assertEquals("child", Files.readString(fs.getPath("/implicit/child")));
+            assertEquals("valid", Files.readString(fs.getPath("/valid")));
+        }
+    }
+
+    /// Rejects body writes to explicit and synthetic directories without damaging their entries.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsDirectoryBodiesBeforeWriting(boolean update) throws IOException {
+        Path archive = temporaryDirectory.resolve("directories.zip");
+        if (update) {
+            try (var fs = ZipArkivoFileSystem.create(archive)) {
+                Files.createDirectory(fs.getPath("/explicit"));
+                Files.writeString(fs.getPath("/implicit/child"), "child");
+            }
+        }
+        try (var fs = update ? ZipArkivoFileSystem.update(archive) : ZipArkivoFileSystem.create(archive)) {
+            if (!update) {
+                Files.createDirectory(fs.getPath("/explicit"));
+                Files.writeString(fs.getPath("/implicit/child"), "child");
+            }
+            for (String name : List.of("/explicit", "/implicit")) {
+                Path directory = fs.getPath(name);
+                assertThrows(FileSystemException.class, () -> Files.newOutputStream(directory).close());
+                assertThrows(FileSystemException.class, () -> Files.newByteChannel(directory,
+                        StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING).close());
+                assertTrue(Files.isDirectory(directory));
+            }
+            Files.writeString(fs.getPath("/valid"), "valid");
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            assertTrue(Files.isDirectory(fs.getPath("/explicit")));
+            assertTrue(Files.isDirectory(fs.getPath("/implicit")));
+            assertEquals("child", Files.readString(fs.getPath("/implicit/child")));
+            assertEquals("valid", Files.readString(fs.getPath("/valid")));
+        }
+    }
+
+    /// Requires explicit creation options when callers supply output options.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void requiresCreateForMissingEntries(boolean update) throws IOException {
+        Path archive = temporaryDirectory.resolve("creation-options.zip");
+        if (update) {
+            try (var ignored = ZipArkivoFileSystem.create(archive)) {
+            }
+        }
+        try (var fs = update ? ZipArkivoFileSystem.update(archive) : ZipArkivoFileSystem.create(archive)) {
+            Path missing = fs.getPath("/missing");
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.newOutputStream(missing, StandardOpenOption.WRITE).close());
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.newOutputStream(missing, StandardOpenOption.TRUNCATE_EXISTING).close());
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.newByteChannel(missing, StandardOpenOption.WRITE).close());
+            assertFalse(Files.exists(missing));
+            Files.writeString(fs.getPath("/default"), "default");
+            Files.writeString(fs.getPath("/explicit"), "explicit", StandardOpenOption.CREATE_NEW);
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            assertFalse(Files.exists(fs.getPath("/missing")));
+            assertEquals("default", Files.readString(fs.getPath("/default")));
+            assertEquals("explicit", Files.readString(fs.getPath("/explicit")));
+        }
+    }
+
+    /// Resolves update paths before selecting entries while retaining terminal links for namespace operations.
+    @Test
+    void resolvesUpdatePathsWithoutChangingLexicalNeighbors() throws IOException {
+        Path archive = temporaryDirectory.resolve("update-paths.zip");
+        try (var fs = ZipArkivoFileSystem.create(archive)) {
+            Files.createDirectories(fs.getPath("/real/sub"));
+            for (String name : List.of("value", "deleted", "moved")) {
+                Files.writeString(fs.getPath("/" + name), "ROOT");
+                Files.writeString(fs.getPath("/real/" + name), "REAL");
+            }
+            Files.createSymbolicLink(fs.getPath("/alias"), fs.getPath("real/sub"));
+            Files.createSymbolicLink(fs.getPath("/filelink"), fs.getPath("real/value"));
+            Files.createSymbolicLink(fs.getPath("/dangling"), fs.getPath("real/new"));
+        }
+        try (var fs = ZipArkivoFileSystem.update(archive)) {
+            Files.writeString(fs.getPath("/alias/../value"), "STREAM");
+            assertEquals("STREAM", Files.readString(fs.getPath("/real/value")));
+            assertEquals("ROOT", Files.readString(fs.getPath("/value")));
+            try (var channel = Files.newByteChannel(fs.getPath("/filelink"),
+                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                channel.write(ByteBuffer.wrap("CHANNEL".getBytes(StandardCharsets.UTF_8)));
+            }
+            assertEquals("CHANNEL", Files.readString(fs.getPath("/real/value")));
+            assertTrue(Files.isSymbolicLink(fs.getPath("/filelink")));
+            assertThrows(FileAlreadyExistsException.class,
+                    () -> Files.newByteChannel(fs.getPath("/filelink"),
+                            StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW).close());
+            assertThrows(FileAlreadyExistsException.class,
+                    () -> Files.newOutputStream(fs.getPath("/dangling"), StandardOpenOption.CREATE_NEW).close());
+            Files.writeString(fs.getPath("/dangling"), "NEW");
+            assertTrue(Files.isSymbolicLink(fs.getPath("/dangling")));
+            assertEquals("NEW", Files.readString(fs.getPath("/real/new")));
+            Files.delete(fs.getPath("/alias/../deleted"));
+            Files.move(fs.getPath("/alias/../moved"), fs.getPath("/alias/../renamed"));
+            Files.createDirectory(fs.getPath("/alias/../created"));
+            Files.createSymbolicLink(fs.getPath("/alias/../link"), fs.getPath("value"));
+            Files.move(fs.getPath("/filelink"), fs.getPath("/moved-link"), StandardCopyOption.REPLACE_EXISTING);
+            assertTrue(Files.isSymbolicLink(fs.getPath("/moved-link")));
+            Files.delete(fs.getPath("/moved-link"));
+            assertEquals("CHANNEL", Files.readString(fs.getPath("/real/value")));
+            assertThrows(NoSuchFileException.class, () -> Files.writeString(fs.getPath("/absent/../value"), "BAD"));
+            assertThrows(NotDirectoryException.class, () -> Files.writeString(fs.getPath("/value/../value"), "BAD"));
+            assertThrows(NoSuchFileException.class, () -> Files.delete(fs.getPath("/absent/../value")));
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.move(fs.getPath("/value"), fs.getPath("/absent/../value")));
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            for (String name : List.of("value", "deleted", "moved")) {
+                assertEquals("ROOT", Files.readString(fs.getPath("/" + name)));
+            }
+            assertEquals("CHANNEL", Files.readString(fs.getPath("/real/value")));
+            assertFalse(Files.exists(fs.getPath("/real/deleted")));
+            assertFalse(Files.exists(fs.getPath("/real/moved")));
+            assertEquals("REAL", Files.readString(fs.getPath("/real/renamed")));
+            assertTrue(Files.isDirectory(fs.getPath("/real/created")));
+            assertTrue(Files.isSymbolicLink(fs.getPath("/real/link")));
+        }
+    }
 
     /// Verifies a forward-only writer exposes coherent NIO infrastructure and rejects unavailable read operations.
     @Test

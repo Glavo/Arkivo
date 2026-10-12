@@ -2374,6 +2374,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         }
 
         /// Closes this compressed entry stream after draining unread bytes.
+        /// A recorded archive limit failure skips draining and descriptor validation but still releases the decoder.
         @Override
         public void close() throws IOException {
             if (closed) {
@@ -2383,6 +2384,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
             Throwable failure = null;
             try {
+                readLimits.requireWithinLimits();
                 if (!finishedEntry) {
                     byte[] discard = discardBuffer();
                     while (readUnchecked(discard, 0, discard.length) >= 0) {
@@ -2432,6 +2434,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
             Throwable failure = null;
             try {
+                readLimits.requireWithinLimits();
                 if (!streamFinished) {
                     failure = new EOFException("Unexpected end of " + formatDisplayName + " ZIP entry before data descriptor");
                 } else {
@@ -2595,6 +2598,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         }
 
         /// Drains the stored entry.
+        /// A recorded archive limit failure stops cleanup without consuming more input.
         @Override
         public void close() throws IOException {
             if (closed) {
@@ -2602,6 +2606,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             closed = true;
 
+            readLimits.requireWithinLimits();
             byte[] discard = new byte[8192];
             while (readUnchecked(discard, 0, discard.length) >= 0) {
                 // Drain stored data until its signed or unsigned descriptor has been consumed.
@@ -2841,6 +2846,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         }
 
         /// Drains the encrypted stored entry.
+        /// A recorded archive limit failure stops cleanup without consuming more input.
         @Override
         public void close() throws IOException {
             if (closed) {
@@ -2848,6 +2854,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             closed = true;
 
+            readLimits.requireWithinLimits();
             byte[] discard = new byte[8192];
             while (readUnchecked(discard, 0, discard.length) >= 0) {
                 // Drain encrypted stored data until authentication and descriptor bytes have been consumed.
@@ -3099,7 +3106,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             return count;
         }
 
-        /// Drains the encrypted stored entry.
+        /// Drains the encrypted stored entry unless an archive limit has already failed.
         @Override
         public void close() throws IOException {
             if (closed) {
@@ -3107,6 +3114,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             closed = true;
 
+            readLimits.requireWithinLimits();
             byte[] discard = new byte[8192];
             while (readUnchecked(discard, 0, discard.length) >= 0) {
                 // Drain encrypted stored data until the signed descriptor has been consumed.

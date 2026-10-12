@@ -3,7 +3,10 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -17,6 +20,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Random;
 import java.util.stream.Stream;
 
 import static org.glavo.arkivo.archive.zip.ZipTestArchiveFixtures.createTemporaryArchivePath;
@@ -38,6 +42,39 @@ public final class ZipStreamingCompressedDescriptorTest {
     /// The password shared by encrypted descriptor cases.
     private static final byte @Unmodifiable [] PASSWORD =
             "descriptor secret".getBytes(StandardCharsets.UTF_8);
+
+    /// Releases every descriptor decoder without consuming more input after its entry-size limit fails.
+    @ParameterizedTest(name = "{0} with {1}, AE-2={2}")
+    @MethodSource("descriptorConfigurations")
+    public void closesRejectedDescriptorWithoutReadingMore(
+            ZipMethod method, ZipEncryption encryption, boolean ae2
+    ) throws IOException {
+        Path archivePath = createTemporaryArchivePath("limited-descriptor-");
+        byte[] content = new byte[64 * 1024];
+        new Random(31L).nextBytes(content);
+        try {
+            writeDescriptorArchive(archivePath, method, encryption, content, new byte[]{1, 2, 3});
+            byte[] archive = Files.readAllBytes(archivePath);
+            ByteArrayInputStream source = new ByteArrayInputStream(ae2 ? withAe2FirstEntry(archive) : archive);
+            var common = ArchiveReadOptions.DEFAULT
+                    .withLimits(ArchiveReadLimits.builder().maximumEntrySize(8L).build())
+                    .withPasswordProvider(ArkivoPasswordProvider.fixed(PASSWORD));
+            try (var reader = ZipArkivoStreamingReader.open(source, new ZipArchiveOptions.Read(common))) {
+                assertTrue(reader.next());
+                var input = reader.openInputStream();
+                assertThrows(ArkivoReadLimitException.class, input::readAllBytes);
+                int remaining = source.available();
+                assertThrows(ArkivoReadLimitException.class, input::close);
+                assertEquals(remaining, source.available(), "Rejected entries must not drain on close");
+                input.close();
+                assertThrows(ArkivoReadLimitException.class, reader::next);
+                reader.close();
+                assertEquals(remaining, source.available(), "Reader cleanup must not resume decoding");
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
 
     /// Reads a compressed data-descriptor entry and the stored entry immediately following it.
     @ParameterizedTest(name = "{0} with {1}, AE-2={2}")
