@@ -38,6 +38,8 @@ import java.util.Set;
 /// storage and any caller-supplied repeatable source.
 /// An entry being replaced through an open writable channel is hidden from new reads until that channel closes;
 /// channels and attribute snapshots opened before the replacement retain the preceding entry state.
+/// Writing through a hard link stages replacement content for its regular-file target. A successful channel close
+/// updates the content visible through all hard links to that target while retaining their link records.
 /// If a storage write or truncation fails on an update channel, further mutations through that channel fail. Closing
 /// it discards the staged body and reports an `IOException` with the mutation failure as its cause. An existing entry
 /// remains unchanged, and a new entry is not added. Invalid arguments rejected before storage access do not discard a body.

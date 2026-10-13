@@ -8,6 +8,8 @@ import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -40,6 +42,7 @@ import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.time.Instant;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -58,6 +61,64 @@ final class TarArkivoFileSystemContractTest {
     /// Temporary directory used for path-backed TAR archives.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Writes through chained hard links without replacing their link records.
+    @ParameterizedTest
+    @ValueSource(strings = {"stream", "channel", "append", "truncate", "symbolic"})
+    void updatesHardLinkContent(String operation) throws IOException {
+        Path archive = temporaryDirectory.resolve("hard-links.tar");
+        try (var writer = TarArkivoStreamingWriter.create(archive)) {
+            try (var entry = writer.beginFile("original"); var output = entry.openOutputStream()) {
+                output.write("old".getBytes(StandardCharsets.UTF_8));
+            }
+            writer.beginHardLink("alias", "original").close();
+            writer.beginHardLink("chain", "alias").close();
+            writer.beginSymbolicLink("symbolic", "chain").close();
+        }
+        String expected = switch (operation) {
+            case "append" -> "oldnew";
+            case "truncate" -> "o";
+            default -> "new";
+        };
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            Path path = fs.getPath(operation.equals("symbolic") ? "symbolic" : "chain");
+            assertThrows(FileAlreadyExistsException.class,
+                    () -> Files.newByteChannel(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW));
+            switch (operation) {
+                case "append" -> Files.writeString(path, "new", StandardOpenOption.APPEND);
+                case "channel", "truncate" -> {
+                    try (var preceding = Files.newInputStream(fs.getPath("original"));
+                         var channel = Files.newByteChannel(path, StandardOpenOption.WRITE)) {
+                        if (operation.equals("truncate")) {
+                            channel.truncate(1);
+                        } else {
+                            channel.write(ByteBuffer.wrap("new".getBytes(StandardCharsets.UTF_8)));
+                        }
+                        assertEquals("old", new String(preceding.readAllBytes(), StandardCharsets.UTF_8));
+                        assertThrows(FileSystemException.class, () -> Files.readString(fs.getPath("original")));
+                    }
+                }
+                default -> Files.writeString(path, "new");
+            }
+            assertHardLinkContent(fs, expected);
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            assertHardLinkContent(fs, expected);
+        }
+    }
+
+    /// Checks shared bytes and the persisted targets of each hard-link record.
+    private static void assertHardLinkContent(TarArkivoFileSystem fs, String expected) throws IOException {
+        for (String name : List.of("original", "alias", "chain", "symbolic")) {
+            assertEquals(expected, Files.readString(fs.getPath(name)));
+            assertEquals(expected.length(), Files.size(fs.getPath(name)));
+        }
+        for (String name : List.of("alias", "chain")) {
+            var attributes = Files.readAttributes(fs.getPath(name), TarArkivoEntryAttributes.class);
+            assertTrue(attributes.isHardLink());
+            assertEquals(name.equals("alias") ? "original" : "alias", attributes.linkName());
+        }
+    }
 
     /// Verifies roots, stores, matchers, principals, view discovery, and closed-state behavior.
     @Test

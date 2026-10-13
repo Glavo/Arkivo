@@ -109,8 +109,41 @@ final class AbstractArkivoPathTest {
         assertEquals("", empty.toString());
         assertFalse(empty.isAbsolute());
         assertNull(empty.getRoot());
-        assertNull(empty.getFileName());
+        assertEquals(empty, empty.getFileName());
         assertNull(empty.getParent());
+    }
+
+    /// Empty relative paths expose one empty name, including results of normalization and relativization.
+    @Test
+    void exposesEmptyNameComponents() {
+        TestFileSystem fs = new TestFileSystem(null);
+        Path empty = fs.getPath("");
+        for (Path path : List.of(empty, fs.getPath("a").relativize(fs.getPath("a")),
+                fs.getPath(".").normalize(), fs.getPath("a/..").normalize())) {
+            assertEquals(empty, path);
+            assertEquals(1, path.getNameCount());
+            assertEquals(empty, path.getFileName());
+            assertEquals(empty, path.getName(0));
+            assertEquals(empty, path.subpath(0, 1));
+            Iterator<Path> iterator = path.iterator();
+            assertEquals(empty, iterator.next());
+            assertFalse(iterator.hasNext());
+            assertThrows(IllegalArgumentException.class, () -> path.getName(1));
+            assertEquals(fs.getPath("/"), path.toAbsolutePath());
+            assertTrue(path.startsWith(empty));
+            assertTrue(path.endsWith(empty));
+        }
+        for (String name : List.of("a", "/", "/a")) {
+            Path path = fs.getPath(name);
+            assertFalse(path.startsWith(empty));
+            assertFalse(path.endsWith(empty));
+            assertEquals(path, path.resolve(empty));
+            assertEquals(path, empty.resolve(path));
+        }
+        assertEquals(fs.getPath("a/b"), empty.relativize(fs.getPath("a/b")));
+        assertEquals(fs.getPath("../.."), fs.getPath("a/b").relativize(empty));
+        assertEquals(0, fs.getPath("/").getNameCount());
+        assertFalse(fs.getPath("/").iterator().hasNext());
     }
 
     /// Verifies invalid component indexes and subpath ranges are rejected.

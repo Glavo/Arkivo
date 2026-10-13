@@ -53,6 +53,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystemException;
+import java.nio.file.FileSystemLoopException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
@@ -1724,22 +1725,24 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 !options.contains(StandardOpenOption.CREATE_NEW),
                 options.contains(StandardOpenOption.CREATE) || options.contains(StandardOpenOption.CREATE_NEW)
         );
-        String entryPath = normalizedNodePath(path);
-        if (entryPath.isEmpty()) {
+        String requestedPath = normalizedNodePath(path);
+        if (requestedPath.isEmpty()) {
             throw new FileSystemException(path.toString(), null, "The TAR root cannot be opened as a file");
         }
-        @Nullable Node existing = nodes.get(entryPath);
+        @Nullable Node requested = nodes.get(requestedPath);
         boolean create = options.contains(StandardOpenOption.CREATE) || options.contains(StandardOpenOption.CREATE_NEW);
         boolean createNew = options.contains(StandardOpenOption.CREATE_NEW);
-        if (existing == null && !create) {
+        if (requested == null && !create) {
             throw new NoSuchFileException(path.toString());
         }
-        if (existing != null && createNew) {
+        if (requested != null && createNew) {
             throw new FileAlreadyExistsException(path.toString());
         }
-        if (existing != null && existing.directory()) {
+        if (requested != null && requested.directory()) {
             throw new FileSystemException(path.toString(), null, "TAR entry is a directory");
         }
+        @Nullable Node existing = requested != null ? resolveHardLinkContentNode(requested) : null;
+        String entryPath = existing != null ? existing.path() : requestedPath;
         InitialAttributes initial = initialAttributes(attributes);
         boolean append = options.contains(StandardOpenOption.APPEND);
         boolean writable = options.contains(StandardOpenOption.WRITE) || append;
@@ -1816,6 +1819,26 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             releaseStoredContent(pendingContent);
             throw exception;
         }
+    }
+
+    /// Resolves hard links to the entry owning their content without changing the link records.
+    private Node resolveHardLinkContentNode(Node node) throws IOException {
+        if (!node.attributes().isHardLink()) {
+            return node;
+        }
+        Set<String> visited = new HashSet<>();
+        while (node.attributes().isHardLink()) {
+            if (!visited.add(node.path())) {
+                throw new FileSystemLoopException(node.path());
+            }
+            String targetPath = normalizeHardLinkTargetPath(node.attributes());
+            @Nullable Node target = nodes.get(targetPath);
+            if (target == null || !target.attributes().isRegularFile()) {
+                throw new IOException("TAR hard link target is not available: " + targetPath);
+            }
+            node = target;
+        }
+        return node;
     }
 
     /// Prepares a previously absent path for an update-mode entry.

@@ -16,8 +16,8 @@ import java.util.Objects;
 
 /// Implements a single-iterator directory stream over an immutable entry snapshot.
 ///
-/// Filtering occurs during traversal. Iterator operations and close are serialized; closing preserves an accepted
-/// lookahead entry but prevents further filter calls.
+/// Filtering occurs during traversal. Iterator operations are serialized. Closing does not wait for an in-flight
+/// traversal; it preserves accepted lookahead and permits a filter already selected by that traversal to complete.
 ///
 /// @param <T> directory entry type
 @NotNullByDefault
@@ -29,7 +29,7 @@ public final class FixedDirectoryStream<T> implements DirectoryStream<T> {
     private final Filter<? super T> filter;
 
     /// Whether this stream remains open.
-    private boolean open = true;
+    private volatile boolean open = true;
 
     /// Whether the single permitted iterator has already been requested.
     private boolean iteratorReturned;
@@ -70,7 +70,7 @@ public final class FixedDirectoryStream<T> implements DirectoryStream<T> {
         open = false;
     }
 
-    /// Filters the snapshot one accepted entry at a time under the stream monitor.
+    /// Serializes traversal separately from close so filters may close the stream or its file system.
     @NotNullByDefault
     private final class SnapshotIterator implements Iterator<T> {
         /// Indicates that no accepted entry is buffered.
@@ -85,7 +85,7 @@ public final class FixedDirectoryStream<T> implements DirectoryStream<T> {
         /// Finds and buffers the next accepted entry without consuming existing lookahead.
         @Override
         public boolean hasNext() {
-            synchronized (FixedDirectoryStream.this) {
+            synchronized (this) {
                 if (nextIndex != NO_ENTRY) return true;
                 while (open && cursor < entries.size()) {
                     int index = cursor++;
@@ -105,7 +105,7 @@ public final class FixedDirectoryStream<T> implements DirectoryStream<T> {
         /// Consumes the accepted lookahead, even if the stream was closed after it was buffered.
         @Override
         public T next() {
-            synchronized (FixedDirectoryStream.this) {
+            synchronized (this) {
                 if (!hasNext()) throw new NoSuchElementException();
                 T entry = entries.get(nextIndex);
                 nextIndex = NO_ENTRY;

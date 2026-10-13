@@ -239,8 +239,10 @@ public abstract class ArkivoFileSystem extends FileSystem {
 
     /// Coordinates a directory stream with this file system's lifecycle.
     ///
-    /// The returned stream owns the delegate. Iterator traversal uses read coordination and iterator removal uses write
-    /// coordination.
+    /// The returned stream owns the delegate. With synchronization enabled, iterator traversal checks the file system
+    /// lifecycle before and after each call, but holds no operation lock while invoking the delegate, which may execute
+    /// user filters. The delegate must coordinate its iterator state with concurrent close. Managed iterators do not
+    /// support removal.
     ///
     /// @param <P> the directory entry type
     /// @param stream the directory stream whose ownership is transferred to the returned managed resource
@@ -934,16 +936,25 @@ public abstract class ArkivoFileSystem extends FileSystem {
         /// Returns whether another entry is available.
         @Override
         public boolean hasNext() {
-            try (Operation ignored = fileSystem.beginReadOperation()) {
-                return delegate.hasNext();
-            }
+            checkFileSystemOpen();
+            boolean result = delegate.hasNext();
+            checkFileSystemOpen();
+            return result;
         }
 
         /// Returns the next directory entry.
         @Override
         public P next() {
+            checkFileSystemOpen();
+            P result = delegate.next();
+            checkFileSystemOpen();
+            return result;
+        }
+
+        /// Checks lifecycle state without retaining a lock across a user filter callback.
+        private void checkFileSystemOpen() {
             try (Operation ignored = fileSystem.beginReadOperation()) {
-                return delegate.next();
+                // Release coordination before calling the delegate.
             }
         }
 

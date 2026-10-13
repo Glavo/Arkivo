@@ -3,9 +3,12 @@
 
 package org.glavo.arkivo.archive;
 
+import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -38,6 +41,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -59,6 +63,81 @@ public final class ArkivoFileSystemConcurrencyTest {
     /// Directory containing managed-channel test content.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Filters can perform exclusive operations without attempting to upgrade an iterator's read lock.
+    @ParameterizedTest
+    @EnumSource(ArkivoFileSystemThreadSafety.class)
+    void directoryFiltersCanWriteAndClose(ArkivoFileSystemThreadSafety mode) throws Exception {
+        var task = new FutureTask<Boolean>(() -> {
+            try (var fs = new TestFileSystem(mode);
+                 var stream = fs.managedDirectoryStream(new FixedDirectoryStream<>(List.of(Path.of("entry")),
+                         entry -> {
+                             fs.runWrite();
+                             return true;
+                         }))) {
+                assertEquals(Path.of("entry"), stream.iterator().next());
+            }
+            try (var fs = new TestFileSystem(mode);
+                 var stream = fs.managedDirectoryStream(new FixedDirectoryStream<>(List.of(Path.of("entry")),
+                         entry -> {
+                             fs.close();
+                             return true;
+                         }))) {
+                var iterator = stream.iterator();
+                if (mode == ArkivoFileSystemThreadSafety.NONE) {
+                    assertTrue(iterator.hasNext());
+                } else {
+                    assertThrows(ClosedFileSystemException.class, iterator::hasNext);
+                }
+            }
+            return true;
+        });
+        Thread worker = new Thread(task, "directory-filter-test");
+        worker.setDaemon(true);
+        worker.start();
+        task.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    /// File system close does not wait for a directory filter, including when it must close the stream in strict mode.
+    @ParameterizedTest
+    @EnumSource(value = ArkivoFileSystemThreadSafety.class, names = {"CONCURRENT_READ", "STRICT"})
+    void closeOverlapsDirectoryFilter(ArkivoFileSystemThreadSafety mode) throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        var fs = new TestFileSystem(mode);
+        var stream = fs.managedDirectoryStream(new FixedDirectoryStream<>(List.of(Path.of("entry")), entry -> {
+            entered.countDown();
+            try {
+                if (!release.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IOException("Filter timed out");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException(exception);
+            }
+            return true;
+        }));
+        var iterator = stream.iterator();
+        try {
+            Future<Boolean> traversal = executor.submit(iterator::hasNext);
+            assertTrue(entered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            Future<Boolean> close = executor.submit(() -> {
+                fs.close();
+                return true;
+            });
+            close.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            release.countDown();
+            var failure = assertThrows(ExecutionException.class,
+                    () -> traversal.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertInstanceOf(ClosedFileSystemException.class, failure.getCause());
+        } finally {
+            release.countDown();
+            stream.close();
+            fs.close();
+            executor.shutdownNow();
+        }
+    }
 
     /// Verifies that read operations overlap while write operations remain exclusive.
     @Test

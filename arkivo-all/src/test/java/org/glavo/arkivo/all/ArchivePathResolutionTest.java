@@ -34,6 +34,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -45,6 +47,37 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies component traversal and symbolic-link policies in read-only and update archive sessions.
 @NotNullByDefault
 final class ArchivePathResolutionTest {
+    /// Directory filters may mutate archive entries without holding a non-upgradable read lock.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void directoryFiltersCanMutateEntries(String format, @TempDir Path directory) throws Exception {
+        var task = new FutureTask<Boolean>(() -> {
+            try (var fs = open(format, true, directory);
+                 var stream = Files.newDirectoryStream(fs.getPath("/real"), entry -> {
+                     if (entry.getFileName().toString().equals("value.txt")) {
+                         Files.delete(entry);
+                         Files.writeString(entry.resolveSibling("created.txt"), "CREATED");
+                     }
+                     return true;
+                 })) {
+                for (Path ignored : stream) {
+                    // Exhaust the snapshot, applying its filter lazily.
+                }
+                assertFalse(Files.exists(fs.getPath("/real/value.txt")));
+                assertEquals("CREATED", Files.readString(fs.getPath("/real/created.txt")));
+            }
+            try (var fs = ArkivoFormats.openFileSystem(format, directory.resolve("paths." + format))) {
+                assertFalse(Files.exists(fs.getPath("/real/value.txt")));
+                assertEquals("CREATED", Files.readString(fs.getPath("/real/created.txt")));
+            }
+            return true;
+        });
+        Thread worker = new Thread(task, "archive-directory-filter-test");
+        worker.setDaemon(true);
+        worker.start();
+        task.get(10, TimeUnit.SECONDS);
+    }
+
     /// Crosses archive providers with read-only and update sessions.
     private static Stream<Arguments> configurations() {
         return Stream.of("ar", "tar", "zip", "7z")

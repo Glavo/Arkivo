@@ -42,7 +42,7 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// Whether this path starts at the file system root.
     private final boolean absolute;
 
-    /// The immutable path name elements.
+    /// The non-empty path name elements; an empty relative path exposes one empty name through the Path API.
     private final @Unmodifiable List<String> names;
 
     /// The cached path text.
@@ -155,7 +155,7 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// Returns the final name component of this path.
     @Override
     public final @Nullable Path getFileName() {
-        return names.isEmpty() ? null : createPath(false, List.of(names.get(names.size() - 1)));
+        return names.isEmpty() ? (absolute ? null : this) : createPath(false, List.of(names.get(names.size() - 1)));
     }
 
     /// Returns the parent path.
@@ -173,7 +173,7 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// Returns the number of name elements.
     @Override
     public final int getNameCount() {
-        return names.size();
+        return text.isEmpty() ? 1 : names.size();
     }
 
     /// Returns a name element by index.
@@ -181,10 +181,10 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// @throws IllegalArgumentException if `index` is negative or not less than [#getNameCount()]
     @Override
     public final Path getName(int index) {
-        if (index < 0 || index >= names.size()) {
+        if (index < 0 || index >= getNameCount()) {
             throw new IllegalArgumentException("Path name index is out of range: " + index);
         }
-        return createPath(false, List.of(names.get(index)));
+        return text.isEmpty() ? this : createPath(false, List.of(names.get(index)));
     }
 
     /// Returns a relative path containing a range of name elements.
@@ -193,20 +193,23 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     @Override
     public final Path subpath(int beginIndex, int endIndex) {
         if (beginIndex < 0
-                || beginIndex >= names.size()
+                || beginIndex >= getNameCount()
                 || endIndex <= beginIndex
-                || endIndex > names.size()) {
+                || endIndex > getNameCount()) {
             throw new IllegalArgumentException(
                     "Invalid path name range: " + beginIndex + ".." + endIndex
             );
         }
-        return createPath(false, names.subList(beginIndex, endIndex));
+        return text.isEmpty() ? this : createPath(false, names.subList(beginIndex, endIndex));
     }
 
     /// Returns whether this path starts with another path.
     @Override
     public final boolean startsWith(Path other) {
-        AbstractArkivoPath<F> that = compatiblePath(other);
+        @Nullable AbstractArkivoPath<F> that = compatiblePath(other);
+        if (that != null && that.text.isEmpty()) {
+            return text.isEmpty();
+        }
         if (that == null || absolute != that.absolute || names.size() < that.names.size()) {
             return false;
         }
@@ -222,7 +225,10 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// Returns whether this path ends with another path.
     @Override
     public final boolean endsWith(Path other) {
-        AbstractArkivoPath<F> that = compatiblePath(other);
+        @Nullable AbstractArkivoPath<F> that = compatiblePath(other);
+        if (that != null && that.text.isEmpty()) {
+            return text.isEmpty();
+        }
         if (that == null || names.size() < that.names.size()) {
             return false;
         }
@@ -481,6 +487,9 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// Returns an iterator over name elements.
     @Override
     public final Iterator<Path> iterator() {
+        if (text.isEmpty()) {
+            return List.<Path>of(this).iterator();
+        }
         ArrayList<Path> paths = new ArrayList<>(names.size());
         for (String name : names) {
             paths.add(createPath(false, List.of(name)));
