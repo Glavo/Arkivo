@@ -12,6 +12,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.OpenOption;
@@ -28,6 +29,7 @@ import java.util.Set;
 ///
 /// Existing output is moved into temporary backup paths before new volumes are published. Successful commit removes
 /// stale previous volumes. Moves are performed one path at a time; publication is not atomic across volumes.
+/// Existing directories are rejected as volume destinations and as stale volumes.
 ///
 /// If publication fails, rollback attempts to remove new output and restore the backups. Cleanup failures are suppressed
 /// on the publication failure, and [ArkivoVolumeOutput#rollback()] or [ArkivoVolumeOutput#close()] retries unfinished
@@ -89,11 +91,13 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
     ///
     /// Publication repeats conflict checks during commit because external paths may change after this method returns.
     ///
-    /// @throws IOException if the output directory or existing archive layout cannot be inspected
+    /// @throws IOException if the output directory or existing archive layout cannot be inspected,
+    ///                     or a discovered volume path denotes a directory
     public void validate() throws IOException {
         normalizedOutputDirectory();
         @Unmodifiable List<Path> existingPaths = existingOutputPaths(List.of());
         validateInitialState(existingPaths);
+        requireNonDirectoryPaths(existingPaths);
     }
 
     /// Returns the normalized directory used for temporary publication state.
@@ -163,6 +167,15 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
     /// Normalizes one required path.
     private static Path normalizedPath(@Nullable Path path, String description) {
         return Objects.requireNonNull(path, description).toAbsolutePath().normalize();
+    }
+
+    /// Rejects directories before any existing output is moved into staging.
+    private static void requireNonDirectoryPaths(@Unmodifiable List<Path> paths) throws IOException {
+        for (Path path : paths) {
+            if (Files.isDirectory(path)) {
+                throw new FileSystemException(path.toString(), null, "Archive volume path is a directory");
+            }
+        }
     }
 
     /// Stages, publishes, and restores path-backed archive volumes.
@@ -302,8 +315,10 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
 
         /// Moves every existing output path into staging for possible rollback.
         private void backupExistingOutput(@Unmodifiable List<Path> outputPaths) throws IOException {
+            @Unmodifiable List<Path> existingPaths = existingOutputPaths(outputPaths);
+            requireNonDirectoryPaths(existingPaths);
             int backupIndex = 0;
-            for (Path outputPath : existingOutputPaths(outputPaths)) {
+            for (Path outputPath : existingPaths) {
                 Path backupPath = stagingDirectory.resolve("backup-" + backupIndex++);
                 Files.move(outputPath, backupPath);
                 backups.add(new OutputBackup(outputPath, backupPath));

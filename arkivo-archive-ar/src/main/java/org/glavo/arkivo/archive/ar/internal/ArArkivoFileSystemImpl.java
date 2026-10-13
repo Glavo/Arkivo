@@ -134,6 +134,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// The target used to publish a rewritten update-mode archive, or `null` outside update mode.
     private final @Nullable ArkivoCommitTarget commitTarget;
 
+    /// The update transaction whose cleanup has not completed.
+    private @Nullable ArkivoCommitOutput pendingCommitOutput;
+
+    /// Whether the forward writer has completed close cleanup.
+    private boolean writerClosed;
+
     /// Whether this file system is read-only.
     private final boolean readOnly;
 
@@ -405,6 +411,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
             if (open
+                    || (writer != null && !writerClosed)
+                    || pendingCommitOutput != null
                     || (editStorage != null && !editStorage.isClosed())
                     || !channelSourceClosed
                     || !closeActionCompleted) {
@@ -418,14 +426,16 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                             failure = exception;
                         }
                     }
-                    @Nullable ArArkivoStreamingWriter currentWriter = writer;
-                    if (failure == null && currentWriter != null) {
-                        try {
-                            currentWriter.close();
-                        } catch (IOException | RuntimeException | Error exception) {
-                            failure = exception;
-                        }
+                }
+                if (writer != null && !writerClosed) {
+                    try {
+                        writer.close();
+                        writerClosed = true;
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = appendFailure(failure, exception);
                     }
+                }
+                if (open) {
                     if (failure == null && updateMode && dirty) {
                         try {
                             commitUpdate();
@@ -434,6 +444,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                         }
                     }
                     open = false;
+                } else {
+                    failure = closeCommitOutput(failure);
                 }
                 failure = closeIndexedStorage(failure);
                 if (!channelSourceClosed) {
@@ -2104,7 +2116,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     private void commitUpdate() throws IOException {
         ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
         ArkivoCommitOutput output = target.openOutput(archivePath);
-        Throwable failure = null;
+        pendingCommitOutput = output;
+        @Nullable Throwable failure = null;
         try {
             try (SeekableByteChannel channel = output.openChannel(Set.of(
                     StandardOpenOption.CREATE,
@@ -2138,12 +2151,21 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         } catch (IOException | RuntimeException | Error exception) {
             failure = appendFailure(failure, exception);
         }
-        try {
-            output.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            failure = appendFailure(failure, exception);
-        }
+        failure = closeCommitOutput(failure);
         throwFailure(failure);
+    }
+
+    /// Retries transaction cleanup without attempting publication again.
+    private @Nullable Throwable closeCommitOutput(@Nullable Throwable failure) {
+        if (pendingCommitOutput != null) {
+            try {
+                pendingCommitOutput.close();
+                pendingCommitOutput = null;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        return failure;
     }
 
     /// Returns the directory used for default atomic update output.

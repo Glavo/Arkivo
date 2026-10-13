@@ -1077,15 +1077,16 @@ public final class CodecChannelAdapters {
             sourceCloser.closeAfter(failure);
         }
 
-        /// Resets the engine at a verified boundary and obtains input for the next frame.
+        /// Obtains input for the next frame before resetting the engine at a verified boundary.
         private boolean beginNextFrame() throws IOException {
-            decoder.reset();
-            betweenFrames = false;
             if (!input.hasRemaining() && !endOfInput) {
                 readInput();
             }
             boolean available = input.hasRemaining();
-            if (!available && endOfInput) {
+            if (available) {
+                decoder.reset();
+                betweenFrames = false;
+            } else if (endOfInput) {
                 streamFinished = true;
             }
             return available;
@@ -1096,15 +1097,11 @@ public final class CodecChannelAdapters {
             input.clear();
             int start = input.position();
             int read;
-            boolean completed = false;
             try {
                 read = source.read(input);
-                completed = true;
             } finally {
                 sourceBytes += input.position() - start;
-                if (!completed) {
-                    input.flip();
-                }
+                input.flip();
             }
             if (read < 0) {
                 endOfInput = true;
@@ -1114,7 +1111,6 @@ public final class CodecChannelAdapters {
             if (read == 0) {
                 throw new IOException("Compression source channel made no progress");
             }
-            input.flip();
         }
 
         /// Requires this decoding channel to remain open.

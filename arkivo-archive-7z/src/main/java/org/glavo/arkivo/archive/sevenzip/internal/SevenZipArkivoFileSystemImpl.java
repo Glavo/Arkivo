@@ -186,6 +186,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// The staged split output published after the writer closes, or `null` for direct path writes and read/update modes.
     private final @Nullable SevenZipSplitArchiveOutput splitOutput;
 
+    /// The single-volume update transaction whose cleanup has not completed.
+    private @Nullable ArkivoCommitOutput pendingCommitOutput;
+
+    /// The split update transaction whose cleanup has not completed.
+    private @Nullable SevenZipSplitArchiveOutput pendingSplitOutput;
+
     /// Whether this file system performs a complete archive rewrite on update.
     private final boolean updateMode;
 
@@ -707,6 +713,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Closes update mode after publishing changed content transactionally.
     private void closeUpdate() throws IOException {
         if (!open
+                && pendingCommitOutput == null
+                && pendingSplitOutput == null
                 && (editStorage == null || editStorage.isClosed())
                 && volumesClosed
                 && closeActionCompleted) {
@@ -734,6 +742,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             writerClosed = true;
             headerEncryptionClosed = true;
             splitOutputClosed = true;
+        } else {
+            failure = closeUpdateOutput(failure);
         }
         failure = closeUpdateStorage(failure);
         if (!volumesClosed) {
@@ -1866,6 +1876,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                         Objects.requireNonNull(sourcePath, "archivePath")
                 ));
         ArkivoCommitOutput output = target.openOutput(sourcePath);
+        pendingCommitOutput = output;
         @Nullable Throwable failure = null;
         @Nullable SevenZipHeaderEncryption encryption = null;
         try (SevenZipWritePassword password = SevenZipWritePassword.open(config.passwordProvider())) {
@@ -1910,12 +1921,29 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         } catch (IOException | RuntimeException | Error exception) {
             failure = appendFailure(failure, exception);
         }
-        try {
-            output.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            failure = appendFailure(failure, exception);
-        }
+        failure = closeUpdateOutput(failure);
         throwFailure(failure);
+    }
+
+    /// Retries update transaction cleanup without attempting publication again.
+    private @Nullable Throwable closeUpdateOutput(@Nullable Throwable failure) {
+        if (pendingCommitOutput != null) {
+            try {
+                pendingCommitOutput.close();
+                pendingCommitOutput = null;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        if (pendingSplitOutput != null) {
+            try {
+                pendingSplitOutput.rollback();
+                pendingSplitOutput = null;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        return failure;
     }
 
     /// Publishes a split updated archive through a transactional volume target.
@@ -1931,7 +1959,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
 
         @Nullable Throwable failure = null;
-        @Nullable SevenZipSplitArchiveOutput output = null;
         @Nullable SevenZipHeaderEncryption encryption = null;
         try (SevenZipWritePassword password = SevenZipWritePassword.open(config.passwordProvider())) {
             if (config.encryptHeaders()) {
@@ -1941,7 +1968,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 }
                 encryption = SevenZipHeaderEncryption.create(passwordBytes);
             }
-            output = SevenZipSplitArchiveOutput.open(
+            SevenZipSplitArchiveOutput output = SevenZipSplitArchiveOutput.open(
                     target,
                     updateSplitSize,
                     password.bytes(),
@@ -1949,6 +1976,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     config.filters(),
                     config.solidFileCount()
             );
+            pendingSplitOutput = output;
             SevenZipArchiveWriter archiveWriter = output.writer();
             @Nullable Throwable writerFailure = null;
             try {
@@ -1966,6 +1994,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 output.encryptHeader(encryption);
             }
             output.commit();
+            pendingSplitOutput = null;
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
         } finally {
@@ -1974,13 +2003,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
         }
 
-        if (failure != null && output != null) {
-            try {
-                output.rollback();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-        }
+        failure = closeUpdateOutput(failure);
         throwFailure(failure);
     }
 

@@ -35,6 +35,8 @@ public final class TemporaryArchiveSource implements ArkivoSeekableChannelSource
     /// Materializes an owned transformed stream into a temporary seekable source.
     ///
     /// This method always closes `source`. A returned source owns its temporary file until [#close()].
+    /// If materialization fails, failures during source cleanup or temporary-file deletion are suppressed on
+    /// the original exception.
     ///
     /// @param source the transformed channel whose ownership transfers after argument validation
     /// @param maximumSize the non-negative decoded archive size limit, or a negative value to disable limiting
@@ -52,7 +54,6 @@ public final class TemporaryArchiveSource implements ArkivoSeekableChannelSource
             closeAfterFailure(source, exception);
             throw exception;
         }
-        boolean completed = false;
         try {
             ReadableByteChannel limited = ArchiveSizeLimitChannel.wrap(source, maximumSize);
             try {
@@ -84,12 +85,16 @@ public final class TemporaryArchiveSource implements ArkivoSeekableChannelSource
                 throw exception;
             }
             limited.close();
-            completed = true;
             return new TemporaryArchiveSource(path);
-        } finally {
-            if (!completed) {
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
                 Files.deleteIfExists(path);
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                if (exception != cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
             }
+            throw exception;
         }
     }
 

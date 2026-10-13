@@ -10,17 +10,24 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.jetbrains.annotations.UnmodifiableView;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.DirectoryNotEmptyException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -33,6 +40,126 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies temporary archive materialization, ownership transfer, and cleanup failures.
 @NotNullByDefault
 final class TemporaryArchiveSourceTest {
+    /// Runs deletion fault injection with an isolated JVM temporary directory.
+    @Test
+    void preservesFailureWhenTemporaryDeletionFails(@TempDir Path directory) throws Exception {
+        String classPath = Path.of(TemporaryArchiveSourceTest.class.getProtectionDomain()
+                .getCodeSource().getLocation().toURI()) + File.pathSeparator
+                + Path.of(TemporaryArchiveSource.class.getProtectionDomain()
+                .getCodeSource().getLocation().toURI());
+        Path log = directory.resolve("probe.log");
+        Process process = new ProcessBuilder(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-Djava.io.tmpdir=" + directory, "-cp", classPath,
+                DeletionFailureProbe.class.getName()
+        ).redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        try {
+            assertTrue(process.waitFor(30, TimeUnit.SECONDS), "Deletion failure probe timed out");
+            assertEquals(0, process.exitValue(), () -> {
+                try {
+                    return Files.readString(log);
+                } catch (IOException exception) {
+                    throw new java.io.UncheckedIOException(exception);
+                }
+            });
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+                process.waitFor();
+            }
+        }
+    }
+
+    /// Injects deletion failures without changing the test worker's temporary directory.
+    @NotNullByDefault
+    public static final class DeletionFailureProbe {
+        /// Tests both transfer and input-close failures with checked and unchecked exceptions.
+        public static void main(String[] arguments) throws Exception {
+            for (boolean failOnClose : new boolean[]{false, true}) {
+                for (Throwable failure : new Throwable[]{
+                        new IOException("Transfer or close failed"),
+                        new IllegalStateException("Transfer or close failed"),
+                        new AssertionError("Transfer or close failed")}) {
+                    DeletionFailingInput input = new DeletionFailingInput(failure, failOnClose);
+                    try {
+                        try {
+                            TemporaryArchiveSource.materialize(input, -1);
+                            throw new AssertionError("Materialization unexpectedly succeeded");
+                        } catch (IOException | RuntimeException | Error actual) {
+                            if (actual != failure || actual.getSuppressed().length != 1
+                                    || !(actual.getSuppressed()[0] instanceof DirectoryNotEmptyException)) {
+                                throw new AssertionError("Primary failure or deletion failure was lost", actual);
+                            }
+                        }
+                    } finally {
+                        Path path = Objects.requireNonNull(input.path);
+                        Files.delete(path.resolve("blocker"));
+                        Files.delete(path);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Replaces the closed temporary output with a nonempty directory before materialization cleanup.
+    @NotNullByDefault
+    private static final class DeletionFailingInput implements ReadableByteChannel {
+        /// The failure whose identity must survive cleanup.
+        private final Throwable failure;
+        /// Whether failure occurs at EOF cleanup instead of transfer.
+        private final boolean failOnClose;
+        /// The isolated temporary path, identified during input close.
+        private @Nullable Path path;
+        /// Whether the input has not yet been closed.
+        private boolean open = true;
+
+        /// Creates an input that fails at the selected stage.
+        private DeletionFailingInput(Throwable failure, boolean failOnClose) {
+            this.failure = failure;
+            this.failOnClose = failOnClose;
+        }
+
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            if (!failOnClose) {
+                throwFailure();
+            }
+            return -1;
+        }
+
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        @Override
+        public void close() throws IOException {
+            open = false;
+            try (var paths = Files.newDirectoryStream(
+                    Path.of(System.getProperty("java.io.tmpdir")), "arkivo-archive-*.tmp")) {
+                path = paths.iterator().next();
+            }
+            Path temporaryPath = Objects.requireNonNull(path);
+            Files.delete(temporaryPath);
+            Files.createDirectory(temporaryPath);
+            Files.writeString(temporaryPath.resolve("blocker"), "Retain original failure");
+            if (failOnClose) {
+                throwFailure();
+            }
+        }
+
+        /// Throws the injected checked exception, runtime exception, or error.
+        private void throwFailure() throws IOException {
+            if (failure instanceof IOException exception) {
+                throw exception;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            throw (Error) failure;
+        }
+    }
+
     /// Verifies empty and multi-buffer bodies survive short reads at transfer-buffer boundaries.
     @ParameterizedTest
     @CsvSource({"0, 1", "1, 1", "65535, 8191", "65536, 65536", "65537, 65537", "131073, 32767"})

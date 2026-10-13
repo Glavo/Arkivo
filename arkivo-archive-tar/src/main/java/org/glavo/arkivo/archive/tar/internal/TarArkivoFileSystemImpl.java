@@ -148,6 +148,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// The target used to publish a rewritten update-mode archive, or `null` outside update mode.
     private final @Nullable ArkivoCommitTarget commitTarget;
 
+    /// The update transaction whose cleanup has not completed.
+    private @Nullable ArkivoCommitOutput pendingCommitOutput;
+
+    /// Whether the forward writer has completed close cleanup.
+    private boolean writerClosed;
+
     /// The compression codec wrapping the TAR stream, or `null` for an uncompressed archive.
     private final @Nullable CompressionCodec<?> compressionCodec;
 
@@ -547,6 +553,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
             if (open
+                    || (writer != null && !writerClosed)
+                    || pendingCommitOutput != null
                     || (editStorage != null && !editStorage.isClosed())
                     || !channelSourceClosed
                     || !closeActionCompleted) {
@@ -560,14 +568,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                             failure = exception;
                         }
                     }
-                    @Nullable TarArkivoStreamingWriter currentWriter = writer;
-                    if (failure == null && currentWriter != null) {
-                        try {
-                            currentWriter.close();
-                        } catch (IOException | RuntimeException | Error exception) {
-                            failure = exception;
-                        }
+                }
+                if (writer != null && !writerClosed) {
+                    try {
+                        writer.close();
+                        writerClosed = true;
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = appendFailure(failure, exception);
                     }
+                }
+                if (open) {
                     if (failure == null && updateMode && dirty) {
                         try {
                             commitUpdate();
@@ -576,6 +586,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                         }
                     }
                     open = false;
+                } else {
+                    failure = closeCommitOutput(failure);
                 }
                 failure = closeIndexedStorage(failure);
                 if (!channelSourceClosed) {
@@ -2501,7 +2513,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private void commitUpdate() throws IOException {
         ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
         ArkivoCommitOutput output = target.openOutput(archivePath);
-        Throwable failure = null;
+        pendingCommitOutput = output;
+        @Nullable Throwable failure = null;
         try {
             try (SeekableByteChannel channel = output.openChannel(Set.of(
                     StandardOpenOption.CREATE,
@@ -2538,12 +2551,21 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         } catch (IOException | RuntimeException | Error exception) {
             failure = appendFailure(failure, exception);
         }
-        try {
-            output.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            failure = appendFailure(failure, exception);
-        }
+        failure = closeCommitOutput(failure);
         throwFailure(failure);
+    }
+
+    /// Retries transaction cleanup without attempting publication again.
+    private @Nullable Throwable closeCommitOutput(@Nullable Throwable failure) {
+        if (pendingCommitOutput != null) {
+            try {
+                pendingCommitOutput.close();
+                pendingCommitOutput = null;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        return failure;
     }
 
     /// Returns the directory used for default atomic update output.

@@ -3,32 +3,165 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
+import org.glavo.arkivo.archive.ArkivoCommitOutput;
+import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
+import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.OpenOption;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies transactional cleanup at each externally observable split-writer failure stage.
+/// Verifies transactional cleanup after archive publication and output failures.
 @NotNullByDefault
 final class ArchiveVolumeTransactionFailureTest {
+    /// Contains source archives and unpublished replacement files.
+    @TempDir
+    private Path temporaryDirectory;
+
+    /// A failed update retains cleanup state across closes without retrying publication.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void retriesFailedUpdateCleanup(String formatName) throws IOException {
+        Path path = temporaryDirectory.resolve("source." + formatName);
+        try (ArkivoFileSystem archive = ArkivoFormats.createFileSystem(formatName, path)) {
+            Files.writeString(archive.getPath("entry"), "original");
+        }
+        byte[] original = Files.readAllBytes(path);
+        RetryCommitOutput output = new RetryCommitOutput(temporaryDirectory.resolve("staged"));
+        ArchiveUpdateOptions options = ArchiveUpdateOptions.DEFAULT.withCommitTarget(ignored -> output);
+        ArkivoFileSystem archive = ArkivoFormats.updateFileSystem(formatName, path, options);
+        Files.writeString(archive.getPath("entry"), "replacement");
+        try {
+            IOException failure = assertThrows(IOException.class, archive::close);
+            assertEquals("Publication failed", failure.getMessage());
+            assertEquals(1, failure.getSuppressed().length);
+            assertEquals("Cleanup failed", failure.getSuppressed()[0].getMessage());
+            assertFalse(archive.isOpen());
+            assertEquals(1, output.closeCalls);
+            assertTrue(Files.exists(output.path()));
+            assertThrows(IOException.class, archive::close);
+            assertEquals(2, output.closeCalls);
+            archive.close();
+            assertEquals(3, output.closeCalls);
+            assertFalse(Files.exists(output.path()));
+            archive.close();
+            assertEquals(3, output.closeCalls);
+            assertEquals(1, output.commitCalls);
+            assertArrayEquals(original, Files.readAllBytes(path));
+        } finally {
+            output.close();
+            archive.close();
+        }
+    }
+
+    /// Split updates retain failed rollback state after the file system becomes closed.
+    @ParameterizedTest
+    @ValueSource(strings = {"zip", "7z"})
+    void retriesSplitUpdateRollback(String formatName) throws IOException {
+        Path path = temporaryDirectory.resolve("source." + formatName);
+        try (ArkivoFileSystem archive = ArkivoFormats.createFileSystem(formatName, path)) {
+            Files.writeString(archive.getPath("entry"), "original");
+        }
+        byte[] original = Files.readAllBytes(path);
+        FailingVolumeOutput output = new FailingVolumeOutput(FailurePoint.COMMIT);
+        output.cleanupBlocked = true;
+        ArkivoFileSystem archive = ArkivoFormats.updateFileSystem(
+                formatName, ArkivoVolumeSource.of(List.of(path)), () -> output,
+                SPLIT_SIZE, ArchiveUpdateOptions.DEFAULT);
+        Files.writeString(archive.getPath("entry"), "replacement");
+        try {
+            assertThrows(IOException.class, archive::close);
+            assertFalse(archive.isOpen());
+            assertFalse(output.finished);
+            assertEquals(1, output.commitCalls);
+            assertThrows(IOException.class, archive::close);
+            assertFalse(output.finished);
+            output.cleanupBlocked = false;
+            archive.close();
+            assertTrue(output.finished);
+            assertTrue(output.allVolumeChannelsClosed());
+            archive.close();
+            assertEquals(1, output.commitCalls);
+            assertArrayEquals(original, Files.readAllBytes(path));
+        } finally {
+            output.cleanupBlocked = false;
+            output.close();
+            archive.close();
+        }
+    }
+
+    /// Rejects publication and the first two cleanup attempts.
+    @NotNullByDefault
+    private static final class RetryCommitOutput implements ArkivoCommitOutput {
+        /// The unpublished replacement file.
+        private final Path path;
+        /// Number of publication attempts.
+        private int commitCalls;
+        /// Number of cleanup attempts.
+        private int closeCalls;
+
+        /// Creates a transaction with independent staged storage.
+        private RetryCommitOutput(Path path) {
+            this.path = path;
+        }
+
+        @Override
+        public Path path() {
+            return path;
+        }
+
+        @Override
+        public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
+            return Files.newByteChannel(path, options);
+        }
+
+        @Override
+        public void commit() throws IOException {
+            commitCalls++;
+            throw new IOException("Publication failed");
+        }
+
+        @Override
+        public void rollback() throws IOException {
+            close();
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (++closeCalls <= 2) {
+                throw new IOException("Cleanup failed");
+            }
+            Files.deleteIfExists(path);
+        }
+    }
     /// ZIP's minimum split size, which is also sufficient for a single-volume 7z transaction.
     private static final long SPLIT_SIZE = 64L * 1024L;
 
@@ -129,6 +262,11 @@ final class ArchiveVolumeTransactionFailureTest {
     /// Records transaction completion while injecting one deterministic stage failure.
     @NotNullByDefault
     private static final class FailingVolumeOutput implements ArkivoVolumeOutput {
+        /// Whether every rollback attempt is currently rejected.
+        private boolean cleanupBlocked;
+
+        /// Number of publication attempts, including failed attempts.
+        private int commitCalls;
         /// Stage rejected once by this output.
         private final FailurePoint failurePoint;
 
@@ -173,6 +311,7 @@ final class ArchiveVolumeTransactionFailureTest {
         /// Publishes the transaction or injects the selected commit failure.
         @Override
         public void commit(long finalVolumeIndex) throws IOException {
+            commitCalls++;
             if (failurePoint == FailurePoint.COMMIT) {
                 throw new IOException("injected commit failure");
             }
@@ -185,9 +324,12 @@ final class ArchiveVolumeTransactionFailureTest {
 
         /// Records one effective rollback and abandons the transaction.
         @Override
-        public void rollback() {
+        public void rollback() throws IOException {
             if (finished) {
                 return;
+            }
+            if (cleanupBlocked) {
+                throw new IOException("Rollback failed");
             }
             rollbackCount++;
             finished = true;
@@ -195,7 +337,7 @@ final class ArchiveVolumeTransactionFailureTest {
 
         /// Rolls back when publication did not complete.
         @Override
-        public void close() {
+        public void close() throws IOException {
             rollback();
         }
 

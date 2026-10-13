@@ -712,7 +712,7 @@ final class CodecChannelAdaptersTest {
         assertEquals(1, decoder.resetCalls());
         CodecResult end = channel.decodeFrame(target);
         assertEquals(CodecResult.Status.END_OF_INPUT, end.status());
-        assertEquals(2, decoder.resetCalls());
+        assertEquals(1, decoder.resetCalls());
         assertEquals(
                 CodecResult.Status.END_OF_INPUT,
                 channel.decodeFrame(ByteBuffer.allocate(1)).status()
@@ -738,7 +738,7 @@ final class CodecChannelAdaptersTest {
         assertEquals(CodecResult.Status.END_OF_INPUT, concatenatedEnd.status());
         assertArrayEquals(new byte[]{3}, firstConcatenatedTarget.array());
         assertArrayEquals(new byte[]{4}, secondConcatenatedTarget.array());
-        assertEquals(2, concatenatingDecoder.resetCalls());
+        assertEquals(1, concatenatingDecoder.resetCalls());
         concatenating.close();
 
         FrameByteDecoder emptyDecoder = new FrameByteDecoder();
@@ -802,6 +802,66 @@ final class CodecChannelAdaptersTest {
         assertEquals("Compression source channel made no progress", zeroFailure.getMessage());
         assertEquals(0, untouchedDecoder.decodeCalls());
         zeroChannel.close();
+    }
+
+    /// Zero-progress reads leave no staged bytes and do not prevent a later retry.
+    @Test
+    void resumesDecodingAfterZeroProgressRead() throws IOException {
+        for (boolean partial : new boolean[]{false, true}) {
+            ChunkedReadableChannel source = new ChunkedReadableChannel(new byte[]{1, 2}, 1, 0, 0);
+            try (var channel = CodecChannelAdapters.newReadableByteChannel(
+                    source, ResourceOwnership.BORROWED, CopyDecoder::new)) {
+                ByteBuffer target = ByteBuffer.allocate(4);
+                if (partial) {
+                    assertEquals(1, channel.read(target));
+                }
+                source.zeroReadsRemaining = 1;
+                assertThrows(IOException.class, () -> channel.read(target));
+                assertEquals(partial ? 1 : 0, channel.sourceBytes());
+                assertEquals(channel.sourceBytes(), channel.inputBytes());
+                assertEquals(0, channel.unconsumedInput().remaining());
+                int count;
+                while ((count = channel.read(target)) >= 0) {
+                    assertTrue(count > 0, "Decoding must make progress after the transient failure");
+                }
+                target.flip();
+                assertArrayEquals(new byte[]{1, 2}, remainingBytes(target));
+                assertEquals(2, channel.sourceBytes());
+                assertEquals(2, channel.inputBytes());
+                assertEquals(2, channel.outputBytes());
+            }
+        }
+    }
+
+    /// A failed next-frame probe retains the verified boundary until data or physical EOF is observed.
+    @Test
+    void retriesInputProbeAtFrameBoundary() throws IOException {
+        for (boolean nextFrame : new boolean[]{false, true}) {
+            for (boolean zeroRead : new boolean[]{false, true}) {
+                byte[] bytes = nextFrame ? new byte[]{1, 2} : new byte[]{1};
+                ChunkedReadableChannel source = new ChunkedReadableChannel(bytes, 1, 0, 0);
+                FrameByteDecoder decoder = new FrameByteDecoder();
+                try (var channel = CodecChannelAdapters.newFramedReadableByteChannel(
+                        source, ResourceOwnership.BORROWED, () -> decoder)) {
+                    ByteBuffer target = ByteBuffer.allocate(4);
+                    assertEquals(CodecResult.Status.FRAME_FINISHED, channel.decodeFrame(target).status());
+                    if (zeroRead) {
+                        source.zeroReadsRemaining = 1;
+                    } else {
+                        source.readFailure = new IOException("frame probe failed");
+                    }
+                    assertThrows(IOException.class, () -> channel.decodeFrame(target));
+                    assertEquals(0, channel.unconsumedInput().remaining());
+                    assertEquals(0, decoder.resetCalls());
+                    assertEquals(nextFrame ? CodecResult.Status.FRAME_FINISHED : CodecResult.Status.END_OF_INPUT,
+                            channel.decodeFrame(target).status());
+                    assertEquals(CodecResult.Status.END_OF_INPUT, channel.decodeFrame(target).status());
+                    assertEquals(nextFrame ? 1 : 0, decoder.resetCalls());
+                    target.flip();
+                    assertArrayEquals(bytes, remainingBytes(target));
+                }
+            }
+        }
     }
 
     /// Verifies decoder input obtained before a source exception remains observable and can be resumed.
@@ -1085,6 +1145,9 @@ final class CodecChannelAdaptersTest {
         /// Number of initial reads that return zero.
         private int zeroReadsRemaining;
 
+        /// A transient failure consumed by the next read, or `null` when reads may proceed.
+        private @Nullable IOException readFailure;
+
         /// Number of initial close attempts that fail.
         private int closeFailuresRemaining;
 
@@ -1118,6 +1181,11 @@ final class CodecChannelAdaptersTest {
                 throw new ClosedChannelException();
             }
             readCalls++;
+            if (readFailure != null) {
+                IOException failure = readFailure;
+                readFailure = null;
+                throw failure;
+            }
             if (!target.hasRemaining()) {
                 return 0;
             }

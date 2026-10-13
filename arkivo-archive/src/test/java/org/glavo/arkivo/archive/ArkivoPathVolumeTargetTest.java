@@ -38,6 +38,44 @@ final class ArkivoPathVolumeTargetTest {
     @TempDir
     private Path temporaryDirectory;
 
+    /// Existing directories, including stale volumes, must never become publication backups.
+    @Test
+    void rejectsDirectoriesBeforeOpeningOutput() throws IOException {
+        TestLayout layout = new TestLayout(temporaryDirectory);
+        for (Path directory : List.of(layout.finalPath(), layout.numberedPath(9))) {
+            Files.createDirectory(directory);
+            ArkivoPathVolumeTarget target = new ArkivoPathVolumeTarget(layout);
+            assertThrows(IOException.class, target::openOutput);
+            Path child = Files.writeString(directory.resolve("important"), "original");
+            assertThrows(IOException.class, target::openOutput);
+            assertEquals("original", Files.readString(child));
+            assertNoStagingDirectories();
+            Files.delete(child);
+            Files.delete(directory);
+        }
+    }
+
+    /// A directory introduced after opening is rejected before any previous volume is replaced.
+    @Test
+    void rejectsDirectoriesDiscoveredDuringCommit() throws IOException {
+        TestLayout layout = new TestLayout(temporaryDirectory);
+        Files.writeString(layout.finalPath(), "old-final");
+        for (Path directory : List.of(layout.numberedPath(0), layout.numberedPath(9))) {
+            try (ArkivoVolumeOutput output = new ArkivoPathVolumeTarget(layout).openOutput()) {
+                writeVolume(output, 0, "new-first");
+                writeVolume(output, 1, "new-final");
+                Files.createDirectory(directory);
+                Files.writeString(directory.resolve("important"), "original");
+                assertThrows(IOException.class, () -> output.commit(1));
+                assertEquals("old-final", Files.readString(layout.finalPath()));
+                assertEquals("original", Files.readString(directory.resolve("important")));
+            }
+            assertNoStagingDirectories();
+            Files.delete(directory.resolve("important"));
+            Files.delete(directory);
+        }
+    }
+
     /// Verifies final-index-dependent naming and removal of stale output volumes.
     @Test
     void publishesNamedVolumesAndRemovesStaleOutput() throws IOException {

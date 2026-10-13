@@ -203,7 +203,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     private CountingOutputStream output;
 
     /// The commit output that receives assembled ZIP bytes before publication.
-    private final @Nullable ArkivoCommitOutput commitOutput;
+    private @Nullable ArkivoCommitOutput commitOutput;
 
     /// The edit storage used by an existing-archive rewrite, or `null` for direct archive creation.
     private final @Nullable StoredContentPool editStorage;
@@ -890,6 +890,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                             failure = exception;
                         }
                     }
+                    failure = closeCommitOutput(failure);
                     failure = closeRewriteStorage(failure);
                     failure = closeExistingArchiveReader(failure);
                     failure = closeArchiveSource(failure);
@@ -1087,7 +1088,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         }
 
         ArkivoCommitOutput openedOutput = target.openOutput(sourcePath);
-        Throwable failure = null;
+        commitOutput = openedOutput;
+        @Nullable Throwable failure = null;
         try {
             try (SeekableByteChannel source = assembledArchive.openChannel(Set.of(StandardOpenOption.READ));
                  SeekableByteChannel destination = openedOutput.openChannel(Set.of(
@@ -1109,11 +1111,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         } catch (IOException | RuntimeException | Error exception) {
             failure = appendFailure(failure, exception);
         }
-        try {
-            openedOutput.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            failure = appendFailure(failure, exception);
-        }
+        failure = closeCommitOutput(failure);
         throwFailure(failure);
     }
 
@@ -1302,7 +1300,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Commits or rolls back the staged commit output and returns the accumulated failure.
     private @Nullable Throwable finishCommitOutput(@Nullable Throwable failure) {
-        ArkivoCommitOutput output = commitOutput;
+        @Nullable ArkivoCommitOutput output = commitOutput;
         if (output == null) {
             return failure;
         }
@@ -1316,10 +1314,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         } catch (IOException | RuntimeException | Error exception) {
             failure = appendFailure(failure, exception);
         }
-        try {
-            output.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            failure = appendFailure(failure, exception);
+        return closeCommitOutput(failure);
+    }
+
+    /// Retries transaction cleanup without attempting publication again.
+    private @Nullable Throwable closeCommitOutput(@Nullable Throwable failure) {
+        if (commitOutput != null) {
+            try {
+                commitOutput.close();
+                commitOutput = null;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
         }
         return failure;
     }
