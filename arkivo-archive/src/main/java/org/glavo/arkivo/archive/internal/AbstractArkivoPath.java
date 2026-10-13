@@ -332,7 +332,8 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             throw new UnsupportedOperationException("Archive paths without a source URI cannot be converted to URIs");
         }
         AbstractArkivoPath<F> absolutePath = requireCompatiblePath(toAbsolutePath());
-        return URI.create(uriScheme() + ":" + sourceUri.toASCIIString() + "!/" + uriPath(absolutePath.names));
+        return URI.create(uriScheme() + ":" + sourceUri.toASCIIString().replace("!", "%21")
+                + "!/" + uriPath(absolutePath.names));
     }
 
     /// Returns this path as an absolute path.

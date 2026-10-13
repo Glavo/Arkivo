@@ -15,6 +15,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
@@ -200,6 +201,23 @@ final class ArchivePathResolutionTest {
             Path restored = fs.provider().getPath(missing.toUri());
             assertEquals(missing.toString(), restored.toString());
             assertThrows(NoSuchFileException.class, () -> Files.readString(restored));
+        }
+    }
+
+    /// Escapes delimiter-like source names without confusing literal percent escapes with exclamation marks.
+    @ParameterizedTest
+    @MethodSource("configurations")
+    void preservesUriSourceDelimiters(String format, boolean update, @TempDir Path directory) throws IOException {
+        for (String name : List.of("bang!", "literal%21", "space !", "bang!/nested!", "bang!inside")) {
+            Path parent = Files.createDirectories(directory.resolve(name));
+            try (var fs = open(format, update, parent);
+                 var registered = fs.provider().newFileSystem(URI.create(fs.getPath("/").toUri()
+                         .toASCIIString().replace("%21inside", "!inside")), Map.of())) {
+                Path entry = registered.getPath("/real/value.txt");
+                assertEquals(entry, fs.provider().getPath(entry.toUri()));
+                assertEquals("REAL", Files.readString(fs.provider().getPath(entry.toUri())));
+                assertEquals(registered, fs.provider().getFileSystem(entry.toUri()));
+            }
         }
     }
 

@@ -3,7 +3,9 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -14,6 +16,7 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
@@ -42,10 +45,14 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -57,6 +64,68 @@ final class ZipWritableFileSystemContractTest {
     /// Temporary directory used for path-backed ZIP archives.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Repeated renames preserve legacy comments and keep source and staged local headers consistent.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesEncodingAcrossRenames(boolean staged) throws IOException {
+        Charset charset = Charset.forName("IBM437");
+        var decoder = ArchiveMetadataDecoder.forCharset(charset);
+        for (String original : List.of("A", "café")) {
+            for (String comment : List.of("", "plain", "café")) {
+                for (String destination : List.of("B", "目录", original)) {
+                    Path archive = temporaryDirectory.resolve("renamed.zip");
+                    try (var output = new ZipOutputStream(Files.newOutputStream(archive), charset)) {
+                        ZipEntry entry = new ZipEntry(original);
+                        entry.setComment(comment);
+                        output.putNextEntry(entry);
+                        output.write("payload".getBytes(StandardCharsets.UTF_8));
+                    }
+                    try (var fs = ZipArkivoFileSystem.update(archive,
+                            ZipArchiveOptions.UPDATE_DEFAULTS.withLegacyMetadataDecoder(decoder))) {
+                        if (staged) {
+                            Files.writeString(fs.getPath(original), "payload");
+                        }
+                        Files.move(fs.getPath(original), fs.getPath("intermediate"));
+                        Files.move(fs.getPath("intermediate"), fs.getPath(destination));
+                        assertEquals("payload", Files.readString(fs.getPath(destination)));
+                    }
+                    try (var fs = ZipArkivoFileSystem.open(archive,
+                            ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(decoder))) {
+                        assertEquals("payload", Files.readString(fs.getPath(destination)));
+                        byte @Nullable [] actual = Files.readAttributes(fs.getPath(destination),
+                                ZipArkivoEntryAttributes.class).rawComment();
+                        assertArrayEquals(comment.getBytes(charset), actual == null ? new byte[0] : actual);
+                    }
+                    try (var zip = new ZipFile(archive.toFile(), charset)) {
+                        ZipEntry entry = zip.entries().nextElement();
+                        assertEquals(comment.isEmpty() ? null : comment, entry.getComment());
+                        try (var input = zip.getInputStream(entry)) {
+                            assertEquals("payload", new String(input.readAllBytes(), StandardCharsets.UTF_8));
+                        }
+                    }
+                    try (var zip = org.apache.commons.compress.archivers.zip.ZipFile.builder()
+                            .setPath(archive).setCharset(charset).get()) {
+                        @Nullable var entry = zip.getEntry(destination);
+                        assertNotNull(entry);
+                        assertEquals(comment, entry.getComment());
+                        try (var input = zip.getInputStream(entry)) {
+                            assertEquals("payload", new String(input.readAllBytes(), StandardCharsets.UTF_8));
+                        }
+                    }
+                    try (var reader = ZipArkivoStreamingReader.open(archive,
+                            ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(decoder))) {
+                        assertTrue(reader.next());
+                        assertEquals(destination, reader.readAttributes().path());
+                        try (var input = reader.openInputStream()) {
+                            assertEquals("payload", new String(input.readAllBytes(), StandardCharsets.UTF_8));
+                        }
+                        assertFalse(reader.next());
+                    }
+                }
+            }
+        }
+    }
 
     /// Treats implicit directories as occupied link names while still allowing explicit directory records.
     @ParameterizedTest

@@ -15,6 +15,7 @@ import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -173,6 +174,63 @@ final class ZipRewriteMetadataTest {
             assertEquals(replacement.length, entry.getSize());
             try (var input = reference.getInputStream(entry)) {
                 assertArrayEquals(replacement, input.readAllBytes());
+            }
+        }
+    }
+
+    /// Replaces authoritative Unicode names in both headers while retaining Unicode comment records and ZIP64 data.
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void renamesLegacyUnicodeMetadata(boolean staged, boolean restoreName, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("unicode-rename.zip");
+        String original = "café.txt";
+        String destination = restoreName ? original : "目录.txt";
+        String comment = "Grüße";
+        byte[] content = new byte[]{1, 2, 3};
+        try (var output = new ZipArchiveOutputStream(archive)) {
+            output.setUseZip64(Zip64Mode.Always);
+            output.setEncoding("IBM437");
+            output.setUseLanguageEncodingFlag(false);
+            output.setCreateUnicodeExtraFields(ZipArchiveOutputStream.UnicodeExtraFieldPolicy.ALWAYS);
+            var entry = new ZipArchiveEntry(original);
+            entry.setComment(comment);
+            output.putArchiveEntry(entry);
+            output.write(content);
+            output.closeArchiveEntry();
+        }
+        byte[] originalCommentField;
+        try (var target = ZipArkivoFileSystem.update(archive)) {
+            Path file = target.getPath(original);
+            byte[] extra = Files.readAttributes(file, ZipArkivoEntryAttributes.class).centralDirectoryExtraData();
+            var field = Objects.requireNonNull(ZipExtraFields.find(extra, 0x6375));
+            originalCommentField = java.util.Arrays.copyOfRange(extra, field.dataOffset(), field.nextOffset());
+            if (staged) {
+                Files.write(file, content);
+            }
+            Files.move(file, target.getPath("intermediate"));
+            Files.move(target.getPath("intermediate"), target.getPath(destination));
+        }
+        try (var target = ZipArkivoFileSystem.open(archive)) {
+            Path file = target.getPath(destination);
+            var attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+            assertArrayEquals(content, Files.readAllBytes(file));
+            assertEquals(0, attributes.generalPurposeFlags() & ZipConstants.UTF8_FLAG);
+            for (byte[] extra : new byte[][]{attributes.localExtraData(), attributes.centralDirectoryExtraData()}) {
+                assertEquals(destination, ZipEntryNameDecoder.decodeUnicodeExtraField(
+                        attributes.rawPath(), extra, 0x7075));
+            }
+            byte[] extra = attributes.centralDirectoryExtraData();
+            var field = Objects.requireNonNull(ZipExtraFields.find(extra, 0x6375));
+            assertArrayEquals(originalCommentField,
+                    java.util.Arrays.copyOfRange(extra, field.dataOffset(), field.nextOffset()));
+            assertArrayEquals(comment.getBytes(Charset.forName("IBM437")), attributes.rawComment());
+        }
+        try (var reference = org.apache.commons.compress.archivers.zip.ZipFile.builder().setPath(archive).get()) {
+            @Nullable var entry = reference.getEntry(destination);
+            assertNotNull(entry);
+            assertEquals(comment, entry.getComment());
+            try (var input = reference.getInputStream(entry)) {
+                assertArrayEquals(content, input.readAllBytes());
             }
         }
     }

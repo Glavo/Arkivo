@@ -501,7 +501,7 @@ public final class ArkivoFileSystemProviderSupport {
             );
         }
 
-        URI archiveUri = URI.create(archivePart).normalize();
+        URI archiveUri = URI.create(archivePart.replace("!", "%21")).normalize();
         Path archivePath = Path.of(archiveUri);
         @Nullable String entryPath = separator >= 0
                 ? decodeEntryPath(schemeSpecificPart.substring(separator + 2))

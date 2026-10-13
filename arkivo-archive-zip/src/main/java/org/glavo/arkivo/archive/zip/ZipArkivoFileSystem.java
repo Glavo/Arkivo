@@ -44,6 +44,10 @@ import java.util.Objects;
 /// encryption extra fields are regenerated or omitted as required by the new record; other extra fields, including
 /// Unicode Path and Unicode Comment records, are retained. Comments are not decoded or used for name detection.
 ///
+/// Renaming retains raw comment bytes. New names use UTF-8; if a non-ASCII legacy comment prevents setting the
+/// language-encoding flag, an Info-ZIP Unicode Path extra field identifies the new name instead. Readers that ignore
+/// this extra field may display a different non-ASCII name.
+///
 /// Modification-time updates synchronize the DOS header and existing recognized timestamp extra fields without adding
 /// timestamp records. NTFS records store 100-nanosecond units; Unix records store whole seconds. A value outside the
 /// representable range of an existing timestamp extra field causes `IOException` without changing the entry metadata.

@@ -1024,6 +1024,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                         entry.source().localHeaderOffset(),
                         entry.source().localHeaderSize(),
                         entry.renamed() ? entry.rawName() : null,
+                        readUnsignedShort(entry.centralDirectoryBytes, 8),
                         entry.modifiedTimeOverride()
                 );
                 output.startRecord(rewrite.finalHeaderSize());
@@ -1046,6 +1047,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                         entry.localHeaderOffset,
                         entry.localHeaderSize,
                         entry.renamed() ? entry.rawName : null,
+                        entry.flags,
                         entry.modifiedTimeOverride
                 );
                 output.startRecord(rewrite.finalHeaderSize());
@@ -1149,6 +1151,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             long localHeaderOffset,
             long sourceHeaderSize,
             byte @Nullable [] renamedRawName,
+            int flags,
             @Nullable FileTime replacementTime
     ) throws IOException {
         boolean timestampChanged = replacementTime != null;
@@ -1176,7 +1179,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         long extraOffset = localHeaderOffset + ZIP_LOCAL_FILE_HEADER_MIN_SIZE + sourceNameLength;
         byte[] sourceExtraData = readExactRange(source, extraOffset, sourceExtraLength);
         byte[] localExtraData = renamedRawName != null
-                ? ZipExtraFields.remove(sourceExtraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID)
+                ? renamedExtraData(sourceExtraData, rawName, flags)
                 : sourceExtraData;
         if (replacementTime != null) {
             localExtraData = ZipExtraFieldMetadata.withLastModifiedTime(localExtraData, replacementTime);
@@ -1184,7 +1187,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         requireUInt16(rawName.length, "entry name length");
         requireUInt16(localExtraData.length, "local extra data length");
         if (renamedRawName != null) {
-            header.putShort(6, (short) (Short.toUnsignedInt(header.getShort(6)) | UTF8_FLAG));
+            header.putShort(6, (short) flags);
         }
         if (timestampChanged) {
             header.putShort(10, (short) dosTime(replacementTime));
@@ -3639,7 +3642,37 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         return relocated;
     }
 
-    /// Replaces the encoded name in one central directory entry with an authoritative UTF-8 name.
+    /// Selects UTF-8 only when it does not change the interpretation of an opaque legacy comment.
+    private static int renamedFlags(int flags, byte[] comment, int offset, int length) {
+        if ((flags & UTF8_FLAG) == 0) {
+            for (int index = offset; index < offset + length; index++) {
+                if (comment[index] < 0) {
+                    return flags;
+                }
+            }
+        }
+        return flags | UTF8_FLAG;
+    }
+
+    /// Replaces stale Unicode names, adding an authoritative path when the comment prevents use of the UTF-8 flag.
+    private static byte[] renamedExtraData(byte[] extraData, byte[] rawName, int flags) throws IOException {
+        byte[] retained = ZipExtraFields.remove(extraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID);
+        if ((flags & UTF8_FLAG) != 0) {
+            return retained;
+        }
+        int fieldSize = 9 + rawName.length;
+        requireUInt16(fieldSize + retained.length, "extra data length");
+        CRC32 crc = new CRC32();
+        crc.update(rawName);
+        // Prepend the field so that any retained trailing padding remains at the end.
+        ByteBuffer result = ByteBuffer.allocate(fieldSize + retained.length).order(ByteOrder.LITTLE_ENDIAN);
+        result.putShort((short) ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID);
+        result.putShort((short) (5 + rawName.length));
+        result.put((byte) 1).putInt((int) crc.getValue()).put(rawName).put(retained);
+        return result.array();
+    }
+
+    /// Replaces the encoded name without reinterpreting the raw comment bytes.
     private static byte[] renameCentralDirectoryEntry(byte[] rawEntry, byte[] rawName) throws IOException {
         Objects.requireNonNull(rawEntry, "rawEntry");
         Objects.requireNonNull(rawName, "rawName");
@@ -3661,9 +3694,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             throw new IOException("Invalid ZIP central directory variable data length");
         }
 
-        byte[] extraData = ZipExtraFields.remove(
+        int flags = renamedFlags(Short.toUnsignedInt(source.getShort(8)), rawEntry, oldCommentOffset, commentLength);
+        byte[] extraData = renamedExtraData(
                 Arrays.copyOfRange(rawEntry, oldExtraOffset, oldCommentOffset),
-                ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID
+                rawName, flags
         );
         requireUInt16(extraData.length, "central directory extra data length");
         byte[] renamed = new byte[
@@ -3677,7 +3711,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         System.arraycopy(rawEntry, oldCommentOffset, renamed, commentOffset, commentLength);
 
         ByteBuffer result = ByteBuffer.wrap(renamed).order(ByteOrder.LITTLE_ENDIAN);
-        result.putShort(8, (short) (Short.toUnsignedInt(result.getShort(8)) | UTF8_FLAG));
+        result.putShort(8, (short) flags);
         result.putShort(28, (short) rawName.length);
         result.putShort(30, (short) extraData.length);
         return renamed;
@@ -6017,7 +6051,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
         /// Returns whether the source local record must receive a replacement header.
         private boolean renamed() {
-            return !entryName.equals(source.entryName());
+            byte[] original = source.bytes();
+            int nameLength = readUnsignedShort(original, 28);
+            return !entryName.equals(source.entryName())
+                    || readUnsignedShort(centralDirectoryBytes, 8) != readUnsignedShort(original, 8)
+                    || !Arrays.equals(rawName, 0, rawName.length,
+                            original, ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE,
+                            ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + nameLength);
         }
 
         /// Returns whether this is an explicit directory entry.
@@ -6075,6 +6115,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
         /// The decoded entry name serialized in the staged local record.
         private final String serializedEntryName;
+
+        /// The encoded name in the staged local header, retained across metadata changes.
+        private final byte @Unmodifiable [] serializedRawName;
+
+        /// The general-purpose flags in the staged local header.
+        private final int serializedFlags;
 
         /// The raw entry name bytes.
         private final byte[] rawName;
@@ -6161,6 +6207,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         ) {
             this.entryName = Objects.requireNonNull(entryName, "entryName");
             this.serializedEntryName = entryName;
+            this.serializedRawName = rawName.clone();
+            this.serializedFlags = flags;
             this.rawName = Objects.requireNonNull(rawName, "rawName");
             this.flags = flags;
             this.method = method;
@@ -6201,6 +6249,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         ) {
             this.entryName = Objects.requireNonNull(entryName, "entryName");
             this.serializedEntryName = source.serializedEntryName;
+            this.serializedRawName = source.serializedRawName;
+            this.serializedFlags = source.serializedFlags;
             this.rawName = Objects.requireNonNull(rawName, "rawName");
             this.flags = flags;
             this.method = source.method;
@@ -6232,18 +6282,19 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         private CentralEntry renamed(String newEntryName) throws IOException {
             String storedName = directory() ? newEntryName + "/" : newEntryName;
             byte[] renamedRawName = rawEntryName(storedName);
+            int renamedFlags = renamedFlags(flags, rawComment, 0, rawComment.length);
             return new CentralEntry(
                     this,
                     storedName,
                     renamedRawName,
-                    flags | UTF8_FLAG,
+                    renamedFlags,
                     dosTime,
                     dosDate,
                     versionMadeBy,
                     internalAttributes,
                     externalAttributes,
-                    ZipExtraFields.remove(localExtraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID),
-                    ZipExtraFields.remove(centralDirectoryExtraData, ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID),
+                    renamedExtraData(localExtraData, renamedRawName, renamedFlags),
+                    renamedExtraData(centralDirectoryExtraData, renamedRawName, renamedFlags),
                     rawComment,
                     null
             );
@@ -6332,7 +6383,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
         /// Returns whether this entry needs a replacement staged local header.
         private boolean renamed() {
-            return !entryName.equals(serializedEntryName);
+            return !entryName.equals(serializedEntryName) || flags != serializedFlags
+                    || !Arrays.equals(rawName, serializedRawName);
         }
 
         /// Returns whether the central directory entry needs ZIP64 extra metadata.
