@@ -338,8 +338,8 @@ public final class ArkivoFileSystemProviderSupport {
         if (sourceKey != null && sourceKey.equals(targetAttributes.fileKey())) {
             return true;
         }
-        Path realSource = followLinks ? source.toRealPath() : source.toRealPath(LinkOption.NOFOLLOW_LINKS);
-        return realSource.equals(target.toRealPath(LinkOption.NOFOLLOW_LINKS));
+        Path realSource = resolvePath(source, followLinks);
+        return realSource.equals(resolvePath(target, false));
     }
 
     /// Copies basic timestamps to a completed target entry.
@@ -362,8 +362,9 @@ public final class ArkivoFileSystemProviderSupport {
 
     /// Returns whether two paths in the same file system resolve to the same archive entry.
     ///
-    /// Paths from different file systems cannot identify the same archive entry. Symbolic links are followed through
-    /// `Path.toRealPath()`, and non-null file keys provide a final identity comparison for distinct real paths.
+    /// Equal paths return `true` without accessing the file system. Paths from different file systems cannot identify
+    /// the same archive entry. Symbolic links are followed through `Path.toRealPath()`, and non-null file keys provide
+    /// a final identity comparison for distinct real paths.
     ///
     /// @param path the first path to compare
     /// @param other the second path to compare
@@ -372,6 +373,9 @@ public final class ArkivoFileSystemProviderSupport {
     public static boolean isSameFile(Path path, Path other) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(other, "other");
+        if (path.equals(other)) {
+            return true;
+        }
         if (path.getFileSystem() != other.getFileSystem()) {
             return false;
         }

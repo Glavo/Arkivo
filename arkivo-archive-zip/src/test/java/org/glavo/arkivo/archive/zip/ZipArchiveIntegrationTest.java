@@ -1079,10 +1079,7 @@ public final class ZipArchiveIntegrationTest {
         assertEquals(false, Files.isSameFile(file, Path.of("foreign")));
         assertThrows(FileSystemLoopException.class, () -> fileSystem.getPath("/cycle-a").toRealPath());
         assertThrows(NoSuchFileException.class, () -> fileSystem.getPath("/missing.txt").toRealPath());
-        assertThrows(
-                NoSuchFileException.class,
-                () -> Files.isSameFile(fileSystem.getPath("/missing.txt"), fileSystem.getPath("/missing.txt"))
-        );
+        assertEquals(true, Files.isSameFile(fileSystem.getPath("/missing.txt"), fileSystem.getPath("/missing.txt")));
     }
 
     /// Verifies that ZIP entries can be copied into a writable ZIP file system target.

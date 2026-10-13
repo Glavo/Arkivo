@@ -90,6 +90,86 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests end-to-end RAR streaming, file-system, volume, encryption, and corruption behavior.
 @NotNullByDefault
 public final class RarArchiveIntegrationTest {
+    /// Unknown-size stored entries obey the same budget during reading, closing, and cursor advancement.
+    @ParameterizedTest
+    @ValueSource(strings = {"entry", "total"})
+    void limitsUnknownSizeBodyConsumption(String limit) throws IOException {
+        byte[] archive = unknownSizeStoredArchive(1, 16_384);
+        ArchiveReadLimits limits = limit.equals("entry")
+                ? ArchiveReadLimits.builder().maximumEntrySize(10).build()
+                : ArchiveReadLimits.builder().maximumTotalEntrySize(10).build();
+        for (String operation : List.of("advance", "partial-close", "read-close")) {
+            ByteArrayInputStream source = new ByteArrayInputStream(archive);
+            try (var reader = RarArkivoFormat.instance().openStreamingReader(source,
+                    ArchiveReadOptions.DEFAULT.withLimits(limits))) {
+                assertTrue(reader.next());
+                int before = source.available();
+                if (operation.equals("advance")) {
+                    assertThrows(ArkivoReadLimitException.class, reader::next);
+                } else {
+                    var body = reader.openInputStream();
+                    if (operation.equals("partial-close")) {
+                        assertEquals(0, body.read());
+                    } else {
+                        assertThrows(ArkivoReadLimitException.class, body::readAllBytes);
+                    }
+                    assertThrows(ArkivoReadLimitException.class, body::close);
+                    int remaining = source.available();
+                    body.close();
+                    assertEquals(remaining, source.available());
+                }
+                assertEquals(11, before - source.available());
+                int remaining = source.available();
+                assertThrows(ArkivoReadLimitException.class, reader::next);
+                assertEquals(remaining, source.available());
+            }
+        }
+    }
+
+    /// Successful partial reads and drains count every byte once across entry boundaries.
+    @Test
+    void accountsUnknownSizeDrainsAcrossEntries() throws IOException {
+        byte[] archive = unknownSizeStoredArchive(2, 10);
+        for (long totalLimit : new long[]{19, 20}) {
+            var limits = ArchiveReadLimits.builder().maximumEntrySize(10).maximumTotalEntrySize(totalLimit).build();
+            try (var reader = RarArkivoFormat.instance().openStreamingReader(new ByteArrayInputStream(archive),
+                    ArchiveReadOptions.DEFAULT.withLimits(limits))) {
+                assertTrue(reader.next());
+                try (var body = reader.openInputStream()) {
+                    assertEquals(3, body.readNBytes(3).length);
+                }
+                assertTrue(reader.next());
+                if (totalLimit == 19) {
+                    assertThrows(ArkivoReadLimitException.class, reader::next);
+                } else {
+                    assertFalse(reader.next());
+                }
+            }
+        }
+    }
+
+    /// Creates plain stored RAR5 entries with unknown logical sizes and known physical bodies.
+    private static byte[] unknownSizeStoredArchive(int count, int size) throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        archive.write(RAR5_SIGNATURE);
+        writeBlock(archive, 1, 0, new byte[]{0}, new byte[0], new byte[0]);
+        for (int index = 0; index < count; index++) {
+            byte[] name = ("entry" + index).getBytes(StandardCharsets.UTF_8);
+            byte[] header = fields(writer -> {
+                writer.writeVint(8);
+                writer.writeVint(0);
+                writer.writeVint(0100644);
+                writer.writeVint(0);
+                writer.writeVint(1);
+                writer.writeVint(name.length);
+                writer.write(name);
+            });
+            writeBlock(archive, 2, 0, header, new byte[0], new byte[size]);
+        }
+        writeBlock(archive, 5, 0, new byte[]{0}, new byte[0], new byte[0]);
+        return archive.toByteArray();
+    }
+
     /// The RAR5 archive signature.
     private static final byte @Unmodifiable [] RAR5_SIGNATURE =
             new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00};

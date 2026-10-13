@@ -3,12 +3,19 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.tar.internal.TarArkivoStreamingReaderImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -16,6 +23,9 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -29,6 +39,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies TAR streaming-reader closure, entry-channel lifetime, and source read-ahead boundaries.
 @NotNullByDefault
 final class TarStreamingReaderLifecycleTest {
+    /// Seekable input skips must still detect truncated entry bodies and block padding.
+    @ParameterizedTest
+    @ValueSource(ints = {1024, 1026, 1029, 1100, 1535})
+    void rejectsTruncatedFileInput(int length, @TempDir Path directory)
+            throws IOException {
+        var path = directory.resolve("truncated.tar");
+        Files.write(path, Arrays.copyOf(archive(), length));
+        for (boolean readPrefix : new boolean[]{false, true}) {
+            try (var input = new FileInputStream(path.toFile());
+                 var reader = new TarArkivoStreamingReaderImpl(input, ArchiveOptions.EMPTY)) {
+                assertTrue(reader.next());
+                assertTrue(reader.next());
+                if (readPrefix && length > 1024) {
+                    reader.openInputStream().read();
+                }
+                assertThrows(EOFException.class, reader::next);
+            }
+        }
+    }
+
     /// Verifies that streaming reader operations fail as closed after the reader is closed.
     @Test
     void readerOperationsAfterCloseAreRejectedAsClosed() throws IOException {

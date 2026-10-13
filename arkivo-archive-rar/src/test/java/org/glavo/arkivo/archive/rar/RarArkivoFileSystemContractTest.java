@@ -109,6 +109,8 @@ final class RarArkivoFileSystemContractTest {
             assertNull(store.getFileStoreAttributeView(FileStoreAttributeView.class));
 
             assertTrue(fileSystem.getPathMatcher("glob:**/*.txt").matches(file));
+            assertTrue(fileSystem.getPathMatcher("glob:*.txt").matches(fileSystem.getPath("report:2026.txt")));
+            assertFalse(fileSystem.getPathMatcher("glob:*.txt").matches(fileSystem.getPath("README.TXT")));
             assertFalse(fileSystem.getPathMatcher("glob:**/*.bin").matches(file));
             assertTrue(fileSystem.getPathMatcher("regex:.*/value\\.txt").matches(file));
             assertThrows(NullPointerException.class, () -> fileSystem.getPathMatcher(null));

@@ -1437,9 +1437,11 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         currentSparseMap = null;
     }
 
-    /// Skips a positive number of source bytes, falling back to one read when skip makes no progress.
+    /// Skips bytes while reserving the final byte for an EOF-checking read.
     private long skipSome(long count) throws IOException {
-        long skipped = source.skip(count);
+        // Seekable streams may report successful skips beyond EOF. Read the last byte separately,
+        // retaining each successful skip in the caller's counters if that final read fails.
+        long skipped = count > 1 ? source.skip(count - 1) : 0;
         if (skipped == 0) {
             if (source.read() < 0) {
                 throw new EOFException("Unexpected end of TAR entry body");

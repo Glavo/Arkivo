@@ -384,6 +384,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The active decompression stream, or `null` before a compressed body is opened.
     private @Nullable DecodedInputStream currentDecodedInput;
 
+    /// The shared accounting stream for an unknown-size stored body, including unread-body drains.
+    private @Nullable InputStream currentUnknownSizeInput;
+
     /// The lazily initialized RAR4 decoder session retaining solid dictionary state.
     private Rar4Decoder.@Nullable Session rar4DecoderSession;
 
@@ -656,11 +659,20 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             return openEncryptedChannel(attributes);
         }
         currentBodyOpened = true;
-        InputStream entryInput = new EntryInputStream();
-        if (attributes.unpackedSize() == RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
-            entryInput = readLimits.trackUnknownEntrySize(attributes.path(), entryInput);
+        return StreamChannelAdapters.readableChannel(storedInput(attributes));
+    }
+
+    /// Returns a stored body stream, retaining one size counter across user reads and internal drains.
+    private InputStream storedInput(RarEntryAttributes attributes) {
+        if (attributes.unpackedSize() != RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
+            return new EntryInputStream();
         }
-        return StreamChannelAdapters.readableChannel(entryInput);
+        @Nullable InputStream input = currentUnknownSizeInput;
+        if (input == null) {
+            input = readLimits.trackUnknownEntrySize(attributes.path(), new EntryInputStream());
+            currentUnknownSizeInput = input;
+        }
+        return input;
     }
 
     /// Opens one supported compressed body through its format-specific stateful decoder.
@@ -2484,6 +2496,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 && currentAttributes.compressionMethod() == 0
                 && !currentAttributes.continuesFromPreviousVolume();
         try {
+            readLimits.requireWithinLimits();
             DecodedInputStream decodedInput = currentDecodedInput;
             if (decodedInput == null && shouldDecodeSkippedCompressedEntry()) {
                 RarEntryAttributes attributes = Objects.requireNonNull(currentAttributes, "currentAttributes");
@@ -2495,6 +2508,13 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 decodedInput.drain();
             } else if (encryptedInput != null) {
                 encryptedInput.drain();
+            } else if (currentAttributes != null
+                    && currentAttributes.isRegularFile()
+                    && currentAttributes.compressionMethod() == 0
+                    && !currentAttributes.isEncrypted()
+                    && !currentAttributes.continuesFromPreviousVolume()
+                    && currentAttributes.unpackedSize() == RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
+                storedInput(currentAttributes).transferTo(OutputStream.nullOutputStream());
             } else {
                 while (true) {
                     if (currentPackedRemaining > 0) {
@@ -2566,6 +2586,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     }
     /// Clears sensitive or asynchronous state retained while an entry body is active.
     private void clearCurrentBodyState() {
+        currentUnknownSizeInput = null;
         Rar5Crypto.clear(currentHashKey);
         currentHashKey = null;
         EncryptedEntryInputStream encryptedInput = currentEncryptedInput;
@@ -2763,6 +2784,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Verifies all active stored-body checksums after the final physical part is consumed.
     private void verifyCurrentIntegrityIfComplete() throws IOException {
+        if (!validateSkippedBodies && !currentBodyOpened) {
+            return;
+        }
         RarEntryAttributes partAttributes = currentPartAttributes;
         if (currentPackedRemaining != 0L
                 || partAttributes != null && partAttributes.continuesInNextVolume()) {

@@ -27,6 +27,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -47,6 +48,69 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies component traversal and symbolic-link policies in read-only and update archive sessions.
 @NotNullByDefault
 final class ArchivePathResolutionTest {
+    /// Equal paths identify the same file without probing whether that file exists.
+    @ParameterizedTest
+    @MethodSource("configurations")
+    void comparesEqualMissingPaths(String format, boolean update, @TempDir Path directory) throws IOException {
+        Path missing;
+        try (var fs = open(format, update, directory)) {
+            missing = fs.getPath("/missing");
+            assertTrue(Files.isSameFile(fs.getPath("/missing"), fs.getPath("/missing")));
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.isSameFile(fs.getPath("/missing"), fs.getPath("/value.txt")));
+        }
+        assertTrue(Files.isSameFile(missing, missing));
+    }
+
+    /// Moving a missing source fails even when source and target resolve to the same path.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void rejectsMissingSelfMove(String format, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, true, directory)) {
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.move(fs.getPath("/missing"), fs.getPath("/missing")));
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.move(fs.getPath("/dirlink/missing"), fs.getPath("/real/missing")));
+        }
+    }
+
+    /// Copying onto the same entry through a parent link must not delete its source.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void copiesSameEntryThroughParentLink(String format, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, true, directory)) {
+            Path source = fs.getPath("/real/value.txt");
+            Path target = fs.getPath("/dirlink/value.txt");
+            Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+            assertEquals("REAL", Files.readString(source));
+            Files.copy(target, source, LinkOption.NOFOLLOW_LINKS);
+            assertEquals("REAL", Files.readString(target));
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, directory.resolve("paths." + format))) {
+            assertEquals("REAL", Files.readString(fs.getPath("/real/value.txt")));
+            assertEquals("REAL", Files.readString(fs.getPath("/dirlink/value.txt")));
+        }
+    }
+
+    /// Archive globs use case-sensitive slash-separated names independently of the host platform.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void matchesArchiveNamesWithoutHostPathRules(String format, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, true, directory)) {
+            Path name = fs.getPath("/report:2026.txt");
+            Files.writeString(name, "report");
+            Files.writeString(fs.getPath("/README.TXT"), "uppercase");
+            assertTrue(fs.getPathMatcher("glob:*.txt").matches(name.getFileName()));
+            assertFalse(fs.getPathMatcher("glob:*.txt").matches(fs.getPath("README.TXT")));
+            var entries = new HashSet<Path>();
+            try (var stream = Files.newDirectoryStream(fs.getPath("/"), "*.txt")) {
+                stream.forEach(entries::add);
+            }
+            assertTrue(entries.contains(name));
+            assertFalse(entries.contains(fs.getPath("/README.TXT")));
+        }
+    }
+
     /// Directory filters may mutate archive entries without holding a non-upgradable read lock.
     @ParameterizedTest
     @ValueSource(strings = {"ar", "tar", "zip", "7z"})

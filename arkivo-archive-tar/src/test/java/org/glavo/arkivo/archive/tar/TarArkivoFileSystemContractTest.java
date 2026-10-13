@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.tar;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -61,6 +62,70 @@ final class TarArkivoFileSystemContractTest {
     /// Temporary directory used for path-backed TAR archives.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Surviving hard links retain shared content after unlinking or replacing a group member.
+    @ParameterizedTest
+    @ValueSource(strings = {"original", "alias", "replace-original", "replace-alias"})
+    void preservesHardLinkGroupAfterRemoval(String operation) throws IOException {
+        Path archive = temporaryDirectory.resolve("unlink-hard-links.tar");
+        try (var writer = TarArkivoStreamingWriter.create(archive)) {
+            try (var entry = writer.beginFile("original"); var output = entry.openOutputStream()) {
+                output.write("old".getBytes(StandardCharsets.UTF_8));
+            }
+            writer.beginHardLink("alias", "original").close();
+            writer.beginHardLink("branch", "original").close();
+            writer.beginHardLink("chain", "alias").close();
+        }
+        String removed = operation.endsWith("original") ? "original" : "alias";
+        @Unmodifiable List<String> survivors = List.of("original", "alias", "branch", "chain").stream()
+                .filter(name -> !name.equals(removed)).toList();
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            if (operation.startsWith("replace-")) {
+                Files.writeString(fs.getPath("replacement"), "replacement");
+                Files.move(fs.getPath("replacement"), fs.getPath(removed), StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.delete(fs.getPath(removed));
+            }
+            Files.writeString(fs.getPath("chain"), "new");
+            for (String name : survivors) {
+                assertEquals("new", Files.readString(fs.getPath(name)));
+            }
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            for (String name : survivors) {
+                assertEquals("new", Files.readString(fs.getPath(name)));
+                assertTrue(Files.isSameFile(fs.getPath("chain"), fs.getPath(name)));
+            }
+            if (operation.startsWith("replace-")) {
+                assertEquals("replacement", Files.readString(fs.getPath(removed)));
+                assertFalse(Files.isSameFile(fs.getPath("chain"), fs.getPath(removed)));
+            }
+        }
+    }
+
+    /// Copy and move between names of one hard-linked file leave every name and its content intact.
+    @Test
+    void recognizesHardLinkIdentity() throws IOException {
+        Path archive = createArchive();
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            Path original = fs.getPath("/dir/value.txt");
+            Path alias = Files.createLink(fs.getPath("/alias"), original);
+            Path chain = Files.createLink(fs.getPath("/chain"), alias);
+            assertTrue(Files.isSameFile(original, chain));
+            assertEquals(Files.getAttribute(original, "basic:fileKey"), Files.getAttribute(chain, "basic:fileKey"));
+            Files.copy(original, chain);
+            Files.move(chain, original);
+            assertEquals("value", Files.readString(chain));
+            Files.writeString(alias, "new");
+            assertTrue(Files.isSameFile(original, chain));
+            Files.move(original, fs.getPath("/moved"));
+            assertTrue(Files.isSameFile(fs.getPath("/moved"), chain));
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            assertTrue(Files.isSameFile(fs.getPath("/moved"), fs.getPath("/chain")));
+            assertEquals("new", Files.readString(fs.getPath("/chain")));
+        }
+    }
 
     /// Writes through chained hard links without replacing their link records.
     @ParameterizedTest
@@ -443,7 +508,9 @@ final class TarArkivoFileSystemContractTest {
                     FileSystemException.class,
                     () -> Files.move(directory, directory.resolve("nested"))
             );
-            assertThrows(FileAlreadyExistsException.class, () -> Files.move(file, hardLink));
+            Files.move(file, hardLink);
+            assertTrue(Files.exists(file));
+            assertTrue(Files.exists(hardLink));
             assertThrows(
                     FileSystemException.class,
                     () -> Files.move(file, emptyDirectory, StandardCopyOption.REPLACE_EXISTING)

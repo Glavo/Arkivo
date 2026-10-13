@@ -59,6 +59,9 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     /// The decoded entry path.
     private final String path;
 
+    /// The content owner's archive-local path for file-system identity comparisons.
+    private final String fileKey;
+
     /// The raw type flag.
     private final byte typeFlag;
 
@@ -119,6 +122,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
             throw new IllegalArgumentException("size must not be negative");
         }
         this.path = Objects.requireNonNull(path, "path");
+        this.fileKey = path;
         this.typeFlag = typeFlag;
         this.directory = directory;
         this.mode = mode;
@@ -132,6 +136,25 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
         this.recordedLastAccessTime = recordedLastAccessTime;
         this.recordedStatusChangeTime = recordedStatusChangeTime;
         this.recordedCreationTime = recordedCreationTime;
+    }
+
+    /// Copies entry metadata with a resolved hard-link identity.
+    TarEntryAttributes(TarArkivoEntryAttributes attributes, String fileKey) {
+        this.path = attributes.path();
+        this.fileKey = fileKey;
+        this.typeFlag = attributes.typeFlag();
+        this.directory = attributes.isDirectory();
+        this.mode = attributes.mode();
+        this.userId = attributes.userId();
+        this.groupId = attributes.groupId();
+        this.userName = attributes.userName();
+        this.groupName = attributes.groupName();
+        this.linkName = attributes.linkName();
+        this.size = attributes.size();
+        this.lastModifiedTime = attributes.lastModifiedTime();
+        this.recordedLastAccessTime = attributes.recordedLastAccessTime();
+        this.recordedStatusChangeTime = attributes.recordedStatusChangeTime();
+        this.recordedCreationTime = attributes.recordedCreationTime();
     }
 
     /// Returns the decoded TAR entry path.
@@ -257,7 +280,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     /// Returns an implementation-specific file key.
     @Override
     public Object fileKey() {
-        return path;
+        return fileKey;
     }
 
     /// Returns the owner principal represented by the stored TAR user name.

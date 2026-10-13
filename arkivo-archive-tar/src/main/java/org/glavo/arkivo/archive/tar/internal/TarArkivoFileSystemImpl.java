@@ -19,6 +19,7 @@ import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
+import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
 import org.glavo.arkivo.archive.internal.PosixModes;
@@ -673,22 +674,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Returns a path matcher while the caller holds the shared operation lock.
     private PathMatcher getPathMatcherLocked(String syntaxAndPattern) {
-        Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
-        int separator = syntaxAndPattern.indexOf(':');
-        if (separator <= 0) {
-            throw new IllegalArgumentException("Path matcher syntax must be syntax:pattern");
-        }
-        String syntax = syntaxAndPattern.substring(0, separator);
-        String pattern = syntaxAndPattern.substring(separator + 1);
-        if ("regex".equals(syntax)) {
-            java.util.regex.Pattern compiled = java.util.regex.Pattern.compile(pattern);
-            return path -> compiled.matcher(path.toString()).matches();
-        }
-        if ("glob".equals(syntax)) {
-            PathMatcher matcher = java.nio.file.FileSystems.getDefault().getPathMatcher("glob:" + pattern);
-            return path -> matcher.matches(Path.of(path.toString()));
-        }
-        throw new UnsupportedOperationException("Unsupported path matcher syntax: " + syntax);
+        return ArkivoPathMatchers.create(syntaxAndPattern, '/');
     }
 
     /// Returns the TAR user principal lookup service.
@@ -964,7 +950,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Deletes one entry from an update-mode archive.
     ///
     /// The synthetic root and non-empty directories cannot be deleted. The deletion affects only the pending index
-    /// until a changed archive is published on file-system close.
+    /// until a changed archive is published on file-system close. Surviving hard links retain their shared content.
     ///
     /// @param path the existing entry to remove
     /// @throws IOException                   if the entry is missing, is a non-empty directory, or is currently open for update
@@ -1002,6 +988,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Moves one entry and any descendants inside an update-mode archive.
     ///
     /// Directory moves remap every descendant and any archive-local hard-link target that refers into the moved tree.
+    /// Moving between two names of the same hard-linked file has no effect.
     /// `StandardCopyOption.REPLACE_EXISTING` permits a compatible target replacement; `ATOMIC_MOVE` is accepted because
     /// publication is already deferred to the archive transaction.
     ///
@@ -1038,10 +1025,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (sourcePath.isEmpty() || targetPath.isEmpty()) {
             throw new FileSystemException(source.toString(), target.toString(), "The TAR root cannot be moved");
         }
+        Node sourceNode = requireNode(source);
         if (sourcePath.equals(targetPath)) {
             return;
         }
-        Node sourceNode = requireNode(source);
         if (sourceNode.directory() && targetPath.startsWith(sourcePath + "/")) {
             throw new FileSystemException(source.toString(), target.toString(), "A directory cannot be moved below itself");
         }
@@ -1049,6 +1036,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
         @Nullable Node targetNode = nodes.get(targetPath);
         if (targetNode != null) {
+            if (resolveHardLinkContentNode(sourceNode) == resolveHardLinkContentNode(targetNode)) {
+                return;
+            }
             if (!replaceExisting) {
                 throw new FileAlreadyExistsException(target.toString());
             }
@@ -1341,7 +1331,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         requireReadableFileSystem();
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(options, "options");
-        TarArkivoEntryAttributes attributes = requireNode(path).attributes();
+        TarArkivoEntryAttributes attributes = attributeSnapshot(requireNode(path));
         if (type == BasicFileAttributes.class || type == TarArkivoEntryAttributes.class || type == PosixFileAttributes.class) {
             return type.cast(attributes);
         }
@@ -1370,7 +1360,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         requireReadableFileSystem();
         Objects.requireNonNull(attributes, "attributes");
         Objects.requireNonNull(options, "options");
-        TarArkivoEntryAttributes entryAttributes = requireNode(path).attributes();
+        TarArkivoEntryAttributes entryAttributes = attributeSnapshot(requireNode(path));
         HashMap<String, Object> values = new HashMap<>();
         RequestedAttributes requestedAttributes = RequestedAttributes.parse(attributes);
         boolean all = requestedAttributes.contains("*");
@@ -2023,32 +2013,31 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return replacement;
     }
 
-    /// Converts hard links that target a deleted entry into independent regular files.
+    /// Returns entry metadata with the same file key for every member of a hard-link group.
+    private TarArkivoEntryAttributes attributeSnapshot(Node node) throws IOException {
+        return node.attributes().isHardLink()
+                ? new TarEntryAttributes(node.attributes(), resolveHardLinkContentNode(node).path())
+                : node.attributes();
+    }
+
+    /// Redirects incoming hard links, promoting one member if the group's content owner is removed.
     private void materializeHardLinksTo(String deletedPath) throws IOException {
-        ArrayDeque<String> deletedTargets = new ArrayDeque<>();
-        deletedTargets.add(deletedPath);
-        while (!deletedTargets.isEmpty()) {
-            String targetPath = deletedTargets.removeFirst();
-            for (Node node : List.copyOf(nodes.values())) {
-                TarArkivoEntryAttributes attributes = node.attributes();
-                @Nullable String linkName = attributes.linkName();
-                if (!attributes.isHardLink() || linkName == null) {
-                    continue;
-                }
-                requireArchiveLocalPath(linkName, "TAR hard link target");
-                if (!normalizeEntryPath(linkName).equals(targetPath)) {
-                    continue;
-                }
-                TarEntryAttributes materialized = copyAttributes(
-                        attributes,
-                        node.path(),
-                        TarEntryAttributes.REGULAR_TYPE,
-                        null,
-                        node.contentSize()
-                );
-                nodes.put(node.path(), replaceNodeAttributes(node, materialized, node.content()));
-                deletedTargets.addLast(node.path());
+        Node deleted = Objects.requireNonNull(nodes.get(deletedPath));
+        Node owner = resolveHardLinkContentNode(deleted);
+        String replacementPath = owner.path();
+        for (Node node : List.copyOf(nodes.values())) {
+            TarArkivoEntryAttributes attributes = node.attributes();
+            if (!attributes.isHardLink() || !normalizeHardLinkTargetPath(attributes).equals(deletedPath)) {
+                continue;
             }
+            boolean promote = replacementPath.equals(deletedPath);
+            if (promote) {
+                replacementPath = node.path();
+            }
+            TarEntryAttributes replacement = copyAttributes(attributes, node.path(),
+                    promote ? TarEntryAttributes.REGULAR_TYPE : TarEntryAttributes.HARD_LINK_TYPE,
+                    promote ? null : replacementPath, node.contentSize());
+            nodes.put(node.path(), replaceNodeAttributes(node, replacement, node.content()));
         }
     }
 

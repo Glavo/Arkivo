@@ -12,6 +12,7 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
+import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
@@ -368,22 +369,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
         try (Operation ignored = beginReadOperation()) {
-            Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
-            int separator = syntaxAndPattern.indexOf(':');
-            if (separator <= 0) {
-                throw new IllegalArgumentException("Path matcher syntax must be syntax:pattern");
-            }
-            String syntax = syntaxAndPattern.substring(0, separator);
-            String pattern = syntaxAndPattern.substring(separator + 1);
-            if ("regex".equals(syntax)) {
-                java.util.regex.Pattern compiled = java.util.regex.Pattern.compile(pattern);
-                return path -> compiled.matcher(path.toString()).matches();
-            }
-            if ("glob".equals(syntax)) {
-                PathMatcher matcher = java.nio.file.FileSystems.getDefault().getPathMatcher("glob:" + pattern);
-                return path -> matcher.matches(Path.of(path.toString()));
-            }
-            throw new UnsupportedOperationException("Unsupported path matcher syntax: " + syntax);
+            return ArkivoPathMatchers.create(syntaxAndPattern, '/');
         }
     }
 
