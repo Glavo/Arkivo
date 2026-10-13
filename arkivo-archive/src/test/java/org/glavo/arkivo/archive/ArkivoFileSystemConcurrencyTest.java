@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive;
 
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
+import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -44,6 +45,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -380,6 +382,84 @@ public final class ArkivoFileSystemConcurrencyTest {
             closeReleasedRead.countDown();
             channel.close();
             fileSystem.close();
+            executor.shutdownNow();
+        }
+    }
+
+    /// A staged close waiting for exclusive completion does not prevent strict close from releasing another reader.
+    @Test
+    void strictCloseCompletesStagedBodyWithoutResourceMonitorInversion() throws Exception {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        CountDownLatch readEntered = new CountDownLatch(1);
+        CountDownLatch releaseRead = new CountDownLatch(1);
+        CountDownLatch storageClosed = new CountDownLatch(1);
+        AtomicInteger completions = new AtomicInteger();
+        ReadableByteChannel reader = fileSystem.managedReadableChannel(
+                new BlockingInterruptibleReadableByteChannel(readEntered, releaseRead));
+        StagedSeekableByteChannel staged = new StagedSeekableByteChannel(
+                new CloseSignallingSeekableByteChannel(storageClosed), false, true, false, true,
+                (completed, commit) -> {
+                    assertTrue(commit);
+                    completions.incrementAndGet();
+                });
+        SeekableByteChannel writer = fileSystem.managedWriteChannel(staged);
+        try {
+            Future<Integer> read = executor.submit(() -> reader.read(ByteBuffer.allocate(1)));
+            assertTrue(readEntered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            Future<Void> entryClose = executor.submit(() -> {
+                writer.close();
+                return null;
+            });
+            assertTrue(storageClosed.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertEquals(0, completions.get());
+            Future<Void> fileSystemClose = executor.submit(() -> {
+                fileSystem.close();
+                return null;
+            });
+
+            fileSystemClose.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            entryClose.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> read.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertInstanceOf(AsynchronousCloseException.class, failure.getCause());
+            assertEquals(1, completions.get());
+            writer.close();
+            assertEquals(1, completions.get());
+        } finally {
+            releaseRead.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    /// Strict close waits for the write failure to be recorded before deciding whether staged content can commit.
+    @Test
+    void strictCloseDiscardsStagedWriteReleasedByStorageClose() throws Exception {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch writeEntered = new CountDownLatch(1);
+        CountDownLatch storageClosed = new CountDownLatch(1);
+        AtomicInteger completions = new AtomicInteger();
+        SeekableByteChannel writer = fileSystem.managedWriteChannel(new StagedSeekableByteChannel(
+                new BlockingStagedWriteChannel(writeEntered, storageClosed), false, true, false, true,
+                (completed, commit) -> {
+                    assertFalse(commit);
+                    completions.incrementAndGet();
+                }));
+        try {
+            Future<Integer> write = executor.submit(() -> writer.write(ByteBuffer.wrap(new byte[]{1})));
+            assertTrue(writeEntered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            Future<IOException> close = executor.submit(() -> assertThrows(IOException.class, fileSystem::close));
+            IOException failure = close.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            assertInstanceOf(AsynchronousCloseException.class, failure.getCause());
+            ExecutionException writeFailure = assertThrows(ExecutionException.class,
+                    () -> write.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertSame(failure.getCause(), writeFailure.getCause());
+            assertEquals(1, completions.get());
+            writer.close();
+            fileSystem.close();
+        } finally {
+            storageClosed.countDown();
             executor.shutdownNow();
         }
     }
@@ -957,6 +1037,53 @@ public final class ArkivoFileSystemConcurrencyTest {
             if (!open) {
                 throw new ClosedChannelException();
             }
+        }
+    }
+
+    /// Signals when staged physical closure completes, without invoking any file system operation.
+    @NotNullByDefault
+    private static class CloseSignallingSeekableByteChannel extends TrackingSeekableByteChannel {
+        /// Signals physical closure to the test and any blocked write.
+        protected final CountDownLatch closed;
+
+        /// Creates a channel with an observable physical close.
+        private CloseSignallingSeekableByteChannel(CountDownLatch closed) {
+            this.closed = closed;
+        }
+
+        /// Closes the channel and releases observers of physical closure.
+        @Override
+        public void close() {
+            super.close();
+            closed.countDown();
+        }
+    }
+
+    /// Keeps a staged write active until physical close, then reports its asynchronous-close failure.
+    @NotNullByDefault
+    private static final class BlockingStagedWriteChannel extends CloseSignallingSeekableByteChannel {
+        /// Signals entry into the write that holds the file system's exclusive operation lock.
+        private final CountDownLatch entered;
+
+        /// Creates a write released only by physical closure.
+        private BlockingStagedWriteChannel(CountDownLatch entered, CountDownLatch closed) {
+            super(closed);
+            this.entered = entered;
+        }
+
+        /// Waits for physical close before failing the pending mutation.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            entered.countDown();
+            try {
+                if (!closed.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IOException("Timed out waiting for staged storage close");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while awaiting staged storage close", exception);
+            }
+            throw new AsynchronousCloseException();
         }
     }
 

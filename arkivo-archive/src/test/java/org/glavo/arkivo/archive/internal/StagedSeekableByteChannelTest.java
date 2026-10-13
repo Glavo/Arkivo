@@ -36,6 +36,50 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies staged-body access, mutation failure isolation, and exactly-once completion.
 @NotNullByDefault
 final class StagedSeekableByteChannelTest {
+    /// Storage closure is independently idempotent and does not publish the body before completion.
+    @Test
+    void separatesStorageCloseFromCompletion() throws IOException {
+        AtomicInteger completions = new AtomicInteger();
+        ReadOnlyByteArrayChannel storage = new ReadOnlyByteArrayChannel(new byte[0]);
+        StagedSeekableByteChannel channel = new StagedSeekableByteChannel(
+                storage, false, true, false, true, (completed, commit) -> {
+                    assertTrue(commit);
+                    assertFalse(storage.isOpen());
+                    completions.incrementAndGet();
+                });
+
+        channel.closeStorage();
+        channel.closeStorage();
+        assertFalse(channel.isOpen());
+        assertFalse(storage.isOpen());
+        assertEquals(0, completions.get());
+        assertThrows(ClosedChannelException.class, () -> channel.write(ByteBuffer.allocate(1)));
+
+        channel.completeClose();
+        channel.completeClose();
+        channel.close();
+        assertEquals(1, completions.get());
+    }
+
+    /// A failed physical close remains visible to the later completion and prevents publication.
+    @Test
+    void retainsStorageFailureUntilCompletion() throws IOException {
+        AtomicInteger completions = new AtomicInteger();
+        StagedSeekableByteChannel channel = new StagedSeekableByteChannel(
+                new CloseFailingChannel(new ReadOnlyByteArrayChannel(new byte[0])),
+                false, true, false, true, (completed, commit) -> {
+                    assertFalse(commit);
+                    completions.incrementAndGet();
+                });
+
+        channel.closeStorage();
+        assertEquals(0, completions.get());
+        IOException failure = assertThrows(IOException.class, channel::completeClose);
+        assertEquals("storage close failed", failure.getMessage());
+        channel.close();
+        assertEquals(1, completions.get());
+    }
+
     /// Verifies staged read/write access, append positioning, change tracking, and idempotent completion.
     @Test
     void managesStagedRandomAccessChannels() throws IOException {

@@ -306,6 +306,8 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
 
     /// Returns a relative path from this path to another path.
     ///
+    /// Single-dot elements are ignored in both paths. Parent elements are retained without resolving symbolic links.
+    ///
     /// @throws ProviderMismatchException if `other` belongs to another path implementation or archive file system
     /// @throws IllegalArgumentException if exactly one of the paths is absolute
     @Override
@@ -315,18 +317,22 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             throw new IllegalArgumentException("Cannot relativize paths with different root types");
         }
 
+        @Unmodifiable List<String> baseNames = names.contains(".")
+                ? names.stream().filter(name -> !name.equals(".")).toList() : names;
+        @Unmodifiable List<String> targetNames = that.names.contains(".")
+                ? that.names.stream().filter(name -> !name.equals(".")).toList() : that.names;
         int sharedNames = 0;
-        while (sharedNames < names.size()
-                && sharedNames < that.names.size()
-                && names.get(sharedNames).equals(that.names.get(sharedNames))) {
+        while (sharedNames < baseNames.size()
+                && sharedNames < targetNames.size()
+                && baseNames.get(sharedNames).equals(targetNames.get(sharedNames))) {
             sharedNames++;
         }
 
         ArrayList<String> relativeNames = new ArrayList<>();
-        for (int index = sharedNames; index < names.size(); index++) {
+        for (int index = sharedNames; index < baseNames.size(); index++) {
             relativeNames.add("..");
         }
-        relativeNames.addAll(that.names.subList(sharedNames, that.names.size()));
+        relativeNames.addAll(targetNames.subList(sharedNames, targetNames.size()));
         return createPath(false, relativeNames);
     }
 

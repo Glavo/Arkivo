@@ -7,6 +7,8 @@ import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
@@ -35,6 +37,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -66,6 +69,33 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies staged archive writers retain resources across failures without repeating publication.
 @NotNullByDefault
 final class ArchiveWriterStorageLifecycleTest {
+    /// Staged output streams retain flush lifecycle checks when channel completion owns their closure.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "7z"})
+    void stagedOutputFlushRejectsClosedResources(String format, @TempDir Path directory) throws IOException {
+        for (var safety : new ArkivoFileSystemThreadSafety[]{
+                ArkivoFileSystemThreadSafety.CONCURRENT_READ, ArkivoFileSystemThreadSafety.STRICT}) {
+            for (boolean closeFileSystem : new boolean[]{false, true}) {
+                Path archive = directory.resolve(safety + "-" + closeFileSystem + "." + format);
+                try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+                    Files.writeString(fs.getPath("file"), "old");
+                }
+                try (var fs = ArkivoFormats.updateFileSystem(format, archive,
+                        ArchiveUpdateOptions.DEFAULT.withThreadSafety(safety));
+                     OutputStream output = Files.newOutputStream(fs.getPath("file"))) {
+                    output.write(BODY);
+                    output.flush();
+                    if (closeFileSystem) fs.close();
+                    else output.close();
+                    assertThrows(IOException.class, output::flush);
+                }
+                try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+                    assertArrayEquals(BODY, Files.readAllBytes(fs.getPath("file")));
+                }
+            }
+        }
+    }
+
     /// Small entry bytes shared by all format cases.
     private static final byte @Unmodifiable [] BODY = {1, 2, 3, 4};
 

@@ -15,6 +15,7 @@ import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
@@ -30,6 +31,10 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -42,6 +47,65 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests indexed TAR content storage ownership and cleanup behavior.
 @NotNullByDefault
 public final class TarIndexedStorageTest {
+    /// File-system close waits for staged channel closure and metadata publication as one operation.
+    @ParameterizedTest
+    @EnumSource(value = ArkivoFileSystemThreadSafety.class, names = {"CONCURRENT_READ", "STRICT"})
+    void concurrentClosePublishesPendingBody(ArkivoFileSystemThreadSafety safety) throws Exception {
+        for (boolean stream : new boolean[]{false, true}) {
+            for (boolean gateSize : new boolean[]{false, true}) {
+                Path archive = createArchive(true);
+                TrackingEditStorage storage = new TrackingEditStorage(false);
+                TarArkivoFileSystem fs = TarArkivoFileSystem.update(archive,
+                        TarArchiveOptions.UPDATE_DEFAULTS.withCommon(ArchiveUpdateOptions.DEFAULT
+                                .withThreadSafety(safety).withEditStorageFactory(() -> storage)));
+                java.io.Closeable entry;
+                if (stream) {
+                    OutputStream output = Files.newOutputStream(fs.getPath("file.txt"));
+                    output.write("replacement".getBytes(StandardCharsets.UTF_8));
+                    entry = output;
+                } else {
+                    SeekableByteChannel channel = Files.newByteChannel(fs.getPath("file.txt"),
+                            StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING);
+                    channel.write(ByteBuffer.wrap("replacement".getBytes(StandardCharsets.UTF_8)));
+                    entry = channel;
+                }
+                storage.gateSize = gateSize;
+                storage.gateArmed = true;
+                FutureTask<Void> entryClose = new FutureTask<>(() -> { entry.close(); return null; });
+                CountDownLatch closing = new CountDownLatch(1);
+                FutureTask<Void> fileSystemClose = new FutureTask<>(() -> {
+                    closing.countDown();
+                    fs.close();
+                    return null;
+                });
+                Thread entryThread = new Thread(entryClose, "tar-entry-close");
+                Thread fsThread = new Thread(fileSystemClose, "tar-file-system-close");
+                entryThread.setDaemon(true);
+                fsThread.setDaemon(true);
+                entryThread.start();
+                try {
+                    assertTrue(storage.gateEntered.await(10, TimeUnit.SECONDS));
+                    fsThread.start();
+                    assertTrue(closing.await(10, TimeUnit.SECONDS));
+                    assertThrows(TimeoutException.class, () -> fileSystemClose.get(100, TimeUnit.MILLISECONDS));
+                } finally {
+                    storage.gateRelease.countDown();
+                    entryClose.get(10, TimeUnit.SECONDS);
+                    if (fsThread.getState() != Thread.State.NEW) fileSystemClose.get(10, TimeUnit.SECONDS);
+                    else fs.close();
+                }
+                entry.close();
+                fs.close();
+                try (var reopened = TarArkivoFileSystem.open(archive)) {
+                    assertEquals("replacement", Files.readString(reopened.getPath("file.txt")));
+                    assertEquals("replacement", Files.readString(reopened.getPath("hard.txt")));
+                } finally {
+                    Files.deleteIfExists(archive);
+                }
+            }
+        }
+    }
+
     /// Verifies that a streaming writer owns staged body storage and retries a failed body cleanup.
     @Test
     public void streamingWriterOwnsBodyStorage() throws IOException {
@@ -338,6 +402,29 @@ public final class TarIndexedStorageTest {
     /// Tracks storage allocation and close calls while delegating content to memory storage.
     @NotNullByDefault
     private static final class TrackingEditStorage implements ArkivoEditStorage {
+        /// Whether the next selected storage operation should pause.
+        private volatile boolean gateArmed;
+        /// Selects metadata size lookup instead of backing-channel close.
+        private boolean gateSize;
+        /// Signals entry into the selected close boundary.
+        private final CountDownLatch gateEntered = new CountDownLatch(1);
+        /// Releases the selected close boundary.
+        private final CountDownLatch gateRelease = new CountDownLatch(1);
+
+        /// Pauses once at an armed storage operation.
+        private void awaitGate(boolean size) throws IOException {
+            if (gateArmed && gateSize == size) {
+                gateArmed = false;
+                gateEntered.countDown();
+                try {
+                    if (!gateRelease.await(10, TimeUnit.SECONDS)) throw new IOException("Close gate timed out");
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(exception);
+                }
+            }
+        }
+
         /// The delegate memory storage.
         private final ArkivoEditStorage delegate = ArkivoEditStorage.memory();
 
@@ -451,6 +538,7 @@ public final class TarIndexedStorageTest {
             /// Reports an armed failure without closing the delegate, or closes it successfully.
             @Override
             public void close() throws IOException {
+                awaitGate(false);
                 channelCloseCount++;
                 @Nullable Throwable failure = channelCloseFailure;
                 channelCloseFailure = null;
@@ -490,6 +578,7 @@ public final class TarIndexedStorageTest {
             /// Returns the delegated content size.
             @Override
             public long size() throws IOException {
+                awaitGate(true);
                 return content.size();
             }
 

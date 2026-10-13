@@ -71,7 +71,13 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
     private @Nullable Throwable mutationFailure;
 
     /// Whether this wrapper remains open.
-    private boolean open = true;
+    private volatile boolean open = true;
+
+    /// The storage-close failure retained until completion, or `null` after successful storage close.
+    private @Nullable Throwable storageCloseFailure;
+
+    /// Whether the completion handler has been invoked.
+    private boolean completed;
 
     /// Creates a staged random-access channel with no additional write validation.
     ///
@@ -218,15 +224,42 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
     /// Subsequent calls do nothing. The content owner is responsible for retrying failed storage cleanup.
     @Override
     public void close() throws IOException {
+        completeClose();
+    }
+
+    /// Closes storage without publishing or discarding the staged body.
+    ///
+    /// Concurrent calls wait for the same storage-close attempt. Any failure is retained for [#completeClose()];
+    /// this method does not report it or invoke the completion handler. The owner must subsequently complete the
+    /// close under its mutation coordination, after any active storage operations have returned.
+    public synchronized void closeStorage() {
         if (!open) {
             return;
         }
         open = false;
-        @Nullable Throwable failure = mutationFailure == null ? null : discardedBodyException();
         try {
             channel.close();
         } catch (IOException | RuntimeException | Error exception) {
-            failure = appendFailure(failure, exception);
+            storageCloseFailure = exception;
+        }
+    }
+
+    /// Completes storage closure and invokes the completion handler at most once.
+    ///
+    /// The caller must exclude active storage operations and coordinate changes made by the completion handler.
+    /// Storage is closed first if necessary. Mutation failures, storage-close failures, and completion failures are
+    /// reported in that order, with later failures suppressed. Subsequent calls do nothing.
+    ///
+    /// @throws IOException if a mutation, storage close, or completion failed
+    public synchronized void completeClose() throws IOException {
+        closeStorage();
+        if (completed) {
+            return;
+        }
+        completed = true;
+        @Nullable Throwable failure = mutationFailure == null ? null : discardedBodyException();
+        if (storageCloseFailure != null) {
+            failure = appendFailure(failure, storageCloseFailure);
         }
         try {
             completionHandler.complete(this, failure == null && writable && changed);

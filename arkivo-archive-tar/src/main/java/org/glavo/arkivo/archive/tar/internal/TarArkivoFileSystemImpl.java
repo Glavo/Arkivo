@@ -792,7 +792,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// @throws UnsupportedOperationException if the file system is read-only or an option is unsupported in its mode
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
-            return manageOutputStream(newOutputStream(path, Set.of(options)));
+            OutputStream output = newOutputStream(path, Set.of(options));
+            return updateMode ? output : manageOutputStream(output);
         }
     }
 
@@ -817,7 +818,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             } else if (!channelOptions.contains(StandardOpenOption.APPEND)) {
                 channelOptions.add(StandardOpenOption.WRITE);
             }
-            return Channels.newOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
+            return manageOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
         }
         validateEntryWriteOptions(options);
         InitialAttributes initial = initialAttributes(attributes);
@@ -1791,10 +1792,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     append,
                     writable && (existing == null || truncate),
                     (completedChannel, commit) -> {
-                        if (activeUpdateChannel == completedChannel) {
-                            activeUpdateChannel = null;
-                            activeUpdatePath = null;
-                        }
                         boolean transferred = false;
                         try {
                             if (commit) {
@@ -1807,8 +1804,15 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                                 transferred = true;
                             }
                         } finally {
-                            if (!transferred) {
-                                releaseStoredContent(pendingContent);
+                            try {
+                                if (!transferred) {
+                                    releaseStoredContent(pendingContent);
+                                }
+                            } finally {
+                                if (activeUpdateChannel == completedChannel) {
+                                    activeUpdateChannel = null;
+                                    activeUpdatePath = null;
+                                }
                             }
                         }
                     }

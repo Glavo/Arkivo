@@ -41,6 +41,9 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     /// A deferred target or transform failure.
     private @Nullable Throwable failure;
 
+    /// The failure most recently delivered by close, used to avoid self-suppression on retry.
+    private @Nullable Throwable previousCloseFailure;
+
     /// Whether all pending filter bytes have been forwarded.
     private boolean finished;
 
@@ -126,18 +129,33 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     ///
     /// `isOpen()` becomes false even if finishing or target closure throws. A close failure is suppressed on an earlier
     /// finish failure, and later calls retry only an incomplete owned-target close.
+    /// If a write or explicit finish already failed, finalization is skipped and an `IOException` with that failure
+    /// as its cause is reported. The distinct exception permits suppression by try-with-resources.
+    /// A target-close retry that repeats the previously reported exception is wrapped in the same way.
     @Override
     public void close() throws IOException {
         @Nullable Throwable closeFailure = null;
         if (open) {
-            try {
-                finish();
-            } catch (IOException | RuntimeException | Error exception) {
-                closeFailure = exception;
+            if (failure != null) {
+                closeFailure = new IOException("Cannot finish a failed transform channel", failure);
+            } else {
+                try {
+                    finish();
+                } catch (IOException | RuntimeException | Error exception) {
+                    closeFailure = exception;
+                }
             }
             open = false;
         }
-        targetCloser.closeAfter(closeFailure);
+        try {
+            targetCloser.closeAfter(closeFailure);
+        } catch (IOException | RuntimeException | Error exception) {
+            if (exception == previousCloseFailure) {
+                throw new IOException("Transform channel target close failed again", exception);
+            }
+            previousCloseFailure = exception;
+            throw exception;
+        }
     }
 
     /// Writes every remaining byte in the supplied buffer.

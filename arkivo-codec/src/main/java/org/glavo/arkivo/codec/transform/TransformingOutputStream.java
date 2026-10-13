@@ -39,6 +39,9 @@ public final class TransformingOutputStream extends OutputStream {
     /// A deferred output or filter failure.
     private @Nullable Throwable failure;
 
+    /// The failure most recently delivered by close, used to avoid self-suppression on retry.
+    private @Nullable Throwable previousCloseFailure;
+
     /// Whether all pending filter bytes have been forwarded.
     private boolean finished;
 
@@ -123,14 +126,21 @@ public final class TransformingOutputStream extends OutputStream {
     ///
     /// The stream remains closed for writes even if finishing or downstream close throws. When both fail, the close
     /// failure is suppressed on the finish failure; later calls retry only downstream closure.
+    /// If a write or explicit finish already failed, finalization is skipped and an `IOException` with that failure
+    /// as its cause is reported. The distinct exception permits suppression by try-with-resources.
+    /// A downstream-close retry that repeats the previously reported exception is wrapped in the same way.
     @Override
     public void close() throws IOException {
         @Nullable Throwable closeFailure = null;
         if (!closed) {
-            try {
-                finish();
-            } catch (IOException | RuntimeException | Error exception) {
-                closeFailure = exception;
+            if (failure != null) {
+                closeFailure = new IOException("Cannot finish a failed transform stream", failure);
+            } else {
+                try {
+                    finish();
+                } catch (IOException | RuntimeException | Error exception) {
+                    closeFailure = exception;
+                }
             }
             closed = true;
         }
@@ -145,6 +155,12 @@ public final class TransformingOutputStream extends OutputStream {
                     closeFailure.addSuppressed(exception);
                 }
             }
+        }
+        if (closeFailure != null) {
+            if (closeFailure == previousCloseFailure) {
+                throw new IOException("Transform stream target close failed again", closeFailure);
+            }
+            previousCloseFailure = closeFailure;
         }
         rethrow(closeFailure);
     }

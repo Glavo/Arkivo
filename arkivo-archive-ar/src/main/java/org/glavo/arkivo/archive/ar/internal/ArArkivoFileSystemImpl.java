@@ -634,7 +634,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// @throws IOException if the file system is read-only or the member cannot be prepared for writing
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
-            return manageOutputStream(newOutputStream(path, Set.of(options)));
+            OutputStream output = newOutputStream(path, Set.of(options));
+            return updateMode ? output : manageOutputStream(output);
         }
     }
 
@@ -659,7 +660,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             } else if (!channelOptions.contains(StandardOpenOption.APPEND)) {
                 channelOptions.add(StandardOpenOption.WRITE);
             }
-            return Channels.newOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
+            return manageOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
         }
         validateEntryWriteOptions(options);
         InitialAttributes initial = initialAttributes(false, false, attributes);
@@ -1507,10 +1508,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                         }
                     },
                     (completedChannel, commit) -> {
-                        if (activeUpdateChannel == completedChannel) {
-                            activeUpdateChannel = null;
-                            activeUpdatePath = null;
-                        }
                         boolean transferred = false;
                         try {
                             if (commit) {
@@ -1518,8 +1515,15 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                                 transferred = true;
                             }
                         } finally {
-                            if (!transferred) {
-                                releaseStoredContent(pendingContent);
+                            try {
+                                if (!transferred) {
+                                    releaseStoredContent(pendingContent);
+                                }
+                            } finally {
+                                if (activeUpdateChannel == completedChannel) {
+                                    activeUpdateChannel = null;
+                                    activeUpdatePath = null;
+                                }
                             }
                         }
                     }

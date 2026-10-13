@@ -29,6 +29,34 @@ final class TransformCloseRetryTest {
     /// The transform that immediately accepts every byte without modification.
     private static final ByteTransform IDENTITY = (buffer, offset, length) -> length;
 
+    /// An explicit close followed by automatic cleanup cannot suppress a repeated endpoint failure onto itself.
+    @Test
+    void repeatedCloseFailurePreservesTryWithResourcesException() throws IOException {
+        FailingCloseWritableChannel channel = new FailingCloseWritableChannel();
+        channel.failedCloseAttempts = 2;
+        IOException channelFailure = assertThrows(IOException.class, () -> {
+            try (var output = new TransformingWritableByteChannel(channel, IDENTITY, ResourceOwnership.OWNED)) {
+                output.close();
+            }
+        });
+        assertSame(channel.failure, channelFailure);
+        assertEquals(1, channelFailure.getSuppressed().length);
+        assertSame(channelFailure, channelFailure.getSuppressed()[0].getCause());
+        assertEquals(2, channel.closeCount());
+        channel.close();
+
+        IOException streamFailure = new IOException("close failed");
+        SharedFailureOutputStream stream = new SharedFailureOutputStream(streamFailure);
+        assertSame(streamFailure, assertThrows(IOException.class, () -> {
+            try (var output = new TransformingOutputStream(stream, IDENTITY)) {
+                output.close();
+            }
+        }));
+        assertEquals(1, streamFailure.getSuppressed().length);
+        assertSame(streamFailure, streamFailure.getSuppressed()[0].getCause());
+        assertEquals(2, stream.closeCount());
+    }
+
     /// Verifies readable and writable channel wrappers retry owned endpoint closure.
     @Test
     void retriesChannelEndpoints() throws IOException {
@@ -150,9 +178,14 @@ final class TransformCloseRetryTest {
         }
     }
 
-    /// Implements a writable channel that fails its first close attempt.
+    /// Implements a writable channel that fails a configurable number of close attempts.
     @NotNullByDefault
     private static final class FailingCloseWritableChannel implements WritableByteChannel {
+        /// Number of initial close attempts that must fail.
+        private int failedCloseAttempts = 1;
+
+        /// The stable failure reported by each unsuccessful close.
+        private final IOException failure = new IOException("close failed");
         /// Collected bytes.
         private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
@@ -174,12 +207,12 @@ final class TransformCloseRetryTest {
             return delegate.isOpen();
         }
 
-        /// Fails once and closes the delegate on retry.
+        /// Fails the configured initial attempts and then closes the delegate.
         @Override
         public void close() throws IOException {
             closeCount++;
-            if (closeCount == 1) {
-                throw new IOException("close failed");
+            if (closeCount <= failedCloseAttempts) {
+                throw failure;
             }
             delegate.close();
         }

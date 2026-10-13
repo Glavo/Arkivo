@@ -51,6 +51,29 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared archive path parsing, composition, comparison, and URI behavior.
 @NotNullByDefault
 final class AbstractArkivoPathTest {
+    /// Dot elements contribute no parent traversal when computing relative paths.
+    @Test
+    void relativizesDotElementsWithoutCollapsingParentElements() {
+        TestFileSystem fs = new TestFileSystem(null);
+        for (String prefix : List.of("", "/")) {
+            for (String base : List.of("dir", "./dir", "dir/.", "./dir/./.")) {
+                for (String target : List.of("dir/source", "./dir/source", "dir/./source/.")) {
+                    Path from = fs.getPath(prefix + base);
+                    Path to = fs.getPath(prefix + target);
+                    assertEquals(fs.getPath("source"), from.relativize(to));
+                    assertEquals(to.normalize(), from.resolve(from.relativize(to)).normalize());
+                }
+            }
+        }
+        assertEquals(fs.getPath(""), fs.getPath(".").relativize(fs.getPath("")));
+        assertEquals(fs.getPath(""), fs.getPath("/./.").relativize(fs.getPath("/")));
+        assertEquals(fs.getPath("../other"), fs.getPath("/dir/.").relativize(fs.getPath("/other/.")));
+        assertEquals(fs.getPath("../source"),
+                fs.getPath("/dir/.").relativize(fs.getPath("/dir/../source")));
+        assertEquals(fs.getPath("source"),
+                fs.getPath("/alias/../.").relativize(fs.getPath("/alias/../source")));
+    }
+
     /// Separator runs preserve literal names, dot elements and non-ASCII text before explicit normalization.
     @Test
     void parsesRepeatedSeparatorsWithoutChangingNames() {

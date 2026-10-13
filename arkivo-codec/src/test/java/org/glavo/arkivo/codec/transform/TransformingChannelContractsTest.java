@@ -178,7 +178,7 @@ public final class TransformingChannelContractsTest {
             );
             assertEquals("Byte filter returned an invalid transformed byte count", writeFailure.getMessage());
             assertSame(writeFailure, assertThrows(IOException.class, output::finish));
-            assertSame(writeFailure, assertThrows(IOException.class, output::close));
+            assertSame(writeFailure, assertThrows(IOException.class, output::close).getCause());
             output.close();
             assertEquals(0, bytes.size());
         }
@@ -207,7 +207,7 @@ public final class TransformingChannelContractsTest {
         );
         assertEquals("Byte filter made no progress with a full buffer", writeFailure.getMessage());
         assertSame(writeFailure, assertThrows(IOException.class, output::finish));
-        assertSame(writeFailure, assertThrows(IOException.class, output::close));
+        assertSame(writeFailure, assertThrows(IOException.class, output::close).getCause());
         output.close();
     }
 
@@ -236,7 +236,7 @@ public final class TransformingChannelContractsTest {
                     assertSame(failure, assertThrows(failure.getClass(), () -> output.write(later)));
                     assertEquals(0, later.position());
                     assertSame(failure, assertThrows(failure.getClass(), output::finish));
-                    assertSame(failure, assertThrows(failure.getClass(), output::close));
+                    assertSame(failure, assertThrows(IOException.class, output::close).getCause());
                     output.close();
                     assertArrayEquals(new byte[]{1}, target.bytes());
                     assertEquals(1, target.writeCount);
@@ -265,11 +265,38 @@ public final class TransformingChannelContractsTest {
             TransformingWritableByteChannel output = new TransformingWritableByteChannel(target, transform);
             assertSame(failure, assertThrows(failure.getClass(), () -> output.write(ByteBuffer.wrap(new byte[]{1}))));
             assertSame(failure, assertThrows(failure.getClass(), () -> output.write(ByteBuffer.wrap(new byte[]{2}))));
-            assertSame(failure, assertThrows(failure.getClass(), output::close));
+            assertSame(failure, assertThrows(IOException.class, output::close).getCause());
             output.close();
             assertEquals(1, calls[0]);
             assertEquals(0, target.bytes().length);
             target.close();
+        }
+    }
+
+    /// Automatic closure suppresses a distinct failure without replacing the original operation exception.
+    @Test
+    public void automaticClosePreservesTheOriginalOperationFailure() throws IOException {
+        for (ResourceOwnership ownership : ResourceOwnership.values()) {
+            for (boolean finishing : new boolean[]{false, true}) {
+                for (Throwable failure : List.of(new IOException("write failed"),
+                        new IllegalStateException("write failed"), new AssertionError("write failed"))) {
+                    OneByteWritableChannel target = new OneByteWritableChannel();
+                    target.writeFailure = failure;
+                    Throwable actual = assertThrows(failure.getClass(), () -> {
+                        try (var output = new TransformingWritableByteChannel(target,
+                                finishing ? (buffer, offset, length) -> 0 : IDENTITY, ownership)) {
+                            output.write(ByteBuffer.wrap(new byte[]{1, 2}));
+                            if (finishing) output.finish();
+                        }
+                    });
+                    assertSame(failure, actual);
+                    assertEquals(1, actual.getSuppressed().length);
+                    assertSame(actual, actual.getSuppressed()[0].getCause());
+                    assertEquals(1, target.writeCount);
+                    assertEquals(ownership == ResourceOwnership.BORROWED, target.isOpen());
+                    target.close();
+                }
+            }
         }
     }
 
