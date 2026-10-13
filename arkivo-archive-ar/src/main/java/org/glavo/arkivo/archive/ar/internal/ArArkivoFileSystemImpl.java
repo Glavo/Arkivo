@@ -899,6 +899,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     ) throws IOException {
         Objects.requireNonNull(attribute, "attribute");
         Objects.requireNonNull(options, "options");
+        path = ArkivoFileSystemProviderSupport.resolveReadPath(path, options);
         int separator = attribute.indexOf(':');
         String view = separator >= 0 ? attribute.substring(0, separator) : "basic";
         String name = separator >= 0 ? attribute.substring(separator + 1) : attribute;
@@ -996,7 +997,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Returns the file store while the caller holds the shared operation lock.
     private FileStore fileStoreLocked(Path path) throws IOException {
         if (readOnly || updateMode) {
-            requireNode(path);
+            requireNode(ArkivoFileSystemProviderSupport.resolveReadPath(path));
         } else {
             requireWritableKnownPath(path);
         }
@@ -1979,6 +1980,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Prepares a new archive member path for forward-only writing.
     private String prepareWritableEntry(Path path, boolean directory) throws IOException {
         ensureOpen();
+        ArkivoFileSystemProviderSupport.validateWritablePath(path);
         String entryPath = normalizedNodePath(path);
         if (entryPath.isEmpty()) {
             throw new FileAlreadyExistsException(path.toString());
@@ -2634,7 +2636,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            ArArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            }
         }
     }
 
@@ -2662,31 +2666,41 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            ArArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            }
         }
 
         /// Sets this path's numeric user identifier in update mode.
         @Override
         public void setUserId(long userId) throws IOException {
-            ArArkivoFileSystemImpl.this.setUserId(path.resolve(), userId);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setUserId(path.resolve(), userId);
+            }
         }
 
         /// Sets this path's numeric group identifier in update mode.
         @Override
         public void setGroupId(long groupId) throws IOException {
-            ArArkivoFileSystemImpl.this.setGroupId(path.resolve(), groupId);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setGroupId(path.resolve(), groupId);
+            }
         }
 
         /// Sets this path's raw mode in update mode.
         @Override
         public void setMode(int mode) throws IOException {
-            ArArkivoFileSystemImpl.this.setMode(path.resolve(), mode);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setMode(path.resolve(), mode);
+            }
         }
 
         /// Sets this path's body size in update mode.
         @Override
         public void setSize(long size) throws IOException {
-            ArArkivoFileSystemImpl.this.setSize(path.resolve(), size);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setSize(path.resolve(), size);
+            }
         }
     }
 
@@ -2716,7 +2730,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         /// Sets this path's numeric owner in update mode.
         @Override
         public void setOwner(UserPrincipal owner) throws IOException {
-            ArArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+            }
         }
     }
 
@@ -2756,25 +2772,33 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            ArArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            }
         }
 
         /// Sets this path's numeric owner in update mode.
         @Override
         public void setOwner(UserPrincipal owner) throws IOException {
-            ArArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+            }
         }
 
         /// Sets this path's numeric group in update mode.
         @Override
         public void setGroup(GroupPrincipal group) throws IOException {
-            ArArkivoFileSystemImpl.this.setGroup(path.resolve(), group);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setGroup(path.resolve(), group);
+            }
         }
 
         /// Sets this path's permissions in update mode.
         @Override
         public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
-            ArArkivoFileSystemImpl.this.setPermissions(path.resolve(), permissions);
+            try (Operation ignored = beginWriteOperation()) {
+                ArArkivoFileSystemImpl.this.setPermissions(path.resolve(), permissions);
+            }
         }
     }
 

@@ -26,6 +26,9 @@ import java.util.Objects;
 /// must be configured before its body opens, and a body can be opened at most once. Closing the writer commits or closes
 /// any pending entry before finalizing the archive and its owned target.
 ///
+/// Entry names must not contain unpaired UTF-16 surrogates. Begin methods reject these with
+/// `IllegalArgumentException` before initializing an entry or writing output.
+///
 /// Entry operations throw `ClosedChannelException` after writer closing begins, including after a failed close attempt.
 /// Cleanup failures do not reopen the writer; repeated close calls exist only so format-specific cleanup can retry.
 @NotNullByDefault
@@ -103,6 +106,15 @@ public abstract class ArkivoStreamingWriter implements Closeable {
         requireOpen();
         if (currentEntry != null) {
             throw new IllegalStateException("An archive entry is already pending");
+        }
+        for (int index = 0; index < checkedPath.length(); index++) {
+            char value = checkedPath.charAt(index);
+            if (Character.isHighSurrogate(value) && index + 1 < checkedPath.length()
+                    && Character.isLowSurrogate(checkedPath.charAt(index + 1))) {
+                index++;
+            } else if (Character.isSurrogate(value)) {
+                throw new IllegalArgumentException("Archive entry names cannot contain unpaired surrogates");
+            }
         }
         checkedInitializer.initialize(checkedPath);
         entrySequence++;

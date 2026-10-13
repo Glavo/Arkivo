@@ -205,6 +205,33 @@ final class CompressionDecoderSupportTest {
         }
     }
 
+    /// Verifies excess bytes produced before a delegate failure leave the limiter in a terminal state.
+    @Test
+    void retainsExcessOutputAfterProbeFailure() {
+        for (int operation = 0; operation < 3; operation++) {
+            DecompressingReadableByteChannel.Framed decoder = CompressionDecoderSupport.limitChannelOutput(
+                    new PartiallyFailingFramedChannel(), 0L);
+            ByteBuffer target = ByteBuffer.allocate(1);
+            int selectedOperation = operation;
+            try {
+                assertThrows(ClosedByInterruptException.class, () -> {
+                    switch (selectedOperation) {
+                        case 0 -> decoder.read(target);
+                        case 1 -> decoder.decode(target);
+                        default -> decoder.decodeFrame(target);
+                    }
+                });
+            } finally {
+                assertTrue(Thread.interrupted());
+            }
+            assertEquals(0, target.position());
+            assertEquals(0L, decoder.outputBytes());
+            assertThrows(DecompressionLimitException.class, () -> decoder.read(target));
+            assertThrows(DecompressionLimitException.class, () -> decoder.decode(target));
+            assertThrows(DecompressionLimitException.class, () -> decoder.decodeFrame(target));
+        }
+    }
+
     /// Verifies exact-limit output reaches EOF and restores a caller buffer's original limit.
     @Test
     void acceptsExactLimitAndPreservesBufferLimit() throws IOException {

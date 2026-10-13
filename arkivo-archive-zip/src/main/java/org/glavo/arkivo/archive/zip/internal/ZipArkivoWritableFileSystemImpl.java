@@ -1970,6 +1970,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         }
 
         try (Operation ignored = beginWriteOperation()) {
+            path = resolveMutationPath(path, !options.contains(StandardOpenOption.CREATE_NEW));
             EntryMetadata metadata = applyInitialAttributes(
                     EntryMetadata.deflated(config.defaultEncryption()),
                     false,
@@ -3330,8 +3331,11 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         if (path.getFileSystem() != this) {
             throw new java.nio.file.ProviderMismatchException();
         }
-        return rewriteSnapshot == null ? path
-                : ArkivoFileSystemProviderSupport.resolveMutationPath(path, followFinalLink);
+        if (rewriteSnapshot != null) {
+            return ArkivoFileSystemProviderSupport.resolveMutationPath(path, followFinalLink);
+        }
+        ArkivoFileSystemProviderSupport.validateWritablePath(path);
+        return path;
     }
 
     /// Rejects body writes to explicit and synthetic directories before any output or staging is created.

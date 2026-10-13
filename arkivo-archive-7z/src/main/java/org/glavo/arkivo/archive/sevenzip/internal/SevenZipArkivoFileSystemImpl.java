@@ -1270,6 +1270,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             throws IOException {
         Objects.requireNonNull(attribute, "attribute");
         Objects.requireNonNull(options, "options");
+        path = ArkivoFileSystemProviderSupport.resolveReadPath(path, options);
         requireUpdateMode();
         int separator = attribute.indexOf(':');
         String view = separator >= 0 ? attribute.substring(0, separator) : "basic";
@@ -1875,8 +1876,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 : ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(
                         Objects.requireNonNull(sourcePath, "archivePath")
                 ));
-        ArkivoCommitOutput output = target.openOutput(sourcePath);
-        pendingCommitOutput = output;
+        ArkivoStoredContent assembled = requireEditStorage().createContent(
+                "assembled.7z", ArkivoEditStorage.UNKNOWN_SIZE);
         @Nullable Throwable failure = null;
         @Nullable SevenZipHeaderEncryption encryption = null;
         try (SevenZipWritePassword password = SevenZipWritePassword.open(config.passwordProvider())) {
@@ -1887,7 +1888,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 }
                 encryption = SevenZipHeaderEncryption.create(passwordBytes);
             }
-            try (SeekableByteChannel channel = output.openChannel(Set.of(
+            try (SeekableByteChannel channel = assembled.openChannel(Set.of(
                     StandardOpenOption.CREATE,
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE
@@ -1901,6 +1902,19 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                  )) {
                 writeUpdatedArchive(archiveWriter);
             }
+            if (!volumesClosed) {
+                if (volumes != null) {
+                    volumes.close();
+                }
+                volumesClosed = true;
+            }
+            ArkivoCommitOutput output = target.openOutput(sourcePath);
+            pendingCommitOutput = output;
+            try (InputStream input = StoredContentSupport.openInputStream(assembled);
+                 SeekableByteChannel destination = output.openChannel(Set.of(
+                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
+                StoredContentSupport.copyInput(input, destination);
+            }
             if (encryption != null) {
                 encryption.applyTo(output.path());
             }
@@ -1912,6 +1926,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
         }
 
+        @Nullable ArkivoCommitOutput output = pendingCommitOutput;
+        if (output == null) {
+            throwFailure(failure);
+            return;
+        }
         try {
             if (failure == null) {
                 output.commit();
@@ -2907,6 +2926,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Prepares a new archive entry path for forward-only writing.
     private String prepareWritableEntry(Path path, boolean directory) throws IOException {
+        ArkivoFileSystemProviderSupport.validateWritablePath(path);
         String pathText = normalizedPathText(path);
         if ("/".equals(pathText)) {
             throw new FileAlreadyExistsException(path.toString());
@@ -3333,7 +3353,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         /// Rejects owner mutation because 7z stores no owner principal.
         @Override
         public void setOwner(UserPrincipal owner) {
-            SevenZipArkivoFileSystemImpl.this.setOwner(path.path(), owner);
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setOwner(path.path(), owner);
+            }
         }
     }
 
@@ -3373,30 +3395,38 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            SevenZipArkivoFileSystemImpl.this.setTimes(
-                    path.resolve(),
-                    lastModifiedTime,
-                    lastAccessTime,
-                    createTime
-            );
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setTimes(
+                        path.resolve(),
+                        lastModifiedTime,
+                        lastAccessTime,
+                        createTime
+                );
+            }
         }
 
         /// Rejects owner mutation because 7z stores no owner principal.
         @Override
         public void setOwner(UserPrincipal owner) {
-            SevenZipArkivoFileSystemImpl.this.setOwner(path.path(), owner);
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setOwner(path.path(), owner);
+            }
         }
 
         /// Rejects group mutation because 7z stores no group principal.
         @Override
         public void setGroup(GroupPrincipal group) {
-            SevenZipArkivoFileSystemImpl.this.setGroup(path.path(), group);
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setGroup(path.path(), group);
+            }
         }
 
         /// Sets permissions encoded by Unix mode metadata.
         @Override
         public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
-            SevenZipArkivoFileSystemImpl.this.setPermissions(path.resolve(), permissions);
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setPermissions(path.resolve(), permissions);
+            }
         }
     }
 
@@ -3430,12 +3460,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            SevenZipArkivoFileSystemImpl.this.setTimes(
-                    path.resolve(),
-                    lastModifiedTime,
-                    lastAccessTime,
-                    createTime
-            );
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setTimes(
+                        path.resolve(),
+                        lastModifiedTime,
+                        lastAccessTime,
+                        createTime
+                );
+            }
         }
     }
 
@@ -3466,42 +3498,54 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            SevenZipArkivoFileSystemImpl.this.setTimes(
-                    path.resolve(),
-                    lastModifiedTime,
-                    lastAccessTime,
-                    createTime
-            );
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setTimes(
+                        path.resolve(),
+                        lastModifiedTime,
+                        lastAccessTime,
+                        createTime
+                );
+            }
         }
 
         /// Sets raw Windows attributes in update mode.
         @Override
         public void setWindowsAttributes(int windowsAttributes) throws IOException {
-            SevenZipArkivoFileSystemImpl.this.setWindowsAttributes(path.resolve(), windowsAttributes);
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setWindowsAttributes(path.resolve(), windowsAttributes);
+            }
         }
 
         /// Sets entry-specific compression in update mode.
         @Override
         public void setCompression(SevenZipCompression compression) throws IOException {
-            SevenZipArkivoFileSystemImpl.this.setCompression(path.resolve(), compression);
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setCompression(path.resolve(), compression);
+            }
         }
 
         /// Sets an entry-specific filter in update mode.
         @Override
         public void setFilter(SevenZipFilter filter) throws IOException {
-            SevenZipArkivoFileSystemImpl.this.setFilter(path.resolve(), filter);
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setFilter(path.resolve(), filter);
+            }
         }
 
         /// Sets an entry-specific filter chain in update mode.
         @Override
         public void setFilters(SevenZipFilterChain filters) throws IOException {
-            SevenZipArkivoFileSystemImpl.this.setFilters(path.resolve(), filters);
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.setFilters(path.resolve(), filters);
+            }
         }
 
         /// Disables filtering for this entry in update mode.
         @Override
         public void clearFilter() throws IOException {
-            SevenZipArkivoFileSystemImpl.this.clearFilter(path.resolve());
+            try (Operation ignored = beginWriteOperation()) {
+                SevenZipArkivoFileSystemImpl.this.clearFilter(path.resolve());
+            }
         }
     }
 }

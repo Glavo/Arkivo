@@ -5,12 +5,19 @@ package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
+import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
+import org.glavo.arkivo.archive.tar.TarArchiveOptions;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
+import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
+import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -45,6 +52,137 @@ final class ArchiveVolumeTransactionFailureTest {
     /// Contains source archives and unpublished replacement files.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Direct targets must not truncate source-backed bodies before they have been read.
+    @ParameterizedTest
+    @ValueSource(strings = {"7z", "tar.zst"})
+    void assemblesBeforeOpeningDirectTarget(String format) throws IOException {
+        for (boolean truncateAtOpen : new boolean[]{false, true}) {
+            Path path = temporaryDirectory.resolve(truncateAtOpen + "." + format);
+            try (ArkivoFileSystem archive = format.equals("7z")
+                    ? ArkivoFormats.createFileSystem("7z", path)
+                    : TarArkivoFileSystem.create(path, TarArchiveOptions.CREATE_DEFAULTS
+                            .withCompression(ZstdCodec.DEFAULT))) {
+                Files.writeString(archive.getPath("retained"), "retained body");
+                Files.writeString(archive.getPath("changed"), "old body");
+            }
+            ArkivoCommitTarget target = truncateAtOpen ? source -> {
+                Files.write(path, new byte[0]);
+                return ArkivoCommitTarget.writeTo(path).openOutput(source);
+            } : ArkivoCommitTarget.replaceOriginal();
+            ArchiveUpdateOptions common = ArchiveUpdateOptions.DEFAULT.withCommitTarget(target);
+            try (ArkivoFileSystem archive = format.equals("7z")
+                    ? ArkivoFormats.updateFileSystem("7z", path, common)
+                    : TarArkivoFileSystem.update(path, TarArchiveOptions.UPDATE_DEFAULTS.withCommon(common))) {
+                Files.writeString(archive.getPath("changed"), "new body");
+            }
+            try (ArkivoFileSystem archive = format.equals("7z")
+                    ? ArkivoFormats.openFileSystem("7z", path)
+                    : TarArkivoFileSystem.open(path)) {
+                assertEquals("retained body", Files.readString(archive.getPath("retained")));
+                assertEquals("new body", Files.readString(archive.getPath("changed")));
+            }
+        }
+    }
+
+    /// Publication starts only after the owned source closes, and close failures cannot publish an update.
+    @ParameterizedTest
+    @ValueSource(strings = {"7z", "tar"})
+    void closesOwnedSourceBeforeOpeningTarget(String format) throws IOException {
+        for (boolean failClose : new boolean[]{false, true}) {
+            Path path = temporaryDirectory.resolve(failClose + "." + format);
+            try (ArkivoFileSystem archive = ArkivoFormats.createFileSystem(format, path)) {
+                Files.writeString(archive.getPath("retained"), "retained body");
+                Files.writeString(archive.getPath("changed"), "old body");
+            }
+            byte[] original = Files.readAllBytes(path);
+            ClosingSource source = new ClosingSource(path);
+            source.closeBlocked = failClose;
+            int[] targetCalls = {0};
+            ArchiveUpdateOptions common = ArchiveUpdateOptions.DEFAULT.withCommitTarget(ignored -> {
+                targetCalls[0]++;
+                assertTrue(source.closed);
+                return ArkivoCommitTarget.writeTo(path).openOutput(null);
+            });
+            ArkivoFileSystem archive = format.equals("7z")
+                    ? SevenZipArkivoFileSystem.update(source, SevenZipArchiveOptions.UPDATE_DEFAULTS.withCommon(common))
+                    : TarArkivoFileSystem.update(source, TarArchiveOptions.UPDATE_DEFAULTS.withCommon(common));
+            try {
+                Files.writeString(archive.getPath("changed"), "new body");
+                if (failClose) {
+                    assertThrows(IOException.class, archive::close);
+                    assertThrows(IOException.class, archive::close);
+                    assertEquals(0, targetCalls[0]);
+                    assertArrayEquals(original, Files.readAllBytes(path));
+                    source.closeBlocked = false;
+                    archive.close();
+                    assertTrue(source.closed);
+                    assertEquals(0, targetCalls[0]);
+                } else {
+                    archive.close();
+                    assertEquals(1, targetCalls[0]);
+                    try (ArkivoFileSystem reopened = ArkivoFormats.openFileSystem(format, path)) {
+                        assertEquals("retained body", Files.readString(reopened.getPath("retained")));
+                        assertEquals("new body", Files.readString(reopened.getPath("changed")));
+                    }
+                }
+            } finally {
+                source.closeBlocked = false;
+                archive.close();
+            }
+        }
+    }
+
+    /// Exposes independent channels and records successful source closure.
+    @NotNullByDefault
+    private static final class ClosingSource implements ArkivoSeekableChannelSource {
+        /// The physical archive opened by each channel.
+        private final Path path;
+        /// Whether source closure must fail.
+        private boolean closeBlocked;
+        /// Whether source closure completed.
+        private boolean closed;
+
+        /// Creates a source over an existing archive.
+        private ClosingSource(Path path) {
+            this.path = path;
+        }
+
+        @Override
+        public SeekableByteChannel openChannel() throws IOException {
+            if (closed) {
+                throw new ClosedChannelException();
+            }
+            return Files.newByteChannel(path);
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closeBlocked) {
+                throw new IOException("Source close failed");
+            }
+            closed = true;
+        }
+    }
+
+    /// An unsupported forward hard link is rejected without making the rest of the TAR unreadable.
+    @Test
+    void rejectsTarHardLinksToSymbolicLinks() throws IOException {
+        Path path = temporaryDirectory.resolve("links.tar");
+        try (ArkivoFileSystem archive = ArkivoFormats.createFileSystem("tar", path)) {
+            Files.writeString(archive.getPath("original"), "body");
+            Files.createSymbolicLink(archive.getPath("symbolic"), archive.getPath("original"));
+            assertThrows(IOException.class,
+                    () -> Files.createLink(archive.getPath("rejected"), archive.getPath("symbolic")));
+            Files.createLink(archive.getPath("hard"), archive.getPath("original"));
+            Files.createLink(archive.getPath("chain"), archive.getPath("hard"));
+        }
+        try (ArkivoFileSystem archive = ArkivoFormats.openFileSystem("tar", path)) {
+            assertEquals("body", Files.readString(archive.getPath("symbolic")));
+            assertEquals("body", Files.readString(archive.getPath("chain")));
+            assertFalse(Files.exists(archive.getPath("rejected")));
+        }
+    }
 
     /// A failed update retains cleanup state across closes without retrying publication.
     @ParameterizedTest

@@ -27,6 +27,32 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies output limiting around buffer decoders with internally staged output.
 @NotNullByDefault
 final class OutputLimitingCompressionDecoderTest {
+    /// Bytes produced before an exception count toward the limit, including a failed hidden probe.
+    @Test
+    void retainsLimitProgressAfterDelegateFailure() throws IOException {
+        for (boolean finish : new boolean[]{false, true}) {
+            IOException injected = new IOException("partial output");
+            try (CompressionDecoder decoder = CompressionDecoderSupport.limitEngineOutput(
+                    new FailingDecoder(injected), 1)) {
+                ByteBuffer output = ByteBuffer.allocate(8);
+                ByteBuffer input = ByteBuffer.allocate(0);
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    assertSame(injected, assertThrows(IOException.class, () -> {
+                        if (finish) decoder.finish(input, output);
+                        else decoder.decode(input, output);
+                    }));
+                    assertEquals(1, output.position());
+                    assertEquals(8, output.limit());
+                }
+                assertThrows(DecompressionLimitException.class, () -> decoder.decode(input, output));
+                assertEquals(1, output.position());
+                decoder.reset();
+                assertSame(injected, assertThrows(IOException.class, () -> decoder.decode(input, output)));
+                assertEquals(2, output.position());
+            }
+        }
+    }
+
     /// Dictionary request exposed by the synthetic dictionary-aware decoders.
     private static final DictionaryRequest<RawCompressionDictionary> DICTIONARY_REQUEST =
             dictionary -> dictionary.size() > 0;

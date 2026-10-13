@@ -133,9 +133,9 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
                     ? decoder.finish(source, target)
                     : decoder.decode(source, target);
         } finally {
+            outputBytes += target.position() - targetStart;
             target.limit(originalLimit);
         }
-        outputBytes += target.position() - targetStart;
         if (outcome == CodecOutcome.NEEDS_OUTPUT
                 && outputBytes == maximumOutputSize
                 && target.hasRemaining()) {
@@ -163,11 +163,15 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
     /// Decodes one hidden byte to determine whether the configured limit is exceeded.
     private CodecOutcome probeForExcess(ByteBuffer source, boolean endOfInput) throws IOException {
         probe.clear();
-        CodecOutcome outcome = endOfInput
-                ? decoder.finish(source, probe)
-                : decoder.decode(source, probe);
-        if (probe.position() != 0) {
-            exceeded = true;
+        CodecOutcome outcome;
+        try {
+            outcome = endOfInput
+                    ? decoder.finish(source, probe)
+                    : decoder.decode(source, probe);
+        } finally {
+            exceeded |= probe.position() != 0;
+        }
+        if (exceeded) {
             throw limitException();
         }
         if (outcome == CodecOutcome.NEEDS_OUTPUT) {

@@ -246,8 +246,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         if (entry.type != EntryType.FILE) {
             throw new IllegalStateException("Only TAR file entries can open a body stream");
         }
-        pendingEntry = null;
         EntryBodyOutputStream body = new EntryBodyOutputStream(entry);
+        pendingEntry = null;
         currentBody = body;
         return body;
     }

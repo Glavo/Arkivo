@@ -1114,9 +1114,13 @@ public final class SevenZipArchiveIntegrationTest {
                 Files.delete(removed);
                 assertEquals(1, storage.openContentCount());
                 assertEquals(1, storage.contentCloseAttemptCount());
+                IOException failure = assertThrows(IOException.class, fileSystem::close);
+                assertEquals("forced stored-content close failure", failure.getMessage());
+                assertEquals(1, storage.openContentCount());
+                assertEquals(3, storage.contentCloseAttemptCount());
             }
 
-            assertEquals(2, storage.contentCloseAttemptCount());
+            assertEquals(4, storage.contentCloseAttemptCount());
             assertEquals(0, storage.openContentCount());
             assertEquals(true, storage.isClosed());
             try (DirectoryStream<Path> files = Files.newDirectoryStream(storageDirectory)) {
@@ -6204,6 +6208,9 @@ public final class SevenZipArchiveIntegrationTest {
     /// Provides logical long-addressable stored content without allocating its sparse byte range.
     @NotNullByDefault
     private static final class LogicalEditStorage implements ArkivoEditStorage {
+        /// Retains bytes for contents other than the sparse long-position test body.
+        private final ArkivoEditStorage ordinaryStorage = ArkivoEditStorage.memory();
+
         /// The expected size supplied for the most recently created content.
         private long lastExpectedSize = Long.MIN_VALUE;
 
@@ -6220,6 +6227,9 @@ public final class SevenZipArchiveIntegrationTest {
             if (closed) {
                 throw new IOException("Logical edit storage is closed");
             }
+            if (!path.endsWith("large.bin")) {
+                return ordinaryStorage.createContent(path, expectedSize);
+            }
             lastExpectedSize = expectedSize;
             LogicalStoredContent content = new LogicalStoredContent();
             lastContent = content;
@@ -6228,7 +6238,8 @@ public final class SevenZipArchiveIntegrationTest {
 
         /// Closes this logical storage.
         @Override
-        public void close() {
+        public void close() throws IOException {
+            ordinaryStorage.close();
             closed = true;
         }
 

@@ -31,12 +31,19 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.AbstractSet;
+import java.util.Iterator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -48,6 +55,164 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies component traversal and symbolic-link policies in read-only and update archive sessions.
 @NotNullByDefault
 final class ArchivePathResolutionTest {
+    /// File-store lookup follows both parent and terminal links and checks the resolved entry.
+    @ParameterizedTest
+    @MethodSource("configurations")
+    void resolvesFileStorePaths(String format, boolean update, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, update, directory)) {
+            var expected = Files.getFileStore(fs.getPath("/real/value.txt"));
+            assertEquals(expected, Files.getFileStore(fs.getPath("/dirlink/value.txt")));
+            assertEquals(expected, Files.getFileStore(fs.getPath("/alias/../value.txt")));
+            assertEquals(expected, Files.getFileStore(fs.getPath("/dirlink/filelink")));
+            assertThrows(NoSuchFileException.class, () -> Files.getFileStore(fs.getPath("/broken")));
+            assertThrows(FileSystemLoopException.class, () -> Files.getFileStore(fs.getPath("/cycle")));
+        }
+    }
+
+    /// NIO writes reject names that archive indexing would reinterpret, without changing existing entries.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void rejectsUnrepresentableEntryNames(String format, @TempDir Path directory) throws IOException {
+        for (boolean update : new boolean[]{false, true}) {
+            Path archive = directory.resolve(update + "." + format);
+            if (update) {
+                try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+                    Files.writeString(fs.getPath("/keep"), "original");
+                }
+            }
+            try (var fs = update ? ArkivoFormats.updateFileSystem(format, archive)
+                    : ArkivoFormats.createFileSystem(format, archive)) {
+                if (!update) {
+                    Files.writeString(fs.getPath("/keep"), "original");
+                }
+                for (String name : List.of("/a\\b", "/C:entry", "/C:", "/x\uD800", "/x\uDC00")) {
+                    Path invalid = fs.getPath(name);
+                    assertThrows(IOException.class, () -> Files.newOutputStream(invalid));
+                    assertThrows(IOException.class, () -> Files.newByteChannel(invalid,
+                            Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)));
+                    assertThrows(IOException.class, () -> Files.createDirectory(invalid));
+                    assertThrows(IOException.class, () -> Files.createSymbolicLink(invalid, fs.getPath("keep")));
+                    if (format.equals("tar")) {
+                        assertThrows(IOException.class, () -> Files.createLink(invalid, fs.getPath("/keep")));
+                    }
+                    if (update) {
+                        assertThrows(IOException.class, () -> Files.copy(fs.getPath("/keep"), invalid));
+                        assertThrows(IOException.class, () -> Files.move(fs.getPath("/keep"), invalid));
+                        assertEquals("original", Files.readString(fs.getPath("/keep")));
+                    }
+                }
+                Files.createDirectories(fs.getPath("/a"));
+                Files.writeString(fs.getPath("/a/b"), "separate");
+                Files.writeString(fs.getPath("/a/C:entry"), "nested colon");
+                Files.writeString(fs.getPath("/x\uD83D\uDE00"), "surrogate pair");
+                Files.writeString(fs.getPath("/following"), "following");
+            }
+            try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+                assertEquals("original", Files.readString(fs.getPath("/keep")));
+                assertEquals("separate", Files.readString(fs.getPath("/a/b")));
+                assertEquals("nested colon", Files.readString(fs.getPath("/a/C:entry")));
+                assertEquals("surrogate pair", Files.readString(fs.getPath("/x\uD83D\uDE00")));
+                assertEquals("following", Files.readString(fs.getPath("/following")));
+                assertFalse(Files.exists(fs.getPath("/a\\b")));
+                assertFalse(Files.exists(fs.getPath("/C:entry")));
+            }
+        }
+    }
+
+    /// Attribute-view mutation and deletion are serialized, including path resolution and attribute conversion.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "7z"})
+    void serializesAttributeViewWrites(String format, @TempDir Path directory) throws Exception {
+        try (var fs = open(format, true, directory)) {
+            Path entry = fs.getPath("/real/value.txt");
+            PosixFileAttributeView view = Files.getFileAttributeView(entry, PosixFileAttributeView.class);
+            assertNotNull(view);
+            GatedPermissions permissions = new GatedPermissions();
+            FutureTask<Void> setter = new FutureTask<>(() -> {
+                view.setPermissions(permissions);
+                return null;
+            });
+            CountDownLatch deleteStarted = new CountDownLatch(1);
+            FutureTask<Void> delete = new FutureTask<>(() -> {
+                deleteStarted.countDown();
+                Files.delete(entry);
+                return null;
+            });
+            Thread setterThread = new Thread(setter);
+            Thread deleteThread = new Thread(delete);
+            setterThread.setDaemon(true);
+            deleteThread.setDaemon(true);
+            setterThread.start();
+            try {
+                assertTrue(permissions.entered.await(10, TimeUnit.SECONDS));
+                deleteThread.start();
+                assertTrue(deleteStarted.await(10, TimeUnit.SECONDS));
+                assertThrows(TimeoutException.class, () -> delete.get(100, TimeUnit.MILLISECONDS));
+            } finally {
+                permissions.release.countDown();
+                setter.get(10, TimeUnit.SECONDS);
+                if (deleteThread.getState() != Thread.State.NEW) delete.get(10, TimeUnit.SECONDS);
+            }
+            assertFalse(Files.exists(entry));
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, directory.resolve("paths." + format))) {
+            assertFalse(Files.exists(fs.getPath("/real/value.txt")));
+        }
+    }
+
+    /// Supplies valid permissions while pausing attribute conversion at a known mutation boundary.
+    @NotNullByDefault
+    private static final class GatedPermissions extends AbstractSet<PosixFilePermission> {
+        /// Signals that conversion has started.
+        private final CountDownLatch entered = new CountDownLatch(1);
+        /// Allows conversion to finish.
+        private final CountDownLatch release = new CountDownLatch(1);
+
+        @Override
+        public int size() {
+            return 1;
+        }
+
+        @Override
+        public Iterator<PosixFilePermission> iterator() {
+            entered.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) throw new AssertionError("Permission conversion timed out");
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(exception);
+            }
+            return Set.of(PosixFilePermission.OWNER_READ).iterator();
+        }
+    }
+
+    /// Named attribute mutations follow parent links and honor the final-link policy.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "7z", "zip"})
+    void resolvesAttributeMutationPaths(String format, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, true, directory)) {
+            FileTime rootTime = Files.getLastModifiedTime(fs.getPath("/value.txt"));
+            FileTime first = FileTime.fromMillis(1_600_000_000_000L);
+            FileTime second = FileTime.fromMillis(1_600_000_010_000L);
+            FileTime third = FileTime.fromMillis(1_600_000_020_000L);
+            Files.setAttribute(fs.getPath("/alias/../value.txt"), "basic:lastModifiedTime", first);
+            assertEquals(first, Files.getLastModifiedTime(fs.getPath("/real/value.txt")));
+            assertEquals(rootTime, Files.getLastModifiedTime(fs.getPath("/value.txt")));
+            Files.setAttribute(fs.getPath("/dirlink/filelink"), "basic:lastModifiedTime", second);
+            assertEquals(second, Files.getLastModifiedTime(fs.getPath("/real/value.txt")));
+            Files.setAttribute(fs.getPath("/dirlink/filelink"), "basic:lastModifiedTime", third,
+                    LinkOption.NOFOLLOW_LINKS);
+            assertEquals(third, Files.getLastModifiedTime(fs.getPath("/real/filelink"), LinkOption.NOFOLLOW_LINKS));
+            assertEquals(second, Files.getLastModifiedTime(fs.getPath("/real/value.txt")));
+            BasicFileAttributeView view = Files.getFileAttributeView(fs.getPath("/dirlink/filelink"),
+                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+            assertNotNull(view);
+            view.setTimes(first, null, null);
+            assertEquals(first, Files.getLastModifiedTime(fs.getPath("/real/filelink"), LinkOption.NOFOLLOW_LINKS));
+            assertEquals(second, Files.getLastModifiedTime(fs.getPath("/real/value.txt")));
+        }
+    }
+
     /// Equal paths identify the same file without probing whether that file exists.
     @ParameterizedTest
     @MethodSource("configurations")

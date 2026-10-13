@@ -3,7 +3,11 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
+import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
@@ -18,11 +22,18 @@ import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.file.Files;
+import java.nio.file.OpenOption;
+import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
@@ -40,12 +51,163 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies pending streaming-writer attributes across archive formats with different snapshot contracts.
 @NotNullByDefault
 final class StreamingWriterPendingAttributesContractTest {
+    /// Malformed UTF-16 names are rejected before entry initialization without rejecting valid surrogate pairs.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z", "cpio"})
+    void rejectsUnpairedSurrogates(String format, @TempDir Path directory) throws IOException {
+        Path path = directory.resolve("names." + format);
+        try (var writer = ArkivoFormats.openStreamingWriter(format, Files.newOutputStream(path))) {
+            for (String name : List.of("x\uD800", "x\uDC00", "x\uD800y", "x\uDC00\uD800")) {
+                assertThrows(IllegalArgumentException.class, () -> writer.beginFile(name));
+                assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory(name));
+                assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink(name, "target"));
+                if (writer instanceof TarArkivoStreamingWriter tar) {
+                    assertThrows(IllegalArgumentException.class, () -> tar.beginHardLink(name, "target"));
+                }
+            }
+            writer.beginFile("x\uD83D\uDE00").close();
+            writer.beginFile("following").close();
+        }
+        if (format.equals("7z")) {
+            try (var archive = ArkivoFormats.openFileSystem(format, path)) {
+                assertEquals("", Files.readString(archive.getPath("/x\uD83D\uDE00")));
+                assertEquals("", Files.readString(archive.getPath("/following")));
+            }
+            return;
+        }
+        try (var reader = ArkivoFormats.openStreamingReader(format, Files.newInputStream(path))) {
+            assertTrue(reader.next());
+            assertEquals("x\uD83D\uDE00", reader.readAttributes().path());
+            assertTrue(reader.next());
+            assertEquals("following", reader.readAttributes().path());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// A staging setup failure leaves the same entry configurable and available for retry or empty completion.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar"})
+    void retainsPendingEntryAfterBodySetupFailure(String format, @TempDir Path directory) throws IOException {
+        for (boolean failChannelOpen : new boolean[]{false, true}) {
+            for (boolean retryBody : new boolean[]{false, true}) {
+                Path path = directory.resolve(failChannelOpen + "-" + retryBody + "." + format);
+                FailingBodyStorage storage = new FailingBodyStorage(failChannelOpen);
+                FileTime modified = FileTime.fromMillis(1_600_000_000_000L);
+                try (ArkivoStreamingWriter writer = format.equals("ar")
+                        ? ArArkivoStreamingWriter.create(path, storage)
+                        : TarArkivoStreamingWriter.create(path, storage)) {
+                    try (ArkivoStreamingWriter.Entry entry = writer.beginFile("pending")) {
+                        assertSame(storage.failure, assertThrows(IOException.class, entry::openOutputStream));
+                        BasicFileAttributeView view = Objects.requireNonNull(
+                                entry.attributeView(BasicFileAttributeView.class));
+                        view.setTimes(modified, null, null);
+                        assertEquals(modified, view.readAttributes().lastModifiedTime());
+                        if (retryBody) {
+                            try (OutputStream body = entry.openOutputStream()) {
+                                body.write("payload".getBytes(StandardCharsets.UTF_8));
+                            }
+                        }
+                    }
+                    writer.beginFile("following").close();
+                }
+                assertTrue(storage.closed);
+                assertEquals(0, storage.openContents);
+                try (var archive = ArkivoFormats.openFileSystem(format, path)) {
+                    assertEquals(retryBody ? "payload" : "", Files.readString(archive.getPath("pending")));
+                    assertEquals(modified, Files.getLastModifiedTime(archive.getPath("pending")));
+                    assertEquals("", Files.readString(archive.getPath("following")));
+                }
+            }
+        }
+    }
+
+    /// Fails the first allocation or channel open without writing any archive bytes.
+    @NotNullByDefault
+    private static final class FailingBodyStorage implements ArkivoEditStorage {
+        /// The storage retaining successfully staged bytes.
+        private final ArkivoEditStorage delegate = ArkivoEditStorage.memory();
+        /// Whether failure occurs after allocation rather than before it.
+        private final boolean failChannelOpen;
+        /// The failure whose identity must survive setup cleanup.
+        private final IOException failure = new IOException("Body staging setup failed");
+        /// Whether the scheduled failure remains available.
+        private boolean failNext = true;
+        /// Allocated contents not yet released.
+        private int openContents;
+        /// Whether storage closure completed.
+        private boolean closed;
+
+        /// Selects the staging operation that fails once.
+        private FailingBodyStorage(boolean failChannelOpen) {
+            this.failChannelOpen = failChannelOpen;
+        }
+
+        @Override
+        public ArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
+            boolean fail = failNext;
+            failNext = false;
+            if (fail && !failChannelOpen) {
+                throw failure;
+            }
+            ArkivoStoredContent content = delegate.createContent(path, expectedSize);
+            openContents++;
+            return new Content(content, fail);
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+            closed = true;
+        }
+
+        /// Tracks content release after a successful or failed channel open.
+        @NotNullByDefault
+        private final class Content implements ArkivoStoredContent {
+            /// The retained bytes owned by this content.
+            private final ArkivoStoredContent content;
+            /// Whether the first channel open must fail.
+            private boolean failOpen;
+            /// Whether content release completed.
+            private boolean released;
+
+            /// Wraps allocated content with optional channel-open failure.
+            private Content(ArkivoStoredContent content, boolean failOpen) {
+                this.content = content;
+                this.failOpen = failOpen;
+            }
+
+            @Override
+            public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
+                if (failOpen) {
+                    failOpen = false;
+                    throw failure;
+                }
+                return content.openChannel(options);
+            }
+
+            @Override
+            public long size() throws IOException {
+                return content.size();
+            }
+
+            @Override
+            public void close() throws IOException {
+                if (!released) {
+                    content.close();
+                    released = true;
+                    openContents--;
+                }
+            }
+        }
+    }
+
     /// Verifies TAR's documented live projection and the defaults for every writable TAR entry type.
     @Test
     void exposesLiveTarAttributesUntilEntryCommit() throws IOException {

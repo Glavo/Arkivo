@@ -246,8 +246,8 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             return body;
         }
 
-        pendingMember = null;
         StoredMemberBodyOutputStream body = new StoredMemberBodyOutputStream(member);
+        pendingMember = null;
         currentBody = body;
         return body;
     }

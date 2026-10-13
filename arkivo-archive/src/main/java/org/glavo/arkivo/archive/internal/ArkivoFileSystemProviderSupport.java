@@ -17,6 +17,7 @@ import java.nio.channels.Channels;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.CopyOption;
 import java.nio.file.FileSystem;
+import java.nio.file.FileSystemException;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
@@ -151,7 +152,7 @@ public final class ArkivoFileSystemProviderSupport {
     /// @param followFinalLink whether to follow the terminal symbolic link
     /// @param createParents whether missing parent names may be returned for subsequent creation
     /// @return the absolute target path, with every existing parent resolved
-    /// @throws IOException if a required component cannot be resolved
+    /// @throws IOException if a required component cannot be resolved or the result cannot be represented as an entry name
     /// @throws ProviderMismatchException if the path is not an Arkivo path
     public static Path resolveMutationPath(Path path, boolean followFinalLink, boolean createParents)
             throws IOException {
@@ -159,7 +160,40 @@ public final class ArkivoFileSystemProviderSupport {
         if (!(path instanceof AbstractArkivoPath<?> archivePath)) {
             throw new ProviderMismatchException();
         }
-        return archivePath.resolvePath(followFinalLink, true, createParents);
+        Path resolved = archivePath.resolvePath(followFinalLink, true, createParents);
+        validateWritablePath(resolved);
+        return resolved;
+    }
+
+    /// Rejects NIO names that would change identity when written and subsequently indexed.
+    ///
+    /// Archive readers interpret backslashes as separators and reject drive-prefixed entry names. NIO path
+    /// components retain these characters literally, so writing them cannot preserve the requested entry identity.
+    /// This check neither changes path components nor validates symbolic-link target text.
+    ///
+    /// @param path the path whose normalized archive-local name would be written
+    /// @throws FileSystemException if the name contains a backslash, an unpaired surrogate, or begins with a drive prefix
+    public static void validateWritablePath(Path path) throws FileSystemException {
+        Path normalized = path.toAbsolutePath().normalize();
+        String text = normalized.toString();
+        for (int index = 0; index < text.length(); index++) {
+            char value = text.charAt(index);
+            if (Character.isHighSurrogate(value) && index + 1 < text.length()
+                    && Character.isLowSurrogate(text.charAt(index + 1))) {
+                index++;
+            } else if (Character.isSurrogate(value)) {
+                throw new FileSystemException(path.toString(), null, "Archive entry names cannot contain unpaired surrogates");
+            }
+        }
+        if (text.indexOf('\\') >= 0) {
+            throw new FileSystemException(path.toString(), null, "Archive entry names cannot contain literal backslashes");
+        }
+        if (normalized.getNameCount() > 0) {
+            String first = normalized.getName(0).toString();
+            if (first.length() >= 2 && first.charAt(1) == ':') {
+                throw new FileSystemException(path.toString(), null, "Archive entry names cannot begin with a drive prefix");
+            }
+        }
     }
 
     /// Creates a lazily resolved path for a file attribute view.

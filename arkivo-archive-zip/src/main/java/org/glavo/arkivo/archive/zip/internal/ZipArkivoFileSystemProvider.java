@@ -219,7 +219,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public FileStore getFileStore(Path path) throws IOException {
         ZipFileSystemOperations operations = operations(path);
-        operations.checkAccess(path);
+        operations.checkAccess(ArkivoFileSystemProviderSupport.resolveReadPath(path));
         return operations.fileStore();
     }
 

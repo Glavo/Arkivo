@@ -373,23 +373,31 @@ public final class CompressionDecoderSupport {
         /// Probes for one excess byte through the ordinary channel read contract.
         private int probeForExcessRead() throws IOException {
             probe.clear();
-            int read = decoder.read(probe);
-            if (read <= 0) {
-                return read;
+            int read;
+            try {
+                read = decoder.read(probe);
+            } finally {
+                exceeded |= probe.position() != 0;
             }
-            exceeded = true;
-            throw limitException();
+            if (exceeded) {
+                throw limitException();
+            }
+            return read;
         }
 
         /// Probes one decode operation after the output limit is reached.
         private CodecResult probeForExcessDecode(boolean stopAtFrame) throws IOException {
             probe.clear();
-            CodecResult result = decodeDelegate(probe, stopAtFrame);
-            if (result.outputBytes() == 0L) {
-                return result;
+            CodecResult result;
+            try {
+                result = decodeDelegate(probe, stopAtFrame);
+            } finally {
+                exceeded |= probe.position() != 0;
             }
-            exceeded = true;
-            throw limitException();
+            if (exceeded) {
+                throw limitException();
+            }
+            return result;
         }
 
         /// Creates the stable configured decompression-limit failure.

@@ -34,6 +34,11 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 /// across the file system but does not make concurrent calls on the same mutable stream, channel, iterator, or path
 /// object safe.
 ///
+/// NIO creation and renaming reject literal backslashes in entry names and a colon as the second character of the
+/// first name component. Archive readers interpret these as separators or drive prefixes; such names cannot retain
+/// their NIO path identity after the archive is reopened. Colons in other positions are permitted. Written entry names
+/// must not contain unpaired UTF-16 surrogates; valid surrogate pairs are preserved.
+///
 /// Entry resources returned to callers should be passed through the appropriate `manage` method. With
 /// [ArkivoFileSystemThreadSafety#CONCURRENT_READ], wrappers reject work after coordinated close but remain caller-owned.
 /// With [ArkivoFileSystemThreadSafety#STRICT], close first force-closes registered wrappers. With

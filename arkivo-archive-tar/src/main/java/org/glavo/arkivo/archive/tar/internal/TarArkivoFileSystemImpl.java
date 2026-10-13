@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
+import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
@@ -177,6 +178,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Directory paths already emitted or implied by forward-only write mode.
     private final HashSet<String> writtenDirectories = new HashSet<>();
+
+    /// Symbolic links emitted by a forward writer, which cannot serve as hard-link targets.
+    private final HashSet<String> writtenSymbolicLinks = new HashSet<>();
 
     /// Whether this file system is open.
     private volatile boolean open = true;
@@ -907,11 +911,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             applyInitialAttributes(entry, initial);
         }
         recordWrittenEntry(entryPath, false);
+        writtenSymbolicLinks.add(entryPath);
     }
 
     /// Creates a new forward-only hard link entry.
     ///
-    /// In forward-only mode the target non-directory entry must already have been emitted. In update mode the target
+    /// In forward-only mode the target regular file or hard link must already have been emitted. In update mode the target
     /// must be a regular file; the new entry initially shares its staged content and preserves hard-link semantics in
     /// the rewritten archive.
     ///
@@ -949,11 +954,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             addUpdateNode(new Node(entryPath, entryAttributes, false, target.content(), false));
             return;
         }
-        String entryPath = prepareWritableEntry(link, false);
         String targetPath = normalizedNodePath(existing);
         if (!writtenEntries.contains(targetPath) || writtenDirectories.contains(targetPath)) {
             throw new NoSuchFileException(existing.toString());
         }
+        if (writtenSymbolicLinks.contains(targetPath)) {
+            throw new FileSystemException(existing.toString(), null, "TAR hard link target is not a regular file");
+        }
+        String entryPath = prepareWritableEntry(link, false);
         TarArkivoStreamingWriter currentWriter = requireWriter();
         currentWriter.beginHardLink(entryPath, targetPath).close();
         recordWrittenEntry(entryPath, false);
@@ -1111,8 +1119,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Updates one named entry attribute in update mode.
     ///
-    /// Changes affect the pending complete-rewrite index and are published only when the file system closes. TAR
-    /// attributes apply to the named archive entry itself; the link options are retained for the NIO provider signature.
+    /// Changes affect the pending complete-rewrite index and are published only when the file system closes.
+    /// Symbolic links are followed unless [LinkOption#NOFOLLOW_LINKS] is specified. Links in parent directories
+    /// are always followed.
     ///
     /// @param path      the existing entry whose metadata is changed
     /// @param attribute the `[view:]name` identifying a basic, owner, POSIX, or TAR attribute
@@ -1137,6 +1146,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     ) throws IOException {
         Objects.requireNonNull(attribute, "attribute");
         Objects.requireNonNull(options, "options");
+        path = ArkivoFileSystemProviderSupport.resolveReadPath(path, options);
         int separator = attribute.indexOf(':');
         String view = separator >= 0 ? attribute.substring(0, separator) : "basic";
         String name = separator >= 0 ? attribute.substring(separator + 1) : attribute;
@@ -1243,7 +1253,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Returns the file store while the caller holds the shared operation lock.
     private FileStore fileStoreLocked(Path path) throws IOException {
         if (readOnly || updateMode) {
-            requireNode(path);
+            requireNode(ArkivoFileSystemProviderSupport.resolveReadPath(path));
         } else {
             requireWritableKnownPath(path);
         }
@@ -2365,6 +2375,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Prepares a new archive entry path for forward-only writing.
     private String prepareWritableEntry(Path path, boolean directory) throws IOException {
         ensureOpen();
+        ArkivoFileSystemProviderSupport.validateWritablePath(path);
         String entryPath = normalizedNodePath(path);
         if (entryPath.isEmpty()) {
             throw new FileAlreadyExistsException(path.toString());
@@ -2512,11 +2523,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Publishes all surviving update nodes through a complete TAR rewrite.
     private void commitUpdate() throws IOException {
         ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
-        ArkivoCommitOutput output = target.openOutput(archivePath);
-        pendingCommitOutput = output;
+        ArkivoStoredContent assembled = requireEditStorage().createContent(
+                "assembled.tar", ArkivoEditStorage.UNKNOWN_SIZE);
         @Nullable Throwable failure = null;
         try {
-            try (SeekableByteChannel channel = output.openChannel(Set.of(
+            try (SeekableByteChannel channel = assembled.openChannel(Set.of(
                     StandardOpenOption.CREATE,
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE
@@ -2539,8 +2550,24 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     }
                 }
             }
+            if (!channelSourceClosed) {
+                Objects.requireNonNull(channelSource, "channelSource").close();
+                channelSourceClosed = true;
+            }
+            ArkivoCommitOutput output = target.openOutput(archivePath);
+            pendingCommitOutput = output;
+            try (InputStream input = StoredContentSupport.openInputStream(assembled);
+                 SeekableByteChannel destination = output.openChannel(Set.of(
+                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
+                StoredContentSupport.copyInput(input, destination);
+            }
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
+        }
+        @Nullable ArkivoCommitOutput output = pendingCommitOutput;
+        if (output == null) {
+            throwFailure(failure);
+            return;
         }
         try {
             if (failure == null) {
@@ -3061,7 +3088,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            }
         }
     }
 
@@ -3089,55 +3118,73 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            }
         }
 
         /// Sets this path's numeric user identifier in update mode.
         @Override
         public void setUserId(long userId) throws IOException {
-            TarArkivoFileSystemImpl.this.setUserId(path.resolve(), userId);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setUserId(path.resolve(), userId);
+            }
         }
 
         /// Sets this path's numeric group identifier in update mode.
         @Override
         public void setGroupId(long groupId) throws IOException {
-            TarArkivoFileSystemImpl.this.setGroupId(path.resolve(), groupId);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setGroupId(path.resolve(), groupId);
+            }
         }
 
         /// Sets this path's raw TAR mode in update mode.
         @Override
         public void setMode(int mode) throws IOException {
-            TarArkivoFileSystemImpl.this.setMode(path.resolve(), mode);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setMode(path.resolve(), mode);
+            }
         }
 
         /// Sets this path's TAR user name in update mode.
         @Override
         public void setUserName(@Nullable String userName) throws IOException {
-            TarArkivoFileSystemImpl.this.setUserName(path.resolve(), userName);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setUserName(path.resolve(), userName);
+            }
         }
 
         /// Sets this path's TAR group name in update mode.
         @Override
         public void setGroupName(@Nullable String groupName) throws IOException {
-            TarArkivoFileSystemImpl.this.setGroupName(path.resolve(), groupName);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setGroupName(path.resolve(), groupName);
+            }
         }
 
         /// Sets or clears this path's explicitly recorded last access time in update mode.
         @Override
         public void setRecordedLastAccessTime(@Nullable FileTime lastAccessTime) throws IOException {
-            TarArkivoFileSystemImpl.this.setRecordedLastAccessTime(path.resolve(), lastAccessTime);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setRecordedLastAccessTime(path.resolve(), lastAccessTime);
+            }
         }
 
         /// Sets or clears this path's explicitly recorded inode status change time in update mode.
         @Override
         public void setRecordedStatusChangeTime(@Nullable FileTime statusChangeTime) throws IOException {
-            TarArkivoFileSystemImpl.this.setRecordedStatusChangeTime(path.resolve(), statusChangeTime);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setRecordedStatusChangeTime(path.resolve(), statusChangeTime);
+            }
         }
 
         /// Sets or clears this path's explicitly recorded creation time in update mode.
         @Override
         public void setRecordedCreationTime(@Nullable FileTime creationTime) throws IOException {
-            TarArkivoFileSystemImpl.this.setRecordedCreationTime(path.resolve(), creationTime);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setRecordedCreationTime(path.resolve(), creationTime);
+            }
         }
     }
 
@@ -3167,7 +3214,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         /// Sets this path's owner in update mode.
         @Override
         public void setOwner(UserPrincipal owner) throws IOException {
-            TarArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+            }
         }
     }
 
@@ -3207,25 +3256,33 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+            }
         }
 
         /// Sets this path's owner in update mode.
         @Override
         public void setOwner(UserPrincipal owner) throws IOException {
-            TarArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+            }
         }
 
         /// Sets this path's group in update mode.
         @Override
         public void setGroup(GroupPrincipal group) throws IOException {
-            TarArkivoFileSystemImpl.this.setGroup(path.resolve(), group);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setGroup(path.resolve(), group);
+            }
         }
 
         /// Sets this path's permissions in update mode.
         @Override
         public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
-            TarArkivoFileSystemImpl.this.setPermissions(path.resolve(), permissions);
+            try (Operation ignored = beginWriteOperation()) {
+                TarArkivoFileSystemImpl.this.setPermissions(path.resolve(), permissions);
+            }
         }
     }
 
