@@ -38,7 +38,8 @@ with multiple related parameters and produce the same immutable codec values.
 
 ## Checksum model
 
-`Checksums` and the XXHash utility classes provide static factories for independent `ChecksumAccumulator` instances.
+`Adler32`, `CRC32`, `CRC32C`, `SHA256`, and the XXHash utility classes provide static factories for independent
+`ChecksumAccumulator` instances.
 Static one-shot methods consume a byte array or the remaining bytes of a `ByteBuffer`; incremental callers update
 an accumulator and then finish it. Finishing is idempotent and terminal until an explicit reset. Caller-owned buffers
 are consumed during a call but never retained.

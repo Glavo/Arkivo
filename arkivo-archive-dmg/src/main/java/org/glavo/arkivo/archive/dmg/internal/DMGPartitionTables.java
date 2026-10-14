@@ -6,8 +6,8 @@ package org.glavo.arkivo.archive.dmg.internal;
 import org.glavo.arkivo.archive.dmg.DMGPartition;
 import org.glavo.arkivo.archive.dmg.DMGPartitionScheme;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
+import org.glavo.arkivo.checksum.CRC32;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.Checksums;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -83,7 +83,7 @@ final class DMGPartitionTables {
         int storedHeaderCRC = ByteArrayAccess.readIntLittleEndian(sector, 16);
         byte[] header = sector.clone();
         ByteArrayAccess.writeIntLittleEndian(header, 16, 0);
-        int computedHeaderCRC = Checksums.crc32(header, 0, Math.toIntExact(headerSize));
+        int computedHeaderCRC = CRC32.computeInt(header, 0, Math.toIntExact(headerSize));
         if (storedHeaderCRC != computedHeaderCRC) {
             throw new IOException("GPT header CRC32 mismatch");
         }
@@ -102,7 +102,7 @@ final class DMGPartitionTables {
         ChannelIO.requireRange(tableOffset, tableLength, disk.size(), "GPT partition table");
         tracker.acceptMetadata(tableLength, null);
 
-        ChecksumAccumulator.Width32 checksum = Checksums.crc32();
+        ChecksumAccumulator.Width32 checksum = CRC32.newAccumulator();
         ArrayList<DMGPartition> partitions = new ArrayList<>();
         int encodedEntrySize = Math.toIntExact(entrySize);
         for (long slot = 0L; slot < partitionCount; slot++) {

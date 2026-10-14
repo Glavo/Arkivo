@@ -3,9 +3,10 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
+import org.glavo.arkivo.checksum.CRC32;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.checksum.ChecksumValue;
-import org.glavo.arkivo.checksum.Checksums;
+import org.glavo.arkivo.checksum.SHA256;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -39,11 +40,11 @@ final class XZCheck {
     static XZCheck create(int type) throws IOException {
         return switch (type) {
             case XZSupport.CHECK_NONE -> new XZCheck(type, 0, null);
-            case XZSupport.CHECK_CRC32 -> new XZCheck(type, Integer.BYTES, Checksums.crc32());
+            case XZSupport.CHECK_CRC32 -> new XZCheck(type, Integer.BYTES, CRC32.newAccumulator());
             case XZSupport.CHECK_CRC64 ->
                     new XZCheck(type, Long.BYTES, new CRC64XZ());
             case XZSupport.CHECK_SHA256 ->
-                    new XZCheck(type, 32, Checksums.sha256());
+                    new XZCheck(type, 32, SHA256.newAccumulator());
             default -> throw new IOException("Unsupported XZ integrity check type: " + type);
         };
     }

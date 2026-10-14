@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public final class ChecksumLifecycleTest {
     /// Returns the built-in factories sharing the accumulator lifecycle.
     private static Stream<Supplier<ChecksumAccumulator>> factories() {
-        return Stream.of(Checksums::adler32, Checksums::crc32, Checksums::crc32c, Checksums::sha256);
+        return Stream.of(Adler32::newAccumulator, CRC32::newAccumulator, CRC32C::newAccumulator, SHA256::newAccumulator);
     }
 
     /// Verifies finish idempotence, terminal updates, and explicit reset for every core built-in factory.
@@ -253,10 +253,10 @@ public final class ChecksumLifecycleTest {
     /// Exercises each built-in static buffer-to-buffer operation.
     private static void compute(Supplier<ChecksumAccumulator> factory, ByteBuffer source, ByteBuffer target) {
         switch (factory.get().name()) {
-            case "Adler-32" -> Checksums.adler32(source, target);
-            case "CRC-32/ISO-HDLC" -> Checksums.crc32(source, target);
-            case "CRC-32C" -> Checksums.crc32c(source, target);
-            case "SHA-256" -> Checksums.sha256(source, target);
+            case "Adler-32" -> Adler32.compute(source, target);
+            case "CRC-32/ISO-HDLC" -> CRC32.compute(source, target);
+            case "CRC-32C" -> CRC32C.compute(source, target);
+            case "SHA-256" -> SHA256.compute(source, target);
             default -> throw new AssertionError("Unexpected checksum");
         }
     }
@@ -264,7 +264,7 @@ public final class ChecksumLifecycleTest {
     /// Verifies raw signed and unsigned primitive views of the same completed computation.
     @Test
     public void width32ExposesRawIntAndUnsignedLongForms() {
-        var accumulator = Checksums.crc32();
+        var accumulator = CRC32.newAccumulator();
         accumulator.update("123456789".getBytes(StandardCharsets.US_ASCII));
         assertEquals(0xcbf4_3926, accumulator.finishInt());
         assertEquals(0xcbf4_3926L, accumulator.finishLong());
