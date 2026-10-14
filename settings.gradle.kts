@@ -4,7 +4,6 @@ include(
     "arkivo-base",
     "arkivo-encoding-detector",
     "arkivo-checksum",
-    "arkivo-checksum-sha2",
     "arkivo-checksum-xxhash",
     "arkivo-archive",
     "arkivo-archive-codec",

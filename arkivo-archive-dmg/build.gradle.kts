@@ -1,7 +1,6 @@
 dependencies {
     api(project(":arkivo-archive"))
     implementation(project(":arkivo-base"))
-    implementation(project(":arkivo-checksum"))
     implementation(project(":arkivo-codec"))
     implementation(project(":arkivo-codec-bzip2"))
     implementation(project(":arkivo-codec-deflate"))

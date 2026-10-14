@@ -11,7 +11,6 @@ module org.glavo.arkivo.all {
     requires transitive org.glavo.arkivo.archive;
     requires transitive org.glavo.arkivo.archive.all;
     requires transitive org.glavo.arkivo.checksum;
-    requires transitive org.glavo.arkivo.checksum.sha2;
     requires transitive org.glavo.arkivo.checksum.xxhash;
     requires transitive org.glavo.arkivo.codec.all;
     requires org.glavo.arkivo.archive.codec;

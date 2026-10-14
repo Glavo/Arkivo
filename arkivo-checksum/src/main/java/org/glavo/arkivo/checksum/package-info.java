@@ -3,8 +3,8 @@
 
 /// Computes checksums over arrays and byte buffers.
 ///
-/// [Adler32], [CRC32], and [CRC32C] compute results in one call or create
-/// independent [ChecksumAccumulator] instances for incremental input.
+/// [ChecksumAccumulator] accepts incremental input. Finishing a computation prevents
+/// further updates until an explicit reset.
 /// Accumulators are not safe for concurrent use. [ChecksumValue] stores the result as immutable bytes.
 /// [ChecksumAccumulator.UpTo64Bits] and its width-specific subinterfaces expose primitive results.
 @NotNullByDefault

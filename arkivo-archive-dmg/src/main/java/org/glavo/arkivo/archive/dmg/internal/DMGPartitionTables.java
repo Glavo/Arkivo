@@ -6,8 +6,6 @@ package org.glavo.arkivo.archive.dmg.internal;
 import org.glavo.arkivo.archive.dmg.DMGPartition;
 import org.glavo.arkivo.archive.dmg.DMGPartitionScheme;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
-import org.glavo.arkivo.checksum.CRC32;
-import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -20,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.zip.CRC32;
 
 /// Discovers GUID and Apple partition maps in a decoded DMG disk.
 @NotNullByDefault
@@ -83,7 +82,9 @@ final class DMGPartitionTables {
         int storedHeaderCRC = ByteArrayAccess.readIntLittleEndian(sector, 16);
         byte[] header = sector.clone();
         ByteArrayAccess.writeIntLittleEndian(header, 16, 0);
-        int computedHeaderCRC = CRC32.computeInt(header, 0, Math.toIntExact(headerSize));
+        CRC32 headerChecksum = new CRC32();
+        headerChecksum.update(header, 0, Math.toIntExact(headerSize));
+        int computedHeaderCRC = (int) headerChecksum.getValue();
         if (storedHeaderCRC != computedHeaderCRC) {
             throw new IOException("GPT header CRC32 mismatch");
         }
@@ -102,7 +103,7 @@ final class DMGPartitionTables {
         ChannelIO.requireRange(tableOffset, tableLength, disk.size(), "GPT partition table");
         tracker.acceptMetadata(tableLength, null);
 
-        ChecksumAccumulator.Width32 checksum = CRC32.newAccumulator();
+        CRC32 checksum = new CRC32();
         ArrayList<DMGPartition> partitions = new ArrayList<>();
         int encodedEntrySize = Math.toIntExact(entrySize);
         for (long slot = 0L; slot < partitionCount; slot++) {
@@ -135,7 +136,7 @@ final class DMGPartitionTables {
                     DMGPartitionScheme.GUID_PARTITION_TABLE
             ));
         }
-        if (checksum.finishInt() != storedTableCRC) {
+        if ((int) checksum.getValue() != storedTableCRC) {
             throw new IOException("GPT partition-table CRC32 mismatch");
         }
         return List.copyOf(partitions);

@@ -100,6 +100,10 @@ final class XZCheckTest {
 
         check.update(input, 0, input.length);
         assertArrayEquals(expected, check.finish());
+
+        byte[] empty = XZCheck.create(type).finish();
+        assertArrayEquals(empty, check.finish());
+        assertArrayEquals(empty, check.finish());
     }
 
     /// Encodes the least significant bytes of a primitive value in little-endian order.

@@ -10,7 +10,6 @@ module org.glavo.arkivo.codec.xz {
     requires transitive org.glavo.arkivo.codec;
     requires org.glavo.arkivo.base;
     requires org.glavo.arkivo.checksum;
-    requires org.glavo.arkivo.checksum.sha2;
     requires transitive org.glavo.arkivo.codec.lzma;
     requires static org.jetbrains.annotations;
 

@@ -36,24 +36,22 @@ Configuration methods named `withXxx` return an immutable value and do not chang
 return the receiver when the requested setting is already present. Format-specific builders assemble configurations
 with multiple related parameters and produce the same immutable codec values.
 
-## Checksum model
+## Checksums
 
-`Adler32`, `CRC32`, `CRC32C`, `SHA256`, and the XXHash utility classes provide static factories for independent
-`ChecksumAccumulator` instances.
-Static one-shot methods consume a byte array or the remaining bytes of a `ByteBuffer`; incremental callers update
-an accumulator and then finish it. Finishing is idempotent and terminal until an explicit reset. Caller-owned buffers
-are consumed during a call but never retained.
+CRC-32, CRC-32C, and Adler-32 use the JDK `java.util.zip` implementations. SHA-256 uses
+`java.security.MessageDigest`. The JDK numeric checksums expose their current value without ending a computation;
+`MessageDigest.digest()` returns the digest and resets its state. Format handlers control check boundaries
+and encode the result in the byte order required by the format.
 
-`ChecksumAccumulator.UpTo64Bits` and its exact `Width32` and `Width64` subinterfaces expose primitive
-results. Results narrower than 64 bits use a nonnegative unsigned `long`; `Width32` additionally exposes the raw `int`
-bit pattern. A `ChecksumValue` owns the canonical big-endian representation of any fixed-width result. Container formats
-remain responsible for format-specific byte order and truncation.
+The `org.glavo.arkivo.checksum` module provides `ChecksumAccumulator` and immutable `ChecksumValue` results.
+Finishing an accumulator is idempotent and terminal until an explicit reset. Caller-owned buffers are consumed
+during a call but never retained. `ChecksumAccumulator.UpTo64Bits`, `Width32`, and `Width64` expose primitive
+results. Results narrower than 64 bits use a nonnegative unsigned `long`; `Width32` additionally exposes the raw
+`int` pattern. `ChecksumValue` stores the canonical big-endian representation; formats handle their own byte order.
 
-The core checksum module contains the shared contracts, Adler-32, CRC-32, and CRC-32C. SHA-256 lives in
-`org.glavo.arkivo.checksum.sha2`. Configurable XXH32 and XXH64 implementations live in the separate
-`org.glavo.arkivo.checksum.xxhash` module. Each accumulator retains its configured
-seed across resets. Integrity algorithms used only as format internals, such as the BZip2 block CRC and CRC-64/XZ,
-remain private to their codec modules.
+The `org.glavo.arkivo.checksum.xxhash` module provides pure Java XXH32 and XXH64 implementations using these
+contracts, including seeded factories and one-shot computations. Reset restores each accumulator's configured seed.
+CRC-32/BZIP2 and CRC-64/XZ also use these contracts and remain internal to their codec modules.
 
 ### Resource ownership
 
@@ -179,8 +177,7 @@ decoder memory. Formats enforce only the limits applicable to their structure.
 | Module | Responsibility |
 | --- | --- |
 | `org.glavo.arkivo.base` | Qualified, low-level implementation primitives shared by selected modules. |
-| `org.glavo.arkivo.checksum` | Checksum contracts, Adler-32, CRC-32, CRC-32C, and immutable values. |
-| `org.glavo.arkivo.checksum.sha2` | SHA-256 digest computations. |
+| `org.glavo.arkivo.checksum` | Incremental checksum contracts and immutable values. |
 | `org.glavo.arkivo.checksum.xxhash` | Configurable pure Java XXH32 and XXH64 algorithms. |
 | `org.glavo.arkivo.codec` | Compression contracts, discovery, engines, adapters, limits, and transforms. |
 | `org.glavo.arkivo.codec.*` | Pure Java implementations for individual compression families. |

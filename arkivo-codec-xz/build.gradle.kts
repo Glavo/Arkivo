@@ -6,7 +6,6 @@ dependencies {
     api(project(":arkivo-codec"))
     implementation(project(":arkivo-base"))
     implementation(project(":arkivo-checksum"))
-    implementation(project(":arkivo-checksum-sha2"))
     api(project(":arkivo-codec-lzma"))
     testImplementation("org.tukaani:xz:1.12")
 }

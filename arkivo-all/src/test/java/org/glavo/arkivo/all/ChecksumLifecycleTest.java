@@ -3,12 +3,10 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.checksum.Adler32;
-import org.glavo.arkivo.checksum.CRC32;
-import org.glavo.arkivo.checksum.CRC32C;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.checksum.ChecksumValue;
-import org.glavo.arkivo.checksum.sha2.SHA256;
+import org.glavo.arkivo.checksum.xxhash.XXHash32;
+import org.glavo.arkivo.checksum.xxhash.XXHash64;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -33,7 +31,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public final class ChecksumLifecycleTest {
     /// Returns the built-in factories sharing the accumulator lifecycle.
     private static Stream<Supplier<ChecksumAccumulator>> factories() {
-        return Stream.of(Adler32::newAccumulator, CRC32::newAccumulator, CRC32C::newAccumulator, SHA256::newAccumulator);
+        return Stream.of(XXHash32::newAccumulator, () -> XXHash32.newAccumulator(-1),
+                XXHash64::newAccumulator, () -> XXHash64.newAccumulator(-1L));
     }
 
     /// Verifies finish idempotence, terminal updates, and explicit reset for every tested built-in factory.
@@ -64,36 +63,6 @@ public final class ChecksumLifecycleTest {
         accumulator.update(readOnly);
         assertEquals(readOnly.limit(), readOnly.position(), factory.get().name());
         assertEquals(expected, accumulator.finish(), factory.get().name());
-    }
-
-    /// Verifies one-shot source consumption and target prevalidation.
-    @ParameterizedTest
-    @MethodSource("factories")
-    public void bufferComputationConsumesSourceOnlyAfterTargetValidation(Supplier<ChecksumAccumulator> factory) {
-        byte[] input = "buffer contract".getBytes(StandardCharsets.US_ASCII);
-        ByteBuffer source = ByteBuffer.wrap(input).asReadOnlyBuffer();
-        source.position(2);
-        int originalPosition = source.position();
-
-        ByteBuffer undersized = ByteBuffer.allocate(factory.get().checksumSize() - 1);
-        assertThrows(BufferOverflowException.class, () -> compute(factory, source, undersized));
-        assertEquals(originalPosition, source.position());
-        assertEquals(0, undersized.position());
-
-        ByteBuffer readOnlyTarget = ByteBuffer.allocate(factory.get().checksumSize()).asReadOnlyBuffer();
-        assertThrows(ReadOnlyBufferException.class, () -> compute(factory, source, readOnlyTarget));
-        assertEquals(originalPosition, source.position());
-        assertEquals(0, readOnlyTarget.position());
-
-        ByteBuffer target = ByteBuffer.allocate(factory.get().checksumSize() + 6);
-        target.position(3);
-        compute(factory, source, target);
-        assertEquals(source.limit(), source.position());
-        assertEquals(3 + factory.get().checksumSize(), target.position());
-        assertEquals(
-                compute(factory, ByteBuffer.wrap(input, originalPosition, input.length - originalPosition)),
-                ChecksumValue.ofBytes(target.flip().position(3))
-        );
     }
 
     /// Verifies a rejected finish target leaves the accumulator active.
@@ -250,31 +219,13 @@ public final class ChecksumLifecycleTest {
         return accumulator.finish();
     }
 
-    /// Computes an expected buffer value using independent state.
-    private static ChecksumValue compute(Supplier<ChecksumAccumulator> factory, ByteBuffer source) {
-        var accumulator = factory.get();
-        accumulator.update(source);
-        return accumulator.finish();
-    }
-
-    /// Exercises each built-in static buffer-to-buffer operation.
-    private static void compute(Supplier<ChecksumAccumulator> factory, ByteBuffer source, ByteBuffer target) {
-        switch (factory.get().name()) {
-            case "Adler-32" -> Adler32.compute(source, target);
-            case "CRC-32/ISO-HDLC" -> CRC32.compute(source, target);
-            case "CRC-32C" -> CRC32C.compute(source, target);
-            case "SHA-256" -> SHA256.compute(source, target);
-            default -> throw new AssertionError("Unexpected checksum");
-        }
-    }
-
     /// Verifies raw signed and unsigned primitive views of the same completed computation.
     @Test
     public void width32ExposesRawIntAndUnsignedLongForms() {
-        var accumulator = CRC32.newAccumulator();
+        var accumulator = XXHash32.newAccumulator();
         accumulator.update("123456789".getBytes(StandardCharsets.US_ASCII));
-        assertEquals(0xcbf4_3926, accumulator.finishInt());
-        assertEquals(0xcbf4_3926L, accumulator.finishLong());
-        assertEquals(ChecksumValue.ofInt(0xcbf4_3926), accumulator.finish());
+        assertEquals(0x937b_ad67, accumulator.finishInt());
+        assertEquals(0x937b_ad67L, accumulator.finishLong());
+        assertEquals(ChecksumValue.ofInt(0x937b_ad67), accumulator.finish());
     }
 }
