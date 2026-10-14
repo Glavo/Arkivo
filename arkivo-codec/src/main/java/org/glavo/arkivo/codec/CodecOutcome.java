@@ -8,7 +8,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// Identifies why a buffer-driven codec operation stopped.
 @NotNullByDefault
 public enum CodecOutcome {
-    /// The supplied source was exhausted before the current encoding completed; preserve codec state and supply input.
+    /// More source bytes are required; preserve codec state and append input after any unconsumed bytes.
+    /// Encoders exhaust the source; decoders may leave an incomplete field unconsumed.
     NEEDS_INPUT,
 
     /// The supplied target was filled while the codec still has work to perform; preserve codec state and supply space.

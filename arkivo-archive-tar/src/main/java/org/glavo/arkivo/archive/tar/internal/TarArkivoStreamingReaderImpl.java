@@ -1108,7 +1108,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                         oldGnuSparseSpec.blocks()
                 );
             }
-            requireValidEntryPath(path);
+            requireValidEntryPath(path, attributes.isDirectory());
 
             return new ResolvedEntry(
                     new TarEntryAttributes(
@@ -1328,8 +1328,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         return left + right;
     }
 
-    /// Requires a decoded TAR entry path to contain a usable archive-local path.
-    private static void requireValidEntryPath(String path) throws IOException {
+    /// Requires an archive-local path, allowing dot-only paths to describe the root directory.
+    private static void requireValidEntryPath(String path, boolean directory) throws IOException {
         if (path.startsWith("/") || path.startsWith("\\")
                 || path.length() >= 2 && path.charAt(1) == ':') {
             throw new IOException("TAR entry path must be relative");
@@ -1348,7 +1348,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             }
             start = end + 1;
         }
-        if (!hasName) {
+        if (!hasName && (!directory || path.isEmpty())) {
             throw new IOException("TAR entry is missing a path");
         }
     }

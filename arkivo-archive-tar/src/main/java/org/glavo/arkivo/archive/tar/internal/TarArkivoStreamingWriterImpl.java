@@ -664,6 +664,9 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             start = end + 1;
         }
         if (builder.isEmpty()) {
+            if (directory && !path.isEmpty()) {
+                return "./";
+            }
             throw new IllegalArgumentException("TAR streaming entry path is empty");
         }
         if (directory) {

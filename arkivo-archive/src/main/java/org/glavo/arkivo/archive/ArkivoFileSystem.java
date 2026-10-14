@@ -183,9 +183,11 @@ public abstract class ArkivoFileSystem extends FileSystem {
         if (operationLock == null) {
             return channel;
         }
-        return channel instanceof InterruptibleChannel
+        ManagedSeekableByteChannel managed = channel instanceof InterruptibleChannel
                 ? new InterruptibleManagedSeekableByteChannel(this, channel, false)
                 : new ManagedSeekableByteChannel(this, channel, false);
+        registerResource(managed);
+        return managed;
     }
 
     /// Coordinates a forward-only readable channel with this file system's lifecycle.
@@ -200,9 +202,11 @@ public abstract class ArkivoFileSystem extends FileSystem {
         if (operationLock == null) {
             return channel;
         }
-        return channel instanceof InterruptibleChannel
+        ManagedReadableByteChannel managed = channel instanceof InterruptibleChannel
                 ? new InterruptibleManagedReadableByteChannel(this, channel)
                 : new ManagedReadableByteChannel(this, channel);
+        registerResource(managed);
+        return managed;
     }
 
     /// Coordinates a seekable writable channel with this file system's lifecycle.
@@ -218,12 +222,16 @@ public abstract class ArkivoFileSystem extends FileSystem {
         if (operationLock == null) {
             return channel;
         }
+        ManagedSeekableByteChannel managed;
         if (channel instanceof StagedSeekableByteChannel staged) {
-            return new ManagedStagedSeekableByteChannel(this, staged);
+            managed = new ManagedStagedSeekableByteChannel(this, staged);
+        } else {
+            managed = channel instanceof InterruptibleChannel
+                    ? new InterruptibleManagedSeekableByteChannel(this, channel, true)
+                    : new ManagedSeekableByteChannel(this, channel, true);
         }
-        return channel instanceof InterruptibleChannel
-                ? new InterruptibleManagedSeekableByteChannel(this, channel, true)
-                : new ManagedSeekableByteChannel(this, channel, true);
+        registerResource(managed);
+        return managed;
     }
 
     /// Coordinates a readable stream with this file system's lifecycle.
@@ -298,7 +306,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
         return new Operation(selectedLock);
     }
 
-    /// Registers one strict-mode resource.
+    /// Registers one strict-mode resource after its delegate and subclass state have been initialized.
     private void registerResource(ManagedResource resource) {
         if (threadSafety == ArkivoFileSystemThreadSafety.STRICT) {
             synchronized (managedResources) {
@@ -458,10 +466,9 @@ public abstract class ArkivoFileSystem extends FileSystem {
         /// Whether the delegate remains open.
         private volatile boolean resourceOpen = true;
 
-        /// Creates and registers one managed resource.
+        /// Creates an unregistered managed resource; the factory registers the fully constructed subclass.
         protected AbstractManagedResource(ArkivoFileSystem fileSystem) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
-            fileSystem.registerResource(this);
         }
 
         /// Closes this resource through the file system's resource-close operation.
@@ -800,19 +807,23 @@ public abstract class ArkivoFileSystem extends FileSystem {
 
         /// Marks the delegate under the shared operation lock.
         @Override
-        public synchronized void mark(int readLimit) {
+        public void mark(int readLimit) {
             try (Operation ignored = fileSystem.beginReadOperation()) {
-                requireOpenUnchecked();
-                delegate.mark(readLimit);
+                synchronized (this) {
+                    requireOpenUnchecked();
+                    delegate.mark(readLimit);
+                }
             }
         }
 
         /// Resets the delegate under the shared operation lock.
         @Override
-        public synchronized void reset() throws IOException {
+        public void reset() throws IOException {
             try (Operation ignored = beginInputOperation()) {
-                requireOpen();
-                delegate.reset();
+                synchronized (this) {
+                    requireOpen();
+                    delegate.reset();
+                }
             }
         }
 

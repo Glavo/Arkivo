@@ -39,6 +39,46 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the blocking channel adapters independently from any concrete compression algorithm.
 @NotNullByDefault
 final class CodecChannelAdaptersTest {
+    /// Incomplete fields survive compacting, small staging buffers, and a transient source failure.
+    @Test
+    void preservesLookaheadAcrossRefillsAndFailures() throws IOException {
+        for (int capacity : new int[]{1, 2, 3, 8}) {
+            for (boolean direct : new boolean[]{false, true}) {
+                var source = new ChunkedReadableChannel(new byte[]{1, 2, 3, 4, 5}, 1, 0, 0);
+                source.failurePosition = 2;
+                ByteBuffer storage = direct ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
+                try (var channel = CodecChannelAdapters.newReadableByteChannel(
+                        source, ResourceOwnership.BORROWED, PrefixDecoder::new, storage)) {
+                    ByteBuffer target = ByteBuffer.allocate(4);
+                    assertThrows(IOException.class, () -> channel.read(target));
+                    assertEquals(0, channel.inputBytes());
+                    assertEquals(2, channel.sourceBytes());
+                    assertArrayEquals(new byte[]{1, 2}, remainingBytes(channel.unconsumedInput()));
+                    assertEquals(4, channel.read(target));
+                    assertArrayEquals(new byte[]{1, 2, 3, 4}, target.array());
+                    assertEquals(4, channel.inputBytes());
+                    assertEquals(4, channel.sourceBytes());
+                    assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+                    assertEquals(4, source.content.position());
+                }
+            }
+        }
+    }
+
+    /// EOF preserves the incomplete prefix for truncation reporting instead of silently dropping it.
+    @Test
+    void preservesLookaheadAtEndOfInput() throws IOException {
+        try (var channel = CodecChannelAdapters.newReadableByteChannel(
+                new ChunkedReadableChannel(new byte[]{1, 2, 3}, 1, 0, 0),
+                ResourceOwnership.BORROWED, PrefixDecoder::new)) {
+            IOException failure = assertThrows(IOException.class, () -> channel.read(ByteBuffer.allocate(4)));
+            assertEquals("Truncated four-byte field: 3", failure.getMessage());
+            assertEquals(0, channel.inputBytes());
+            assertEquals(3, channel.sourceBytes());
+            assertArrayEquals(new byte[]{1, 2, 3}, remainingBytes(channel.unconsumedInput()));
+        }
+    }
+
     /// Reusing output storage preserves bytes and capabilities without reactivating a closed adapter.
     @Test
     void reusesExclusiveOutputStorageAcrossFramesAndChannels() throws IOException {
@@ -760,7 +800,7 @@ final class CodecChannelAdaptersTest {
     void rejectsInvalidDecoderAndSourceProgress() throws IOException {
         assertDecodingFailure(
                 new OutcomeDecoder(CodecOutcome.NEEDS_INPUT, false, false),
-                "Compression decoder requested input before consuming its source buffer"
+                "Compression decoder requested input after end of input"
         );
         assertDecodingFailure(
                 new OutcomeDecoder(CodecOutcome.NEEDS_OUTPUT, false, false),
@@ -1148,6 +1188,9 @@ final class CodecChannelAdaptersTest {
         /// A transient failure consumed by the next read, or `null` when reads may proceed.
         private @Nullable IOException readFailure;
 
+        /// Source position at which one read fails, or `-1` when no position-triggered failure is pending.
+        private int failurePosition = -1;
+
         /// Number of initial close attempts that fail.
         private int closeFailuresRemaining;
 
@@ -1181,6 +1224,10 @@ final class CodecChannelAdaptersTest {
                 throw new ClosedChannelException();
             }
             readCalls++;
+            if (content.position() == failurePosition) {
+                failurePosition = -1;
+                throw new IOException("Source read failed at a pending prefix");
+            }
             if (readFailure != null) {
                 IOException failure = readFailure;
                 readFailure = null;
@@ -1758,6 +1805,39 @@ final class CodecChannelAdaptersTest {
         /// Returns the number of release attempts.
         private int closeCalls() {
             return closeCalls;
+        }
+    }
+
+    /// Decodes a single four-byte field without consuming an incomplete prefix.
+    @NotNullByDefault
+    private static final class PrefixDecoder implements CompressionDecoder {
+        /// Copies one complete field and leaves trailing input untouched.
+        @Override
+        public CodecOutcome decode(ByteBuffer source, ByteBuffer target) {
+            if (source.remaining() < 4) {
+                return CodecOutcome.NEEDS_INPUT;
+            }
+            target.putInt(source.getInt());
+            return CodecOutcome.FINISHED;
+        }
+
+        /// Rejects a truncated field with its retained length.
+        @Override
+        public CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException {
+            if (source.remaining() < 4) {
+                throw new IOException("Truncated four-byte field: " + source.remaining());
+            }
+            return decode(source, target);
+        }
+
+        /// Holds no state to reset.
+        @Override
+        public void reset() {
+        }
+
+        /// Holds no resources to release.
+        @Override
+        public void close() {
         }
     }
 

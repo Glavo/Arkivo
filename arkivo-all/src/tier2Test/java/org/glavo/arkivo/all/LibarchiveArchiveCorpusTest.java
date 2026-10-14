@@ -454,6 +454,40 @@ public final class LibarchiveArchiveCorpusTest {
         }
     }
 
+    /// Reads the explicit root directory and AppleDouble bodies from libarchive's compressed macOS TAR fixture.
+    @Test
+    public void readsMacTarExplicitRoot(@TempDir Path temporaryDirectory) throws IOException {
+        Path archive = decodeFixture("test_compat_mac-2.tar.Z.uu", "mac-root.tar.Z", temporaryDirectory);
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive)) {
+            TarArkivoEntryAttributes root = Files.readAttributes(
+                    fileSystem.getPath("/"), TarArkivoEntryAttributes.class);
+            assertEquals("./", root.path());
+            assertTrue(root.isDirectory());
+            assertEquals(0755, root.mode());
+            assertEquals(501L, root.userId());
+            assertEquals(20L, root.groupId());
+            assertEquals("tim", root.userName());
+            assertEquals("staff", root.groupName());
+            assertEquals(1_303_628_303L, root.lastModifiedTime().toInstant().getEpochSecond());
+            assertTrue(Files.isDirectory(fileSystem.getPath("/mydir")));
+            assertEquals(0L, Files.size(fileSystem.getPath("/myfile")));
+            byte[] directoryMetadata = Files.readAllBytes(fileSystem.getPath("/._mydir"));
+            byte[] fileMetadata = Files.readAllBytes(fileSystem.getPath("/._myfile"));
+            assertEquals(267, directoryMetadata.length);
+            assertEquals(267, fileMetadata.length);
+            assertEquals(2_737_040_903L, crc32(directoryMetadata));
+            assertEquals(4_181_220_954L, crc32(fileMetadata));
+        }
+        try (ReadableByteChannel source = Files.newByteChannel(archive);
+             ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source)) {
+            for (String name : List.of("./", "./._mydir", "./mydir/", "./._myfile", "./myfile")) {
+                assertTrue(reader.next());
+                assertEquals(name, reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
     /// Verifies valid ZIP data and rejects an entry with an intentionally corrupted CRC.
     @Test
     public void readsZipAndRejectsBadCrc(@TempDir Path temporaryDirectory) throws IOException {

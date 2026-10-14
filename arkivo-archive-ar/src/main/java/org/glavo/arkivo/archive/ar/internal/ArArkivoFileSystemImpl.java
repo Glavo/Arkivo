@@ -786,6 +786,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             parent.children().remove(fileName(entryPath));
         }
         dirty = true;
+        releaseStoredContent(node.content());
     }
 
     /// Moves one member and any descendants inside an update-mode archive.
@@ -875,6 +876,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         nodes.clear();
         nodes.putAll(rebuilt);
         dirty = true;
+        if (targetNode != null) {
+            releaseStoredContent(targetNode.content());
+        }
     }
 
     /// Updates one named member attribute in update mode.
@@ -1610,9 +1614,16 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             nodes.put(path, replacement);
         }
         dirty = true;
+        if (existing != null) {
+            releaseStoredContent(existing.content());
+        }
     }
-    /// Requests release of uncommitted content, leaving failed cleanup tracked by the storage pool.
-    private void releaseStoredContent(ArkivoStoredContent content) {
+
+    /// Requests release of unused content, leaving failed cleanup tracked by the storage pool.
+    private void releaseStoredContent(@Nullable ArkivoStoredContent content) {
+        if (content == null) {
+            return;
+        }
         try {
             content.close();
         } catch (IOException | RuntimeException | Error ignored) {
@@ -1931,6 +1942,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             );
             nodes.put(node.path(), replaceNodeAttributes(node, attributes, content));
             dirty = true;
+            releaseStoredContent(node.content());
         } catch (IOException | RuntimeException | Error exception) {
             releaseStoredContent(content);
             throw exception;

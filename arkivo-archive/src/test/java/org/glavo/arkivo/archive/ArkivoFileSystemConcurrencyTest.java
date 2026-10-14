@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -288,11 +289,17 @@ public final class ArkivoFileSystemConcurrencyTest {
     public void strictCloseClosesManagedResources() throws IOException {
         TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
         TrackingSeekableByteChannel seekableDelegate = new TrackingSeekableByteChannel();
+        TrackingSeekableByteChannel writableDelegate = new TrackingSeekableByteChannel();
+        TrackingSeekableByteChannel stagedDelegate = new TrackingSeekableByteChannel();
+        AtomicInteger completions = new AtomicInteger();
         TrackingReadableByteChannel readableDelegate = new TrackingReadableByteChannel();
         TrackingInputStream inputDelegate = new TrackingInputStream();
         TrackingOutputStream outputDelegate = new TrackingOutputStream();
         TrackingDirectoryStream directoryDelegate = new TrackingDirectoryStream();
         SeekableByteChannel seekable = fileSystem.managedReadChannel(seekableDelegate);
+        SeekableByteChannel writable = fileSystem.managedWriteChannel(writableDelegate);
+        SeekableByteChannel staged = fileSystem.managedWriteChannel(new StagedSeekableByteChannel(
+                stagedDelegate, true, true, false, false, (channel, changed) -> completions.incrementAndGet()));
         ReadableByteChannel readable = fileSystem.managedReadableChannel(readableDelegate);
         InputStream input = fileSystem.managedInputStream(inputDelegate);
         OutputStream output = fileSystem.managedOutputStream(outputDelegate);
@@ -302,17 +309,81 @@ public final class ArkivoFileSystemConcurrencyTest {
         fileSystem.close();
 
         assertFalse(seekableDelegate.isOpen());
+        assertFalse(writableDelegate.isOpen());
+        assertFalse(stagedDelegate.isOpen());
+        assertEquals(1, completions.get());
         assertFalse(readableDelegate.isOpen());
         assertFalse(inputDelegate.isOpen());
         assertFalse(outputDelegate.isOpen());
         assertFalse(directoryDelegate.isOpen());
         assertFalse(seekable.isOpen());
+        assertFalse(writable.isOpen());
+        assertFalse(staged.isOpen());
         assertFalse(readable.isOpen());
         assertThrows(ClosedChannelException.class, () -> seekable.read(ByteBuffer.allocate(1)));
+        assertThrows(ClosedChannelException.class, () -> writable.write(ByteBuffer.allocate(1)));
+        assertThrows(ClosedChannelException.class, () -> staged.write(ByteBuffer.allocate(1)));
         assertThrows(ClosedChannelException.class, () -> readable.read(ByteBuffer.allocate(1)));
         assertThrows(IOException.class, input::read);
         assertThrows(IOException.class, () -> output.write(1));
         assertThrows(ClosedFileSystemException.class, iterator::hasNext);
+        writable.close();
+        staged.close();
+        assertEquals(1, completions.get());
+    }
+
+    /// Mark and reset cannot hold a stream monitor while waiting behind strict close for the operation lock.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void strictCloseDoesNotDeadlockWithLateInputMarks(boolean reset) throws Exception {
+        var fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
+        var close = new FutureTask<Void>(() -> {
+            fileSystem.close();
+            return null;
+        });
+        var closer = new Thread(close, "strict-input-close");
+        closer.setDaemon(true);
+        FutureTask<Void> operation;
+        TrackingInputStream delegate = new TrackingInputStream();
+        try (ArkivoFileSystem.Operation ignored = fileSystem.beginReadOperation()) {
+            closer.start();
+            awaitOperationLock(closer, "beginCloseOperation");
+            // An already active open may publish a stream after the first close snapshot.
+            InputStream stream = fileSystem.managedInputStream(delegate);
+            operation = new FutureTask<>(() -> {
+                if (reset) {
+                    assertThrows(IOException.class, stream::reset);
+                } else {
+                    assertThrows(ClosedFileSystemException.class, () -> stream.mark(1));
+                }
+                return null;
+            });
+            var marker = new Thread(operation, "strict-input-mark");
+            marker.setDaemon(true);
+            marker.start();
+            awaitOperationLock(marker, "beginOperation");
+        }
+        close.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        operation.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        assertEquals(1, delegate.closeCalls());
+        assertFalse(delegate.isOpen());
+    }
+
+    /// Waits until a thread is parked inside the specified file system lock acquisition.
+    private static void awaitOperationLock(Thread thread, String method) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(OPERATION_TIMEOUT_SECONDS);
+        while (System.nanoTime() < deadline) {
+            if (thread.getState() == Thread.State.WAITING) {
+                for (StackTraceElement frame : thread.getStackTrace()) {
+                    if (frame.getClassName().equals(ArkivoFileSystem.class.getName())
+                            && frame.getMethodName().equals(method)) {
+                        return;
+                    }
+                }
+            }
+            Thread.sleep(1L);
+        }
+        throw new AssertionError("Thread did not reach " + method);
     }
 
     /// Verifies strict close aggregates initial resource failures while retrying them after lock acquisition.

@@ -1004,6 +1004,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             parent.children().remove(fileName(entryPath));
         }
         dirty = true;
+        releaseUnreferencedContent(node.content());
     }
 
     /// Moves one entry and any descendants inside an update-mode archive.
@@ -1116,6 +1117,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         nodes.clear();
         nodes.putAll(rebuilt);
         dirty = true;
+        if (targetNode != null) {
+            releaseUnreferencedContent(targetNode.content());
+        }
     }
 
     /// Updates one named entry attribute in update mode.
@@ -1926,6 +1930,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
         refreshHardLinkContents(path, content, size);
         dirty = true;
+        if (existing != null) {
+            releaseUnreferencedContent(existing.content());
+        }
     }
 
     /// Refreshes cached content for hard links that transitively depend on a changed entry.
@@ -1944,8 +1951,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 if (!attributes.isHardLink() || linkName == null) {
                     continue;
                 }
-                requireArchiveLocalPath(linkName, "TAR hard link target");
-                if (!normalizeEntryPath(linkName).equals(targetPath)) {
+                requireArchiveLocalPath(linkName, "TAR hard link target", false);
+                if (!normalizeEntryPath(linkName, false).equals(targetPath)) {
                     continue;
                 }
                 Node replacement = replaceNodeAttributes(
@@ -1959,7 +1966,20 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
-    /// Requests release of uncommitted content, leaving failed cleanup tracked by the storage pool.
+    /// Releases removed content only after every hard-link node has stopped referring to it.
+    private void releaseUnreferencedContent(@Nullable ArkivoStoredContent content) {
+        if (content == null) {
+            return;
+        }
+        for (Node node : nodes.values()) {
+            if (node.content() == content) {
+                return;
+            }
+        }
+        releaseStoredContent(content);
+    }
+
+    /// Requests release of unused content, leaving failed cleanup tracked by the storage pool.
     private void releaseStoredContent(ArkivoStoredContent content) {
         try {
             content.close();
@@ -2003,11 +2023,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             @Nullable String linkName,
             long size
     ) {
+        boolean directory = typeFlag == TarEntryAttributes.DIRECTORY_TYPE
+                || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE && attributes.isDirectory();
         return new TarEntryAttributes(
-                path,
+                directory && path.isEmpty() ? "./" : path,
                 typeFlag,
-                typeFlag == TarEntryAttributes.DIRECTORY_TYPE
-                        || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE && attributes.isDirectory(),
+                directory,
                 attributes.mode(),
                 attributes.userId(),
                 attributes.groupId(),
@@ -2076,8 +2097,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (!attributes.isHardLink() || linkName == null) {
             return linkName;
         }
-        requireArchiveLocalPath(linkName, "TAR hard link target");
-        return movedPaths.getOrDefault(normalizeEntryPath(linkName), linkName);
+        requireArchiveLocalPath(linkName, "TAR hard link target", false);
+        return movedPaths.getOrDefault(normalizeEntryPath(linkName, false), linkName);
     }
 
     /// Requires a path's parent to exist as a directory.
@@ -2542,7 +2563,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                                  compressionCodec
                          ))) {
                 for (Node node : nodes.values()) {
-                    if (node.path().isEmpty() || node.syntheticDirectory()) {
+                    if (node.syntheticDirectory()) {
                         continue;
                     }
                     @Nullable ArkivoStoredContent content = node.content();
@@ -2744,7 +2765,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         try (TarArkivoStreamingReaderImpl reader = new TarArkivoStreamingReaderImpl(input, options)) {
             while (reader.next()) {
                 TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
-                String path = normalizeEntryPath(attributes.path());
+                String path = normalizeEntryPath(attributes.path(), attributes.isDirectory());
                 ensureParents(nodes, path);
                 TarArkivoEntryAttributes nodeAttributes = attributes;
                 @Nullable ArkivoStoredContent content = null;
@@ -2794,8 +2815,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (linkName == null) {
             throw new IOException("TAR hard link entry is missing a link target: " + attributes.path());
         }
-        requireArchiveLocalPath(linkName, "TAR hard link target");
-        return normalizeEntryPath(linkName);
+        requireArchiveLocalPath(linkName, "TAR hard link target", false);
+        return normalizeEntryPath(linkName, false);
     }
 
     /// Returns an attribute snapshot with a resolved regular file size.
@@ -2858,9 +2879,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
-    /// Normalizes an entry path into node map form.
-    private static String normalizeEntryPath(String path) throws IOException {
-        requireArchiveLocalPath(path, "TAR entry path");
+    /// Normalizes an entry path into node map form, mapping explicit dot-root directories to the empty key.
+    private static String normalizeEntryPath(String path, boolean directory) throws IOException {
+        requireArchiveLocalPath(path, "TAR entry path", directory);
         StringBuilder normalized = new StringBuilder(path.length());
         int start = 0;
         while (start <= path.length()) {
@@ -2877,8 +2898,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return normalized.toString();
     }
 
-    /// Requires an archive-local path without absolute or parent-directory components.
-    private static void requireArchiveLocalPath(String path, String description) throws IOException {
+    /// Requires an archive-local path, optionally accepting a nonempty dot-only root directory path.
+    private static void requireArchiveLocalPath(String path, String description, boolean directory) throws IOException {
         if (path.startsWith("/") || path.startsWith("\\") || path.length() >= 2 && path.charAt(1) == ':') {
             throw new IOException(description + " must be relative");
         }
@@ -2895,7 +2916,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             }
             start = end + 1;
         }
-        if (!hasName) {
+        if (!hasName && (!directory || path.isEmpty())) {
             throw new IOException(description + " is missing a path");
         }
     }

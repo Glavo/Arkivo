@@ -172,6 +172,7 @@ public final class CodecChannelAdapters {
     /// The buffer must be writable and have positive capacity. Its position and limit are initialized by this method.
     /// The caller must not access it while the channel is open. Views returned by the channel's unconsumed-input method
     /// cease to be valid when the buffer is reused after closure.
+    /// A buffer smaller than the default staging size may be replaced if a decoder needs more lookahead space.
     ///
     /// @param source compressed-data source
     /// @param ownership whether closing the adapter closes the source
@@ -844,8 +845,8 @@ public final class CodecChannelAdapters {
         /// Whether the channel decodes concatenated frames until physical input ends.
         private final boolean concatenatedFrames;
 
-        /// Buffered compressed input visible to the engine.
-        private final ByteBuffer input;
+        /// Buffered compressed input, enlarged up to the default capacity when a leased buffer cannot hold lookahead.
+        private ByteBuffer input;
 
         /// Number of compressed bytes logically consumed by the engine.
         private long inputBytes;
@@ -1017,8 +1018,8 @@ public final class CodecChannelAdapters {
                 if (outcome != CodecOutcome.NEEDS_INPUT) {
                     throw new IOException("Unexpected compression decode outcome: " + outcome);
                 }
-                if (input.hasRemaining()) {
-                    throw new IOException("Compression decoder requested input before consuming its source buffer");
+                if (endOfInput) {
+                    throw new IOException("Compression decoder requested input after end of input");
                 }
                 if (target.position() != outputPosition) {
                     return new CodecResult(
@@ -1027,6 +1028,7 @@ public final class CodecChannelAdapters {
                             CodecResult.Status.ACTIVE
                     );
                 }
+                readInput();
             }
         }
 
@@ -1092,9 +1094,18 @@ public final class CodecChannelAdapters {
             return available;
         }
 
-        /// Refills the compressed input staging buffer or records physical EOF.
+        /// Appends compressed input after an unconsumed prefix, preserving it across EOF or source failure.
         private void readInput() throws IOException {
-            input.clear();
+            if (input.remaining() == input.capacity()) {
+                if (input.capacity() >= BUFFER_SIZE) {
+                    throw new IOException("Compression decoder requires a larger input buffer");
+                }
+                int capacity = Math.min(BUFFER_SIZE, Math.max(Integer.BYTES, input.capacity() * 2));
+                ByteBuffer expanded = input.isDirect() ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
+                expanded.put(input).flip();
+                input = expanded;
+            }
+            input.compact();
             int start = input.position();
             int read;
             try {
@@ -1105,7 +1116,6 @@ public final class CodecChannelAdapters {
             }
             if (read < 0) {
                 endOfInput = true;
-                input.limit(0);
                 return;
             }
             if (read == 0) {

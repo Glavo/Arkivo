@@ -4,14 +4,18 @@
 package org.glavo.arkivo.codec.lz4;
 
 import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DictionaryRequiredException;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -19,6 +23,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
@@ -35,6 +40,109 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests standard-frame dictionary semantics and read-only legacy-frame compatibility.
 @NotNullByDefault
 public final class LZ4FrameDictionaryAndLegacyTest {
+    /// Read failures retain a split legacy header without consuming the following frame's magic.
+    @Test
+    void preservesLegacyBoundaryAfterPartialSourceFailure() throws IOException {
+        byte[] legacy = legacyFrame(new byte[]{'a'}, false);
+        byte[] modern = compress(new LZ4Codec(), new byte[]{'b'});
+        ByteBuffer encoded = ByteBuffer.wrap(concatenate(legacy, modern));
+        IOException failure = new IOException("Partial transport failure");
+        ReadableByteChannel source = new ReadableByteChannel() {
+            /// Number of attempted reads.
+            private int reads;
+
+            /// Whether the test transport remains open.
+            private boolean open = true;
+
+            /// Splits the initial block header and fails after transferring an additional byte.
+            @Override
+            public int read(ByteBuffer target) throws IOException {
+                if (!encoded.hasRemaining()) {
+                    return -1;
+                }
+                int maximum = ++reads == 1 ? 5 : reads == 2 ? 1 : 4;
+                int count = Math.min(Math.min(maximum, encoded.remaining()), target.remaining());
+                target.put(encoded.slice().limit(count));
+                encoded.position(encoded.position() + count);
+                if (reads == 2) {
+                    throw failure;
+                }
+                return count;
+            }
+
+            /// Returns the transport's open state.
+            @Override
+            public boolean isOpen() {
+                return open;
+            }
+
+            /// Closes the test transport.
+            @Override
+            public void close() {
+                open = false;
+            }
+        };
+        try (var channel = new LZ4Codec().newReadableByteChannel(source, ResourceOwnership.OWNED)) {
+            ByteBuffer target = ByteBuffer.allocate(16);
+            assertSame(failure, assertThrows(IOException.class, () -> channel.decodeFrame(target)));
+            assertEquals(4, channel.inputBytes());
+            assertEquals(6, channel.sourceBytes());
+            assertEquals(2, channel.unconsumedInput().remaining());
+            CodecResult result;
+            do {
+                result = channel.decodeFrame(target);
+            } while (result.status() != CodecResult.Status.FRAME_FINISHED);
+            assertEquals(legacy.length, channel.inputBytes());
+            assertEquals(legacy.length + 4, channel.sourceBytes());
+            assertEquals(4, channel.unconsumedInput().remaining());
+            assertEquals('a', target.get(0));
+            do {
+                result = channel.decodeFrame(target);
+            } while (result.status() != CodecResult.Status.FRAME_FINISHED);
+            assertEquals(2, target.position());
+            assertEquals('b', target.get(1));
+            assertEquals(legacy.length + modern.length, channel.inputBytes());
+        }
+        assertFalse(source.isOpen());
+    }
+
+    /// Transport fragments may split a legacy block size, terminator, or following frame magic at any byte.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 7, 8192})
+    void decodesLegacyFramesFromFragmentedStreams(int chunkSize) throws IOException {
+        byte[] content = "legacy payload".getBytes(StandardCharsets.UTF_8);
+        byte[] followingContent = "following frame".getBytes(StandardCharsets.UTF_8);
+        byte[] following = compress(new LZ4Codec(), followingContent);
+        for (boolean terminated : new boolean[]{false, true}) {
+            byte[] legacy = legacyFrame(content, terminated);
+            for (boolean concatenated : new boolean[]{false, true}) {
+                byte[] encoded = concatenated ? concatenate(legacy, following) : legacy;
+                byte[] expected = concatenated ? concatenate(content, followingContent) : content;
+                try (InputStream decoded = new LZ4Codec().newInputStream(fragmentedStream(encoded, chunkSize))) {
+                    assertArrayEquals(expected, decoded.readAllBytes());
+                }
+            }
+        }
+        byte[] legacy = legacyFrame(content, false);
+        for (int remaining = 1; remaining < Integer.BYTES; remaining++) {
+            byte[] truncated = concatenate(legacy, Arrays.copyOf(following, remaining));
+            try (InputStream decoded = new LZ4Codec().newInputStream(fragmentedStream(truncated, chunkSize))) {
+                assertThrows(IOException.class, decoded::readAllBytes);
+            }
+        }
+    }
+
+    /// Returns a blocking stream whose bulk reads never exceed the selected fragment size.
+    private static InputStream fragmentedStream(byte[] bytes, int chunkSize) {
+        return new ByteArrayInputStream(bytes) {
+            /// Exposes at most one fragment to the channel adapter.
+            @Override
+            public synchronized int read(byte[] target, int offset, int length) {
+                return super.read(target, offset, Math.min(length, chunkSize));
+            }
+        };
+    }
+
     /// Verifies immutable dictionary construction, effective suffix selection, and codec configuration.
     @Test
     public void dictionaryValuesAreImmutableAndSelfTyped() {

@@ -123,6 +123,12 @@ final class OpenJdkZipCorpusTest {
             assertNotNull(body);
             expected.put(renamed, body);
             expected.put("added.bin", new byte[]{0, 1, 2, (byte) 0xff});
+            int parentSeparator = original.lastIndexOf('/');
+            if (parentSeparator >= 0) {
+                String parent = original.substring(0, parentSeparator + 1);
+                expected.putIfAbsent(parent, new byte[0]);
+                assertTrue(Files.isDirectory(fileSystem.getPath("/" + parent)));
+            }
             assertContents(fileSystem, expected);
         }
         Map<String, byte[]> actual = referenceContents(archive);

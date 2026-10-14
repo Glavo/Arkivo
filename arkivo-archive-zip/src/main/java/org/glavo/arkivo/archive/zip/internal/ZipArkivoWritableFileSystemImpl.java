@@ -2643,6 +2643,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 throw new DirectoryNotEmptyException(path.toString());
             }
 
+            retainImplicitParent(entryName);
             removeWrittenEntry(entryName);
             if (existingEntryNames.contains(entryName)) {
                 deletedEntries.add(entryName);
@@ -2735,6 +2736,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 }
             }
 
+            retainImplicitParent(sourceName);
             ArrayList<ExistingEntry> rebuiltExistingEntries = new ArrayList<>(
                     existingCentralDirectoryEntries.size()
             );
@@ -2781,6 +2783,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             }
         } finally {
             unlock();
+        }
+    }
+
+    /// Materializes a parent before removing its last child, so it remains a directory until explicitly deleted.
+    private void retainImplicitParent(String entryName) throws IOException {
+        int separator = entryName.lastIndexOf('/');
+        if (separator < 0) {
+            return;
+        }
+        String parent = entryName.substring(0, separator);
+        if (!visibleEntry(parent)) {
+            createDirectoryLocked(getPath("/" + parent), EntryMetadata.directory());
         }
     }
 

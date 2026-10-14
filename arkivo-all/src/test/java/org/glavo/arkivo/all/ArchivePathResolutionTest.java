@@ -22,11 +22,13 @@ import java.nio.file.AccessMode;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.FileSystemLoopException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
@@ -55,6 +57,76 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies component traversal and symbolic-link policies in read-only and update archive sessions.
 @NotNullByDefault
 final class ArchivePathResolutionTest {
+    /// Removing the last child keeps implicit parents addressable, including after the archive is rewritten.
+    @ParameterizedTest
+    @ValueSource(strings = {"zip", "7z"})
+    void retainsImplicitParentAfterChildRemoval(String format, @TempDir Path directory) throws IOException {
+        for (boolean move : new boolean[]{false, true}) {
+            Path archive = directory.resolve(move + "." + format);
+            try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+                Files.writeString(fs.getPath("/parent/nested/child"), "content");
+            }
+            try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+                if (move) {
+                    Files.move(fs.getPath("/parent/nested/child"), fs.getPath("/moved"));
+                } else {
+                    Files.delete(fs.getPath("/parent/nested/child"));
+                }
+                assertTrue(Files.isDirectory(fs.getPath("/parent/nested")));
+                try (var children = Files.list(fs.getPath("/parent/nested"))) {
+                    assertEquals(0, children.count());
+                }
+            }
+            try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+                assertTrue(Files.isDirectory(fs.getPath("/parent/nested")));
+                Files.move(fs.getPath("/parent/nested"), fs.getPath("/empty"));
+                assertTrue(Files.isDirectory(fs.getPath("/parent")));
+                Files.delete(fs.getPath("/parent"));
+                Files.delete(fs.getPath("/empty"));
+                if (move) {
+                    assertEquals("content", Files.readString(fs.getPath("/moved")));
+                }
+            }
+            try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+                assertFalse(Files.exists(fs.getPath("/parent")));
+                assertFalse(Files.exists(fs.getPath("/empty")));
+            }
+        }
+    }
+
+    /// Standard postorder directory deletion works for archive trees whose directories were implicit on disk.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void recursivelyDeletesImplicitDirectories(String format, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("recursive." + format);
+        try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+            Files.writeString(fs.getPath("/parent/nested/child"), "content");
+        }
+        try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+            Files.walkFileTree(fs.getPath("/parent"), new SimpleFileVisitor<Path>() {
+                /// Deletes a visited child without removing its parent.
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
+                    Files.delete(file);
+                    assertTrue(Files.isDirectory(file.getParent()));
+                    return FileVisitResult.CONTINUE;
+                }
+
+                /// Deletes each directory after its children, propagating traversal failures.
+                @Override
+                public FileVisitResult postVisitDirectory(Path path,
+                        @Nullable IOException failure) throws IOException {
+                    if (failure != null) {
+                        throw failure;
+                    }
+                    Files.delete(path);
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+            assertFalse(Files.exists(fs.getPath("/parent")));
+        }
+    }
+
     /// File-store lookup follows both parent and terminal links and checks the resolved entry.
     @ParameterizedTest
     @MethodSource("configurations")

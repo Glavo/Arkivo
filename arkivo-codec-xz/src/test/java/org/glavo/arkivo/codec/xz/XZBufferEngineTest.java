@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,6 +29,41 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests the transport-independent XZ encoder and decoder contracts.
 @NotNullByDefault
 public final class XZBufferEngineTest {
+    /// Failed nested LZMA2 operations preserve the caller's compressed-input position on every buffer kind.
+    @Test
+    void failedBlockDecodingRetainsConsumedInput() throws IOException {
+        byte[] data = new byte[4096];
+        new Random(42).nextBytes(data);
+        XZCodec codec = new XZCodec().withDictionarySize(4096);
+        ByteBuffer encoded = codec.compress(ByteBuffer.wrap(data));
+        for (boolean direct : new boolean[]{false, true}) {
+            for (boolean readOnly : new boolean[]{false, true}) {
+                ByteBuffer source = direct ? ByteBuffer.allocateDirect(103) : ByteBuffer.allocate(103);
+                source.position(3);
+                source.put(encoded.duplicate().limit(100)).flip().position(3);
+                if (readOnly) {
+                    source = source.asReadOnlyBuffer();
+                }
+                ByteBuffer input = source;
+                try (var decoder = codec.newDecoder()) {
+                    assertThrows(IOException.class, () -> decoder.finish(input, ByteBuffer.allocate(8192)));
+                    assertEquals(103, input.position());
+                    assertEquals(103, input.limit());
+                }
+            }
+        }
+
+        // The first Block begins after the 12-byte Stream Header and its encoded Block Header.
+        int payloadOffset = 12 + ((encoded.get(12) & 0xff) + 1) * 4;
+        ByteBuffer malformed = ByteBuffer.allocate(encoded.remaining());
+        malformed.put(encoded.duplicate()).flip();
+        malformed.put(payloadOffset, (byte) 3);
+        try (var decoder = codec.newDecoder()) {
+            assertThrows(IOException.class, () -> decoder.decode(malformed, ByteBuffer.allocate(8192)));
+            assertEquals(payloadOffset + 1, malformed.position());
+        }
+    }
+
     /// Shared XZ codec under test.
     private static final XZCodec CODEC = new XZCodec();
 

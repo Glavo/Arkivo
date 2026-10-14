@@ -50,6 +50,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
 import java.util.EnumMap;
@@ -69,6 +70,89 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies staged archive writers retain resources across failures without repeating publication.
 @NotNullByDefault
 final class ArchiveWriterStorageLifecycleTest {
+    /// Replacing and removing nodes releases obsolete content without invalidating already open readers.
+    @ParameterizedTest
+    @EnumSource(value = UpdateFormat.class, names = {"AR", "TAR"})
+    void releasesObsoleteUpdateContent(UpdateFormat format, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("archive");
+        try (var fs = format.create(archive)) {
+            Files.write(fs.getPath("entry"), BODY);
+        }
+        TrackingStorage storage = new TrackingStorage();
+        try (var fs = format.update(archive, storage)) {
+            Path entry = fs.getPath("entry");
+            assertEquals(1, storage.liveContents);
+            try (InputStream old = Files.newInputStream(entry)) {
+                for (int index = 0; index < 6; index++) {
+                    Files.write(entry, new byte[]{(byte) index});
+                    assertEquals(2, storage.liveContents, "Only the old reader and latest version retain content");
+                }
+                assertArrayEquals(BODY, old.readAllBytes());
+            }
+            assertEquals(1, storage.liveContents);
+            if (format == UpdateFormat.AR) {
+                for (long size : new long[]{3, 8, 1, 7}) {
+                    Files.setAttribute(entry, "ar:size", size);
+                    assertEquals(size, Files.size(entry));
+                    assertEquals(1, storage.liveContents);
+                }
+            }
+            Files.write(fs.getPath("replacement"), BODY);
+            assertEquals(2, storage.liveContents);
+            Files.move(fs.getPath("replacement"), entry, StandardCopyOption.REPLACE_EXISTING);
+            assertEquals(1, storage.liveContents);
+            assertArrayEquals(BODY, Files.readAllBytes(entry));
+            Files.delete(entry);
+            assertEquals(0, storage.liveContents);
+        }
+        storage.assertReleased();
+    }
+
+    /// Removing one hard-link name keeps shared content alive until the final name and reader have gone.
+    @Test
+    void retainsContentReferencedByTarHardLinks(@TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("archive.tar");
+        try (var fs = UpdateFormat.TAR.create(archive)) {
+            Files.write(fs.getPath("original"), BODY);
+            Files.createLink(fs.getPath("alias"), fs.getPath("original"));
+        }
+        TrackingStorage storage = new TrackingStorage();
+        try (var fs = UpdateFormat.TAR.update(archive, storage)) {
+            Files.delete(fs.getPath("original"));
+            assertEquals(1, storage.liveContents);
+            try (var old = Files.newInputStream(fs.getPath("alias"))) {
+                Files.write(fs.getPath("alias"), new byte[]{9});
+                assertEquals(2, storage.liveContents);
+                Files.delete(fs.getPath("alias"));
+                assertEquals(1, storage.liveContents);
+                assertArrayEquals(BODY, old.readAllBytes());
+            }
+            assertEquals(0, storage.liveContents);
+        }
+        storage.assertReleased();
+    }
+
+    /// A failed early content cleanup remains owned by the pool and is retried at file-system close.
+    @ParameterizedTest
+    @EnumSource(value = UpdateFormat.class, names = {"AR", "TAR"})
+    void retriesObsoleteContentCleanup(UpdateFormat format, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("archive");
+        try (var fs = format.create(archive)) {
+            Files.write(fs.getPath("entry"), BODY);
+        }
+        TrackingStorage storage = new TrackingStorage();
+        try (var fs = format.update(archive, storage)) {
+            storage.fail(Stage.CONTENT, new IOException("Transient content cleanup failure"));
+            Files.write(fs.getPath("entry"), new byte[]{9});
+            assertEquals(2, storage.liveContents);
+            assertArrayEquals(new byte[]{9}, Files.readAllBytes(fs.getPath("entry")));
+        }
+        storage.assertReleased();
+        try (var fs = format.open(archive)) {
+            assertArrayEquals(new byte[]{9}, Files.readAllBytes(fs.getPath("entry")));
+        }
+    }
+
     /// Staged output streams retain flush lifecycle checks when channel completion owns their closure.
     @ParameterizedTest
     @ValueSource(strings = {"ar", "tar", "7z"})

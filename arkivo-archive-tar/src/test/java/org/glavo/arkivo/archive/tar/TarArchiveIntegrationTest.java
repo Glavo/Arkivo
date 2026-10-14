@@ -14,6 +14,8 @@ import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -62,6 +64,83 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests end-to-end TAR streaming, writing, file-system, update, metadata, and corruption behavior.
 @NotNullByDefault
 public final class TarArchiveIntegrationTest {
+    /// Explicit root directories retain their metadata and children through indexing and an update rewrite.
+    @ParameterizedTest
+    @ValueSource(strings = {".", "./", "././", ".\\", "pax"})
+    void preservesExplicitRootDirectory(String rootName) throws IOException {
+        for (boolean rootFirst : new boolean[]{true, false}) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            if (!rootFirst) {
+                writeEntry(output, "./value.txt", "old".getBytes(StandardCharsets.UTF_8));
+            }
+            if (rootName.equals("pax")) {
+                writePaxHeader(output, Map.of("path", "./"));
+            }
+            writeHeader(output, rootName, 0750, 17, 23, 0, '5', "", "owner", "group");
+            if (rootFirst) {
+                writeEntry(output, "./value.txt", "old".getBytes(StandardCharsets.UTF_8));
+            }
+            output.write(new byte[1024]);
+
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+                for (int index = 0; index < 2; index++) {
+                    assertTrue(reader.next());
+                    var attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+                    if (attributes.isDirectory()) {
+                        assertEquals(rootName.equals("pax") ? "./" : rootName, attributes.path());
+                        assertEquals(0750, attributes.mode());
+                    }
+                }
+                assertFalse(reader.next());
+            }
+
+            Path archive = createTemporaryArchivePath("tar-explicit-root-");
+            try {
+                Files.write(archive, output.toByteArray());
+                try (var fs = TarArkivoFileSystem.update(archive)) {
+                    assertEquals("old", Files.readString(fs.getPath("/value.txt")));
+                    assertEquals(0750, Files.readAttributes(fs.getPath("/"), TarArkivoEntryAttributes.class).mode());
+                    try (var children = Files.list(fs.getPath("/"))) {
+                        assertEquals(List.of(fs.getPath("/value.txt")), children.toList());
+                    }
+                    Files.writeString(fs.getPath("/value.txt"), "new");
+                    Files.move(fs.getPath("/value.txt"), fs.getPath("/moved.txt"));
+                }
+                try (var fs = TarArkivoFileSystem.open(archive)) {
+                    var root = Files.readAttributes(fs.getPath("/"), TarArkivoEntryAttributes.class);
+                    assertTrue(root.isDirectory());
+                    assertEquals(0750, root.mode());
+                    assertEquals(17, root.userId());
+                    assertEquals(23, root.groupId());
+                    assertEquals("new", Files.readString(fs.getPath("/moved.txt")));
+                }
+            } finally {
+                deleteTemporaryArchive(archive);
+            }
+        }
+    }
+
+    /// Root syntax is reserved for nonempty relative directory names, not files, links, or unsafe paths.
+    @Test
+    void rejectsInvalidRootEntries() throws IOException {
+        for (String name : new String[]{"", "/", "../", "./../", "C:/"}) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            writeHeader(output, name, 0755, 0, 0, 0, '5', "", "", "");
+            output.write(new byte[1024]);
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+                assertThrows(IOException.class, reader::next, name);
+            }
+        }
+        for (char type : new char[]{'0', '1', '2'}) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            writeHeader(output, ".", 0644, 0, 0, 0, type, "target", "", "");
+            output.write(new byte[1024]);
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+                assertThrows(IOException.class, reader::next);
+            }
+        }
+    }
+
     /// Verifies that regular files, directories, and symbolic links are read in stream order.
     @Test
     public void readsStreamingEntries() throws IOException {

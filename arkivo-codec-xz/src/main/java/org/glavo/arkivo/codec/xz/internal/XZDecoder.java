@@ -695,12 +695,16 @@ public final class XZDecoder implements CompressionDecoder.Framed {
                 ByteBuffer compressed = boundedCompressedSource(source);
                 boolean compressedEnd = compressedEnd(compressed, source, endOfInput);
                 int inputStart = compressed.position();
-                CodecOutcome outcome = compressedEnd
-                        ? decoder.finish(compressed, decodedBuffer)
-                        : decoder.decode(compressed, decodedBuffer);
-                int consumed = compressed.position() - inputStart;
-                source.position(source.position() + consumed);
-                addCompressedBytes(consumed);
+                CodecOutcome outcome;
+                try {
+                    outcome = compressedEnd
+                            ? decoder.finish(compressed, decodedBuffer)
+                            : decoder.decode(compressed, decodedBuffer);
+                } finally {
+                    int consumed = compressed.position() - inputStart;
+                    source.position(source.position() + consumed);
+                    addCompressedBytes(consumed);
+                }
 
                 decodedBuffer.flip();
                 boolean outputProduced = decodedBuffer.hasRemaining();

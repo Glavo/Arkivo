@@ -1119,6 +1119,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             throw new NoSuchFileException(path.toString());
         }
 
+        retainImplicitParent(pathText);
         entries.remove(pathText);
         @Nullable ArkivoStoredContent removedContent = stagedContents.remove(pathText);
         if (removedContent != null) {
@@ -1223,6 +1224,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
         }
 
+        retainImplicitParent(sourcePath);
         LinkedHashMap<String, SevenZipEntryMetadata> rebuiltEntries = new LinkedHashMap<>();
         for (Map.Entry<String, SevenZipEntryMetadata> entry : entries.entrySet()) {
             String oldPath = entry.getKey();
@@ -2567,6 +2569,18 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         @Nullable SevenZipEntryMetadata parent = entries.get(parentPath);
         if (parent != null && !parent.directory()) {
             throw new java.nio.file.FileSystemException(path, parentPath, "7z parent entry is not a directory");
+        }
+    }
+
+    /// Materializes a parent directory before removing or moving the child that may be its last stored entry.
+    private void retainImplicitParent(String path) {
+        int separator = path.lastIndexOf('/');
+        if (separator <= 0) {
+            return;
+        }
+        String parent = path.substring(0, separator);
+        if (!entries.containsKey(parent)) {
+            entries.put(parent, newMetadata(parent, true, 0L, initialEntryMetadata(true, false)));
         }
     }
 

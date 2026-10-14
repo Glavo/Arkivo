@@ -48,6 +48,9 @@ import java.nio.ByteBuffer;
 ///         }
 ///         if (outcome == CodecOutcome.NEEDS_INPUT) {
 ///             input.compact();
+///             if (!input.hasRemaining()) {
+///                 throw new IOException("Compressed input buffer is too small");
+///             }
 ///             endOfInput = compressedSource.read(input) < 0;
 ///             input.flip();
 ///             continue;
@@ -64,8 +67,10 @@ import java.nio.ByteBuffer;
 public interface CompressionDecoder extends AutoCloseable {
     /// Decodes compressed source bytes while allowing additional source bytes in a later operation.
     ///
-    /// `NEEDS_INPUT` means the source was exhausted before the encoding completed. `NEEDS_OUTPUT` means the target was
-    /// filled first. `NEEDS_DICTIONARY` is returned only by a [CompressionDecoder.DictionaryAware] decoder, and
+    /// `NEEDS_INPUT` means more input is required. The source may retain an incomplete field, which the caller must
+    /// preserve and precede new input with on the next call. If the input buffer is full of unconsumed bytes, the caller
+    /// must supply a larger buffer. `NEEDS_OUTPUT` means the target was filled first.
+    /// `NEEDS_DICTIONARY` is returned only by a [CompressionDecoder.DictionaryAware] decoder, and
     /// `FINISHED` marks the detected end of the current encoding.
     ///
     /// @param source the compressed input buffer
