@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.xz.internal;
 import org.glavo.arkivo.checksum.CRC32;
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.checksum.ChecksumValue;
-import org.glavo.arkivo.checksum.SHA256;
+import org.glavo.arkivo.checksum.sha2.SHA256;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

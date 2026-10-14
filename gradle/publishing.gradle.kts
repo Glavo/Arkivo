@@ -34,6 +34,10 @@ val publicationMetadata = mapOf(
         "Arkivo Checksum API",
         "Provides reusable checksum algorithms, incremental accumulators, and immutable checksum values."
     ),
+    "arkivo-checksum-sha2" to ArkivoPublicationMetadata(
+        "Arkivo SHA-2 Checksums",
+        "Provides SHA-256 digests using the shared checksum contracts."
+    ),
     "arkivo-checksum-xxhash" to ArkivoPublicationMetadata(
         "Arkivo XXHash Checksums",
         "Provides configurable pure Java XXH32 and XXH64 checksum algorithms."
@@ -351,11 +355,13 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive-all:compile:$publicationVersion",
         "org.glavo:arkivo-archive-codec:runtime:$publicationVersion",
         "org.glavo:arkivo-checksum:compile:$publicationVersion",
+        "org.glavo:arkivo-checksum-sha2:compile:$publicationVersion",
         "org.glavo:arkivo-checksum-xxhash:compile:$publicationVersion",
         "org.glavo:arkivo-codec-all:compile:$publicationVersion"
     ),
     "arkivo-base" to emptySet(),
     "arkivo-checksum" to emptySet(),
+    "arkivo-checksum-sha2" to setOf("org.glavo:arkivo-checksum:compile:$publicationVersion"),
     "arkivo-checksum-xxhash" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-checksum:compile:$publicationVersion"
@@ -463,6 +469,7 @@ val expectedDependencies = mapOf(
     "arkivo-codec-xz" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-checksum:runtime:$publicationVersion",
+        "org.glavo:arkivo-checksum-sha2:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:compile:$publicationVersion",
         "org.glavo:arkivo-codec-lzma:compile:$publicationVersion"
     ),

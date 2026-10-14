@@ -1,7 +1,14 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.checksum;
+package org.glavo.arkivo.all;
+
+import org.glavo.arkivo.checksum.Adler32;
+import org.glavo.arkivo.checksum.CRC32;
+import org.glavo.arkivo.checksum.CRC32C;
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.ChecksumValue;
+import org.glavo.arkivo.checksum.sha2.SHA256;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -29,7 +36,7 @@ public final class ChecksumLifecycleTest {
         return Stream.of(Adler32::newAccumulator, CRC32::newAccumulator, CRC32C::newAccumulator, SHA256::newAccumulator);
     }
 
-    /// Verifies finish idempotence, terminal updates, and explicit reset for every core built-in factory.
+    /// Verifies finish idempotence, terminal updates, and explicit reset for every tested built-in factory.
     @ParameterizedTest
     @MethodSource("factories")
     public void finishIsIdempotentAndResetRestoresActiveState(Supplier<ChecksumAccumulator> factory) {

@@ -1,12 +1,17 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.checksum;
+package org.glavo.arkivo.checksum.sha2;
 
-import org.glavo.arkivo.checksum.internal.MessageDigestChecksum;
+import org.glavo.arkivo.checksum.ChecksumAccumulator;
+import org.glavo.arkivo.checksum.ChecksumValue;
+import org.glavo.arkivo.checksum.sha2.internal.MessageDigestChecksum;
 import org.jetbrains.annotations.NotNullByDefault;
 
+import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
+import java.util.Objects;
 
 /// Computes SHA-256 checksums and creates independent incremental computations.
 ///
@@ -67,7 +72,13 @@ public final class SHA256 {
     /// @throws java.nio.ReadOnlyBufferException if the target is read-only
     /// @throws java.nio.BufferOverflowException if the target has insufficient remaining space
     public static void compute(ByteBuffer source, ByteBuffer target) {
-        ChecksumValue.requireWritable(target, 32);
+        Objects.requireNonNull(target, "target");
+        if (target.isReadOnly()) {
+            throw new ReadOnlyBufferException();
+        }
+        if (target.remaining() < 32) {
+            throw new BufferOverflowException();
+        }
         var accumulator = newAccumulator();
         accumulator.update(source);
         accumulator.finish(target);
