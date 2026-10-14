@@ -124,7 +124,7 @@ public final class BZip2Decoder implements CompressionDecoder.Framed {
     private int expectedBlockCrc;
 
     /// The accumulating CRC state of the current block's decoded bytes.
-    private final ChecksumAccumulator.Width32 blockCrc = BZip2CRC32Algorithm.INSTANCE.newAccumulator();
+    private final ChecksumAccumulator.Width32 blockCrc = new BZip2CRC32();
 
     /// The stream-level combined block CRC.
     private int combinedCrc;

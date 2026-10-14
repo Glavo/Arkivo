@@ -60,7 +60,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     private final long initialSourceSize;
 
     /// Streaming decoded-content checksum state.
-    private final ChecksumAccumulator.Width32 contentHash = XXHash32.DEFAULT.newAccumulator();
+    private final ChecksumAccumulator.Width32 contentHash = XXHash32.newAccumulator();
 
     /// Prefix history retained for the next linked block.
     private byte[] history = new byte[0];
@@ -335,7 +335,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         byte[] header = new byte[FRAME_MAGIC.length + descriptor.length + 1];
         System.arraycopy(FRAME_MAGIC, 0, header, 0, FRAME_MAGIC.length);
         System.arraycopy(descriptor, 0, header, FRAME_MAGIC.length, descriptor.length);
-        header[header.length - 1] = (byte) (XXHash32.DEFAULT.computeInt(descriptor) >>> 8);
+        header[header.length - 1] = (byte) (XXHash32.computeInt(descriptor) >>> 8);
         queue(header);
         contentHash.reset();
         history = dictionaryHistory;
@@ -359,7 +359,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
             ByteArrayAccess.writeIntLittleEndian(
                     encoded,
                     Integer.BYTES + payload.length,
-                    XXHash32.DEFAULT.computeInt(payload)
+                    XXHash32.computeInt(payload)
             );
         }
         queue(encoded);

@@ -154,7 +154,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         this.maximumFrameSize = options.maximumFrameSize();
         this.tableChecksums = tableChecksums;
         this.frameChecksums = tableChecksums ? new int[INITIAL_FRAME_CAPACITY] : new int[0];
-        this.activeChecksum = tableChecksums ? XXHash64.DEFAULT.newAccumulator() : null;
+        this.activeChecksum = tableChecksums ? XXHash64.newAccumulator() : null;
     }
 
     /// Encodes all remaining source bytes, ending frames at the configured uncompressed size.
@@ -329,7 +329,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         activeFrameCompressedOffset = outputBytes;
         activeFrameSize = 0;
         frameActive = false;
-        activeChecksum = tableChecksums ? XXHash64.DEFAULT.newAccumulator() : null;
+        activeChecksum = tableChecksums ? XXHash64.newAccumulator() : null;
     }
 
     /// Records one completed frame in the in-memory seek-table builder.

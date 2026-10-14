@@ -546,7 +546,7 @@ public final class ZstdDictionaryBuilder {
 
     /// Derives a compliant non-zero dictionary identifier from dictionary content.
     private static long dictionaryId(byte[] content) {
-        long hash = XXHash64.DEFAULT.computeLong(content);
+        long hash = XXHash64.computeLong(content);
         return Long.remainderUnsigned(hash, DICTIONARY_ID_RANGE) + MINIMUM_DICTIONARY_ID;
     }
 

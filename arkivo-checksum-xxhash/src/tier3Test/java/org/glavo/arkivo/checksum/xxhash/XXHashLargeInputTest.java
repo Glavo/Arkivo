@@ -30,8 +30,8 @@ public final class XXHashLargeInputTest {
         new Random(0x4c5a_3401L).nextBytes(chunk);
         int seed32 = 0x9747_b28c;
         long seed64 = 0x0123_4567_89ab_cdefL;
-        ChecksumAccumulator.Width32 actual32 = new XXHash32(seed32).newAccumulator();
-        ChecksumAccumulator.Width64 actual64 = new XXHash64(seed64).newAccumulator();
+        ChecksumAccumulator.Width32 actual32 = XXHash32.newAccumulator(seed32);
+        ChecksumAccumulator.Width64 actual64 = XXHash64.newAccumulator(seed64);
 
         XXHashFactory oracle = XXHashFactory.safeInstance();
         try (StreamingXXHash32 expected32 = oracle.newStreamingHash32(seed32);

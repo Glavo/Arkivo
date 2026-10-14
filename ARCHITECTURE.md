@@ -26,9 +26,9 @@ after the method returns.
 
 ### Configuration and operation state
 
-Completed configuration values are immutable. A `ChecksumAlgorithm` contains reusable checksum parameters, and a
-`CompressionCodec` contains compression parameters; both can be shared safely between threads. Mutable builders are
-confined to configuration assembly and are not safe for concurrent use unless their type says otherwise. Each checksum
+Completed configuration values are immutable. A `CompressionCodec` contains compression parameters and can be shared
+safely between threads. Mutable builders are confined to configuration assembly and are not safe for concurrent use
+unless their type says otherwise. Each checksum
 accumulator, encoder, decoder, channel, stream, archive reader, archive writer, and archive file system owns independent
 operation state.
 
@@ -38,19 +38,20 @@ with multiple related parameters and produce the same immutable codec values.
 
 ## Checksum model
 
-`ChecksumAlgorithm` describes immutable, reusable configuration and creates independent `ChecksumAccumulator`
-instances. One-shot methods consume a byte array or the remaining bytes of a `ByteBuffer`; incremental callers update
+`Checksums` and the XXHash utility classes provide static factories for independent `ChecksumAccumulator` instances.
+Static one-shot methods consume a byte array or the remaining bytes of a `ByteBuffer`; incremental callers update
 an accumulator and then finish it. Finishing is idempotent and terminal until an explicit reset. Caller-owned buffers
 are consumed during a call but never retained.
 
-`ChecksumAlgorithm.UpTo64Bits` and its exact `Width32` and `Width64` subinterfaces expose allocation-free primitive
+`ChecksumAccumulator.UpTo64Bits` and its exact `Width32` and `Width64` subinterfaces expose primitive
 results. Results narrower than 64 bits use a nonnegative unsigned `long`; `Width32` additionally exposes the raw `int`
 bit pattern. A `ChecksumValue` owns the canonical big-endian representation of any fixed-width result. Container formats
 remain responsible for format-specific byte order and truncation.
 
 The core checksum module contains the shared contracts and common algorithms. Configurable XXH32 and XXH64
-implementations live in the separate `org.glavo.arkivo.checksum.xxhash` module. Integrity algorithms used only as
-format internals, such as the BZip2 block CRC and CRC-64/XZ, remain private to their codec modules.
+implementations live in the separate `org.glavo.arkivo.checksum.xxhash` module. Each accumulator retains its configured
+seed across resets. Integrity algorithms used only as format internals, such as the BZip2 block CRC and CRC-64/XZ,
+remain private to their codec modules.
 
 ### Resource ownership
 

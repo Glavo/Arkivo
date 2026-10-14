@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.xz.internal;
+package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -12,44 +12,43 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Verifies the format-local XZ CRC-64 implementation.
+/// Verifies the format-local BZip2 block CRC implementation.
 @NotNullByDefault
-public final class CRC64XZAlgorithmTest {
-    /// Verifies the canonical CRC-64/XZ check value.
+public final class BZip2CRC32Test {
+    /// Verifies the canonical CRC-32/BZIP2 check value.
     @Test
     public void matchesCanonicalCheckValue() {
         byte[] input = "123456789".getBytes(StandardCharsets.US_ASCII);
-        assertEquals(0x995d_c9bb_df19_39faL, CRC64XZAlgorithm.INSTANCE.computeLong(input));
+        var accumulator = new BZip2CRC32();
+        accumulator.update(input);
+        assertEquals(0xfc89_1918L, accumulator.finishLong());
     }
 
     /// Verifies algorithm metadata, independent state, byte updates, terminal idempotence, and reset.
     @Test
     public void exposesReusablePrimitiveAccumulator() {
         byte[] input = "123456789".getBytes(StandardCharsets.US_ASCII);
-        ChecksumAccumulator.Width64 first = CRC64XZAlgorithm.INSTANCE.newAccumulator();
-        ChecksumAccumulator.Width64 second = CRC64XZAlgorithm.INSTANCE.newAccumulator();
+        ChecksumAccumulator.Width32 first = new BZip2CRC32();
+        ChecksumAccumulator.Width32 second = new BZip2CRC32();
 
-        assertEquals("CRC-64/XZ", CRC64XZAlgorithm.INSTANCE.name());
-        assertEquals("CRC-64/XZ", CRC64XZAlgorithm.INSTANCE.toString());
-        assertSame(CRC64XZAlgorithm.INSTANCE, first.algorithm());
+        assertEquals("CRC-32/BZIP2", first.name());
         assertNotSame(first, second);
         assertEquals(0L, second.finishLong());
 
         for (byte value : input) {
             first.update(value);
         }
-        assertEquals(0x995d_c9bb_df19_39faL, first.finishLong());
-        assertEquals(0x995d_c9bb_df19_39faL, first.finishLong());
+        assertEquals(0xfc89_1918, first.finishInt());
+        assertEquals(0xfc89_1918L, first.finishLong());
         assertThrows(IllegalStateException.class, () -> first.update((byte) 0));
 
         first.reset();
         byte[] padded = new byte[input.length + 2];
         System.arraycopy(input, 0, padded, 1, input.length);
         first.update(padded, 1, input.length);
-        assertEquals(0x995d_c9bb_df19_39faL, first.finishLong());
+        assertEquals(0xfc89_1918L, first.finishLong());
     }
 
     /// Verifies direct and read-only buffers are consumed from their current positions without changing their limits.
@@ -64,22 +63,22 @@ public final class CRC64XZAlgorithmTest {
         ByteBuffer direct = ByteBuffer.allocateDirect(padded.length).put(padded).flip();
         direct.position(1).limit(1 + input.length);
         int directLimit = direct.limit();
-        ChecksumAccumulator.Width64 directAccumulator = CRC64XZAlgorithm.INSTANCE.newAccumulator();
+        ChecksumAccumulator.Width32 directAccumulator = new BZip2CRC32();
         directAccumulator.update(direct);
         assertEquals(directLimit, direct.position());
         assertEquals(directLimit, direct.limit());
-        assertEquals(0x995d_c9bb_df19_39faL, directAccumulator.finishLong());
+        assertEquals(0xfc89_1918L, directAccumulator.finishLong());
 
         ByteBuffer readOnly = ByteBuffer.wrap(padded).asReadOnlyBuffer();
         readOnly.position(1).limit(1 + input.length);
         int readOnlyLimit = readOnly.limit();
-        ChecksumAccumulator.Width64 readOnlyAccumulator = CRC64XZAlgorithm.INSTANCE.newAccumulator();
+        ChecksumAccumulator.Width32 readOnlyAccumulator = new BZip2CRC32();
         readOnlyAccumulator.update(readOnly);
         assertEquals(readOnlyLimit, readOnly.position());
         assertEquals(readOnlyLimit, readOnly.limit());
-        assertEquals(0x995d_c9bb_df19_39faL, readOnlyAccumulator.finishLong());
+        assertEquals(0xfc89_1918L, readOnlyAccumulator.finishLong());
 
-        ChecksumAccumulator.Width64 emptyAccumulator = CRC64XZAlgorithm.INSTANCE.newAccumulator();
+        ChecksumAccumulator.Width32 emptyAccumulator = new BZip2CRC32();
         emptyAccumulator.update(ByteBuffer.allocateDirect(0));
         assertEquals(0L, emptyAccumulator.finishLong());
     }
@@ -88,7 +87,7 @@ public final class CRC64XZAlgorithmTest {
     @Test
     @SuppressWarnings("DataFlowIssue")
     public void validatesUpdateArgumentsAndLifecycle() {
-        ChecksumAccumulator.Width64 accumulator = CRC64XZAlgorithm.INSTANCE.newAccumulator();
+        ChecksumAccumulator.Width32 accumulator = new BZip2CRC32();
         byte[] source = {1, 2, 3};
 
         assertThrows(NullPointerException.class, () -> accumulator.update((byte[]) null));

@@ -166,7 +166,7 @@ public final class ZstdOfficialCorpusTest {
     @MethodSource("compressionRegressionInputNames")
     void roundTripCrashParameters(String name) throws IOException {
         byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression").resolve(name));
-        int level = (int) (XXHash32.DEFAULT.computeLong(input, 0, Math.min(128, input.length)) % 19);
+        int level = (int) (Integer.toUnsignedLong(XXHash32.computeInt(input, 0, Math.min(128, input.length))) % 19);
         for (int workers : new int[]{0, 2}) {
             ZstdCodec codec = ZstdCodec.builder().compressionLevel(level).workerCount(workers).overlapLog(5).build();
             ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));

@@ -104,7 +104,7 @@ public final class LZ4Dictionary implements CompressionDictionary {
         LZ4Dictionary dictionary = rawContent(bytes);
         return new LZ4Dictionary(
                 dictionary.buffer(),
-                XXHash32.DEFAULT.computeLong(dictionary.bytes())
+                Integer.toUnsignedLong(XXHash32.computeInt(dictionary.bytes()))
         );
     }
 

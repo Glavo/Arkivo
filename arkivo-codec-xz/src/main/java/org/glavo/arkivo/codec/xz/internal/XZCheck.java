@@ -39,11 +39,11 @@ final class XZCheck {
     static XZCheck create(int type) throws IOException {
         return switch (type) {
             case XZSupport.CHECK_NONE -> new XZCheck(type, 0, null);
-            case XZSupport.CHECK_CRC32 -> new XZCheck(type, Integer.BYTES, Checksums.CRC32.newAccumulator());
+            case XZSupport.CHECK_CRC32 -> new XZCheck(type, Integer.BYTES, Checksums.crc32());
             case XZSupport.CHECK_CRC64 ->
-                    new XZCheck(type, Long.BYTES, CRC64XZAlgorithm.INSTANCE.newAccumulator());
+                    new XZCheck(type, Long.BYTES, new CRC64XZ());
             case XZSupport.CHECK_SHA256 ->
-                    new XZCheck(type, Checksums.SHA256.checksumSize(), Checksums.SHA256.newAccumulator());
+                    new XZCheck(type, 32, Checksums.sha256());
             default -> throw new IOException("Unsupported XZ integrity check type: " + type);
         };
     }

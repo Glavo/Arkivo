@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Defines immutable seeded XXH32 and XXH64 algorithms.
+/// Computes seeded XXH32 and XXH64 checksums.
 ///
-/// [org.glavo.arkivo.checksum.xxhash.XXHash32#DEFAULT] and
-/// [org.glavo.arkivo.checksum.xxhash.XXHash64#DEFAULT] provide the conventional zero-seeded variants.
+/// [XXHash32#newAccumulator()] and [XXHash64#newAccumulator()] create zero-seeded computations.
+/// Their overloads accept explicit seeds, which remain unchanged when an accumulator is reset.
 @NotNullByDefault
 package org.glavo.arkivo.checksum.xxhash;
 

@@ -3,10 +3,9 @@
 
 /// Computes checksums over arrays and byte buffers.
 ///
-/// [ChecksumAlgorithm] computes a result in one call or creates a [ChecksumAccumulator] for incremental input.
-/// Algorithm objects are immutable and safe to share; accumulators are not safe for concurrent use. [ChecksumValue]
-/// stores the result as immutable bytes. Numeric algorithms also expose primitive results through
-/// [ChecksumAlgorithm.UpTo64Bits] and its width-specific subinterfaces.
+/// [Checksums] computes a result in one call or creates a [ChecksumAccumulator] for incremental input.
+/// Accumulators are not safe for concurrent use. [ChecksumValue] stores the result as immutable bytes.
+/// [ChecksumAccumulator.UpTo64Bits] and its width-specific subinterfaces expose primitive results.
 @NotNullByDefault
 package org.glavo.arkivo.checksum;
 

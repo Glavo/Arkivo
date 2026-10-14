@@ -15,10 +15,15 @@ import java.util.Objects;
 /// computation and restores the algorithm's configured initial state. Accumulators are not safe for concurrent use.
 @NotNullByDefault
 public interface ChecksumAccumulator {
-    /// Returns the immutable algorithm configuration that created this accumulator.
+    /// Returns the conventional algorithm name for diagnostics, not for provider lookup.
     ///
-    /// @return the checksum algorithm
-    ChecksumAlgorithm algorithm();
+    /// @return the algorithm name
+    String name();
+
+    /// Returns the fixed number of bytes in a completed checksum.
+    ///
+    /// @return a positive result size
+    int checksumSize();
 
     /// Adds one complete byte to the active computation.
     ///
@@ -62,12 +67,12 @@ public interface ChecksumAccumulator {
 
     /// Completes the checksum and writes its canonical representation.
     ///
-    /// The target position advances by [ChecksumAlgorithm#checksumSize()] on success. A read-only or undersized target
+    /// The target position advances by [#checksumSize()] on success. A read-only or undersized target
     /// is rejected before this accumulator enters the finished state.
     ///
     /// @param target the destination buffer
     default void finish(ByteBuffer target) {
-        ChecksumValue.requireWritable(target, algorithm().checksumSize());
+        ChecksumValue.requireWritable(target, checksumSize());
         finish().writeTo(target);
     }
 
@@ -77,11 +82,18 @@ public interface ChecksumAccumulator {
     /// Accumulates a checksum whose complete result fits in a `long` carrier.
     @NotNullByDefault
     interface UpTo64Bits extends ChecksumAccumulator {
-        /// Returns the primitive-capable algorithm configuration.
+        /// Returns the number of significant result bits.
         ///
-        /// @return the checksum algorithm
+        /// @return a value from 1 through 64
+        int bitSize();
+
+        /// Returns the byte width needed to carry the result bits.
+        ///
+        /// @return the fixed result size
         @Override
-        ChecksumAlgorithm.UpTo64Bits algorithm();
+        default int checksumSize() {
+            return (bitSize() + Byte.SIZE - 1) / Byte.SIZE;
+        }
 
         /// Completes and returns the checksum in a `long` carrier.
         ///
@@ -96,18 +108,20 @@ public interface ChecksumAccumulator {
         /// @return the completed checksum
         @Override
         default ChecksumValue finish() {
-            return ChecksumValue.ofLong(finishLong(), algorithm().checksumSize());
+            return ChecksumValue.ofLong(finishLong(), checksumSize());
         }
     }
 
     /// Accumulates an exact 32-bit checksum.
     @NotNullByDefault
     interface Width32 extends UpTo64Bits {
-        /// Returns the exact-width algorithm configuration.
+        /// Returns the exact 32-bit result width.
         ///
-        /// @return the 32-bit checksum algorithm
+        /// @return [Integer#SIZE]
         @Override
-        ChecksumAlgorithm.Width32 algorithm();
+        default int bitSize() {
+            return Integer.SIZE;
+        }
 
         /// Completes and returns the raw 32-bit checksum pattern.
         ///
@@ -128,10 +142,12 @@ public interface ChecksumAccumulator {
     /// Accumulates an exact 64-bit checksum.
     @NotNullByDefault
     interface Width64 extends UpTo64Bits {
-        /// Returns the exact-width algorithm configuration.
+        /// Returns the exact 64-bit result width.
         ///
-        /// @return the 64-bit checksum algorithm
+        /// @return [Long#SIZE]
         @Override
-        ChecksumAlgorithm.Width64 algorithm();
+        default int bitSize() {
+            return Long.SIZE;
+        }
     }
 }

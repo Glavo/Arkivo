@@ -36,26 +36,24 @@ public final class XXHashCompatibilityTest {
         long @Unmodifiable [] seeds64 = {0L, 1L, -1L, 0x0123_4567_89ab_cdefL};
 
         for (int seed : seeds32) {
-            XXHash32 algorithm = new XXHash32(seed);
             for (int length : BOUNDARY_LENGTHS) {
                 int offset = length & 15;
                 long expected = Integer.toUnsignedLong(ORACLE.hash32().hash(bytes, offset, length, seed));
                 assertEquals(
                         expected,
-                        algorithm.computeLong(bytes, offset, length),
+                        Integer.toUnsignedLong(XXHash32.computeInt(bytes, offset, length, seed)),
                         "XXH32 seed " + seed + ", length " + length
                 );
             }
         }
 
         for (long seed : seeds64) {
-            XXHash64 algorithm = new XXHash64(seed);
             for (int length : BOUNDARY_LENGTHS) {
                 int offset = length & 15;
                 long expected = ORACLE.hash64().hash(bytes, offset, length, seed);
                 assertEquals(
                         expected,
-                        algorithm.computeLong(bytes, offset, length),
+                        XXHash64.computeLong(bytes, offset, length, seed),
                         "XXH64 seed " + seed + ", length " + length
                 );
             }
@@ -70,7 +68,7 @@ public final class XXHashCompatibilityTest {
         long @Unmodifiable [] seeds64 = {0L, 0x1357_9bdf_2468_ace0L, Long.MIN_VALUE};
 
         for (int seed : seeds32) {
-            ChecksumAccumulator.Width32 actual = new XXHash32(seed).newAccumulator();
+            ChecksumAccumulator.Width32 actual = XXHash32.newAccumulator(seed);
             try (StreamingXXHash32 expected = ORACLE.newStreamingHash32(seed)) {
                 updateFragmented(actual, expected, bytes);
                 assertEquals(
@@ -82,7 +80,7 @@ public final class XXHashCompatibilityTest {
         }
 
         for (long seed : seeds64) {
-            ChecksumAccumulator.Width64 actual = new XXHash64(seed).newAccumulator();
+            ChecksumAccumulator.Width64 actual = XXHash64.newAccumulator(seed);
             try (StreamingXXHash64 expected = ORACLE.newStreamingHash64(seed)) {
                 updateFragmented(actual, expected, bytes);
                 assertEquals(expected.getValue(), actual.finishLong(), "XXH64 seed " + seed);

@@ -52,7 +52,7 @@ public class XXHash32Benchmark {
     private @UnmodifiableView ByteBuffer input = ByteBuffer.allocate(0).asReadOnlyBuffer();
 
     /// Reusable zero-seeded checksum state.
-    private final ChecksumAccumulator.Width32 accumulator = XXHash32.DEFAULT.newAccumulator();
+    private final ChecksumAccumulator.Width32 accumulator = XXHash32.newAccumulator();
 
     /// Creates source data and checks the selected path against individual byte updates.
     @Setup
@@ -65,7 +65,7 @@ public class XXHash32Benchmark {
             case "direct" -> ByteBuffer.allocateDirect(SIZE).put(bytes).flip().asReadOnlyBuffer();
             default -> throw new IllegalArgumentException(kind);
         };
-        ChecksumAccumulator.Width32 reference = XXHash32.DEFAULT.newAccumulator();
+        ChecksumAccumulator.Width32 reference = XXHash32.newAccumulator();
         for (byte value : bytes) reference.update(value);
         if (reference.finishInt() != hash()) throw new AssertionError("XXH32 update paths differ");
     }

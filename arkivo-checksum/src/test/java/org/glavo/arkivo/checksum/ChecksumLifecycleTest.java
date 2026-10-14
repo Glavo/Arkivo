@@ -15,6 +15,7 @@ import java.nio.ByteOrder;
 import java.nio.ReadOnlyBufferException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,100 +24,100 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies the common accumulator lifecycle and buffer contracts.
 @NotNullByDefault
 public final class ChecksumLifecycleTest {
-    /// Returns the built-in algorithms sharing the accumulator lifecycle.
-    private static Stream<ChecksumAlgorithm> algorithms() {
-        return Stream.of(Checksums.ADLER32, Checksums.CRC32, Checksums.CRC32C, Checksums.SHA256);
+    /// Returns the built-in factories sharing the accumulator lifecycle.
+    private static Stream<Supplier<ChecksumAccumulator>> factories() {
+        return Stream.of(Checksums::adler32, Checksums::crc32, Checksums::crc32c, Checksums::sha256);
     }
 
-    /// Verifies finish idempotence, terminal updates, and explicit reset for every core built-in algorithm.
+    /// Verifies finish idempotence, terminal updates, and explicit reset for every core built-in factory.
     @ParameterizedTest
-    @MethodSource("algorithms")
-    public void finishIsIdempotentAndResetRestoresActiveState(ChecksumAlgorithm algorithm) {
+    @MethodSource("factories")
+    public void finishIsIdempotentAndResetRestoresActiveState(Supplier<ChecksumAccumulator> factory) {
         byte[] input = "checksum lifecycle".getBytes(StandardCharsets.UTF_8);
-        ChecksumAccumulator accumulator = algorithm.newAccumulator();
+        ChecksumAccumulator accumulator = factory.get();
         accumulator.update(input);
         ChecksumValue expected = accumulator.finish();
-        assertEquals(expected, accumulator.finish(), algorithm.name());
-        assertThrows(IllegalStateException.class, () -> accumulator.update((byte) 0), algorithm.name());
-        assertThrows(IllegalStateException.class, () -> accumulator.update(input), algorithm.name());
+        assertEquals(expected, accumulator.finish(), factory.get().name());
+        assertThrows(IllegalStateException.class, () -> accumulator.update((byte) 0), factory.get().name());
+        assertThrows(IllegalStateException.class, () -> accumulator.update(input), factory.get().name());
         assertThrows(
                 IllegalStateException.class,
                 () -> accumulator.update(ByteBuffer.wrap(input)),
-                algorithm.name()
+                factory.get().name()
         );
 
         accumulator.reset();
         accumulator.update(input);
-        assertEquals(expected, accumulator.finish(), algorithm.name());
+        assertEquals(expected, accumulator.finish(), factory.get().name());
 
         ByteBuffer direct = ByteBuffer.allocateDirect(input.length);
         direct.put(input).flip();
         ByteBuffer readOnly = direct.asReadOnlyBuffer();
         accumulator.reset();
         accumulator.update(readOnly);
-        assertEquals(readOnly.limit(), readOnly.position(), algorithm.name());
-        assertEquals(expected, accumulator.finish(), algorithm.name());
+        assertEquals(readOnly.limit(), readOnly.position(), factory.get().name());
+        assertEquals(expected, accumulator.finish(), factory.get().name());
     }
 
     /// Verifies one-shot source consumption and target prevalidation.
     @ParameterizedTest
-    @MethodSource("algorithms")
-    public void bufferComputationConsumesSourceOnlyAfterTargetValidation(ChecksumAlgorithm algorithm) {
+    @MethodSource("factories")
+    public void bufferComputationConsumesSourceOnlyAfterTargetValidation(Supplier<ChecksumAccumulator> factory) {
         byte[] input = "buffer contract".getBytes(StandardCharsets.US_ASCII);
         ByteBuffer source = ByteBuffer.wrap(input).asReadOnlyBuffer();
         source.position(2);
         int originalPosition = source.position();
 
-        ByteBuffer undersized = ByteBuffer.allocate(algorithm.checksumSize() - 1);
-        assertThrows(BufferOverflowException.class, () -> algorithm.compute(source, undersized));
+        ByteBuffer undersized = ByteBuffer.allocate(factory.get().checksumSize() - 1);
+        assertThrows(BufferOverflowException.class, () -> compute(factory, source, undersized));
         assertEquals(originalPosition, source.position());
         assertEquals(0, undersized.position());
 
-        ByteBuffer readOnlyTarget = ByteBuffer.allocate(algorithm.checksumSize()).asReadOnlyBuffer();
-        assertThrows(ReadOnlyBufferException.class, () -> algorithm.compute(source, readOnlyTarget));
+        ByteBuffer readOnlyTarget = ByteBuffer.allocate(factory.get().checksumSize()).asReadOnlyBuffer();
+        assertThrows(ReadOnlyBufferException.class, () -> compute(factory, source, readOnlyTarget));
         assertEquals(originalPosition, source.position());
         assertEquals(0, readOnlyTarget.position());
 
-        ByteBuffer target = ByteBuffer.allocate(algorithm.checksumSize() + 6);
+        ByteBuffer target = ByteBuffer.allocate(factory.get().checksumSize() + 6);
         target.position(3);
-        algorithm.compute(source, target);
+        compute(factory, source, target);
         assertEquals(source.limit(), source.position());
-        assertEquals(3 + algorithm.checksumSize(), target.position());
+        assertEquals(3 + factory.get().checksumSize(), target.position());
         assertEquals(
-                algorithm.compute(ByteBuffer.wrap(input, originalPosition, input.length - originalPosition)),
+                compute(factory, ByteBuffer.wrap(input, originalPosition, input.length - originalPosition)),
                 ChecksumValue.ofBytes(target.flip().position(3))
         );
     }
 
     /// Verifies a rejected finish target leaves the accumulator active.
     @ParameterizedTest
-    @MethodSource("algorithms")
-    public void finishTargetIsValidatedBeforeTerminalTransition(ChecksumAlgorithm algorithm) {
-        ChecksumAccumulator accumulator = algorithm.newAccumulator();
+    @MethodSource("factories")
+    public void finishTargetIsValidatedBeforeTerminalTransition(Supplier<ChecksumAccumulator> factory) {
+        ChecksumAccumulator accumulator = factory.get();
         accumulator.update((byte) 1);
-        ByteBuffer undersized = ByteBuffer.allocate(algorithm.checksumSize() + 3);
+        ByteBuffer undersized = ByteBuffer.allocate(factory.get().checksumSize() + 3);
         undersized.position(4);
         assertThrows(BufferOverflowException.class, () -> accumulator.finish(undersized));
         assertEquals(4, undersized.position());
-        ByteBuffer readOnly = ByteBuffer.allocate(algorithm.checksumSize()).asReadOnlyBuffer();
+        ByteBuffer readOnly = ByteBuffer.allocate(factory.get().checksumSize()).asReadOnlyBuffer();
         assertThrows(ReadOnlyBufferException.class, () -> accumulator.finish(readOnly));
         assertEquals(0, readOnly.position());
         accumulator.update((byte) 2);
-        ChecksumValue expected = algorithm.compute(new byte[]{1, 2});
-        ByteBuffer target = ByteBuffer.allocateDirect(algorithm.checksumSize() + 6)
+        ChecksumValue expected = compute(factory, new byte[]{1, 2});
+        ByteBuffer target = ByteBuffer.allocateDirect(factory.get().checksumSize() + 6)
                 .order(ByteOrder.LITTLE_ENDIAN);
         for (int index = 0; index < target.capacity(); index++) {
             target.put(index, (byte) 0x5a);
         }
-        target.position(3).limit(3 + algorithm.checksumSize());
+        target.position(3).limit(3 + factory.get().checksumSize());
         accumulator.finish(target);
         assertEquals(target.limit(), target.position());
-        assertEquals(3 + algorithm.checksumSize(), target.limit());
+        assertEquals(3 + factory.get().checksumSize(), target.limit());
         assertEquals(expected, ChecksumValue.ofBytes(target.duplicate().position(3)));
         ByteBuffer storage = target.duplicate().clear();
         for (int index = 0; index < 3; index++) {
             assertEquals((byte) 0x5a, storage.get(index));
-            assertEquals((byte) 0x5a, storage.get(3 + algorithm.checksumSize() + index));
+            assertEquals((byte) 0x5a, storage.get(3 + factory.get().checksumSize() + index));
         }
         target.position(3);
         accumulator.finish(target);
@@ -126,14 +127,14 @@ public final class ChecksumLifecycleTest {
 
     /// Verifies empty updates still obey the finished state and do not consume rejected input.
     @ParameterizedTest
-    @MethodSource("algorithms")
-    public void emptyUpdatesObeyLifecycle(ChecksumAlgorithm algorithm) {
-        ChecksumAccumulator accumulator = algorithm.newAccumulator();
+    @MethodSource("factories")
+    public void emptyUpdatesObeyLifecycle(Supplier<ChecksumAccumulator> factory) {
+        ChecksumAccumulator accumulator = factory.get();
         byte[] input = {1, 2, 3};
         ByteBuffer empty = ByteBuffer.allocateDirect(7).position(7).asReadOnlyBuffer();
         accumulator.update(input, input.length, 0);
         accumulator.update(empty);
-        ChecksumValue expected = algorithm.compute(new byte[0]);
+        ChecksumValue expected = compute(factory, new byte[0]);
         assertEquals(expected, accumulator.finish());
         assertThrows(IllegalStateException.class, () -> accumulator.update(new byte[0]));
         assertThrows(IllegalStateException.class, () -> accumulator.update(input, input.length, 0));
@@ -149,9 +150,9 @@ public final class ChecksumLifecycleTest {
 
     /// Verifies invalid array ranges leave existing progress usable, including overflowing ranges.
     @ParameterizedTest
-    @MethodSource("algorithms")
-    public void invalidUpdatesPreserveAccumulatedBytes(ChecksumAlgorithm algorithm) {
-        ChecksumAccumulator accumulator = algorithm.newAccumulator();
+    @MethodSource("factories")
+    public void invalidUpdatesPreserveAccumulatedBytes(Supplier<ChecksumAccumulator> factory) {
+        ChecksumAccumulator accumulator = factory.get();
         byte[] input = {1, 2, 3};
         accumulator.update(input[0]);
         assertThrows(IndexOutOfBoundsException.class, () -> accumulator.update(input, -1, 1));
@@ -160,19 +161,19 @@ public final class ChecksumLifecycleTest {
         assertThrows(IndexOutOfBoundsException.class, () -> accumulator.update(input, Integer.MAX_VALUE, 2));
         assertThrows(IndexOutOfBoundsException.class, () -> accumulator.update(input, 1, Integer.MAX_VALUE));
         accumulator.update(input, 1, 2);
-        assertEquals(algorithm.compute(input), accumulator.finish());
+        assertEquals(compute(factory, input), accumulator.finish());
     }
 
     /// Verifies reset discards partial progress without changing completed values or other accumulators.
     @ParameterizedTest
-    @MethodSource("algorithms")
-    public void resetAndIndependentAccumulatorsDoNotAlterSnapshots(ChecksumAlgorithm algorithm) {
+    @MethodSource("factories")
+    public void resetAndIndependentAccumulatorsDoNotAlterSnapshots(Supplier<ChecksumAccumulator> factory) {
         byte[] firstInput = {1, 2, 3};
         byte[] secondInput = {4, 5};
-        ChecksumValue firstExpected = algorithm.compute(firstInput);
-        ChecksumValue secondExpected = algorithm.compute(secondInput);
-        ChecksumAccumulator first = algorithm.newAccumulator();
-        ChecksumAccumulator second = algorithm.newAccumulator();
+        ChecksumValue firstExpected = compute(factory, firstInput);
+        ChecksumValue secondExpected = compute(factory, secondInput);
+        ChecksumAccumulator first = factory.get();
+        ChecksumAccumulator second = factory.get();
         first.update(firstInput);
         second.update(secondInput[0]);
         ChecksumValue snapshot = first.finish();
@@ -191,15 +192,15 @@ public final class ChecksumLifecycleTest {
 
     /// Verifies mixed update forms and sliced-buffer boundaries produce the same checksum as contiguous input.
     @ParameterizedTest
-    @MethodSource("algorithms")
-    public void fragmentedBuffersPreserveRangesAndPositions(ChecksumAlgorithm algorithm) {
+    @MethodSource("factories")
+    public void fragmentedBuffersPreserveRangesAndPositions(Supplier<ChecksumAccumulator> factory) {
         int @Unmodifiable [] lengths = {0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 5551, 5552, 5553, 8193};
         byte[] input = new byte[8193];
         for (int index = 0; index < input.length; index++) {
             input[index] = (byte) (index * 37 + (index >>> 3));
         }
         for (int length : lengths) {
-            ChecksumAccumulator accumulator = algorithm.newAccumulator();
+            ChecksumAccumulator accumulator = factory.get();
             int offset = 0;
             int fragment = 0;
             while (offset < length) {
@@ -231,31 +232,42 @@ public final class ChecksumLifecycleTest {
                 offset += count;
                 fragment++;
             }
-            assertEquals(algorithm.compute(Arrays.copyOf(input, length)), accumulator.finish(), "length " + length);
+            assertEquals(compute(factory, Arrays.copyOf(input, length)), accumulator.finish(), "length " + length);
         }
     }
 
-    /// Verifies 32-bit primitive methods preserve raw and unsigned forms.
+    /// Computes an expected value using an independent accumulator.
+    private static ChecksumValue compute(Supplier<ChecksumAccumulator> factory, byte[] source) {
+        var accumulator = factory.get();
+        accumulator.update(source);
+        return accumulator.finish();
+    }
+
+    /// Computes an expected buffer value using independent state.
+    private static ChecksumValue compute(Supplier<ChecksumAccumulator> factory, ByteBuffer source) {
+        var accumulator = factory.get();
+        accumulator.update(source);
+        return accumulator.finish();
+    }
+
+    /// Exercises each built-in static buffer-to-buffer operation.
+    private static void compute(Supplier<ChecksumAccumulator> factory, ByteBuffer source, ByteBuffer target) {
+        switch (factory.get().name()) {
+            case "Adler-32" -> Checksums.adler32(source, target);
+            case "CRC-32/ISO-HDLC" -> Checksums.crc32(source, target);
+            case "CRC-32C" -> Checksums.crc32c(source, target);
+            case "SHA-256" -> Checksums.sha256(source, target);
+            default -> throw new AssertionError("Unexpected checksum");
+        }
+    }
+
+    /// Verifies raw signed and unsigned primitive views of the same completed computation.
     @Test
     public void width32ExposesRawIntAndUnsignedLongForms() {
-        int raw = Checksums.CRC32.computeInt("123456789".getBytes(StandardCharsets.US_ASCII));
-        assertEquals(0xcbf4_3926, raw);
-        assertEquals(0xcbf4_3926L, Checksums.CRC32.computeLong("123456789".getBytes(StandardCharsets.US_ASCII)));
-
-        byte[] padded = "xx123456789yy".getBytes(StandardCharsets.US_ASCII);
-        assertEquals(raw, Checksums.CRC32.computeInt(padded, 2, 9));
-        assertEquals(Integer.toUnsignedLong(raw), Checksums.CRC32.computeLong(padded, 2, 9));
-        assertEquals(ChecksumValue.ofInt(raw), Checksums.CRC32.compute(padded, 2, 9));
-        assertThrows(IndexOutOfBoundsException.class, () -> Checksums.CRC32.computeInt(padded, -1, 1));
-
-        ByteBuffer direct = ByteBuffer.allocateDirect(padded.length + 4);
-        direct.position(2).put(padded).limit(13).position(4);
-        ByteBuffer readOnly = direct.asReadOnlyBuffer();
-        assertEquals(raw, Checksums.CRC32.computeInt(readOnly));
-        assertEquals(readOnly.limit(), readOnly.position());
-
-        direct.position(4);
-        assertEquals(Integer.toUnsignedLong(raw), Checksums.CRC32.computeLong(direct));
-        assertEquals(direct.limit(), direct.position());
+        var accumulator = Checksums.crc32();
+        accumulator.update("123456789".getBytes(StandardCharsets.US_ASCII));
+        assertEquals(0xcbf4_3926, accumulator.finishInt());
+        assertEquals(0xcbf4_3926L, accumulator.finishLong());
+        assertEquals(ChecksumValue.ofInt(0xcbf4_3926), accumulator.finish());
     }
 }

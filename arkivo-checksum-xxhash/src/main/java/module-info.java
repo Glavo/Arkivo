@@ -1,10 +1,9 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Provides configurable XXH32 and XXH64 checksum algorithms.
+/// Provides seeded XXH32 and XXH64 checksum computations.
 ///
-/// Algorithm instances are immutable and safe for concurrent use. Mutable computation state belongs to independent
-/// accumulators created by each algorithm.
+/// Static factories create independent accumulators whose configured seeds are retained across resets.
 module org.glavo.arkivo.checksum.xxhash {
     requires transitive org.glavo.arkivo.checksum;
     requires org.glavo.arkivo.base;

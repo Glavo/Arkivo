@@ -4,7 +4,6 @@
 package org.glavo.arkivo.checksum.xxhash;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.ChecksumAlgorithm;
 import org.glavo.arkivo.checksum.ChecksumValue;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -13,134 +12,127 @@ import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies XXHash vectors, configuration, and accumulator lifecycle.
+/// Verifies XXHash static computations, seeded factories, and accumulator lifecycle.
 @NotNullByDefault
 public final class XXHashTest {
-    /// Verifies conventional zero-seeded XXH32 and XXH64 vectors.
+    /// Checks conventional zero-seeded XXH32 and XXH64 vectors.
     @Test
-    public void defaultAlgorithmsMatchKnownVectors() {
-        assertEquals(0x02cc_5d05L, XXHash32.DEFAULT.computeLong(new byte[0]));
-        assertEquals(
-                0x32d1_53ffL,
-                XXHash32.DEFAULT.computeLong("abc".getBytes(StandardCharsets.US_ASCII))
-        );
-        assertEquals(0xef46_db37_51d8_e999L, XXHash64.DEFAULT.computeLong(new byte[0]));
-        assertEquals(
-                0x44bc_2cf5_ad77_0999L,
-                XXHash64.DEFAULT.computeLong("abc".getBytes(StandardCharsets.US_ASCII))
-        );
+    public void staticComputationsMatchKnownVectors() {
+        byte[] abc = "abc".getBytes(StandardCharsets.US_ASCII);
+        assertEquals(0x02cc_5d05, XXHash32.computeInt(new byte[0]));
+        assertEquals(0x32d1_53ff, XXHash32.computeInt(abc));
+        assertEquals(0xef46_db37_51d8_e999L, XXHash64.computeLong(new byte[0]));
+        assertEquals(0x44bc_2cf5_ad77_0999L, XXHash64.computeLong(abc));
+        byte[] padded = "xabcx".getBytes(StandardCharsets.US_ASCII);
+        assertEquals(XXHash32.computeInt(abc), XXHash32.computeInt(padded, 1, 3));
+        assertEquals(XXHash64.computeLong(abc), XXHash64.computeLong(padded, 1, 3));
+        assertEquals(XXHash32.computeInt(abc), XXHash32.computeInt(ByteBuffer.wrap(abc)));
+        assertEquals(XXHash64.computeLong(abc), XXHash64.computeLong(ByteBuffer.wrap(abc)));
+        var first = XXHash32.newAccumulator();
+        first.update(abc);
+        assertEquals(XXHash32.computeInt(abc), first.finishInt());
+        var second = XXHash64.newAccumulator();
+        second.update(abc);
+        assertEquals(XXHash64.computeLong(abc), second.finishLong());
     }
 
-    /// Verifies fragmented seeded updates and reset reuse.
+    /// Factories create independent state, and resets restore the original seed after any completed or partial input.
     @Test
-    public void seededConfigurationsCreateReusableIndependentState() {
+    public void seededFactoriesCreateIndependentReusableState() {
+        @Unmodifiable List<Supplier<ChecksumAccumulator.UpTo64Bits>> factories = List.of(
+                () -> XXHash32.newAccumulator(0x9747_b28c),
+                () -> XXHash64.newAccumulator(0x1357_9bdf_2468_ace0L));
         byte[] input = "0123456789abcdef".repeat(8).getBytes(StandardCharsets.US_ASCII);
-        XXHash32 algorithm = new XXHash32(0x9747_b28c);
-        ChecksumAccumulator.Width32 accumulator = algorithm.newAccumulator();
-        for (int offset = 0; offset < input.length; offset += 7) {
-            accumulator.update(input, offset, Math.min(7, input.length - offset));
-        }
-        assertEquals(algorithm.computeLong(input), accumulator.finishLong());
-
-        accumulator.reset();
-        ByteBuffer direct = ByteBuffer.allocateDirect(input.length + 4);
-        direct.position(2).put(input).limit(input.length + 2).position(2);
-        ByteBuffer readOnly = direct.asReadOnlyBuffer();
-        accumulator.update(readOnly);
-        assertEquals(readOnly.limit(), readOnly.position());
-        assertEquals(algorithm.computeLong(input), accumulator.finishLong());
-
-        assertSame(algorithm, algorithm.withSeed(algorithm.seed()));
-        assertEquals(algorithm, new XXHash32(algorithm.seed()));
-    }
-
-    /// Verifies terminal finish behavior and explicit reset for both widths.
-    @Test
-    public void accumulatorsFollowTheChecksumLifecycle() {
-        byte[] input = "xxhash lifecycle".getBytes(StandardCharsets.UTF_8);
-        @Unmodifiable List<ChecksumAlgorithm> algorithms = List.of(XXHash32.DEFAULT, XXHash64.DEFAULT);
-
-        for (ChecksumAlgorithm algorithm : algorithms) {
-            ChecksumAccumulator accumulator = algorithm.newAccumulator();
-            accumulator.update(input);
-            ChecksumValue expected = accumulator.finish();
-            assertEquals(expected, accumulator.finish(), algorithm.name());
-            assertThrows(IllegalStateException.class, () -> accumulator.update((byte) 0), algorithm.name());
-
-            accumulator.reset();
-            accumulator.update(input);
-            assertEquals(expected, accumulator.finish(), algorithm.name());
+        for (var factory : factories) {
+            var first = factory.get();
+            var second = factory.get();
+            assertNotSame(first, second);
+            assertEquals(first.bitSize() / 8, first.checksumSize());
+            second.update(input);
+            long expected = second.finishLong();
+            for (int offset = 0; offset < input.length; offset += 7) {
+                first.update(input, offset, Math.min(7, input.length - offset));
+            }
+            assertEquals(expected, first.finishLong());
+            ChecksumValue snapshot = first.finish();
+            assertEquals(snapshot, first.finish());
+            assertThrows(IllegalStateException.class, () -> first.update((byte) 0));
+            assertThrows(IllegalStateException.class, () -> first.update(new byte[0]));
+            first.reset();
+            first.update((byte) 99);
+            first.reset();
+            for (byte value : input) {
+                first.update(value);
+            }
+            assertEquals(snapshot, first.finish());
+            assertEquals(expected, second.finishLong());
         }
     }
 
-    /// Verifies seeded algorithms expose complete immutable value semantics and diagnostic metadata.
+    /// Seeded buffer computations consume only the selected range and agree with static array computations.
     @Test
-    public void seededAlgorithmsHaveValueSemantics() {
-        XXHash32 hash32 = new XXHash32(-1);
-        assertEquals(-1, hash32.seed());
-        assertEquals("XXH32", hash32.name());
-        assertEquals(Integer.SIZE, hash32.bitSize());
-        assertEquals(Integer.BYTES, hash32.checksumSize());
-        assertEquals("XXH32[seed=0xffffffff]", hash32.toString());
-        assertTrue(hash32.equals(hash32));
-        assertSame(hash32, hash32.withSeed(-1));
-        assertEquals(hash32, new XXHash32(-1));
-        assertEquals(hash32.hashCode(), new XXHash32(-1).hashCode());
-        assertNotEquals(hash32, hash32.withSeed(0));
-        assertNotEquals(hash32, XXHash64.DEFAULT);
-        assertNotEquals(hash32, null);
-
-        XXHash64 hash64 = new XXHash64(-1L);
-        assertEquals(-1L, hash64.seed());
-        assertEquals("XXH64", hash64.name());
-        assertEquals(Long.SIZE, hash64.bitSize());
-        assertEquals(Long.BYTES, hash64.checksumSize());
-        assertEquals("XXH64[seed=0xffffffffffffffff]", hash64.toString());
-        assertTrue(hash64.equals(hash64));
-        assertSame(hash64, hash64.withSeed(-1L));
-        assertEquals(hash64, new XXHash64(-1L));
-        assertEquals(hash64.hashCode(), new XXHash64(-1L).hashCode());
-        assertNotEquals(hash64, hash64.withSeed(0L));
-        assertNotEquals(hash64, hash32);
-        assertNotEquals(hash64, null);
-    }
-
-    /// Verifies single-byte updates and one-shot buffer methods cross every stripe boundary without retaining buffers.
-    @Test
-    public void byteUpdatesAndBufferComputationsCrossStripes() {
+    public void seededBuffersCrossStripeBoundaries() {
         byte[] input = new byte[97];
         for (int index = 0; index < input.length; index++) {
             input[index] = (byte) (index * 37 + 11);
         }
-
-        @Unmodifiable List<ChecksumAlgorithm.UpTo64Bits> algorithms = List.of(
-                new XXHash32(0x1357_9bdf),
-                new XXHash64(0x1357_9bdf_2468_ace0L)
-        );
-        for (ChecksumAlgorithm.UpTo64Bits algorithm : algorithms) {
-            long expected = algorithm.computeLong(input);
-            ChecksumAccumulator.UpTo64Bits accumulator = algorithm.newAccumulator();
-            for (byte value : input) {
-                accumulator.update(value);
+        for (int seed32 : new int[]{0, -1, Integer.MIN_VALUE, 0x1357_9bdf}) {
+            long seed64 = (long) seed32 << 32 | Integer.toUnsignedLong(seed32);
+            int expected32 = XXHash32.computeInt(input, seed32);
+            long expected64 = XXHash64.computeLong(input, seed64);
+            ByteBuffer parent = ByteBuffer.allocateDirect(input.length + 6);
+            parent.position(3).put(input).limit(input.length + 3).position(3);
+            ByteBuffer source = parent.asReadOnlyBuffer();
+            assertEquals(expected32, XXHash32.computeInt(source, seed32));
+            assertEquals(source.limit(), source.position());
+            source.position(3);
+            assertEquals(expected64, XXHash64.computeLong(source, seed64));
+            assertEquals(source.limit(), source.position());
+            assertEquals(3, parent.position());
+            var accumulator32 = XXHash32.newAccumulator(seed32);
+            var accumulator64 = XXHash64.newAccumulator(seed64);
+            accumulator32.update(parent.duplicate());
+            accumulator64.update(parent.duplicate());
+            parent.clear();
+            while (parent.hasRemaining()) {
+                parent.put((byte) 0);
             }
-            assertEquals(expected, accumulator.finishLong(), algorithm.name());
-
-            ByteBuffer direct = ByteBuffer.allocateDirect(input.length + 6);
-            direct.position(3).put(input).limit(input.length + 3).position(3);
-            ByteBuffer readOnly = direct.asReadOnlyBuffer();
-            assertEquals(expected, algorithm.computeLong(readOnly), algorithm.name());
-            assertEquals(readOnly.limit(), readOnly.position(), algorithm.name());
-
+            assertEquals(expected32, accumulator32.finishInt());
+            assertEquals(Integer.toUnsignedLong(expected32), accumulator32.finishLong());
+            assertEquals(expected64, accumulator64.finishLong());
+            assertEquals("XXH32", accumulator32.name());
+            assertEquals("XXH64", accumulator64.name());
             ByteBuffer empty = ByteBuffer.allocate(4).position(2).limit(2);
-            assertEquals(algorithm.computeLong(new byte[0]), algorithm.computeLong(empty), algorithm.name());
-            assertEquals(empty.limit(), empty.position(), algorithm.name());
+            assertEquals(XXHash32.computeInt(new byte[0], seed32), XXHash32.computeInt(empty, seed32));
+            assertEquals(XXHash64.computeLong(new byte[0], seed64), XXHash64.computeLong(empty, seed64));
+            assertEquals(2, empty.position());
         }
+    }
+
+    /// Invalid static inputs and rejected updates do not corrupt an existing seeded computation.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    public void validatesInputsWithoutDiscardingProgress() {
+        assertThrows(NullPointerException.class, () -> XXHash32.computeInt((byte[]) null));
+        assertThrows(NullPointerException.class, () -> XXHash64.computeLong((ByteBuffer) null));
+        byte[] input = {1, 2, 3};
+        assertThrows(IndexOutOfBoundsException.class, () -> XXHash32.computeInt(input, -1, 1));
+        assertThrows(IndexOutOfBoundsException.class, () -> XXHash64.computeLong(input, 1, Integer.MAX_VALUE));
+        var first = XXHash32.newAccumulator(-1);
+        var second = XXHash64.newAccumulator(-1);
+        first.update((byte) 1);
+        second.update((byte) 1);
+        assertThrows(IndexOutOfBoundsException.class, () -> first.update(input, 2, 2));
+        assertThrows(IndexOutOfBoundsException.class, () -> second.update(input, -1, 1));
+        first.update(input, 1, 2);
+        second.update(input, 1, 2);
+        assertEquals(XXHash32.computeInt(input, -1), first.finishInt());
+        assertEquals(XXHash64.computeLong(input, -1), second.finishLong());
     }
 }

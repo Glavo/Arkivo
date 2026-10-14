@@ -41,7 +41,7 @@ public final class LZ4FrameWireRobustnessTest {
         byte[] block = new byte[(flags & 1) != 0 ? 8 : 4];
         ByteArrayAccess.writeIntLittleEndian(block, 0, Integer.MIN_VALUE);
         if ((flags & 1) != 0) {
-            ByteArrayAccess.writeIntLittleEndian(block, 4, XXHash32.DEFAULT.computeInt(new byte[0]));
+            ByteArrayAccess.writeIntLittleEndian(block, 4, XXHash32.computeInt(new byte[0]));
         }
         ByteBuffer assembled = ByteBuffer.allocateDirect(empty.length + block.length + 1);
         assembled.put(empty, 0, headerSize).put(block)
@@ -73,7 +73,7 @@ public final class LZ4FrameWireRobustnessTest {
         byte[] emptyBlock = new byte[(flags & 1) != 0 ? 8 : 4];
         ByteArrayAccess.writeIntLittleEndian(emptyBlock, 0, Integer.MIN_VALUE);
         if ((flags & 1) != 0) {
-            ByteArrayAccess.writeIntLittleEndian(emptyBlock, 4, XXHash32.DEFAULT.computeInt(new byte[0]));
+            ByteArrayAccess.writeIntLittleEndian(emptyBlock, 4, XXHash32.computeInt(new byte[0]));
         }
         ByteBuffer assembled = ByteBuffer.allocate(frame.length + 2 * emptyBlock.length);
         assembled.put(frame, 0, headerSize).put(emptyBlock)
@@ -260,7 +260,7 @@ public final class LZ4FrameWireRobustnessTest {
             ByteArrayAccess.writeIntLittleEndian(
                     frame,
                     header.length + Integer.BYTES,
-                    XXHash32.DEFAULT.computeInt(new byte[0])
+                    XXHash32.computeInt(new byte[0])
             );
         }
         return frame;
@@ -299,7 +299,7 @@ public final class LZ4FrameWireRobustnessTest {
         byte[] header = new byte[Integer.BYTES + descriptor.length + 1];
         ByteArrayAccess.writeIntLittleEndian(header, 0, (int) LZ4Format.FRAME_MAGIC);
         System.arraycopy(descriptor, 0, header, Integer.BYTES, descriptor.length);
-        header[header.length - 1] = (byte) (XXHash32.DEFAULT.computeInt(descriptor) >>> 8);
+        header[header.length - 1] = (byte) (XXHash32.computeInt(descriptor) >>> 8);
         return header;
     }
 

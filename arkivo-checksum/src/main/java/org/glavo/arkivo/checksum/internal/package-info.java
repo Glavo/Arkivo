@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Contains non-exported checksum implementations used by the public algorithm catalog.
+/// Contains non-exported accumulators created by the public checksum factories.
 @NotNullByDefault
 package org.glavo.arkivo.checksum.internal;
 

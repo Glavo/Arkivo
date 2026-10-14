@@ -70,7 +70,7 @@ final class ZstdStreamEncoder {
     private long parallelFrameSubmitted;
 
     /// Checksum for the active frame.
-    private ChecksumAccumulator.Width64 checksum = XXHash64.DEFAULT.newAccumulator();
+    private ChecksumAccumulator.Width64 checksum = XXHash64.newAccumulator();
 
     /// Number of uncompressed bytes accepted in the active frame.
     private long frameInputBytes;
@@ -227,7 +227,7 @@ final class ZstdStreamEncoder {
         pendingJobSize = 0;
         nextJobPrefix = new byte[0];
         parallelFrameSubmitted = 0L;
-        checksum = XXHash64.DEFAULT.newAccumulator();
+        checksum = XXHash64.newAccumulator();
     }
 
     /// Writes the active frame header once.

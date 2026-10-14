@@ -4,25 +4,20 @@
 package org.glavo.arkivo.checksum.xxhash;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.ChecksumAlgorithm;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Describes an immutable seeded XXH32 algorithm.
+/// Computes XXH32 checksums and creates independent incremental computations.
 ///
-/// [#DEFAULT] uses the zero seed required by standard LZ4 frame checksums. Each accumulator retains at most one partial
-/// 16-byte stripe and never retains caller-provided storage.
+/// The default seed is zero, as required by LZ4 frame checksums. Each accumulator retains its seed across resets,
+/// buffers at most one partial 16-byte stripe, and never retains caller buffers.
 @NotNullByDefault
-public final class XXHash32 implements ChecksumAlgorithm.Width32 {
-    /// The conventional zero-seeded XXH32 algorithm.
-    public static final XXHash32 DEFAULT = new XXHash32(0);
-
+public final class XXHash32 {
     /// First XXH32 prime.
     private static final int PRIME_1 = 0x9e37_79b1;
 
@@ -38,70 +33,86 @@ public final class XXHash32 implements ChecksumAlgorithm.Width32 {
     /// Fifth XXH32 prime.
     private static final int PRIME_5 = 0x1656_67b1;
 
-    /// The configured seed bit pattern.
-    private final int seed;
-
-    /// Creates a seeded algorithm.
-    ///
-    /// @param seed the seed bit pattern
-    public XXHash32(int seed) {
-        this.seed = seed;
+    /// Prevents construction.
+    private XXHash32() {
     }
 
-    /// Returns the configured seed bit pattern.
-    ///
-    /// @return the seed
-    public int seed() {
-        return seed;
-    }
-
-    /// Returns an immutable algorithm using the requested seed.
-    ///
-    /// @param seed the seed bit pattern
-    /// @return this instance when unchanged, otherwise a new algorithm
-    public XXHash32 withSeed(int seed) {
-        return this.seed == seed ? this : new XXHash32(seed);
-    }
-
-    /// Returns the conventional algorithm name.
-    ///
-    /// @return `XXH32`
-    @Override
-    public String name() {
-        return "XXH32";
-    }
-
-    /// Creates fresh active XXH32 state.
+    /// Creates an active zero-seeded computation.
     ///
     /// @return an independent accumulator
-    @Override
-    public ChecksumAccumulator.Width32 newAccumulator() {
-        return new Accumulator(this);
+    public static ChecksumAccumulator.Width32 newAccumulator() {
+        return newAccumulator(0);
     }
 
-    /// Compares configured seed values.
+    /// Creates an active seeded computation.
     ///
-    /// @param other the object to compare
-    /// @return whether `other` describes the same seeded algorithm
-    @Override
-    public boolean equals(@Nullable Object other) {
-        return this == other || other instanceof XXHash32 hash && seed == hash.seed;
+    /// @param seed the seed bit pattern, restored by every reset
+    /// @return an independent accumulator
+    public static ChecksumAccumulator.Width32 newAccumulator(int seed) {
+        return new Accumulator(seed);
     }
 
-    /// Returns the seed hash code.
+    /// Computes the 32-bit checksum using a zero seed.
     ///
-    /// @return the configured seed
-    @Override
-    public int hashCode() {
-        return seed;
+    /// @param source the complete input
+    /// @return the raw 32-bit result
+    public static int computeInt(byte[] source) {
+        return computeInt(source, 0);
     }
 
-    /// Returns a diagnostic seeded-algorithm description.
+    /// Computes the 32-bit checksum using the supplied seed.
     ///
-    /// @return the algorithm name and unsigned hexadecimal seed
-    @Override
-    public String toString() {
-        return "XXH32[seed=0x" + Integer.toUnsignedString(seed, 16) + "]";
+    /// @param source the complete input
+    /// @param seed the seed bit pattern
+    /// @return the raw 32-bit result
+    public static int computeInt(byte[] source, int seed) {
+        ChecksumAccumulator.Width32 accumulator = newAccumulator(seed);
+        accumulator.update(source);
+        return accumulator.finishInt();
+    }
+
+    /// Computes the 32-bit checksum using a zero seed.
+    ///
+    /// @param source the source array
+    /// @param offset the first byte index
+    /// @param length the number of bytes
+    /// @return the raw 32-bit result
+    /// @throws IndexOutOfBoundsException if the range is outside the array
+    public static int computeInt(byte[] source, int offset, int length) {
+        return computeInt(source, offset, length, 0);
+    }
+
+    /// Computes the 32-bit checksum using the supplied seed.
+    ///
+    /// @param source the source array
+    /// @param offset the first byte index
+    /// @param length the number of bytes
+    /// @param seed the seed bit pattern
+    /// @return the raw 32-bit result
+    /// @throws IndexOutOfBoundsException if the range is outside the array
+    public static int computeInt(byte[] source, int offset, int length, int seed) {
+        ChecksumAccumulator.Width32 accumulator = newAccumulator(seed);
+        accumulator.update(source, offset, length);
+        return accumulator.finishInt();
+    }
+
+    /// Computes the 32-bit checksum using a zero seed.
+    ///
+    /// @param source the input buffer, consumed through its limit without changing its limit or byte order
+    /// @return the raw 32-bit result
+    public static int computeInt(ByteBuffer source) {
+        return computeInt(source, 0);
+    }
+
+    /// Computes the 32-bit checksum using the supplied seed.
+    ///
+    /// @param source the input buffer, consumed through its limit without changing its limit or byte order
+    /// @param seed the seed bit pattern
+    /// @return the raw 32-bit result
+    public static int computeInt(ByteBuffer source, int seed) {
+        ChecksumAccumulator.Width32 accumulator = newAccumulator(seed);
+        accumulator.update(source);
+        return accumulator.finishInt();
     }
 
     /// Mixes one four-byte lane into a large-input accumulator.
@@ -118,8 +129,8 @@ public final class XXHash32 implements ChecksumAlgorithm.Width32 {
     /// Holds one incremental XXH32 computation.
     @NotNullByDefault
     private static final class Accumulator implements ChecksumAccumulator.Width32 {
-        /// The immutable seeded algorithm.
-        private final XXHash32 algorithm;
+        /// The configured seed bit pattern.
+        private final int seed;
 
         /// Incomplete stripe bytes.
         private final byte[] memory = new byte[16];
@@ -148,20 +159,17 @@ public final class XXHash32 implements ChecksumAlgorithm.Width32 {
         /// Whether this computation has finished.
         private boolean finished;
 
-        /// Creates initial state for one seeded algorithm.
+        /// Creates active state retaining the supplied seed.
         ///
-        /// @param algorithm the immutable seeded algorithm
-        private Accumulator(XXHash32 algorithm) {
-            this.algorithm = algorithm;
+        /// @param seed the seed bit pattern
+        private Accumulator(int seed) {
+            this.seed = seed;
             reset();
         }
 
-        /// Returns the creating algorithm.
-        ///
-        /// @return the immutable seeded algorithm
         @Override
-        public ChecksumAlgorithm.Width32 algorithm() {
-            return algorithm;
+        public String name() {
+            return "XXH32";
         }
 
         /// Adds one byte.
@@ -281,7 +289,6 @@ public final class XXHash32 implements ChecksumAlgorithm.Width32 {
         /// Restores the configured seeded initial state.
         @Override
         public void reset() {
-            int seed = algorithm.seed;
             accumulator1 = seed + PRIME_1 + PRIME_2;
             accumulator2 = seed + PRIME_2;
             accumulator3 = seed;
@@ -304,7 +311,7 @@ public final class XXHash32 implements ChecksumAlgorithm.Width32 {
                         + Integer.rotateLeft(accumulator3, 12)
                         + Integer.rotateLeft(accumulator4, 18);
             } else {
-                hash = algorithm.seed + PRIME_5;
+                hash = seed + PRIME_5;
             }
             hash += (int) totalLength;
 

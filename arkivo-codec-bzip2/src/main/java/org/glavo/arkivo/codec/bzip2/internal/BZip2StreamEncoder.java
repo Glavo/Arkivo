@@ -56,7 +56,7 @@ final class BZip2StreamEncoder {
     private int blockLength;
 
     /// The CRC state for original bytes represented by the current block.
-    private final ChecksumAccumulator.Width32 blockCrc = BZip2CRC32Algorithm.INSTANCE.newAccumulator();
+    private final ChecksumAccumulator.Width32 blockCrc = new BZip2CRC32();
 
     /// The stream-level combined block CRC.
     private int combinedCrc;

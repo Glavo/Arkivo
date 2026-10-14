@@ -241,7 +241,7 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
             }
         }
         if (index.verifiesTableChecksums()) {
-            if ((int) XXHash64.DEFAULT.computeLong(decoded) != index.frameChecksum(frameIndex)) {
+            if ((int) XXHash64.computeLong(decoded) != index.frameChecksum(frameIndex)) {
                 throw new IOException("Indexed Zstandard frame checksum does not match the seek table");
             }
         }

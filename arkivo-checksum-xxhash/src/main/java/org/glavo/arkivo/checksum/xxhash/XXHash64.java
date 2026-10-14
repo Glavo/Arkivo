@@ -4,25 +4,20 @@
 package org.glavo.arkivo.checksum.xxhash;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
-import org.glavo.arkivo.checksum.ChecksumAlgorithm;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Describes an immutable seeded XXH64 algorithm.
+/// Computes XXH64 checksums and creates independent incremental computations.
 ///
-/// [#DEFAULT] uses the zero seed required by Zstandard frame checksums. Each accumulator retains at most one partial
-/// 32-byte stripe and never retains caller-provided storage.
+/// The default seed is zero, as required by Zstandard frame checksums. Each accumulator retains its seed across resets,
+/// buffers at most one partial 32-byte stripe, and never retains caller buffers.
 @NotNullByDefault
-public final class XXHash64 implements ChecksumAlgorithm.Width64 {
-    /// The conventional zero-seeded XXH64 algorithm.
-    public static final XXHash64 DEFAULT = new XXHash64(0L);
-
+public final class XXHash64 {
     /// First XXH64 prime.
     private static final long PRIME_1 = 0x9e37_79b1_85eb_ca87L;
 
@@ -38,70 +33,86 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
     /// Fifth XXH64 prime.
     private static final long PRIME_5 = 0x27d4_eb2f_1656_67c5L;
 
-    /// The configured seed bit pattern.
-    private final long seed;
-
-    /// Creates a seeded algorithm.
-    ///
-    /// @param seed the seed bit pattern
-    public XXHash64(long seed) {
-        this.seed = seed;
+    /// Prevents construction.
+    private XXHash64() {
     }
 
-    /// Returns the configured seed bit pattern.
-    ///
-    /// @return the seed
-    public long seed() {
-        return seed;
-    }
-
-    /// Returns an immutable algorithm using the requested seed.
-    ///
-    /// @param seed the seed bit pattern
-    /// @return this instance when unchanged, otherwise a new algorithm
-    public XXHash64 withSeed(long seed) {
-        return this.seed == seed ? this : new XXHash64(seed);
-    }
-
-    /// Returns the conventional algorithm name.
-    ///
-    /// @return `XXH64`
-    @Override
-    public String name() {
-        return "XXH64";
-    }
-
-    /// Creates fresh active XXH64 state.
+    /// Creates an active zero-seeded computation.
     ///
     /// @return an independent accumulator
-    @Override
-    public ChecksumAccumulator.Width64 newAccumulator() {
-        return new Accumulator(this);
+    public static ChecksumAccumulator.Width64 newAccumulator() {
+        return newAccumulator(0);
     }
 
-    /// Compares configured seed values.
+    /// Creates an active seeded computation.
     ///
-    /// @param other the object to compare
-    /// @return whether `other` describes the same seeded algorithm
-    @Override
-    public boolean equals(@Nullable Object other) {
-        return this == other || other instanceof XXHash64 hash && seed == hash.seed;
+    /// @param seed the seed bit pattern, restored by every reset
+    /// @return an independent accumulator
+    public static ChecksumAccumulator.Width64 newAccumulator(long seed) {
+        return new Accumulator(seed);
     }
 
-    /// Returns the seed hash code.
+    /// Computes the 64-bit checksum using a zero seed.
     ///
-    /// @return the configured seed hash code
-    @Override
-    public int hashCode() {
-        return Long.hashCode(seed);
+    /// @param source the complete input
+    /// @return the raw 64-bit result
+    public static long computeLong(byte[] source) {
+        return computeLong(source, 0);
     }
 
-    /// Returns a diagnostic seeded-algorithm description.
+    /// Computes the 64-bit checksum using the supplied seed.
     ///
-    /// @return the algorithm name and unsigned hexadecimal seed
-    @Override
-    public String toString() {
-        return "XXH64[seed=0x" + Long.toUnsignedString(seed, 16) + "]";
+    /// @param source the complete input
+    /// @param seed the seed bit pattern
+    /// @return the raw 64-bit result
+    public static long computeLong(byte[] source, long seed) {
+        ChecksumAccumulator.Width64 accumulator = newAccumulator(seed);
+        accumulator.update(source);
+        return accumulator.finishLong();
+    }
+
+    /// Computes the 64-bit checksum using a zero seed.
+    ///
+    /// @param source the source array
+    /// @param offset the first byte index
+    /// @param length the number of bytes
+    /// @return the raw 64-bit result
+    /// @throws IndexOutOfBoundsException if the range is outside the array
+    public static long computeLong(byte[] source, int offset, int length) {
+        return computeLong(source, offset, length, 0);
+    }
+
+    /// Computes the 64-bit checksum using the supplied seed.
+    ///
+    /// @param source the source array
+    /// @param offset the first byte index
+    /// @param length the number of bytes
+    /// @param seed the seed bit pattern
+    /// @return the raw 64-bit result
+    /// @throws IndexOutOfBoundsException if the range is outside the array
+    public static long computeLong(byte[] source, int offset, int length, long seed) {
+        ChecksumAccumulator.Width64 accumulator = newAccumulator(seed);
+        accumulator.update(source, offset, length);
+        return accumulator.finishLong();
+    }
+
+    /// Computes the 64-bit checksum using a zero seed.
+    ///
+    /// @param source the input buffer, consumed through its limit without changing its limit or byte order
+    /// @return the raw 64-bit result
+    public static long computeLong(ByteBuffer source) {
+        return computeLong(source, 0);
+    }
+
+    /// Computes the 64-bit checksum using the supplied seed.
+    ///
+    /// @param source the input buffer, consumed through its limit without changing its limit or byte order
+    /// @param seed the seed bit pattern
+    /// @return the raw 64-bit result
+    public static long computeLong(ByteBuffer source, long seed) {
+        ChecksumAccumulator.Width64 accumulator = newAccumulator(seed);
+        accumulator.update(source);
+        return accumulator.finishLong();
     }
 
     /// Mixes one eight-byte lane into a large-input accumulator.
@@ -128,8 +139,8 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
     /// Holds one incremental XXH64 computation.
     @NotNullByDefault
     private static final class Accumulator implements ChecksumAccumulator.Width64 {
-        /// The immutable seeded algorithm.
-        private final XXHash64 algorithm;
+        /// The configured seed bit pattern.
+        private final long seed;
 
         /// Incomplete stripe bytes.
         private final byte[] memory = new byte[32];
@@ -158,20 +169,17 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
         /// Whether this computation has finished.
         private boolean finished;
 
-        /// Creates initial state for one seeded algorithm.
+        /// Creates active state retaining the supplied seed.
         ///
-        /// @param algorithm the immutable seeded algorithm
-        private Accumulator(XXHash64 algorithm) {
-            this.algorithm = algorithm;
+        /// @param seed the seed bit pattern
+        private Accumulator(long seed) {
+            this.seed = seed;
             reset();
         }
 
-        /// Returns the creating algorithm.
-        ///
-        /// @return the immutable seeded algorithm
         @Override
-        public ChecksumAlgorithm.Width64 algorithm() {
-            return algorithm;
+        public String name() {
+            return "XXH64";
         }
 
         /// Adds one byte.
@@ -275,7 +283,6 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
         /// Restores the configured seeded initial state.
         @Override
         public void reset() {
-            long seed = algorithm.seed;
             accumulator1 = seed + PRIME_1 + PRIME_2;
             accumulator2 = seed + PRIME_2;
             accumulator3 = seed;
@@ -302,7 +309,7 @@ public final class XXHash64 implements ChecksumAlgorithm.Width64 {
                 hash = mergeRound(hash, accumulator3);
                 hash = mergeRound(hash, accumulator4);
             } else {
-                hash = algorithm.seed + PRIME_5;
+                hash = seed + PRIME_5;
             }
             hash += totalLength;
 

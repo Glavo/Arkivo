@@ -337,7 +337,7 @@ public final class ZstdDecoder
         frameInfo = standard;
         requiredDictionaryId = ZstdDictionary.NO_DICTIONARY_ID;
         blockDecoder = new ZstdBlockDecoder(standard.windowSize(), dictionary);
-        checksum = standard.checksum() && verifyChecksums ? XXHash64.DEFAULT.newAccumulator() : null;
+        checksum = standard.checksum() && verifyChecksums ? XXHash64.newAccumulator() : null;
         blockHeader.clear();
         state = State.BLOCK_HEADER;
     }
