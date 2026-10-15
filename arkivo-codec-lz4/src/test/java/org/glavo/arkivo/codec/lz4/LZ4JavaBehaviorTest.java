@@ -8,6 +8,8 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -28,6 +30,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Ports format-level raw-block and frame edge cases from the lz4-java 1.8.0 test suite.
 @NotNullByDefault
 public final class LZ4JavaBehaviorTest {
+    /// Ignores the match-length nibble when the final sequence ends after its literal bytes.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
+    public void acceptsUnusedFinalMatchNibbles(int nibble) throws IOException {
+        LZ4BlockCodec codec = new LZ4BlockCodec().withMaximumBlockSize(512);
+        for (int length : new int[]{0, 1, 5, 15, 20, 270}) {
+            byte[] expected = randomBytes(length, 0x424c4f43L + length);
+            byte[] block = literalOnlyBlock(expected).clone();
+            block[0] |= (byte) nibble;
+            assertArrayEquals(expected, decompress(codec, block));
+        }
+        byte[] matched = {0x13, 42, 1, 0, (byte) (0x50 | nibble), 1, 2, 3, 4, 5};
+        assertArrayEquals(new byte[]{42, 42, 42, 42, 42, 42, 42, 42, 1, 2, 3, 4, 5},
+                decompress(codec, matched));
+    }
+
     /// Verifies the standard raw-block bound and encoded output for representative source lengths.
     @Test
     public void rawBlockBoundCoversEncodedOutput() throws IOException {
@@ -83,7 +101,6 @@ public final class LZ4JavaBehaviorTest {
 
         assertRawBlockFailure(codec, new byte[]{(byte) 0xf0}, "Truncated LZ4 literal length");
         assertRawBlockFailure(codec, new byte[]{0x20, 42}, "Truncated LZ4 literal bytes");
-        assertRawBlockFailure(codec, new byte[]{0x01}, "Final LZ4 sequence declares a missing match");
         assertRawBlockFailure(codec, new byte[]{0x10, 42, 1}, "Truncated LZ4 match offset");
         assertRawBlockFailure(
                 codec,

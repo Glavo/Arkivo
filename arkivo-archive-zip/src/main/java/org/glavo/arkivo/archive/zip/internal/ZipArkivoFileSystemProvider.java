@@ -145,6 +145,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
+        options = ArkivoFileSystemProviderSupport.normalizeChannelOptions(options);
         Path readPath = ArkivoFileSystemProviderSupport.resolveReadChannelPath(path, options);
         return operations(path).newByteChannel(readPath, options, attributes);
     }

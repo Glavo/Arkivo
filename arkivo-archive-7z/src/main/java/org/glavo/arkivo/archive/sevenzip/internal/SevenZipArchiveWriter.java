@@ -38,7 +38,6 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileTime;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -184,14 +183,11 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     /// The AES block and initialization-vector size.
     private static final int AES_BLOCK_SIZE = 16;
 
-    /// The Windows FILETIME epoch offset in 100-nanosecond ticks.
-    private static final long WINDOWS_EPOCH_OFFSET_TICKS = 116_444_736_000_000_000L;
-
-    /// The number of Windows FILETIME ticks in one second.
-    private static final long WINDOWS_TICKS_PER_SECOND = 10_000_000L;
-
     /// The destination archive channel owned by this writer.
     private final SeekableByteChannel channel;
+
+    /// Physical resources that can be closed independently of coder and metadata state.
+    private final SevenZipWriterResources resources = new SevenZipWriterResources();
 
     /// Shared failure protection for signature, header, and every packed-stream write.
     private final ArchiveOutputStream output;
@@ -240,7 +236,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             SevenZipFilterChain defaultFilters,
             int solidFileCount
     ) throws IOException {
-        this.channel = Objects.requireNonNull(channel, "channel");
+        Objects.requireNonNull(channel, "channel");
         this.defaultCompression = Objects.requireNonNull(defaultCompression, "defaultCompression");
         this.defaultFilters = Objects.requireNonNull(defaultFilters, "defaultFilters");
         if (solidFileCount <= 0) {
@@ -250,7 +246,8 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         this.encryptionKey = password != null
                 ? SevenZipAesCrypto.deriveKey(AES_CYCLE_POWER, new byte[0], password)
                 : null;
-        this.output = new ArchiveOutputStream(StreamChannelAdapters.outputStream(channel));
+        this.channel = resources.own(channel);
+        this.output = new ArchiveOutputStream(StreamChannelAdapters.outputStream(this.channel));
         try {
             channel.position(0L);
             channel.truncate(0L);
@@ -306,12 +303,18 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 currentFolderEncoder = encoder;
             }
             encoder.write(buffer, offset, length);
+            resources.ensureActive();
             currentEntryCrc32.update(buffer, offset, length);
             currentEntrySize = nextSize;
         } catch (IOException | RuntimeException | Error exception) {
             output.fail(exception);
             throw exception;
         }
+    }
+
+    /// Cancels physical I/O without touching entry, folder, or encoder state.
+    @Nullable Throwable cancelOutput() {
+        return resources.cancel();
     }
 
 
@@ -347,6 +350,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             closing = true;
             try {
                 output.ensureWritable();
+                resources.ensureActive();
                 if (currentEntry != null) {
                     throw new IOException("Cannot close a 7z writer while an entry remains open");
                 }
@@ -367,6 +371,11 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         clearKey();
         try {
             output.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = appendFailure(failure, exception);
+        }
+        try {
+            resources.close();
         } catch (IOException | RuntimeException | Error exception) {
             failure = appendFailure(failure, exception);
         }
@@ -392,6 +401,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         if (filters.size() == 1 && filters.get(0).method() == SevenZipFilterMethod.BCJ2) {
             return Bcj2FolderEncoder.open(
                     output,
+                    resources,
                     encryptionKey,
                     entry.compression(),
                     entry.filters()
@@ -809,7 +819,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         data.write(0);
         for (FileTime value : values) {
             if (value != null) {
-                writeLongLittleEndian(data, windowsTicks(value));
+                writeLongLittleEndian(data, SevenZipEntryWriteMetadata.windowsTicks(value));
             }
         }
         writeProperty(output, property, data.toByteArray());
@@ -931,15 +941,6 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     }
 
 
-    /// Converts a Java file time to Windows FILETIME ticks.
-    private static long windowsTicks(FileTime time) {
-        Instant instant = time.toInstant();
-        return WINDOWS_EPOCH_OFFSET_TICKS
-                + instant.getEpochSecond() * WINDOWS_TICKS_PER_SECOND
-                + instant.getNano() / 100L;
-    }
-
-
     /// Returns the unsigned CRC-32 of one byte array.
     private static long crc32(byte[] bytes) {
         CRC32 crc32 = new CRC32();
@@ -964,6 +965,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             throw new ClosedChannelException();
         }
         output.ensureWritable();
+        resources.ensureActive();
     }
 
 
@@ -1546,6 +1548,9 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         /// The shared failure-protected archive output.
         private final ArchiveOutputStream archiveOutput;
 
+        /// Physical resources shared with the writer's asynchronous cancellation mechanism.
+        private final SevenZipWriterResources resources;
+
         /// The shared derived AES key, or `null` when branch encryption is disabled.
         private final byte @Nullable [] encryptionKey;
 
@@ -1555,9 +1560,13 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         /// The temporary decoded folder output.
         private final OutputStream stagingOutput;
 
+        /// Branch paths retained until deletion succeeds, including after failed finalization.
+        private final List<Path> branches = new ArrayList<>(4);
+
         /// Creates one active staged BCJ2 folder.
         private Bcj2FolderEncoder(
                 ArchiveOutputStream archiveOutput,
+                SevenZipWriterResources resources,
                 byte @Nullable [] encryptionKey,
                 SevenZipCompression compressionSetting,
                 SevenZipFilterChain filterSetting,
@@ -1566,6 +1575,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         ) {
             super(compressionSetting, filterSetting);
             this.archiveOutput = Objects.requireNonNull(archiveOutput, "archiveOutput");
+            this.resources = resources;
             this.encryptionKey = encryptionKey;
             this.stagingPath = Objects.requireNonNull(stagingPath, "stagingPath");
             this.stagingOutput = Objects.requireNonNull(stagingOutput, "stagingOutput");
@@ -1574,19 +1584,22 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         /// Opens temporary storage for one BCJ2 folder.
         private static Bcj2FolderEncoder open(
                 ArchiveOutputStream archiveOutput,
+                SevenZipWriterResources resources,
                 byte @Nullable [] encryptionKey,
                 SevenZipCompression compressionSetting,
                 SevenZipFilterChain filterSetting
         ) throws IOException {
-            Path path = Files.createTempFile("arkivo-7z-bcj2-", ".tmp");
+            Path path = resources.createTemporaryFile("arkivo-7z-bcj2-");
             try {
-                OutputStream output = new BufferedOutputStream(Files.newOutputStream(
+                SeekableByteChannel channel = resources.own(Files.newByteChannel(
                         path,
                         StandardOpenOption.WRITE,
                         StandardOpenOption.TRUNCATE_EXISTING
                 ));
+                OutputStream output = new BufferedOutputStream(StreamChannelAdapters.outputStream(channel));
                 return new Bcj2FolderEncoder(
                         archiveOutput,
+                        resources,
                         encryptionKey,
                         compressionSetting,
                         filterSetting,
@@ -1595,7 +1608,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 );
             } catch (IOException | RuntimeException | Error exception) {
                 try {
-                    Files.deleteIfExists(path);
+                    resources.deleteTemporaryFile(path);
                 } catch (IOException cleanupFailure) {
                     appendFailure(exception, cleanupFailure);
                 }
@@ -1616,26 +1629,25 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 long decodedCrc32,
                 List<Substream> completedSubstreams
         ) throws IOException {
-            Path[] branches = new Path[4];
             @Nullable Throwable failure = null;
             try {
                 stagingOutput.close();
-                for (int index = 0; index < branches.length; index++) {
-                    branches[index] = Files.createTempFile("arkivo-7z-bcj2-branch-", ".tmp");
+                for (int index = 0; index < 4; index++) {
+                    branches.add(resources.createTemporaryFile("arkivo-7z-bcj2-branch-"));
                 }
-                try (InputStream source = new BufferedInputStream(Files.newInputStream(stagingPath));
-                     OutputStream main = temporaryOutput(branches[0]);
-                     OutputStream call = temporaryOutput(branches[1]);
-                     OutputStream jump = temporaryOutput(branches[2]);
-                     OutputStream range = temporaryOutput(branches[3])) {
+                try (InputStream source = temporaryInput(stagingPath);
+                     OutputStream main = temporaryOutput(branches.get(0));
+                     OutputStream call = temporaryOutput(branches.get(1));
+                     OutputStream jump = temporaryOutput(branches.get(2));
+                     OutputStream range = temporaryOutput(branches.get(3))) {
                     SevenZipBcj2Encoder.encode(source, decodedSize, main, call, jump, range);
                 }
-                Files.deleteIfExists(stagingPath);
+                resources.deleteTemporaryFile(stagingPath);
 
-                BranchOutput main = writePackedBranch(branches[0], compressionSetting());
-                BranchOutput range = writePackedBranch(branches[3], null);
-                BranchOutput call = writePackedBranch(branches[1], compressionSetting());
-                BranchOutput jump = writePackedBranch(branches[2], compressionSetting());
+                BranchOutput main = writePackedBranch(branches.get(0), compressionSetting());
+                BranchOutput range = writePackedBranch(branches.get(3), null);
+                BranchOutput call = writePackedBranch(branches.get(1), compressionSetting());
+                BranchOutput jump = writePackedBranch(branches.get(2), compressionSetting());
                 return buildFolder(
                         decodedSize,
                         decodedCrc32,
@@ -1649,12 +1661,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 failure = exception;
                 throw exception;
             } finally {
-                @Nullable Throwable cleanupFailure = deleteTemporary(stagingPath, null);
-                for (Path branch : branches) {
-                    if (branch != null) {
-                        cleanupFailure = deleteTemporary(branch, cleanupFailure);
-                    }
-                }
+                @Nullable Throwable cleanupFailure = deleteTemporaryFiles(null);
                 if (failure != null && cleanupFailure != null) {
                     appendFailure(failure, cleanupFailure);
                 } else if (cleanupFailure != null) {
@@ -1665,12 +1672,19 @@ final class SevenZipArchiveWriter implements AutoCloseable {
 
 
         /// Opens a buffered output over one existing temporary branch file.
-        private static OutputStream temporaryOutput(Path path) throws IOException {
-            return new BufferedOutputStream(Files.newOutputStream(
+        private OutputStream temporaryOutput(Path path) throws IOException {
+            SeekableByteChannel channel = resources.own(Files.newByteChannel(
                     path,
                     StandardOpenOption.WRITE,
                     StandardOpenOption.TRUNCATE_EXISTING
             ));
+            return new BufferedOutputStream(StreamChannelAdapters.outputStream(channel));
+        }
+
+        /// Opens a buffered input whose physical channel can be closed without acquiring the buffer monitor.
+        private InputStream temporaryInput(Path path) throws IOException {
+            return new BufferedInputStream(StreamChannelAdapters.inputStream(
+                    resources.own(Files.newByteChannel(path, StandardOpenOption.READ))));
         }
 
         /// Writes one branch through optional compression and AES into the archive channel.
@@ -1694,7 +1708,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                     : openCompression(compressionSetting, packedTarget);
             OutputStream output = compression == null ? packedTarget : compression.output();
             @Nullable Throwable failure = null;
-            try (InputStream input = new BufferedInputStream(Files.newInputStream(path));
+            try (InputStream input = temporaryInput(path);
                  OutputStream ownedOutput = output) {
                 try {
                     transfer(input, ownedOutput);
@@ -1796,14 +1810,30 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
             }
-            failure = deleteTemporary(stagingPath, failure);
+            failure = deleteTemporaryFiles(failure);
             throwFailure(failure);
         }
 
+        /// Deletes temporary paths while preserving failed branch deletions for another cleanup attempt.
+        private @Nullable Throwable deleteTemporaryFiles(@Nullable Throwable failure) {
+            failure = deleteTemporary(stagingPath, failure);
+            var iterator = branches.iterator();
+            while (iterator.hasNext()) {
+                Path branch = iterator.next();
+                try {
+                    resources.deleteTemporaryFile(branch);
+                    iterator.remove();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = appendFailure(failure, exception);
+                }
+            }
+            return failure;
+        }
+
         /// Deletes one temporary path while retaining an earlier failure.
-        private static @Nullable Throwable deleteTemporary(Path path, @Nullable Throwable failure) {
+        private @Nullable Throwable deleteTemporary(Path path, @Nullable Throwable failure) {
             try {
-                Files.deleteIfExists(path);
+                resources.deleteTemporaryFile(path);
             } catch (IOException | RuntimeException | Error exception) {
                 failure = appendFailure(failure, exception);
             }

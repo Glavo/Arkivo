@@ -195,7 +195,8 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
     /// provider unregistration that previously failed.
     @Override
     public void close() throws IOException {
-        try (CloseOperation ignored = beginCloseOperation()) {
+        CloseOperation operation = beginCloseOperation();
+        try {
             if (!open && imageClosed && closeActionCompleted) {
                 return;
             }
@@ -222,6 +223,10 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
                 }
             }
             throwFailure(failure);
+        } catch (IOException | RuntimeException | Error exception) {
+            operation.rethrowFailure(exception);
+        } finally {
+            operation.close();
         }
     }
 
@@ -517,10 +522,10 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
             int separator = attributes.indexOf(':');
             String view = separator >= 0 ? attributes.substring(0, separator) : "basic";
             String namesText = separator >= 0 ? attributes.substring(separator + 1) : attributes;
-            if (!SUPPORTED_ATTRIBUTE_VIEWS.contains(view) || namesText.isEmpty()) {
+            if (!SUPPORTED_ATTRIBUTE_VIEWS.contains(view)) {
                 throw new UnsupportedOperationException("Unsupported DMG attribute selection: " + attributes);
             }
-            Set<String> names = "*".equals(namesText) ? Set.of("*") : Set.of(namesText.split(","));
+            Set<String> names = Set.copyOf(List.of(namesText.split(",")));
             boolean all = names.contains("*");
             HashMap<String, Object> values = new HashMap<>();
             if ("owner".equals(view)) {
@@ -533,6 +538,7 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
             } else {
                 putBasic(values, names, all, node);
             }
+            ArkivoFileSystemProviderSupport.validateAttributeNames(names, values);
             return Collections.unmodifiableMap(values);
         }
     }
@@ -764,6 +770,7 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
         /// Returns whether a standard attribute view is supported.
         @Override
         public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
+            Objects.requireNonNull(type, "type");
             return type == BasicFileAttributeView.class
                     || type == FileOwnerAttributeView.class
                     || type == PosixFileAttributeView.class;

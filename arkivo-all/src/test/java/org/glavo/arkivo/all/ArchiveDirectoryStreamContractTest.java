@@ -9,6 +9,7 @@ import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,9 +34,75 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Checks directory-stream traversal under each archive lifecycle coordination mode.
+/// Checks directory contents across updates and traversal under each archive lifecycle coordination mode.
 @NotNullByDefault
 final class ArchiveDirectoryStreamContractTest {
+    /// Crosses writable formats with operations that leave or explicitly remove implicit directories.
+    private static Stream<Arguments> directoryMutations() {
+        return Stream.of("ar", "tar", "zip", "7z").flatMap(format -> Stream.of(
+                "delete-file", "move-file", "move-subtree", "delete-directory", "move-empty-directory", "delete-all"
+        ).map(operation -> Arguments.of(format, operation)));
+    }
+
+    /// Preserves unmodified parent directories across publication, including empty ancestors of moved subtrees.
+    @ParameterizedTest(name = "{0}, {1}")
+    @MethodSource("directoryMutations")
+    void retainsImplicitDirectoriesAfterRemovingChildren(String format, String operation, @TempDir Path directory)
+            throws IOException {
+        Path archive = directory.resolve("implicit." + format);
+        try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+            Files.writeString(fs.getPath("/parent/nested/value"), "body");
+        }
+        @Unmodifiable Set<String> expected = switch (operation) {
+            case "delete-file" -> Set.of("/", "/parent", "/parent/nested");
+            case "move-file" -> Set.of("/", "/parent", "/parent/nested", "/moved");
+            case "move-subtree" -> Set.of("/", "/parent", "/moved", "/moved/value");
+            case "delete-directory" -> Set.of("/", "/parent");
+            case "move-empty-directory" -> Set.of("/", "/parent", "/moved");
+            case "delete-all" -> Set.of("/");
+            default -> throw new AssertionError(operation);
+        };
+        try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+            Path file = fs.getPath("/parent/nested/value");
+            Path parent = file.getParent();
+            switch (operation) {
+                case "delete-file" -> Files.delete(file);
+                case "move-file" -> Files.move(file, fs.getPath("/moved"));
+                case "move-subtree" -> Files.move(parent, fs.getPath("/moved"));
+                case "delete-directory", "delete-all" -> {
+                    Files.delete(file);
+                    Files.delete(parent);
+                    if (operation.equals("delete-all")) Files.delete(parent.getParent());
+                }
+                case "move-empty-directory" -> {
+                    Files.delete(file);
+                    Files.move(parent, fs.getPath("/moved"));
+                }
+                default -> throw new AssertionError(operation);
+            }
+            assertDirectoryTree(fs, expected, operation);
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+            assertDirectoryTree(fs, expected, operation);
+        }
+    }
+
+    /// Verifies traversal, directory types, and the contents of any surviving moved file.
+    private static void assertDirectoryTree(ArkivoFileSystem fs, Set<String> expected, String operation)
+            throws IOException {
+        try (var paths = Files.walk(fs.getPath("/"))) {
+            assertEquals(expected, paths.map(Path::toString).collect(Collectors.toSet()));
+        }
+        for (String name : expected) {
+            Path path = fs.getPath(name);
+            if (name.endsWith("/value") || name.equals("/moved") && operation.equals("move-file")) {
+                assertEquals("body", Files.readString(path));
+            } else {
+                assertTrue(Files.isDirectory(path), name);
+            }
+        }
+    }
+
     /// Crosses writable formats, read/update sessions, and all resource coordination modes.
     private static Stream<Arguments> configurations() {
         return Stream.of("ar", "tar", "zip", "7z").flatMap(format -> Stream.of(false, true)

@@ -52,7 +52,7 @@ public final class LZMARawDecoder implements CompressionDecoder {
     /// @param properties        LZMA model and dictionary properties
     /// @param decodedSize       exact decoded size, or `CompressionCodec.UNKNOWN_SIZE`
     /// @param maximumWindowSize maximum permitted dictionary allocation
-    /// @throws IOException if the dictionary size exceeds {@code maximumWindowSize}
+    /// @throws IOException if the allocated dictionary size exceeds {@code maximumWindowSize}
     /// @throws NullPointerException if {@code properties} is {@code null}
     /// @throws IllegalArgumentException if {@code decodedSize} is less than {@link CompressionCodec#UNKNOWN_SIZE}
     public LZMARawDecoder(
@@ -65,7 +65,8 @@ public final class LZMARawDecoder implements CompressionDecoder {
         }
         this.properties = Objects.requireNonNull(properties, "properties");
         this.expectedSize = decodedSize;
-        CompressionDecoderSupport.requireWindowSize(maximumWindowSize, properties.dictionarySize());
+        CompressionDecoderSupport.requireWindowSize(maximumWindowSize,
+                Math.max(properties.dictionarySize(), LZMAProperties.MINIMUM_DICTIONARY_SIZE));
         decoder = createDecoder();
     }
 

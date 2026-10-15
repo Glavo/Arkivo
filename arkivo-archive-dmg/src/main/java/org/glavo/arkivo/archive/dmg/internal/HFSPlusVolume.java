@@ -16,6 +16,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -321,12 +322,7 @@ final class HFSPlusVolume {
         HashSet<Long> resolving = new HashSet<>();
         for (HFSPlusNode node : byId.values()) {
             if (node.id() != ROOT_FOLDER_ID) {
-                resolvePath(node, byId, byPath, resolving);
-            }
-        }
-        for (HFSPlusNode node : byPath.values()) {
-            if (!node.path().isEmpty()) {
-                tracker.acceptEntry(node.path(), node.size());
+                resolvePath(node, byId, byPath, resolving, tracker);
             }
         }
         return Map.copyOf(byPath);
@@ -399,33 +395,42 @@ final class HFSPlusVolume {
         );
     }
 
-    /// Resolves and indexes one catalog node path recursively through its parent IDs.
+    /// Resolves an ancestor chain iteratively, checking entry limits before publishing each complete path.
     private static void resolvePath(
             HFSPlusNode node,
             Map<Long, HFSPlusNode> byId,
             Map<String, HFSPlusNode> byPath,
-            Set<Long> resolving
+            Set<Long> resolving,
+            ArkivoReadLimitTracker tracker
     ) throws IOException {
         if (!node.path().isEmpty()) {
             return;
         }
-        if (!resolving.add(node.id())) {
-            throw new IOException("Cyclic HFS Plus catalog hierarchy at node " + node.id());
+        ArrayDeque<HFSPlusNode> pending = new ArrayDeque<>();
+        HFSPlusNode ancestor = node;
+        while (ancestor.id() != ROOT_FOLDER_ID && ancestor.path().isEmpty()) {
+            if (!resolving.add(ancestor.id())) {
+                throw new IOException("Cyclic HFS Plus catalog hierarchy at node " + ancestor.id());
+            }
+            pending.push(ancestor);
+            @Nullable HFSPlusNode parent = byId.get(ancestor.parentId());
+            if (parent == null || !parent.isDirectory()) {
+                throw new IOException("HFS Plus catalog node has no directory parent: " + ancestor.id());
+            }
+            ancestor = parent;
         }
-        HFSPlusNode parent = byId.get(node.parentId());
-        if (parent == null || !parent.isDirectory()) {
-            throw new IOException("HFS Plus catalog node has no directory parent: " + node.id());
+        while (!pending.isEmpty()) {
+            HFSPlusNode child = pending.pop();
+            String path = ancestor.path().isEmpty() ? child.name() : ancestor.path() + "/" + child.name();
+            tracker.acceptEntry(path, child.size());
+            child.setPath(path);
+            if (byPath.putIfAbsent(path, child) != null
+                    || ancestor.mutableChildren().putIfAbsent(child.name(), path) != null) {
+                throw new IOException("Duplicate HFS Plus catalog path: " + path);
+            }
+            resolving.remove(child.id());
+            ancestor = child;
         }
-        if (parent.id() != ROOT_FOLDER_ID && parent.path().isEmpty()) {
-            resolvePath(parent, byId, byPath, resolving);
-        }
-        String path = parent.path().isEmpty() ? node.name() : parent.path() + "/" + node.name();
-        node.setPath(path);
-        if (byPath.putIfAbsent(path, node) != null
-                || parent.mutableChildren().putIfAbsent(node.name(), path) != null) {
-            throw new IOException("Duplicate HFS Plus catalog path: " + path);
-        }
-        resolving.remove(node.id());
     }
 
     /// Parses one 80-byte HFS Plus fork record and validates its initial extents.

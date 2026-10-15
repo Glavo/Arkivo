@@ -141,14 +141,14 @@ public final class ArkivoReadLimitTrackerTest {
         tracker.requireWithinLimits();
     }
 
-    /// Verifies cumulative counters saturate instead of wrapping when an unrestricted-sized addition overflows.
+    /// Verifies unrestricted cumulative counters saturate without rejecting further entries.
     @Test
     public void saturatesCumulativeSizesAtLongMaximum() throws IOException {
         ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
                 -1L,
                 -1L,
-                Long.MAX_VALUE,
-                Long.MAX_VALUE
+                -1L,
+                -1L
         );
 
         tracker.acceptMetadata(Long.MAX_VALUE, null);
@@ -156,6 +156,55 @@ public final class ArkivoReadLimitTrackerTest {
         tracker.acceptEntry("maximum.bin", Long.MAX_VALUE);
         tracker.acceptEntry("overflow.bin", 1L);
         tracker.requireWithinLimits();
+    }
+
+    /// Enforces an explicitly configured maximum even when the rejected sum cannot fit in a long.
+    @ParameterizedTest
+    @ValueSource(longs = {Long.MAX_VALUE - 1L, Long.MAX_VALUE})
+    public void rejectsOverflowingCumulativeSizes(long maximum) throws IOException {
+        ArkivoReadLimitTracker metadata = ArkivoReadLimitTracker.fromLimits(-1L, -1L, -1L, maximum);
+        metadata.acceptMetadata(maximum, null);
+        metadata.acceptMetadata(0L, "empty.bin");
+        ArkivoReadLimitException metadataFailure = assertThrows(ArkivoReadLimitException.class,
+                () -> metadata.acceptMetadata(2L, "overflow.bin"));
+        assertLimit(metadataFailure, ArkivoReadLimitKind.METADATA_SIZE, maximum, Long.MAX_VALUE, "overflow.bin");
+        assertLimit(assertThrows(ArkivoReadLimitException.class, metadata::requireWithinLimits),
+                metadataFailure.kind(), maximum, Long.MAX_VALUE, "overflow.bin");
+
+        ArkivoReadLimitTracker known = ArkivoReadLimitTracker.fromLimits(-1L, -1L, maximum);
+        known.acceptEntry("maximum.bin", maximum);
+        known.acceptEntry("empty.bin", 0L);
+        ArkivoReadLimitException knownFailure = assertThrows(ArkivoReadLimitException.class,
+                () -> known.acceptEntry("overflow.bin", 2L));
+        assertLimit(knownFailure, ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, maximum, Long.MAX_VALUE, "overflow.bin");
+        assertLimit(assertThrows(ArkivoReadLimitException.class, known::requireWithinLimits),
+                knownFailure.kind(), maximum, Long.MAX_VALUE, "overflow.bin");
+    }
+
+    /// Rejects the first observed byte after known entries exhaust a maximum-long total budget.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void rejectsObservedBytesBeyondMaximumLongTotal(boolean bulk) throws IOException {
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, -1L, Long.MAX_VALUE);
+        tracker.acceptEntry("maximum.bin", Long.MAX_VALUE);
+        tracker.acceptEntry("unknown.bin", -1L);
+        ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{1, 2, 3});
+        try (InputStream input = tracker.trackUnknownEntrySize("unknown.bin", source)) {
+            assertEquals(0, input.read(new byte[1], 0, 0));
+            ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> {
+                if (bulk) {
+                    input.read(new byte[16]);
+                } else {
+                    input.read();
+                }
+            });
+            assertLimit(failure, ArkivoReadLimitKind.TOTAL_ENTRY_SIZE,
+                    Long.MAX_VALUE, Long.MAX_VALUE, "unknown.bin");
+            assertEquals(2, source.available());
+            assertLimit(assertThrows(ArkivoReadLimitException.class, input::read),
+                    failure.kind(), failure.maximum(), failure.actual(), failure.entryPath());
+            assertEquals(2, source.available());
+        }
     }
 
     /// Verifies unknown-size streams account large skips, empty reads, and physical end of input.

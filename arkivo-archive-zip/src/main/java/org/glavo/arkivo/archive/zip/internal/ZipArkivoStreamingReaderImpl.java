@@ -179,6 +179,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 closeCurrentEntry();
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
+            } finally {
+                // Cleanup retries must not reopen a discarded entry after source closure.
+                currentEntry = null;
             }
             try {
                 deflateDecoders.close();
@@ -1838,9 +1841,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Skips an entry body by raw compressed size.
     private void skipRawEntryData(LocalEntry entry) throws IOException {
-        try (InputStream ignored = new BoundedInputStream(input, entry.compressedSize)) {
-            ignored.transferTo(OutputStream.nullOutputStream());
-        }
+        new BoundedInputStream(input, entry.compressedSize).close();
     }
 
     /// Marks the current input stream as closed.
@@ -2489,6 +2490,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// Reads stored ZIP entry data until a signed or unsigned data descriptor is found.
     @NotNullByDefault
     final class StoredDataDescriptorInputStream extends InputStream {
+        /// A failure deferred until completed batch output has been delivered to the caller.
+        private @Nullable Throwable pendingReadFailure;
+
         /// The source stream.
         private final PushbackInputStream input;
 
@@ -2528,6 +2532,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
         /// Reads one stored entry byte without checking the wrapper open state for close-time draining.
         private int readUnchecked() throws IOException {
+            @Nullable Throwable failure = pendingReadFailure;
+            pendingReadFailure = null;
+            throwFailure(failure);
             Integer output = pendingOutput.pollFirst();
             if (output != null) {
                 return output;
@@ -2586,13 +2593,17 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             bytes[offset] = (byte) first;
             int count = 1;
-            while (count < length) {
-                int value = readUnchecked();
-                if (value < 0) {
-                    break;
+            try {
+                while (count < length) {
+                    int value = readUnchecked();
+                    if (value < 0) {
+                        break;
+                    }
+                    bytes[offset + count] = (byte) value;
+                    count++;
                 }
-                bytes[offset + count] = (byte) value;
-                count++;
+            } catch (IOException | RuntimeException | Error failure) {
+                pendingReadFailure = failure;
             }
             return count;
         }
@@ -2728,6 +2739,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// Reads WinZip AES stored ZIP entry data until a signed data descriptor is found after authentication bytes.
     @NotNullByDefault
     private final class AesStoredDataDescriptorInputStream extends InputStream {
+        /// A failure deferred until completed batch output has been delivered to the caller.
+        private @Nullable Throwable pendingReadFailure;
+
         /// The source stream.
         private final PushbackInputStream input;
 
@@ -2788,6 +2802,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
         /// Reads one decrypted stored entry byte without checking the wrapper open state for close-time draining.
         private int readUnchecked() throws IOException {
+            @Nullable Throwable failure = pendingReadFailure;
+            pendingReadFailure = null;
+            throwFailure(failure);
             Integer pending = pendingPlain.pollFirst();
             if (pending != null) {
                 return pending;
@@ -2834,13 +2851,17 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             bytes[offset] = (byte) first;
             int count = 1;
-            while (count < length) {
-                int value = readUnchecked();
-                if (value < 0) {
-                    break;
+            try {
+                while (count < length) {
+                    int value = readUnchecked();
+                    if (value < 0) {
+                        break;
+                    }
+                    bytes[offset + count] = (byte) value;
+                    count++;
                 }
-                bytes[offset + count] = (byte) value;
-                count++;
+            } catch (IOException | RuntimeException | Error failure) {
+                pendingReadFailure = failure;
             }
             return count;
         }
@@ -2982,6 +3003,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// Reads encrypted stored ZIP entry data until a signed data descriptor is found.
     @NotNullByDefault
     final class EncryptedStoredDataDescriptorInputStream extends InputStream {
+        /// A failure deferred until completed batch output has been delivered to the caller.
+        private @Nullable Throwable pendingReadFailure;
+
         /// The source stream.
         private final PushbackInputStream input;
 
@@ -3026,6 +3050,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
         /// Reads one decrypted stored entry byte without checking the wrapper open state for close-time draining.
         private int readUnchecked() throws IOException {
+            @Nullable Throwable failure = pendingReadFailure;
+            pendingReadFailure = null;
+            throwFailure(failure);
             if (finishedEntry) {
                 return -1;
             }
@@ -3041,7 +3068,19 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             byte[] candidate = new byte[DATA_DESCRIPTOR_SIGNATURE_BYTES.length - 1];
             int count = 0;
             while (count < candidate.length) {
-                int value = input.read();
+                int value;
+                try {
+                    value = input.read();
+                } catch (IOException | RuntimeException | Error sourceFailure) {
+                    // None of this candidate has advanced the decryptor; retry it from the first signature byte.
+                    try {
+                        unread(candidate, count);
+                        input.unread(first);
+                    } catch (IOException | RuntimeException | Error rewindFailure) {
+                        mergeFailure(sourceFailure, rewindFailure);
+                    }
+                    throw sourceFailure;
+                }
                 if (value < 0) {
                     unread(candidate, count);
                     return decryptedByte(first);
@@ -3095,13 +3134,17 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             bytes[offset] = (byte) first;
             int count = 1;
-            while (count < length) {
-                int value = readUnchecked();
-                if (value < 0) {
-                    break;
+            try {
+                while (count < length) {
+                    int value = readUnchecked();
+                    if (value < 0) {
+                        break;
+                    }
+                    bytes[offset + count] = (byte) value;
+                    count++;
                 }
-                bytes[offset + count] = (byte) value;
-                count++;
+            } catch (IOException | RuntimeException | Error failure) {
+                pendingReadFailure = failure;
             }
             return count;
         }

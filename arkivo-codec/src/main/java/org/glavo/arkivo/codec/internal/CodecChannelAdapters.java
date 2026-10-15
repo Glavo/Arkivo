@@ -314,6 +314,9 @@ public final class CodecChannelAdapters {
         /// The first failed encoding operation, retained for subsequent closed-channel diagnostics.
         private @Nullable Throwable operationFailure;
 
+        /// Whether a target-cleanup retry has already reported a failure to its caller.
+        private boolean targetCloseFailed;
+
         /// An engine-release failure that must also be visible to a concurrent aborting closer.
         private @Nullable Throwable abortFailure;
 
@@ -420,8 +423,10 @@ public final class CodecChannelAdapters {
             try {
                 targetCloser.close();
             } catch (IOException | RuntimeException | Error exception) {
-                if (exception == operationFailure) {
-                    throw new IOException("Compression target close failed after encoding failure", exception);
+                boolean retry = targetCloseFailed;
+                targetCloseFailed = true;
+                if (exception == operationFailure || retry) {
+                    throw new IOException("Compression target close failed after an earlier failure", exception);
                 }
                 throw exception;
             }
@@ -872,6 +877,12 @@ public final class CodecChannelAdapters {
         /// Whether this decoding channel remains open.
         private boolean open = true;
 
+        /// Whether a decoder or source failure has already been delivered to the caller.
+        private boolean readFailed;
+
+        /// Whether a previous close attempt reported a failure.
+        private boolean closeFailed;
+
         /// Creates a decoding channel around a fresh engine.
         protected DecodingChannel(
                 ReadableByteChannel source,
@@ -903,8 +914,11 @@ public final class CodecChannelAdapters {
         @Override
         public int read(ByteBuffer target) throws IOException {
             Objects.requireNonNull(target, "target");
+            ensureOpen();
+            if (target.isReadOnly()) {
+                throw new IllegalArgumentException("Target buffer is read-only");
+            }
             if (!target.hasRemaining()) {
-                ensureOpen();
                 return 0;
             }
             int start = target.position();
@@ -929,6 +943,9 @@ public final class CodecChannelAdapters {
         ) throws IOException {
             Objects.requireNonNull(target, "target");
             ensureOpen();
+            if (target.isReadOnly()) {
+                throw new IllegalArgumentException("Target buffer is read-only");
+            }
             long inputStart = inputBytes;
             long outputStart = outputBytes;
             if (streamFinished) {
@@ -962,6 +979,9 @@ public final class CodecChannelAdapters {
                     outcome = endOfInput
                             ? decoder.finish(input, target)
                             : decoder.decode(input, target);
+                } catch (IOException | RuntimeException | Error exception) {
+                    readFailed = true;
+                    throw exception;
                 } finally {
                     inputBytes += input.position() - inputPosition;
                     outputBytes += target.position() - outputPosition;
@@ -1062,21 +1082,30 @@ public final class CodecChannelAdapters {
             return open;
         }
 
-        /// Releases the engine and applies source ownership exactly once.
+        /// Releases the engine once and retries incomplete source cleanup without repeating a delivered exception.
         @Override
         public void close() throws IOException {
-            if (!open) {
-                sourceCloser.close();
-                return;
-            }
-            open = false;
-            @Nullable Throwable failure = null;
             try {
-                decoder.close();
-            } catch (RuntimeException | Error exception) {
-                failure = exception;
+                if (!open) {
+                    sourceCloser.close();
+                    return;
+                }
+                open = false;
+                @Nullable Throwable failure = null;
+                try {
+                    decoder.close();
+                } catch (RuntimeException | Error exception) {
+                    failure = exception;
+                }
+                sourceCloser.closeAfter(failure);
+            } catch (IOException | RuntimeException | Error exception) {
+                boolean retry = closeFailed;
+                closeFailed = true;
+                if (readFailed || retry) {
+                    throw new IOException("Compression source cleanup failed after an earlier failure", exception);
+                }
+                throw exception;
             }
-            sourceCloser.closeAfter(failure);
         }
 
         /// Obtains input for the next frame before resetting the engine at a verified boundary.
@@ -1086,7 +1115,12 @@ public final class CodecChannelAdapters {
             }
             boolean available = input.hasRemaining();
             if (available) {
-                decoder.reset();
+                try {
+                    decoder.reset();
+                } catch (RuntimeException | Error exception) {
+                    readFailed = true;
+                    throw exception;
+                }
                 betweenFrames = false;
             } else if (endOfInput) {
                 streamFinished = true;
@@ -1110,6 +1144,9 @@ public final class CodecChannelAdapters {
             int read;
             try {
                 read = source.read(input);
+            } catch (IOException | RuntimeException | Error exception) {
+                readFailed = true;
+                throw exception;
             } finally {
                 sourceBytes += input.position() - start;
                 input.flip();

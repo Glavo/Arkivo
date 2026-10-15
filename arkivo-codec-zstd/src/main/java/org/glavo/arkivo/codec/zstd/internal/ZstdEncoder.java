@@ -16,6 +16,9 @@ import java.util.ArrayDeque;
 import java.util.Objects;
 
 /// Incrementally encodes a sequence of Zstandard frames without binding caller-visible state to a channel.
+///
+/// A failure in frame initialization or encoding leaves the encoder unusable until [#reset()].
+/// Subsequent encoding and boundary operations throw [IllegalStateException] without consuming input or emitting output.
 @NotNullByDefault
 public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     /// Validated parameters restored by reset for the initial frame.
@@ -55,12 +58,17 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     @Override
     public void startFrame(EncodingOptions options) {
         Objects.requireNonNull(options, "options");
-        requireOpen();
+        requireUsable();
         if (state != State.BETWEEN_FRAMES) {
             throw new IllegalStateException("Cannot start a Zstandard frame while encoder state is " + state);
         }
         parameters = defaultFrameParameters.withPledgedSourceSize(options.sourceSize());
-        encoder.startFrame(options);
+        try {
+            encoder.startFrame(options);
+        } catch (RuntimeException | Error failure) {
+            state = State.FAILED;
+            throw failure;
+        }
         state = State.ACTIVE;
     }
 
@@ -69,7 +77,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     public CodecOutcome encode(ByteBuffer source, ByteBuffer target) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        requireOpen();
+        requireUsable();
         if (state == State.BETWEEN_FRAMES) {
             if (!source.hasRemaining()) {
                 return CodecOutcome.NEEDS_INPUT;
@@ -87,6 +95,9 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
             source.limit(source.position() + Math.min(source.remaining(), parameters.blockSize()));
             try {
                 encoder.write(source);
+            } catch (IOException | RuntimeException | Error failure) {
+                state = State.FAILED;
+                throw failure;
             } finally {
                 source.limit(originalLimit);
             }
@@ -102,7 +113,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     @Override
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
-        requireOpen();
+        requireUsable();
         if (state == State.FINISHING_FRAME || state == State.FINISHING || state == State.FINISHED) {
             throw new IllegalStateException("Cannot flush a finishing or finished Zstandard encoding");
         }
@@ -110,7 +121,12 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
             return CodecOutcome.FLUSHED;
         }
         if (state == State.ACTIVE) {
-            encoder.flush();
+            try {
+                encoder.flush();
+            } catch (IOException | RuntimeException | Error failure) {
+                state = State.FAILED;
+                throw failure;
+            }
             state = State.FLUSHING;
         }
         drainOutput(target);
@@ -125,7 +141,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     @Override
     public CodecOutcome finish(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
-        requireOpen();
+        requireUsable();
         if (state == State.FLUSHING) {
             throw new IllegalStateException("Complete the active flush before finishing the Zstandard encoding");
         }
@@ -135,13 +151,13 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
         if (state == State.FINISHED) {
             return CodecOutcome.FINISHED;
         }
-        if (state == State.BETWEEN_FRAMES) {
-            encoder.finish();
-            state = State.FINISHED;
-            return CodecOutcome.FINISHED;
-        }
-        if (state == State.ACTIVE) {
-            encoder.finish();
+        if (state == State.ACTIVE || state == State.BETWEEN_FRAMES) {
+            try {
+                encoder.finish();
+            } catch (IOException | RuntimeException | Error failure) {
+                state = State.FAILED;
+                throw failure;
+            }
             state = State.FINISHING;
         }
         drainOutput(target);
@@ -156,7 +172,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     @Override
     public CodecOutcome finishFrame(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
-        requireOpen();
+        requireUsable();
         if (state == State.FLUSHING) {
             throw new IllegalStateException("Complete the active flush before finishing the Zstandard frame");
         }
@@ -167,7 +183,12 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
             return CodecOutcome.BOUNDARY_REACHED;
         }
         if (state == State.ACTIVE) {
-            encoder.finishFrame();
+            try {
+                encoder.finishFrame();
+            } catch (IOException | RuntimeException | Error failure) {
+                state = State.FAILED;
+                throw failure;
+            }
             state = State.FINISHING_FRAME;
         }
         drainOutput(target);
@@ -222,6 +243,14 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     private void requireOpen() {
         if (state == State.CLOSED) {
             throw new IllegalStateException("Zstandard encoder is closed");
+        }
+    }
+
+    /// Rejects operations after closure or a frame-encoding failure, while allowing reset to recover failed sessions.
+    private void requireUsable() {
+        requireOpen();
+        if (state == State.FAILED) {
+            throw new IllegalStateException("Zstandard encoder failed; reset is required");
         }
     }
 
@@ -302,6 +331,9 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
 
         /// The complete encoding finished and may be reset or closed.
         FINISHED,
+
+        /// Frame encoding failed; only reset or close may follow.
+        FAILED,
 
         /// Worker and frame resources were released.
         CLOSED

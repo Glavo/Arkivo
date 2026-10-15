@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -44,11 +45,11 @@ public final class StoredContentSupport {
                 : ArkivoEditStorage.temporaryFiles(defaultStorageDirectory());
     }
 
-    /// Closes a pool allocated during a failed open and suppresses its cleanup failure.
+    /// Closes storage allocated during a failed open and suppresses its cleanup failure.
     ///
-    /// @param editStorage the pool whose owned resources are released in dependency order
+    /// @param editStorage the storage whose owned resources are released
     /// @param failure the primary failure that receives any cleanup failure
-    public static void closeAfterOpenFailure(StoredContentPool editStorage, Throwable failure) {
+    public static void closeAfterOpenFailure(ArkivoEditStorage editStorage, Throwable failure) {
         Objects.requireNonNull(editStorage, "editStorage");
         Objects.requireNonNull(failure, "failure");
         try {
@@ -79,11 +80,18 @@ public final class StoredContentSupport {
         Objects.requireNonNull(input, "input");
         ArkivoStoredContent content = editStorage.createContent(path, expectedSize);
         try {
-            try (SeekableByteChannel output = content.openChannel(Set.of(
+            SeekableByteChannel output = content.openChannel(Set.of(
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE
-            ))) {
+            ));
+            @Nullable Throwable failure = null;
+            try {
                 copyInput(input, output);
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+                throw exception;
+            } finally {
+                closeAfterTransfer(output, failure);
             }
             return content;
         } catch (IOException | RuntimeException | Error exception) {
@@ -139,16 +147,78 @@ public final class StoredContentSupport {
             ArkivoStoredContent destination
     ) throws IOException {
         Objects.requireNonNull(destination, "destination");
-        try (SeekableByteChannel output = destination.openChannel(Set.of(
+        SeekableByteChannel output = destination.openChannel(Set.of(
                 StandardOpenOption.TRUNCATE_EXISTING,
                 StandardOpenOption.WRITE
-        ))) {
+        ));
+        @Nullable Throwable failure = null;
+        try {
             if (source == null) {
                 return;
             }
-            try (SeekableByteChannel input = source.openChannel(Set.of(StandardOpenOption.READ))) {
+            SeekableByteChannel input = source.openChannel(Set.of(StandardOpenOption.READ));
+            try {
                 copyInput(Channels.newInputStream(input), output);
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+                throw exception;
+            } finally {
+                closeAfterTransfer(input, failure);
             }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            closeAfterTransfer(output, failure);
+        }
+    }
+
+    /// Copies assembled content to a commit output and closes both transfer channels.
+    ///
+    /// This method neither commits nor rolls back the output. A transfer failure retains its identity;
+    /// distinct cleanup failures are suppressed onto it. Both channel closures are attempted, but this method
+    /// does not retain channels or retry a failed close.
+    ///
+    /// @param content the borrowed assembled content, read from its beginning through end of input
+    /// @param output the borrowed commit output, whose channel is opened for writing and truncated
+    /// @throws IOException if opening, copying, or closing a transfer channel fails
+    public static void copyToCommitOutput(ArkivoStoredContent content, ArkivoCommitOutput output) throws IOException {
+        Objects.requireNonNull(content, "content");
+        Objects.requireNonNull(output, "output");
+        SeekableByteChannel source = content.openChannel(Set.of(StandardOpenOption.READ));
+        @Nullable Throwable failure = null;
+        try {
+            SeekableByteChannel destination = output.openChannel(Set.of(
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE));
+            try {
+                copyInput(Channels.newInputStream(source), destination);
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+                throw exception;
+            } finally {
+                closeAfterTransfer(destination, failure);
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            closeAfterTransfer(source, failure);
+        }
+    }
+
+    /// Closes a transfer channel without suppressing a primary failure onto itself.
+    ///
+    /// @param channel the channel to close; its owner remains responsible for retrying failed cleanup
+    /// @param failure the pending transfer failure, or `null` if the transfer completed normally
+    /// @throws IOException if closure fails without a pending transfer failure
+    public static void closeAfterTransfer(SeekableByteChannel channel, @Nullable Throwable failure) throws IOException {
+        try {
+            channel.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            if (failure == null) {
+                throw exception;
+            }
+            addSuppressed(failure, exception);
         }
     }
 

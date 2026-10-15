@@ -96,6 +96,12 @@ public final class InterruptibleChannelSupport {
     /// An abort cleanup failure that cannot be recovered by invoking a terminal delegate again.
     private @Nullable Throwable terminalAbortFailure;
 
+    /// Whether a close call has reported a failure, guarded by lock.
+    private boolean closeFailed;
+
+    /// Whether an operation has reported a failure that cleanup might return again, guarded by lock.
+    private boolean operationFailed;
+
     /// Creates lifecycle state for an interruptible backing endpoint.
     ///
     /// @param endpoint the endpoint whose close unblocks active operations
@@ -140,7 +146,13 @@ public final class InterruptibleChannelSupport {
                 failure = exception;
             }
         }
-        rethrow(completeActiveOperation(failure, abortAction, false));
+        failure = completeActiveOperation(failure, abortAction, false);
+        if (failure != null) {
+            synchronized (lock) {
+                operationFailed = true;
+            }
+        }
+        rethrow(failure);
         return Objects.requireNonNull(result, "operation result");
     }
 
@@ -158,6 +170,10 @@ public final class InterruptibleChannelSupport {
 
     /// Gracefully closes an idle adapter or aborts an operation active on another thread.
     ///
+    /// A close started after an operation has reported a failure wraps cleanup failures in distinct `IOException`
+    /// instances. Close failures reported after an earlier failed close are also wrapped.
+    /// Their causes retain the cleanup failures without allowing try-with-resources self-suppression.
+    ///
     /// @param normalCloseAction the ordinary codec finalization or release action
     /// @param abortAction       the codec cleanup performed after terminal cancellation
     /// @throws IOException if terminal processing, endpoint close, or cleanup fails
@@ -165,6 +181,7 @@ public final class InterruptibleChannelSupport {
         Objects.requireNonNull(normalCloseAction, "normalCloseAction");
         Objects.requireNonNull(abortAction, "abortAction");
         CloseMode mode;
+        boolean previousOperationFailed;
         Thread current = Thread.currentThread();
         boolean restoreInterrupt = false;
         synchronized (lock) {
@@ -177,6 +194,7 @@ public final class InterruptibleChannelSupport {
                     restoreInterrupt = true;
                 }
             }
+            previousOperationFailed = operationFailed;
             if (open) {
                 open = false;
                 if (activeThread == null) {
@@ -204,13 +222,23 @@ public final class InterruptibleChannelSupport {
             current.interrupt();
         }
 
-        switch (mode) {
-            case NONE -> {
+        try {
+            switch (mode) {
+                case NONE -> {
+                }
+                case NORMAL -> closeNormally(normalCloseAction, abortAction);
+                case ABORT_ACTIVE -> abortActiveOperation(current);
+                case RETRY_NORMAL -> retryClose(normalCloseAction, false);
+                case RETRY_ABORT -> retryClose(abortAction, true);
             }
-            case NORMAL -> closeNormally(normalCloseAction, abortAction);
-            case ABORT_ACTIVE -> abortActiveOperation(current);
-            case RETRY_NORMAL -> retryClose(normalCloseAction, false);
-            case RETRY_ABORT -> retryClose(abortAction, true);
+        } catch (IOException | RuntimeException | Error exception) {
+            boolean retry;
+            synchronized (lock) {
+                retry = closeFailed || previousOperationFailed;
+                closeFailed = true;
+            }
+            if (retry) throw new IOException("Interruptible channel cleanup failed after an earlier failure", exception);
+            throw exception;
         }
     }
 

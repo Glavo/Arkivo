@@ -220,6 +220,37 @@ final class CPIOEntryContractTest {
         assertNegativeTimestampRejected();
     }
 
+    /// Rejects drive prefixes exposed by dot removal without invalidating the writer or rejecting link targets.
+    @Test
+    void rejectsDriveNamesAfterRemovingDotComponents() throws IOException {
+        for (CPIODialect dialect : CPIODialect.values()) {
+            for (CPIOBinaryByteOrder byteOrder : CPIOBinaryByteOrder.values()) {
+                ByteArrayOutputStream target = new ByteArrayOutputStream();
+                var options = CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(dialect).withBinaryByteOrder(byteOrder);
+                try (var writer = CPIOArkivoStreamingWriter.open(target, options)) {
+                    for (String path : new String[]{"./C:/escape", ".\\C:\\escape", "././C:escape", ".//c:/escape"}) {
+                        assertThrows(IllegalArgumentException.class, () -> writer.beginFile(path), path);
+                        assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory(path), path);
+                        assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink(path, "target"), path);
+                    }
+                    writer.beginFile("./C/value").close();
+                    writer.beginSymbolicLink("./link", "C:/target").close();
+                }
+                try (var reader = CPIOArkivoStreamingReader.open(new ByteArrayInputStream(target.toByteArray()))) {
+                    assertTrue(reader.next());
+                    assertEquals("C/value", reader.readAttributes().path());
+                    assertTrue(reader.next());
+                    assertEquals("link", reader.readAttributes().path());
+                    assertTrue(reader.readAttributes().isSymbolicLink());
+                    try (InputStream body = reader.openInputStream()) {
+                        assertEquals("C:/target", new String(body.readAllBytes(), StandardCharsets.UTF_8));
+                    }
+                    assertFalse(reader.next());
+                }
+            }
+        }
+    }
+
     /// Verifies single-byte body I/O, unsupported attributes, repeated end detection, and idempotent reader close.
     @Test
     void enforcesSingleByteReaderCursorLifecycle() throws IOException {

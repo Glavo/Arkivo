@@ -37,6 +37,9 @@ public final class ReadOnlyByteArrayChannel implements SeekableByteChannel {
     public int read(ByteBuffer destination) throws IOException {
         Objects.requireNonNull(destination, "destination");
         ensureOpen();
+        if (destination.isReadOnly()) {
+            throw new IllegalArgumentException("Destination buffer is read-only");
+        }
         if (!destination.hasRemaining()) {
             return 0;
         }

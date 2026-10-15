@@ -31,6 +31,23 @@ final class CompressionDetectionBufferContractTest {
             "compression signature buffer contract 0123456789abcdef;".repeat(32)
     ).getBytes(StandardCharsets.UTF_8);
 
+    /// Resolves shared leading frames through guarded views without altering their state or byte order.
+    @Test
+    void detectsSkippablePrefixesFromProtectedViews() throws IOException {
+        for (String name : new String[]{"lz4", "zstd"}) {
+            CompressionFormat format = CompressionFormats.require(name);
+            ByteBuffer encoded = format.defaultCodec().compress(ByteBuffer.wrap(CONTENT));
+            byte[] prefix = ByteBuffer.allocate(19 + encoded.remaining()).order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(0x184d2a50).putInt(3).put(new byte[3])
+                    .putInt(0x184d2a5f).putInt(0).put(encoded).array();
+            for (boolean direct : new boolean[]{false, true}) {
+                for (boolean readOnly : new boolean[]{false, true}) {
+                    assertDetectedView(format, prefix, direct, readOnly);
+                }
+            }
+        }
+    }
+
     /// Verifies exact preferred prefixes across heap, direct, mutable, and read-only views.
     @Test
     void detectsEverySignedFormatFromProtectedBufferViews() throws IOException {

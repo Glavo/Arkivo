@@ -14,6 +14,7 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
@@ -59,15 +60,13 @@ public final class ArkivoEditStorageSupport {
 
     /// Returns whether the given open options request read access.
     private static boolean readable(Set<? extends OpenOption> options) {
-        return options.isEmpty() || options.contains(StandardOpenOption.READ);
+        return options.contains(StandardOpenOption.READ) || !writable(options);
     }
 
     /// Returns whether the given open options request write access.
     private static boolean writable(Set<? extends OpenOption> options) {
         return options.contains(StandardOpenOption.WRITE)
-                || options.contains(StandardOpenOption.CREATE)
-                || options.contains(StandardOpenOption.CREATE_NEW)
-                || options.contains(StandardOpenOption.TRUNCATE_EXISTING);
+                || options.contains(StandardOpenOption.APPEND);
     }
 
     /// Implements memory-backed edit storage.
@@ -172,12 +171,20 @@ public final class ArkivoEditStorageSupport {
             Objects.requireNonNull(options, "options");
             MemoryData data = requireData();
             boolean writable = writable(options);
+            boolean append = options.contains(StandardOpenOption.APPEND);
+            if (append && (options.contains(StandardOpenOption.READ)
+                    || options.contains(StandardOpenOption.TRUNCATE_EXISTING))) {
+                throw new IllegalArgumentException("APPEND cannot be combined with READ or TRUNCATE_EXISTING");
+            }
+            if (writable && options.contains(StandardOpenOption.CREATE_NEW)) {
+                throw new FileAlreadyExistsException("Stored content");
+            }
             if (writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
                 synchronized (data) {
                     data.size = 0;
                 }
             }
-            return new MemoryChannel(data, readable(options), writable);
+            return new MemoryChannel(data, readable(options), writable, append);
         }
 
         /// Returns the staged content size.
@@ -240,14 +247,23 @@ public final class ArkivoEditStorageSupport {
         /// Whether writes are allowed.
         private final boolean writable;
 
+        /// Whether each write starts at the shared content's current end.
+        private final boolean append;
+
         /// The current channel position.
         private long position;
 
         /// Creates a memory channel.
-        private MemoryChannel(MemoryData content, boolean readable, boolean writable) {
+        private MemoryChannel(MemoryData content, boolean readable, boolean writable, boolean append) {
             this.content = Objects.requireNonNull(content, "content");
             this.readable = readable;
             this.writable = writable;
+            this.append = append;
+            if (append) {
+                synchronized (content) {
+                    position = content.size;
+                }
+            }
         }
 
         /// Reads bytes from the current position.
@@ -257,6 +273,9 @@ public final class ArkivoEditStorageSupport {
             MemoryData content = requireContent();
             if (!readable) {
                 throw new NonReadableChannelException();
+            }
+            if (destination.isReadOnly()) {
+                throw new IllegalArgumentException("Destination buffer is read-only");
             }
             if (!destination.hasRemaining()) {
                 return 0;
@@ -286,12 +305,13 @@ public final class ArkivoEditStorageSupport {
             if (count == 0) {
                 return 0;
             }
-            if (position > Integer.MAX_VALUE - (long) count) {
-                throw new IOException("Memory stored content exceeds the maximum array size");
-            }
-            int arrayPosition = Math.toIntExact(position);
-            int end = arrayPosition + count;
             synchronized (content) {
+                long writePosition = append ? content.size : position;
+                if (writePosition > Integer.MAX_VALUE - (long) count) {
+                    throw new IOException("Memory stored content exceeds the maximum array size");
+                }
+                int arrayPosition = Math.toIntExact(writePosition);
+                int end = arrayPosition + count;
                 content.ensureCapacity(end);
                 source.get(content.bytes, arrayPosition, count);
                 position = end;

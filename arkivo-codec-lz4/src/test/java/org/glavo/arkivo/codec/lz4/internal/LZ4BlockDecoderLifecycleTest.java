@@ -18,12 +18,43 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies raw LZ4 block collection, output backpressure, reset behavior, and terminal states.
 @NotNullByDefault
 final class LZ4BlockDecoderLifecycleTest {
     /// The primitive sentinel used for an unlimited decoder resource bound.
     private static final long UNLIMITED = -1L;
+
+    /// Bounds retained input capacity as well as the number of compressed bytes collected across fragments.
+    @Test
+    void inputGrowthRespectsMemoryLimit() throws IOException, ReflectiveOperationException {
+        var compressedField = LZ4BlockDecoder.class.getDeclaredField("compressed");
+        compressedField.setAccessible(true);
+        var bytesField = OwnedByteAccumulator.class.getDeclaredField("bytes");
+        bytesField.setAccessible(true);
+        for (int limit : new int[]{0, 17, 8191, 8192, 65535}) {
+            try (var decoder = limit >= 65535
+                    ? LZ4BlockCodec.DEFAULT.withMaximumMemorySize(limit).newDecoder()
+                    : new LZ4BlockDecoder(65535, 65535, UNLIMITED, limit)) {
+                int remaining = limit;
+                while (remaining > 0) {
+                    int count = Math.min(remaining, 8192);
+                    ByteBuffer source = ByteBuffer.allocate(count);
+                    assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(source, ByteBuffer.allocate(0)));
+                    assertEquals(count, source.position());
+                    assertTrue(((byte[]) bytesField.get(compressedField.get(decoder))).length <= limit);
+                    remaining -= count;
+                }
+                ByteBuffer rejected = ByteBuffer.allocate(1);
+                assertThrows(DecompressionMemoryLimitException.class,
+                        () -> decoder.decode(rejected, ByteBuffer.allocate(0)));
+                assertEquals(0, rejected.position());
+                decoder.reset();
+                assertEquals(0, ((byte[]) bytesField.get(compressedField.get(decoder))).length);
+            }
+        }
+    }
 
     /// Verifies fragmented compressed input is owned and decoded output drains without accepting later input.
     @Test

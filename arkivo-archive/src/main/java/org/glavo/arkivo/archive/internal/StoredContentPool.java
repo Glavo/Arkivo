@@ -28,6 +28,8 @@ import java.util.Set;
 /// their eventual closure advances deferred cleanup. Failed channel cleanup is retried before its content is released,
 /// and failed content cleanup is retried before the storage is closed. A subsequent close retries incomplete cleanup.
 /// Lifecycle operations are serialized; individual channels retain their underlying concurrency and blocking behavior.
+/// Cleanup wraps an exception already delivered by this pool in a new `IOException`, preserving the original as its
+/// cause so that automatic resource closure cannot suppress an exception on itself.
 @NotNullByDefault
 public final class StoredContentPool implements ArkivoEditStorage {
     /// The storage whose ownership was transferred to this pool.
@@ -35,6 +37,12 @@ public final class StoredContentPool implements ArkivoEditStorage {
 
     /// Contents whose resources have not yet been fully released.
     private final Set<Content> contents = Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /// Serializes failure bookkeeping without acquiring the lifecycle monitor from channel I/O.
+    private final Object failureLock = new Object();
+
+    /// Failures already delivered to callers, allocated only after the first failure.
+    private @Nullable Set<Throwable> reportedFailures;
 
     /// Whether new allocations and channel opens have been disabled.
     private boolean closing;
@@ -53,7 +61,13 @@ public final class StoredContentPool implements ArkivoEditStorage {
     @Override
     public synchronized ArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
         ensureOpen();
-        Content content = new Content(storage.createContent(path, expectedSize));
+        Content content;
+        try {
+            content = new Content(storage.createContent(path, expectedSize));
+        } catch (IOException | RuntimeException | Error failure) {
+            recordFailure(failure);
+            throw failure;
+        }
         contents.add(content);
         return content;
     }
@@ -97,7 +111,7 @@ public final class StoredContentPool implements ArkivoEditStorage {
                 iterator.remove();
             }
         }
-        throwFailure(finishStorage(failure));
+        throwCleanupFailure(finishStorage(failure));
     }
 
     /// Releases closed channels before attempting content deletion, preserving the first failure.
@@ -131,7 +145,7 @@ public final class StoredContentPool implements ArkivoEditStorage {
         if (content.closed) {
             contents.remove(content);
         }
-        throwFailure(finishStorage(failure));
+        throwCleanupFailure(finishStorage(failure));
     }
 
     /// Closes backing storage only after every tracked content has been released.
@@ -165,8 +179,27 @@ public final class StoredContentPool implements ArkivoEditStorage {
         return failure;
     }
 
-    /// Rethrows a cleanup failure without changing its type.
-    private static void throwFailure(@Nullable Throwable failure) throws IOException {
+    /// Records an operation failure without holding the lifecycle monitor during channel I/O.
+    private void recordFailure(Throwable failure) {
+        synchronized (failureLock) {
+            if (reportedFailures == null) {
+                reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+            }
+            reportedFailures.add(failure);
+        }
+    }
+
+    /// Preserves first cleanup failures and wraps repeated identities before handing them to automatic close.
+    private void throwCleanupFailure(@Nullable Throwable failure) throws IOException {
+        if (failure == null) {
+            return;
+        }
+        synchronized (failureLock) {
+            if (reportedFailures != null && reportedFailures.contains(failure)) {
+                failure = new IOException("Stored-content cleanup failed", failure);
+            }
+            recordFailure(failure);
+        }
         if (failure instanceof IOException exception) {
             throw exception;
         }
@@ -219,7 +252,13 @@ public final class StoredContentPool implements ArkivoEditStorage {
             if (released) {
                 throw new ClosedChannelException();
             }
-            SeekableByteChannel source = delegate.openChannel(options);
+            SeekableByteChannel source;
+            try {
+                source = delegate.openChannel(options);
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
             ContentChannel channel = source instanceof InterruptibleChannel
                     ? new InterruptibleContentChannel(this, source, releaseOnClose)
                     : new ContentChannel(this, source, releaseOnClose);
@@ -235,7 +274,12 @@ public final class StoredContentPool implements ArkivoEditStorage {
                 if (released) {
                     throw new ClosedChannelException();
                 }
-                return delegate.size();
+                try {
+                    return delegate.size();
+                } catch (IOException | RuntimeException | Error failure) {
+                    recordFailure(failure);
+                    throw failure;
+                }
             }
         }
 
@@ -275,7 +319,12 @@ public final class StoredContentPool implements ArkivoEditStorage {
         @Override
         public int read(ByteBuffer target) throws IOException {
             checkOpen();
-            return delegate.read(target);
+            try {
+                return delegate.read(target);
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
         }
 
         /// Writes through ordinary content channels and rejects writes through transient read channels.
@@ -286,21 +335,36 @@ public final class StoredContentPool implements ArkivoEditStorage {
             if (releaseOnClose) {
                 throw new NonWritableChannelException();
             }
-            return delegate.write(source);
+            try {
+                return delegate.write(source);
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
         }
 
         /// Returns the delegate position.
         @Override
         public long position() throws IOException {
             checkOpen();
-            return delegate.position();
+            try {
+                return delegate.position();
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
         }
 
         /// Changes the delegate position and returns this channel.
         @Override
         public SeekableByteChannel position(long position) throws IOException {
             checkOpen();
-            delegate.position(position);
+            try {
+                delegate.position(position);
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
             return this;
         }
 
@@ -308,7 +372,12 @@ public final class StoredContentPool implements ArkivoEditStorage {
         @Override
         public long size() throws IOException {
             checkOpen();
-            return delegate.size();
+            try {
+                return delegate.size();
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
         }
 
         /// Truncates ordinary content channels and rejects truncation through transient read channels.
@@ -321,7 +390,12 @@ public final class StoredContentPool implements ArkivoEditStorage {
             if (releaseOnClose) {
                 throw new NonWritableChannelException();
             }
-            delegate.truncate(size);
+            try {
+                delegate.truncate(size);
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
             return this;
         }
 

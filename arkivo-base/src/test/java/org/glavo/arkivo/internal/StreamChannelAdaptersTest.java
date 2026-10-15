@@ -7,21 +7,33 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -35,6 +47,422 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies progress-safe and close-retryable stream/channel adaptation.
 @NotNullByDefault
 final class StreamChannelAdaptersTest {
+    /// Keeps a previously delivered endpoint failure primary when automatic closure reports the same object.
+    @ParameterizedTest
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    void preservesRepeatedFailureIdentity(String kind) throws IOException {
+        for (boolean failOperation : new boolean[]{false, true}) {
+            for (Throwable failure : List.of(new IOException("endpoint failed"),
+                    new IllegalStateException("endpoint failed"), new AssertionError("endpoint failed"))) {
+                var endpoint = new RepeatedFailureChannel(failure, failOperation ? 1 : 2);
+                AdaptedOperation operation = adaptedOperation(kind, endpoint);
+                try {
+                    Throwable actual = assertThrows(failure.getClass(), () -> {
+                        try (var resource = operation.resource()) {
+                            if (failOperation) operation.action().run();
+                            else resource.close();
+                        }
+                    });
+                    assertSame(failure, actual);
+                    assertEquals(1, actual.getSuppressed().length);
+                    assertEquals(IOException.class, actual.getSuppressed()[0].getClass());
+                    assertSame(failure, actual.getSuppressed()[0].getCause());
+                    assertTrue(endpoint.isOpen());
+                    operation.resource().close();
+                    operation.resource().close();
+                    assertFalse(endpoint.isOpen());
+                    assertEquals(failOperation ? 2 : 3, endpoint.closeCalls);
+                } finally {
+                    operation.resource().close();
+                }
+            }
+        }
+    }
+
+    /// Preserves an older exception even when another endpoint failure was reported before cleanup reuses it.
+    @ParameterizedTest
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    void preservesEarlierFailureAcrossInterveningFailures(String kind) throws IOException {
+        for (Throwable first : List.of(new IOException("first failure"),
+                new IllegalStateException("first failure"), new AssertionError("first failure"))) {
+            var endpoint = new RepeatedFailureChannel(first, 1);
+            AdaptedOperation operation = adaptedOperation(kind, endpoint);
+            try {
+                Throwable actual = assertThrows(first.getClass(), () -> {
+                    try (var resource = operation.resource()) {
+                        assertSame(first, assertThrows(first.getClass(), operation.action()::run));
+                        IOException intervening = new IOException("intervening failure");
+                        endpoint.failure = intervening;
+                        assertSame(intervening, assertThrows(IOException.class, operation.action()::run));
+                        endpoint.failure = first;
+                        throw first;
+                    }
+                });
+                assertSame(first, actual);
+                assertEquals(1, actual.getSuppressed().length);
+                assertEquals(IOException.class, actual.getSuppressed()[0].getClass());
+                assertSame(first, actual.getSuppressed()[0].getCause());
+                operation.resource().close();
+                operation.resource().close();
+                assertEquals(2, endpoint.closeCalls);
+                assertFalse(endpoint.isOpen());
+            } finally {
+                operation.resource().close();
+            }
+        }
+    }
+
+    /// Invalid arguments and empty transfers do not change the identity of the first endpoint cleanup failure.
+    @ParameterizedTest
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream"})
+    void preservesFirstCloseFailureAfterRejectedArguments(String kind) throws IOException {
+        for (Throwable failure : List.of(new IOException("first close failure"),
+                new IllegalStateException("first close failure"), new AssertionError("first close failure"))) {
+            var endpoint = new RepeatedFailureChannel(failure, 1);
+            try (var resource = adaptedOperation(kind, endpoint).resource()) {
+                if (resource instanceof ReadableByteChannel channel) {
+                    assertThrows(NullPointerException.class, () -> channel.read(null));
+                    assertThrows(IllegalArgumentException.class, () -> channel.read(ByteBuffer.allocate(1).asReadOnlyBuffer()));
+                    assertEquals(0, channel.read(ByteBuffer.allocate(0)));
+                } else if (resource instanceof WritableByteChannel channel) {
+                    assertThrows(NullPointerException.class, () -> channel.write(null));
+                    assertEquals(0, channel.write(ByteBuffer.allocate(0)));
+                } else if (resource instanceof InputStream stream) {
+                    assertThrows(IndexOutOfBoundsException.class, () -> stream.read(new byte[1], -1, 1));
+                    assertEquals(0, stream.read(new byte[0]));
+                    assertEquals(0L, stream.skip(-1));
+                } else if (resource instanceof OutputStream stream) {
+                    assertThrows(IndexOutOfBoundsException.class, () -> stream.write(new byte[1], -1, 1));
+                    stream.write(new byte[0]);
+                } else {
+                    throw new AssertionError(kind);
+                }
+                assertSame(failure, assertThrows(failure.getClass(), resource::close));
+                assertEquals(0, failure.getSuppressed().length);
+                assertTrue(endpoint.isOpen());
+            }
+            assertEquals(2, endpoint.closeCalls);
+            assertFalse(endpoint.isOpen());
+        }
+    }
+
+    /// A new cleanup failure retains its subtype and identity after an unrelated data failure.
+    @ParameterizedTest
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    void preservesDistinctCleanupFailure(String kind) throws IOException {
+        for (Throwable cleanup : List.of(new EOFException("cleanup failure"), new ClosedChannelException(),
+                new IllegalStateException("cleanup failure"), new AssertionError("cleanup failure"),
+                new EqualIOException())) {
+            IOException first = new EqualIOException();
+            var endpoint = new RepeatedFailureChannel(first, 1);
+            AdaptedOperation operation = adaptedOperation(kind, endpoint);
+            try (var resource = operation.resource()) {
+                assertSame(first, assertThrows(IOException.class, operation.action()::run));
+                endpoint.failure = cleanup;
+                assertSame(cleanup, assertThrows(cleanup.getClass(), resource::close));
+                assertEquals(0, cleanup.getSuppressed().length);
+            }
+            assertEquals(2, endpoint.closeCalls);
+            assertFalse(endpoint.isOpen());
+        }
+    }
+
+    /// Cleanup also protects a previously delivered wrapper if the endpoint later reuses that wrapper itself.
+    @ParameterizedTest
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    void preservesReusedCleanupWrapper(String kind) throws IOException {
+        IOException first = new IOException("endpoint failure");
+        var endpoint = new RepeatedFailureChannel(first, 2);
+        AdaptedOperation operation = adaptedOperation(kind, endpoint);
+        try {
+            IOException delivered = assertThrows(IOException.class, () -> {
+                try (var resource = operation.resource()) {
+                    assertSame(first, assertThrows(IOException.class, operation.action()::run));
+                    IOException wrapper = assertThrows(IOException.class, resource::close);
+                    assertSame(first, wrapper.getCause());
+                    endpoint.failure = wrapper;
+                    throw wrapper;
+                }
+            });
+            assertSame(first, delivered.getCause());
+            assertEquals(1, delivered.getSuppressed().length);
+            assertSame(delivered, delivered.getSuppressed()[0].getCause());
+            operation.resource().close();
+            operation.resource().close();
+            assertEquals(3, endpoint.closeCalls);
+            assertFalse(endpoint.isOpen());
+        } finally {
+            operation.resource().close();
+        }
+    }
+
+    /// Distinct instances compare equal, so exception tracking must use object identity.
+    @NotNullByDefault
+    private static final class EqualIOException extends IOException {
+        /// Serialization identifier for this test exception.
+        private static final long serialVersionUID = 1L;
+
+        /// Creates an exception whose equality does not distinguish instances.
+        private EqualIOException() {
+            super("equal endpoint failure");
+        }
+
+        /// Treats every instance of this test exception as equal.
+        @Override
+        public boolean equals(@Nullable Object other) {
+            return other instanceof EqualIOException;
+        }
+
+        /// Returns the shared hash code for equal test exceptions.
+        @Override
+        public int hashCode() {
+            return 1;
+        }
+    }
+
+    /// Retains both failures when cancelling an in-flight operation, without holding the history lock during I/O.
+    @ParameterizedTest
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    void preservesConcurrentOperationAndCloseFailures(String kind) throws Exception {
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            for (int iteration = 0; iteration < 1024; iteration++) {
+                var endpoint = new ConcurrentFailureChannel(true);
+                AdaptedOperation operation = adaptedOperation(kind, endpoint);
+                var pending = executor.submit(() -> assertThrows(IOException.class, operation.action()::run));
+                assertSame(endpoint.closeFailure, assertThrows(IOException.class, operation.resource()::close));
+                assertSame(endpoint.operationFailure, pending.get(5, TimeUnit.SECONDS));
+                IOException retry = assertThrows(IOException.class, operation.resource()::close);
+                assertSame(endpoint.operationFailure, retry.getCause());
+                operation.resource().close();
+                operation.resource().close();
+                assertFalse(endpoint.isOpen());
+                assertEquals(3, endpoint.closeCalls);
+            }
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    /// A read or write released by successful closure does not recreate the closed adapter's failure history.
+    @ParameterizedTest
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    void releasesHistoryWhenConcurrentOperationFailsAfterClose(String kind) throws Exception {
+        var endpoint = new ConcurrentFailureChannel(false);
+        AdaptedOperation operation = adaptedOperation(kind, endpoint);
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            var pending = executor.submit(() -> assertThrows(IOException.class, operation.action()::run));
+            operation.resource().close();
+            endpoint.releaseOperation.countDown();
+            assertSame(endpoint.operationFailure, pending.get(5, TimeUnit.SECONDS));
+            operation.resource().close();
+            assertEquals(1, endpoint.closeCalls);
+            assertFalse(endpoint.isOpen());
+            var field = operation.resource().getClass().getDeclaredField("reportedFailures");
+            field.setAccessible(true);
+            assertNull(field.get(operation.resource()));
+        } finally {
+            endpoint.releaseOperation.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    /// Coordinates one data operation with its first close, then permits bounded cleanup retries.
+    @NotNullByDefault
+    private static final class ConcurrentFailureChannel implements SeekableByteChannel {
+        /// Rendezvous for the operation and the first close attempt.
+        private final CyclicBarrier barrier = new CyclicBarrier(2);
+        /// Releases a pending operation after the adapter has completed successful closure.
+        private final CountDownLatch releaseOperation = new CountDownLatch(1);
+        /// Stable failure delivered by the data operation and a failed-close retry.
+        private final IOException operationFailure = new IOException("operation failed");
+        /// Distinct failure from the first close attempt.
+        private final IOException closeFailure = new IOException("close failed");
+        /// Whether the first close fails instead of completing cancellation successfully.
+        private final boolean firstCloseFails;
+        /// Number of physical close attempts.
+        private int closeCalls;
+        /// Whether the endpoint remains open.
+        private boolean open = true;
+
+        /// Selects whether cancellation itself fails.
+        private ConcurrentFailureChannel(boolean firstCloseFails) {
+            this.firstCloseFails = firstCloseFails;
+        }
+
+        /// Waits for the other side of cancellation without relying on timing delays.
+        private void rendezvous() throws IOException {
+            try {
+                barrier.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new IOException(failure);
+            } catch (BrokenBarrierException | TimeoutException failure) {
+                throw new IOException(failure);
+            }
+        }
+
+        /// Reports the operation failure concurrently with, or after, the first close.
+        private void failOperation() throws IOException {
+            rendezvous();
+            if (!firstCloseFails) {
+                try {
+                    assertTrue(releaseOperation.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(failure);
+                }
+            }
+            throw operationFailure;
+        }
+
+        /// Fails without changing the target.
+        @Override
+        public int read(ByteBuffer target) throws IOException { failOperation(); return -1; }
+
+        /// Fails without consuming input.
+        @Override
+        public int write(ByteBuffer source) throws IOException { failOperation(); return 0; }
+
+        /// Fails the positioning lookup used by skips.
+        @Override
+        public long position() throws IOException { failOperation(); return 0; }
+
+        /// Rejects unused positioning operations.
+        @Override
+        public SeekableByteChannel position(long position) { throw new AssertionError("Unexpected positioning"); }
+
+        /// Rejects unused size lookups.
+        @Override
+        public long size() { throw new AssertionError("Unexpected size lookup"); }
+
+        /// Rejects unused truncations.
+        @Override
+        public SeekableByteChannel truncate(long size) { throw new AssertionError("Unexpected truncation"); }
+
+        /// Returns whether cancellation has completed successfully.
+        @Override
+        public boolean isOpen() { return open; }
+
+        /// Performs cancellation outside the adapter's identity-history critical section.
+        @Override
+        public void close() throws IOException {
+            if (++closeCalls == 1) {
+                rendezvous();
+                if (firstCloseFails) throw closeFailure;
+            } else if (closeCalls == 2 && firstCloseFails) {
+                throw operationFailure;
+            }
+            open = false;
+        }
+    }
+
+    /// Creates an adapter and a data operation that reaches the supplied endpoint.
+    private static AdaptedOperation adaptedOperation(String kind, SeekableByteChannel endpoint) {
+        return switch (kind) {
+            case "readable-channel" -> {
+                var channel = StreamChannelAdapters.readableChannel(Channels.newInputStream(endpoint));
+                yield new AdaptedOperation(channel, () -> channel.read(ByteBuffer.allocateDirect(3)));
+            }
+            case "writable-channel" -> {
+                var channel = StreamChannelAdapters.writableChannel(Channels.newOutputStream(endpoint));
+                yield new AdaptedOperation(channel, () -> channel.write(ByteBuffer.allocateDirect(3)));
+            }
+            case "input-stream" -> {
+                var stream = StreamChannelAdapters.inputStream(endpoint);
+                yield new AdaptedOperation(stream, stream::read);
+            }
+            case "seekable-skip" -> {
+                var stream = StreamChannelAdapters.inputStream(endpoint);
+                yield new AdaptedOperation(stream, () -> stream.skip(1));
+            }
+            case "output-stream" -> {
+                var stream = StreamChannelAdapters.outputStream(endpoint);
+                yield new AdaptedOperation(stream, () -> stream.write(1));
+            }
+            default -> throw new AssertionError(kind);
+        };
+    }
+
+    /// Associates one adapter with an operation that accesses its endpoint.
+    /// @param resource the adapter whose closure is tested
+    /// @param action the read, write or skip operation
+    @NotNullByDefault
+    private record AdaptedOperation(Closeable resource, IOAction action) {}
+
+    /// Performs one checked I/O operation.
+    @NotNullByDefault
+    @FunctionalInterface
+    private interface IOAction {
+        /// Performs the operation.
+        void run() throws IOException;
+    }
+
+    /// Reuses one failure for data operations and a finite number of close attempts.
+    @NotNullByDefault
+    private static final class RepeatedFailureChannel implements SeekableByteChannel {
+        /// The failure instance currently reported by endpoint operations.
+        private Throwable failure;
+        /// Remaining failed close attempts.
+        private int closeFailures;
+        /// Number of physical close attempts.
+        private int closeCalls;
+        /// Whether the channel is open.
+        private boolean open = true;
+
+        /// Configures the shared failure and number of close failures.
+        private RepeatedFailureChannel(Throwable failure, int closeFailures) {
+            this.failure = failure;
+            this.closeFailures = closeFailures;
+        }
+
+        /// Throws the original checked or unchecked failure.
+        private void fail() throws IOException {
+            if (failure instanceof IOException exception) throw exception;
+            if (failure instanceof RuntimeException exception) throw exception;
+            throw (Error) failure;
+        }
+
+        /// Fails without consuming input.
+        @Override
+        public int read(ByteBuffer target) throws IOException { fail(); return -1; }
+
+        /// Fails without consuming output.
+        @Override
+        public int write(ByteBuffer source) throws IOException { fail(); return 0; }
+
+        /// Fails position lookup used by seekable skips.
+        @Override
+        public long position() throws IOException { fail(); return 0; }
+
+        /// Fails position updates.
+        @Override
+        public SeekableByteChannel position(long position) throws IOException { fail(); return this; }
+
+        /// Fails size lookup.
+        @Override
+        public long size() throws IOException { fail(); return 0; }
+
+        /// Fails truncation.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException { fail(); return this; }
+
+        /// Returns whether a close has completed successfully.
+        @Override
+        public boolean isOpen() { return open; }
+
+        /// Fails the configured number of attempts, then closes successfully.
+        @Override
+        public void close() throws IOException {
+            closeCalls++;
+            if (closeFailures-- > 0) fail();
+            open = false;
+        }
+    }
+
     /// Heap and empty reads need no transfer workspace; nonempty direct reads allocate it only once.
     @Test
     void allocatesTransferStorageOnlyForDirectReads() throws Exception {

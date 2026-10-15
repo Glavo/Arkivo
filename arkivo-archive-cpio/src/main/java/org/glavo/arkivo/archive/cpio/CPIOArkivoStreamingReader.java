@@ -18,6 +18,8 @@ import java.util.Objects;
 /// `TRAILER!!!` record. Attributes returned for a cursor position are detached snapshots. The entry body may be opened
 /// once; advancing closes it before consuming the next header and its dialect-specific padding. Truncated input or EOF
 /// before the trailer fails with `IOException` rather than acting as a normal end of archive.
+/// Reading the last body bytes does not consume alignment padding or validate the completed checksum. These checks
+/// occur before a subsequent read reports end-of-entry, or when the body is closed or the reader advances.
 ///
 /// A successfully returned reader owns and closes the supplied stream or channel. Closing an entry body does not close
 /// the reader. The reader is a stateful cursor; callers must serialize cursor operations.

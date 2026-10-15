@@ -35,6 +35,7 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.DosFileAttributeView;
 import java.nio.file.attribute.DosFileAttributes;
+import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileStoreAttributeView;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
@@ -64,6 +65,115 @@ final class ZipWritableFileSystemContractTest {
     /// Temporary directory used for path-backed ZIP archives.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Rejects non-directory parents before emitting records and leaves the archive usable after each failure.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsCreationBelowRegularFiles(boolean update) throws IOException {
+        Path archive = temporaryDirectory.resolve("file-parent.zip");
+        try (var fs = ZipArkivoFileSystem.create(archive)) {
+            Files.writeString(fs.getPath("parent"), "preserved");
+            Files.createSymbolicLink(fs.getPath("alias"), fs.getPath("parent"));
+            if (!update) assertNonDirectoryParentsRejected(fs);
+        }
+        if (update) {
+            try (var fs = ZipArkivoFileSystem.update(archive)) {
+                assertNonDirectoryParentsRejected(fs);
+            }
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            assertEquals("preserved", Files.readString(fs.getPath("parent")));
+            assertEquals("valid", Files.readString(fs.getPath("valid")));
+            assertTrue(Files.isSymbolicLink(fs.getPath("alias")));
+            try (var entries = Files.list(fs.getPath("/"))) {
+                assertEquals(3, entries.count());
+            }
+        }
+    }
+
+    /// Checks all NIO creation entry points, including a parent that cannot be cancelled by `..`.
+    private static void assertNonDirectoryParentsRejected(ZipArkivoFileSystem fs) throws IOException {
+        for (String name : List.of("parent/child", "parent/../child", "alias/child")) {
+            Path path = fs.getPath(name);
+            assertThrows(NotDirectoryException.class, () -> Files.createFile(path));
+            assertThrows(NotDirectoryException.class, () -> Files.createDirectory(path));
+            assertThrows(NotDirectoryException.class,
+                    () -> Files.createSymbolicLink(path, fs.getPath("target")));
+            assertThrows(NotDirectoryException.class, () -> {
+                try (var ignored = Files.newByteChannel(path,
+                        Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) { }
+            });
+            assertThrows(NotDirectoryException.class, () -> {
+                try (var ignored = Files.newOutputStream(path)) { }
+            });
+        }
+        Files.writeString(fs.getPath("valid"), "valid");
+    }
+
+    /// Resolves existing parent links during creation while retaining support for implicit directories.
+    @Test
+    void resolvesCreationParents() throws IOException {
+        Path archive = temporaryDirectory.resolve("creation-parents.zip");
+        try (var fs = ZipArkivoFileSystem.create(archive)) {
+            Files.createDirectory(fs.getPath("real/sub"));
+            Files.createSymbolicLink(fs.getPath("alias"), fs.getPath("real/sub"));
+            Files.writeString(fs.getPath("alias/../value"), "value");
+            Files.createFile(fs.getPath("alias/file"));
+            Files.createDirectory(fs.getPath("alias/directory"));
+            Files.createSymbolicLink(fs.getPath("alias/link"), fs.getPath("file"));
+            Files.writeString(fs.getPath("implicit/nested/value"), "nested");
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            assertEquals("value", Files.readString(fs.getPath("real/value")));
+            assertFalse(Files.exists(fs.getPath("value")));
+            assertTrue(Files.isRegularFile(fs.getPath("real/sub/file")));
+            assertTrue(Files.isDirectory(fs.getPath("real/sub/directory")));
+            assertEquals(fs.getPath("file"), Files.readSymbolicLink(fs.getPath("real/sub/link")));
+            assertEquals("nested", Files.readString(fs.getPath("implicit/nested/value")));
+        }
+    }
+
+    /// Verifies that store capabilities agree with readable views in create, update, and read sessions.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void reportsAvailableFileStoreViews(int mode) throws IOException {
+        Path archive = temporaryDirectory.resolve("views.zip");
+        if (mode != 0) {
+            try (var fs = ZipArkivoFileSystem.create(archive)) {
+                Files.writeString(fs.getPath("entry"), "value");
+            }
+        }
+        try (var fs = switch (mode) {
+            case 0 -> ZipArkivoFileSystem.create(archive);
+            case 1 -> ZipArkivoFileSystem.update(archive);
+            case 2 -> ZipArkivoFileSystem.open(archive);
+            default -> throw new AssertionError(mode);
+        }) {
+            Path entry = fs.getPath("entry");
+            if (mode == 0) {
+                Files.writeString(entry, "value");
+            }
+            FileStore store = Files.getFileStore(entry);
+            assertSame(store, fs.getFileStores().iterator().next());
+            assertEquals(mode == 2, store.isReadOnly());
+            for (Path path : List.of(fs.getPath("/"), entry)) {
+                @Nullable var owner = Files.getFileAttributeView(path, FileOwnerAttributeView.class);
+                @Nullable var posix = Files.getFileAttributeView(path, PosixFileAttributeView.class);
+                assertNotNull(owner);
+                assertNotNull(posix);
+                assertEquals(Files.getOwner(path), owner.getOwner());
+                assertEquals(Files.getPosixFilePermissions(path), posix.readAttributes().permissions());
+                assertEquals(owner.getOwner(), posix.readAttributes().owner());
+            }
+            assertTrue(store.supportsFileAttributeView(FileOwnerAttributeView.class));
+            assertTrue(store.supportsFileAttributeView(PosixFileAttributeView.class));
+            for (String view : fs.supportedFileAttributeViews()) {
+                assertTrue(store.supportsFileAttributeView(view), view);
+            }
+            assertFalse(store.supportsFileAttributeView(DosFileAttributeView.class));
+            assertFalse(store.supportsFileAttributeView("dos"));
+        }
+    }
 
     /// Repeated renames preserve legacy comments and keep source and staged local headers consistent.
     @ParameterizedTest
@@ -127,7 +237,7 @@ final class ZipWritableFileSystemContractTest {
         }
     }
 
-    /// Treats implicit directories as occupied link names while still allowing explicit directory records.
+    /// Treats implicit directories as occupied names for both link and directory creation.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void rejectsLinksOverImplicitDirectories(boolean update) throws IOException {
@@ -146,13 +256,82 @@ final class ZipWritableFileSystemContractTest {
                     () -> Files.createSymbolicLink(directory, fs.getPath("target")));
             assertTrue(Files.isDirectory(directory));
             assertTrue(Files.exists(directory.resolve("child")));
-            Files.createDirectory(directory);
+            assertThrows(FileAlreadyExistsException.class, () -> Files.createDirectory(directory));
             Files.writeString(fs.getPath("/valid"), "valid");
         }
         try (var fs = ZipArkivoFileSystem.open(archive)) {
             assertTrue(Files.isDirectory(fs.getPath("/implicit")));
             assertEquals("child", Files.readString(fs.getPath("/implicit/child")));
             assertEquals("valid", Files.readString(fs.getPath("/valid")));
+        }
+    }
+
+    /// Rejects creating existing root, explicit, and implicit directories in create and update sessions.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsCreationOfExistingDirectories(boolean update) throws IOException {
+        Path archive = temporaryDirectory.resolve("existing-directories.zip");
+        try (var fs = ZipArkivoFileSystem.create(archive)) {
+            Files.writeString(fs.getPath("implicit/child"), "child");
+            Files.createDirectory(fs.getPath("explicit"));
+            if (!update) assertExistingDirectoryCreationRejected(fs);
+        }
+        if (update) {
+            try (var fs = ZipArkivoFileSystem.update(archive)) {
+                assertExistingDirectoryCreationRejected(fs);
+            }
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            assertEquals("child", Files.readString(fs.getPath("implicit/child")));
+            assertTrue(Files.isDirectory(fs.getPath("explicit")));
+        }
+    }
+
+    /// Rejects duplicate creation without changing permissions, while recursive creation remains idempotent.
+    private static void assertExistingDirectoryCreationRejected(ZipArkivoFileSystem fs) throws IOException {
+        for (String name : new String[]{"/", "/implicit", "/explicit"}) {
+            Path path = fs.getPath(name);
+            Set<PosixFilePermission> before = Files.getPosixFilePermissions(path);
+            assertThrows(FileAlreadyExistsException.class, () -> Files.createDirectory(path,
+                    PosixFilePermissions.asFileAttribute(Set.of(PosixFilePermission.OWNER_READ))));
+            assertEquals(before, Files.getPosixFilePermissions(path));
+            assertEquals(path, Files.createDirectories(path));
+        }
+    }
+
+    /// Preserves explicitly empty permissions for newly created entries and updated files after reopening.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesEmptyPosixPermissions(boolean update) throws IOException {
+        Path archive = temporaryDirectory.resolve("empty-permissions.zip");
+        if (update) {
+            try (var fs = ZipArkivoFileSystem.create(archive)) {
+                Files.writeString(fs.getPath("existing"), "content");
+            }
+        }
+        try (var fs = update ? ZipArkivoFileSystem.update(archive) : ZipArkivoFileSystem.create(archive)) {
+            var permissions = PosixFilePermissions.asFileAttribute(Set.<PosixFilePermission>of());
+            Files.createFile(fs.getPath("file"), permissions);
+            Files.createDirectory(fs.getPath("directory"), permissions);
+            Files.createSymbolicLink(fs.getPath("link"), fs.getPath("file"), permissions);
+            for (String name : new String[]{"file", "directory", "link"}) {
+                assertEquals(Set.of(), Files.readAttributes(fs.getPath(name), PosixFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS).permissions());
+            }
+            if (update) Files.setPosixFilePermissions(fs.getPath("existing"), Set.of());
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            for (String name : new String[]{"file", "directory", "link"}) {
+                assertEquals(Set.of(), Files.readAttributes(fs.getPath(name), PosixFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS).permissions());
+            }
+            assertTrue(Files.isRegularFile(fs.getPath("file")));
+            assertTrue(Files.isDirectory(fs.getPath("directory")));
+            assertTrue(Files.isSymbolicLink(fs.getPath("link")));
+            if (update) {
+                assertEquals(Set.of(), Files.getPosixFilePermissions(fs.getPath("existing")));
+                assertEquals("content", Files.readString(fs.getPath("existing")));
+            }
         }
     }
 
@@ -306,10 +485,12 @@ final class ZipWritableFileSystemContractTest {
             assertEquals(0L, store.getUsableSpace());
             assertTrue(store.supportsFileAttributeView(BasicFileAttributeView.class));
             assertTrue(store.supportsFileAttributeView(ZipArkivoEntryAttributeView.class));
-            assertFalse(store.supportsFileAttributeView(PosixFileAttributeView.class));
+            assertTrue(store.supportsFileAttributeView(FileOwnerAttributeView.class));
+            assertTrue(store.supportsFileAttributeView(PosixFileAttributeView.class));
             assertTrue(store.supportsFileAttributeView("basic"));
             assertTrue(store.supportsFileAttributeView("zip"));
-            assertFalse(store.supportsFileAttributeView("posix"));
+            assertTrue(store.supportsFileAttributeView("owner"));
+            assertTrue(store.supportsFileAttributeView("posix"));
             assertNull(store.getFileStoreAttributeView(FileStoreAttributeView.class));
             assertEquals(Set.of("basic", "zip", "owner", "posix"), fileSystem.supportedFileAttributeViews());
 
@@ -458,7 +639,7 @@ final class ZipWritableFileSystemContractTest {
                     () -> Files.newByteChannel(file, Set.of(LinkOption.NOFOLLOW_LINKS))
             );
             assertThrows(
-                    IllegalArgumentException.class,
+                    NoSuchFileException.class,
                     () -> Files.newByteChannel(missing, Set.of(StandardOpenOption.CREATE))
             );
             assertThrows(

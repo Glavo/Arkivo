@@ -33,6 +33,7 @@ import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -61,6 +62,26 @@ final class ArkivoFileSystemProviderSupportTest {
     /// Temporary directory used to create portable nested file URIs.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Filters ignored read-channel options without mutating callers or changing actual write requests.
+    @Test
+    void normalizesReadChannelOptions() {
+        Set<OpenOption> original = Set.of(StandardOpenOption.READ, StandardOpenOption.CREATE,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.TRUNCATE_EXISTING, LinkOption.NOFOLLOW_LINKS);
+        Set<OpenOption> options = new HashSet<>(original);
+        assertEquals(Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS),
+                ArkivoFileSystemProviderSupport.normalizeChannelOptions(options));
+        assertEquals(original, options);
+        for (StandardOpenOption access : new StandardOpenOption[]{StandardOpenOption.WRITE, StandardOpenOption.APPEND}) {
+            Set<OpenOption> writable = new HashSet<>(original);
+            writable.add(access);
+            assertSame(writable, ArkivoFileSystemProviderSupport.normalizeChannelOptions(writable));
+            assertEquals(original.size() + 1, writable.size());
+        }
+        OpenOption unsupported = new OpenOption() { };
+        assertEquals(Set.of(unsupported), ArkivoFileSystemProviderSupport.normalizeChannelOptions(
+                Set.of(unsupported, StandardOpenOption.CREATE)));
+    }
 
     /// Verifies every read adapter resolves only pure following reads to a real path.
     @Test

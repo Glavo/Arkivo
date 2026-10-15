@@ -34,6 +34,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies complete AR header preparation before any member bytes are emitted.
 @NotNullByDefault
 final class ArHeaderEncodingTest {
+    /// A failed fixed-body size check freezes cached metadata and discards the uncommitted member.
+    @Test
+    void freezesMetadataAfterFixedBodySizeFailure() throws IOException {
+        ByteArrayOutputStream target = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(target, ArkivoEditStorage.memory())) {
+            writer.beginFile("before").close();
+            byte @Unmodifiable [] before = target.toByteArray();
+            var entry = writer.beginFile("invalid");
+            var view = Objects.requireNonNull(entry.attributeView(ArArkivoEntryAttributeView.class));
+            view.setSize(1L);
+            assertThrows(IOException.class, entry::close);
+            assertArrayEquals(before, target.toByteArray());
+            assertThrows(IOException.class, () -> entry.attributeView(ArArkivoEntryAttributeView.class));
+            assertThrows(IOException.class, entry::openOutputStream);
+            assertThrows(IllegalStateException.class, () -> view.setSize(0L));
+            assertThrows(IllegalStateException.class, () -> view.setUserId(7L));
+            entry.close();
+            entry.close();
+            assertArrayEquals(before, target.toByteArray());
+            writer.beginFile("after").close();
+        }
+        try (var reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(target.toByteArray()))) {
+            assertTrue(reader.next());
+            assertEquals("before", reader.readAttributes().path());
+            assertTrue(reader.next());
+            assertEquals("after", reader.readAttributes().path());
+            assertFalse(reader.next());
+        }
+    }
+
     /// Verifies invalid metadata cannot leave a partial header after either a fixed or staged member.
     @ParameterizedTest
     @MethodSource("completionFailures")

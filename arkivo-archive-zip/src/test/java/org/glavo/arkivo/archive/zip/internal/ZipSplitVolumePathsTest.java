@@ -10,9 +10,11 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.END_OF_CENTRAL_DIRECTORY_SIGNATURE;
@@ -29,6 +31,22 @@ final class ZipSplitVolumePathsTest {
     /// Temporary directory containing synthetic ZIP end records.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Keeps absolute and parentless relative volume paths in their original file system.
+    @Test
+    void discoversVolumesInAnotherFileSystem() throws IOException {
+        try (var fs = FileSystems.newFileSystem(temporaryDirectory.resolve("container.zip"), Map.of("create", "true"))) {
+            Files.createDirectory(fs.getPath("/dir"));
+            for (String prefix : List.of("", "/", "/dir/")) {
+                Path archive = fs.getPath(prefix + "sample.zip");
+                Path first = fs.getPath(prefix + "sample.z01");
+                Files.write(first, new byte[0]);
+                Files.write(archive, classicEndRecord(1, 1, new byte[0]));
+                assertEquals(first, ZipSplitVolumePaths.numberedVolumePath(archive, 0));
+                assertEquals(List.of(first, archive), ZipSplitVolumePaths.discover(archive));
+            }
+        }
+    }
 
     /// Verifies numbered paths preserve the base name and use a minimum two-digit suffix.
     @Test

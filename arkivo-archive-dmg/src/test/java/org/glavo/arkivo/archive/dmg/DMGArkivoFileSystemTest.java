@@ -14,7 +14,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
@@ -217,6 +216,10 @@ final class DMGArkivoFileSystemTest {
             );
 
             Map<String, Object> basic = Files.readAttributes(file, "basic:size,isRegularFile,fileKey");
+            assertEquals(Files.readAttributes(file, "basic:*"), Files.readAttributes(file, "basic:*,size,*"));
+            assertEquals(Map.of("size", Files.size(file)), Files.readAttributes(file, "basic:size,size"));
+            assertThrows(IllegalArgumentException.class, () -> Files.getAttribute(file, "basic:doesNotExist"));
+            assertThrows(IllegalArgumentException.class, () -> Files.readAttributes(file, "basic:*,doesNotExist"));
             assertEquals(Set.of("size", "isRegularFile", "fileKey"), basic.keySet());
             assertEquals(5L, basic.get("size"));
             assertEquals(true, basic.get("isRegularFile"));
@@ -234,9 +237,14 @@ final class DMGArkivoFileSystemTest {
             assertEquals(PosixFilePermissions.fromString("rw-r--r--"), posix.get("permissions"));
             assertEquals(true, posix.get("isRegularFile"));
             assertThrows(UnsupportedOperationException.class, () -> Files.readAttributes(file, "zip:*"));
-            assertThrows(UnsupportedOperationException.class, () -> Files.readAttributes(file, "basic:"));
+            assertThrows(IllegalArgumentException.class, () -> Files.readAttributes(file, "basic:"));
+            assertThrows(IllegalArgumentException.class, () -> Files.readAttributes(file, "basic:,,"));
 
             FileStore store = Files.getFileStore(file);
+            assertThrows(NullPointerException.class,
+                    () -> store.supportsFileAttributeView((Class<BasicFileAttributeView>) null));
+            assertThrows(NullPointerException.class, () -> store.supportsFileAttributeView((String) null));
+            assertThrows(NullPointerException.class, () -> store.getFileStoreAttributeView(null));
             assertTrue(store.supportsFileAttributeView(BasicFileAttributeView.class));
             assertTrue(store.supportsFileAttributeView(FileOwnerAttributeView.class));
             assertTrue(store.supportsFileAttributeView(PosixFileAttributeView.class));
@@ -265,6 +273,16 @@ final class DMGArkivoFileSystemTest {
             Path file = fileSystem.getPath("/hello.txt");
             Path link = fileSystem.getPath("/link");
             Path missing = fileSystem.getPath("/missing");
+
+            for (StandardOpenOption option : new StandardOpenOption[]{StandardOpenOption.CREATE,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.TRUNCATE_EXISTING}) {
+                for (Path path : new Path[]{file, link}) {
+                    try (SeekableByteChannel channel = Files.newByteChannel(path, option)) {
+                        assertEquals(5L, channel.size());
+                    }
+                }
+                assertThrows(NoSuchFileException.class, () -> Files.newByteChannel(missing, option));
+            }
 
             try (SeekableByteChannel channel = Files.newByteChannel(link, StandardOpenOption.READ)) {
                 assertEquals(5L, channel.size());
@@ -459,7 +477,8 @@ final class DMGArkivoFileSystemTest {
 
             assertSame(channel, channel.position(0L));
             ByteBuffer readOnlyTarget = ByteBuffer.allocate(1).asReadOnlyBuffer();
-            assertThrows(ReadOnlyBufferException.class, () -> channel.read(readOnlyTarget));
+            assertThrows(IllegalArgumentException.class, () -> channel.read(readOnlyTarget));
+            assertThrows(IllegalArgumentException.class, () -> channel.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
             assertEquals(0, readOnlyTarget.position());
             assertEquals(0L, channel.position());
 

@@ -29,6 +29,7 @@ import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
@@ -1313,10 +1314,10 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         long extraSize = 0L;
         long dataSize = 0L;
         if ((flags & HEADER_FLAG_EXTRA_AREA) != 0) {
-            extraSize = reader.readVint("RAR extra area size");
+            extraSize = reader.readNonNegativeVint("RAR extra area size");
         }
         if ((flags & HEADER_FLAG_DATA_AREA) != 0) {
-            dataSize = reader.readVint("RAR data area size");
+            dataSize = reader.readNonNegativeVint("RAR data area size");
         }
         if (extraSize > headerData.length - reader.position()) {
             throw new IOException("RAR extra area exceeds header size");
@@ -1665,6 +1666,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         HeaderReader reader = new HeaderReader(block.headerData(), block.fieldsOffset(), block.extraOffset());
         long fileFlags = reader.readVint("RAR file flags");
         long rawUnpackedSize = reader.readVint("RAR unpacked size");
+        if ((fileFlags & FILE_FLAG_UNKNOWN_UNPACKED_SIZE) == 0 && rawUnpackedSize < 0) {
+            throw new IOException("RAR unpacked size is too large");
+        }
         long fileAttributes = reader.readVint("RAR file attributes");
         FileTime lastModifiedTime = MISSING_TIME;
         if ((fileFlags & FILE_FLAG_UNIX_TIME) != 0) {
@@ -1698,7 +1702,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         );
         int hostOs = readIntVint(reader, "RAR host OS");
         int nameLength = readIntVint(reader, "RAR name length");
-        String path = validatePath(reader.readString(nameLength, "RAR entry name"));
+        String path = validatePath(reader.readUtf8String(nameLength, "RAR entry name"));
         ExtraMetadata extraMetadata = parseExtraArea(block.headerData(), block.extraOffset(), block.headerData().length);
         if (extraMetadata.lastModifiedTime != null) {
             lastModifiedTime = extraMetadata.lastModifiedTime;
@@ -2341,7 +2345,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (nameLength > recordEnd - reader.position()) {
             throw new IOException("RAR redirection name exceeds record size");
         }
-        String target = reader.readString(nameLength, "RAR redirection name");
+        String target = reader.readUtf8String(nameLength, "RAR redirection name");
         metadata.redirectionType = redirectionType;
         metadata.redirectionFlags = redirectionFlags;
         metadata.redirectionTarget = target;
@@ -2362,10 +2366,10 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             metadata.groupName = readRecordString(reader, recordEnd, "RAR Unix owner group name");
         }
         if ((flags & UNIX_OWNER_USER_ID) != 0) {
-            metadata.userId = reader.readVint("RAR Unix owner user ID");
+            metadata.userId = reader.readNonNegativeVint("RAR Unix owner user ID");
         }
         if ((flags & UNIX_OWNER_GROUP_ID) != 0) {
-            metadata.groupId = reader.readVint("RAR Unix owner group ID");
+            metadata.groupId = reader.readNonNegativeVint("RAR Unix owner group ID");
         }
     }
 
@@ -2375,7 +2379,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (length > recordEnd - reader.position()) {
             throw new IOException(description + " exceeds record size");
         }
-        return reader.readString(length, description);
+        return reader.readNativeString(length, description);
     }
 
     /// Validates a decoded RAR entry path.
@@ -2771,15 +2775,22 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     private void skipFully(long count) throws IOException {
         long remaining = count;
         while (remaining > 0) {
-            long skipped = source.skip(remaining);
-            if (skipped == 0) {
-                if (source.read() < 0) {
-                    throw new EOFException("Unexpected end of RAR data area");
-                }
-                skipped = 1L;
-            }
-            remaining -= skipped;
+            remaining -= skipSome(remaining);
         }
+    }
+
+    /// Skips bytes while reserving the final byte for an EOF-checking read.
+    private long skipSome(long count) throws IOException {
+        // File-backed streams can seek beyond EOF. Leave the final byte for a read so that
+        // exhausting a declared data area always checks that its physical end exists.
+        long skipped = count > 1 ? source.skip(count - 1) : 0L;
+        if (skipped == 0L) {
+            if (source.read() < 0) {
+                throw new EOFException("Unexpected end of RAR data area");
+            }
+            return 1L;
+        }
+        return skipped;
     }
 
     /// Verifies all active stored-body checksums after the final physical part is consumed.
@@ -2876,7 +2887,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Reads an integer-sized variable length integer.
     private static int readIntVint(HeaderReader reader, String description) throws IOException {
-        long value = reader.readVint(description);
+        long value = reader.readNonNegativeVint(description);
         if (value > Integer.MAX_VALUE) {
             throw new IOException(description + " is too large");
         }
@@ -2885,7 +2896,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Adds an unsigned size to a position after checking the result.
     private static int checkedAdd(int position, long size, String description) throws IOException {
-        if (size > Integer.MAX_VALUE - position) {
+        if (size < 0 || size > Integer.MAX_VALUE - position) {
             throw new IOException(description + " is too large");
         }
         return position + (int) size;
@@ -2930,7 +2941,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         /// Creates a decoded RAR block header.
         private BlockHeader {
             Objects.requireNonNull(headerData, "headerData");
-            if (version < 0 || type < 0 || flags < 0 || dataSize < 0 || fieldsOffset < 0 || extraOffset < fieldsOffset
+            if (version < 0 || type < 0 || dataSize < 0 || fieldsOffset < 0 || extraOffset < fieldsOffset
                     || extraOffset > headerData.length) {
                 throw new IllegalArgumentException("Invalid RAR block header");
             }
@@ -3116,7 +3127,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             return position < limit;
         }
 
-        /// Reads one RAR variable length integer.
+        /// Reads the unsigned 64-bit pattern of one RAR variable-length integer.
         private long readVint(String description) throws IOException {
             long value = 0L;
             int shift = 0;
@@ -3132,6 +3143,15 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 shift += 7;
             }
             throw new IOException(description + " is too large");
+        }
+
+        /// Reads one unsigned variable-length integer that fits in a non-negative `long`.
+        private long readNonNegativeVint(String description) throws IOException {
+            long value = readVint(description);
+            if (value < 0) {
+                throw new IOException(description + " is too large");
+            }
+            return value;
         }
 
         /// Reads one little-endian unsigned 32-bit integer.
@@ -3168,8 +3188,24 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             return value;
         }
 
-        /// Reads one UTF-8 string of the requested byte length.
-        private String readString(int length, String description) throws IOException {
+        /// Reads an authoritative UTF-8 field, rejecting malformed sequences.
+        private String readUtf8String(int length, String description) throws IOException {
+            if (length < 0) {
+                throw new IOException(description + " length must not be negative");
+            }
+            requireRemaining(length, description);
+            String value;
+            try {
+                value = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(data, position, length)).toString();
+            } catch (CharacterCodingException exception) {
+                throw new IOException("Invalid UTF-8 in " + description, exception);
+            }
+            position += length;
+            return value;
+        }
+
+        /// Decodes a native-encoding owner field as UTF-8, replacing undecodable sequences.
+        private String readNativeString(int length, String description) throws IOException {
             if (length < 0) {
                 throw new IOException(description + " length must not be negative");
             }
@@ -4183,7 +4219,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 }
                 return toSkip;
             }
-            long skipped = source.skip(toSkip);
+            long skipped = skipSome(toSkip);
             currentPackedRemaining -= skipped;
             return skipped;
         }

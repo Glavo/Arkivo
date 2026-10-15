@@ -15,7 +15,6 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
@@ -206,7 +205,8 @@ final class UDIFImageTest {
 
         assertSame(channel, channel.position(0L));
         ByteBuffer readOnlyTarget = ByteBuffer.allocate(1).asReadOnlyBuffer();
-        assertThrows(ReadOnlyBufferException.class, () -> channel.read(readOnlyTarget));
+        assertThrows(IllegalArgumentException.class, () -> channel.read(readOnlyTarget));
+        assertThrows(IllegalArgumentException.class, () -> channel.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
         assertEquals(0, readOnlyTarget.position());
         assertEquals(0L, channel.position());
 

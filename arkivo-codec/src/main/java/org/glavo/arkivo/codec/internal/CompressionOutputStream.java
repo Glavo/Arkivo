@@ -35,10 +35,14 @@ public final class CompressionOutputStream extends OutputStream {
     /// Whether this adapter remains open.
     private boolean open = true;
 
+    /// Whether a write, flush, or close failure has already been delivered to the caller.
+    private boolean failureDelivered;
+
     /// Creates a stream that owns the channel and flushes its downstream stream.
     ///
     /// Explicit flush attempts both compression and downstream flush. Close flushes the downstream stream only
-    /// when the channel borrows it. A failed close can be retried without losing either failure's identity.
+    /// when the channel borrows it. A failed close can be retried. After a write, flush, or close call has reported
+    /// a failure, subsequent close failures are wrapped in a new `IOException` with the cleanup failure as its cause.
     ///
     /// @param target the channel owned by this stream
     /// @param downstream the stream receiving compressed bytes
@@ -66,10 +70,15 @@ public final class CompressionOutputStream extends OutputStream {
         Objects.checkFromIndexSize(offset, length, bytes.length);
         ensureOpen();
         ByteBuffer source = ByteBuffer.wrap(bytes, offset, length);
-        while (source.hasRemaining()) {
-            if (target.write(source) == 0) {
-                throw new IOException("Writable channel made no progress");
+        try {
+            while (source.hasRemaining()) {
+                if (target.write(source) == 0) {
+                    throw new IOException("Writable channel made no progress");
+                }
             }
+        } catch (IOException | RuntimeException | Error exception) {
+            failureDelivered = true;
+            throw exception;
         }
     }
 
@@ -91,6 +100,7 @@ public final class CompressionOutputStream extends OutputStream {
             failure = mergeFailure(failure, exception);
         }
         if (failure != null) {
+            failureDelivered = true;
             rethrow(failure);
         }
     }
@@ -115,6 +125,10 @@ public final class CompressionOutputStream extends OutputStream {
             }
         }
         if (failure != null) {
+            if (failureDelivered) {
+                throw new IOException("Compression output cleanup failed", failure);
+            }
+            failureDelivered = true;
             rethrow(failure);
         }
         open = false;

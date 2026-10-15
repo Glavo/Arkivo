@@ -7,6 +7,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.net.URI;
@@ -51,6 +53,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared archive path parsing, composition, comparison, and URI behavior.
 @NotNullByDefault
 final class AbstractArkivoPathTest {
+    /// Sibling resolution rejects null operands even when the base has no parent.
+    @ParameterizedTest
+    @ValueSource(strings = {"", "/", "single", ".", "a/b", "/a/b"})
+    void rejectsNullSibling(String name) {
+        TestFileSystem fileSystem = new TestFileSystem(null);
+        Path path = fileSystem.getPath(name);
+        assertThrows(NullPointerException.class, () -> path.resolveSibling((Path) null));
+        assertThrows(NullPointerException.class, () -> path.resolveSibling((String) null));
+        Path sibling = fileSystem.getPath("other");
+        @Nullable Path parent = path.getParent();
+        assertEquals(parent == null ? sibling : parent.resolve(sibling), path.resolveSibling(sibling));
+    }
+
     /// Dot elements contribute no parent traversal when computing relative paths.
     @Test
     void relativizesDotElementsWithoutCollapsingParentElements() {
@@ -72,6 +87,20 @@ final class AbstractArkivoPathTest {
                 fs.getPath("/dir/.").relativize(fs.getPath("/dir/../source")));
         assertEquals(fs.getPath("source"),
                 fs.getPath("/alias/../.").relativize(fs.getPath("/alias/../source")));
+    }
+
+    /// Rejects unmatched parent elements instead of treating them as reversible child names.
+    @ParameterizedTest
+    @ValueSource(strings = {"a/x/..", "a/../x", "a/x/../z", "../a", "../..", "a/../."})
+    void rejectsUnmatchedParentElementsInRelativeBase(String base) {
+        TestFileSystem fs = new TestFileSystem(null);
+        for (String prefix : List.of("", "/")) {
+            Path from = fs.getPath(prefix + base);
+            Path to = fs.getPath(prefix + "a/y");
+            assertThrows(IllegalArgumentException.class, () -> from.relativize(to));
+            assertEquals(fs.getPath("child"), from.relativize(from.resolve("child")));
+            assertEquals(fs.getPath(""), from.relativize(from));
+        }
     }
 
     /// Separator runs preserve literal names, dot elements and non-ASCII text before explicit normalization.

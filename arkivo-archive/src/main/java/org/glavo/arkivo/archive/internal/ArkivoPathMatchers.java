@@ -25,6 +25,7 @@ public final class ArkivoPathMatchers {
     }
 
     /// Creates a path matcher with the given path separator.
+    /// Syntax names are compared without regard to case; the pattern is passed unchanged to its parser.
     ///
     /// @param syntaxAndPattern a {@code glob:pattern} or {@code regex:pattern} specification
     /// @param separator the path separator excluded by single-segment glob wildcards
@@ -41,11 +42,14 @@ public final class ArkivoPathMatchers {
 
         String syntax = syntaxAndPattern.substring(0, syntaxSeparator);
         String pattern = syntaxAndPattern.substring(syntaxSeparator + 1);
-        Pattern compiledPattern = switch (syntax) {
-            case "glob" -> Pattern.compile(globToRegex(pattern, separator));
-            case "regex" -> Pattern.compile(pattern);
-            default -> throw new UnsupportedOperationException("Unsupported path matcher syntax: " + syntax);
-        };
+        Pattern compiledPattern;
+        if (syntax.equalsIgnoreCase("glob")) {
+            compiledPattern = Pattern.compile(globToRegex(pattern, separator));
+        } else if (syntax.equalsIgnoreCase("regex")) {
+            compiledPattern = Pattern.compile(pattern);
+        } else {
+            throw new UnsupportedOperationException("Unsupported path matcher syntax: " + syntax);
+        }
         return path -> compiledPattern.matcher(path.toString()).matches();
     }
 
@@ -62,7 +66,8 @@ public final class ArkivoPathMatchers {
             switch (ch) {
                 case '*' -> {
                     if (index + 1 < glob.length() && glob.charAt(index + 1) == '*') {
-                        regex.append(".*");
+                        // Names may contain line terminators as well as ordinary characters.
+                        regex.append("(?s:.*)");
                         index++;
                     } else {
                         appendNotSeparator(regex, separator);

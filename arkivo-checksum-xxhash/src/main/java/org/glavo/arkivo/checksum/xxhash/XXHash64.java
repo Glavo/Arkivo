@@ -212,7 +212,7 @@ public final class XXHash64 {
             totalLength += length;
             int end = offset + length;
 
-            if (memorySize + length < memory.length) {
+            if (length < memory.length - memorySize) {
                 System.arraycopy(source, offset, memory, memorySize, length);
                 memorySize += length;
                 return;
@@ -247,7 +247,7 @@ public final class XXHash64 {
                 return;
             }
             totalLength += length;
-            if (memorySize + length < memory.length) {
+            if (length < memory.length - memorySize) {
                 source.get(memory, memorySize, length);
                 memorySize += length;
                 return;

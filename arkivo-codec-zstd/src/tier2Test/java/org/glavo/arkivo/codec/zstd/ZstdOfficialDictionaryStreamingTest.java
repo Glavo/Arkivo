@@ -103,7 +103,7 @@ final class ZstdOfficialDictionaryStreamingTest {
                 assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.decode(source, target));
                 int stoppedAt = source.position();
                 assertEquals(dictionary.dictionaryId(), decoder.dictionaryRequest().dictionaryId());
-                assertThrows(IOException.class, () -> decoder.provideDictionary(wrong));
+                assertThrows(IllegalArgumentException.class, () -> decoder.provideDictionary(wrong));
                 assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.decode(source, target));
                 assertEquals(stoppedAt, source.position());
                 assertEquals(0, target.position());

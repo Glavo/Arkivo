@@ -5,12 +5,16 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -19,6 +23,7 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -140,6 +145,72 @@ final class SevenZipSplitArchiveOutputTest {
         assertEquals(1, physicalOutput.rollbackAttempts);
     }
 
+    /// Supplies checked, unchecked, and fatal close failures before and after the channel reports closure.
+    private static Stream<Arguments> volumeCloseFailures() {
+        return Stream.of(false, true).flatMap(afterClose -> Stream.of(
+                new IOException("volume close failure"),
+                new IllegalStateException("volume close failure"),
+                new AssertionError("volume close failure")
+        ).map(failure -> Arguments.of(failure, afterClose)));
+    }
+
+    /// Retains a failed physical close until it succeeds before invoking any transaction cleanup.
+    @ParameterizedTest
+    @MethodSource("volumeCloseFailures")
+    void retriesPhysicalCloseBeforeTransactionCleanup(Throwable closeFailure, boolean afterClose) throws IOException {
+        RecordingVolumeOutput physicalOutput = new RecordingVolumeOutput();
+        physicalOutput.firstVolumeCloseFailures = 3;
+        physicalOutput.firstVolumeCloseFailure = closeFailure;
+        physicalOutput.closeBeforeFailure = afterClose;
+        RecordingVolumeTarget target = new RecordingVolumeTarget(physicalOutput);
+        SevenZipSplitArchiveOutput output = completedOutput(target, 8L);
+
+        assertSame(closeFailure, assertThrows(closeFailure.getClass(), output::commit));
+        assertEquals(2, physicalOutput.channels.get(0).closeAttempts);
+        assertEquals(0, physicalOutput.rollbackAttempts);
+        assertEquals(0, physicalOutput.closeAttempts);
+        assertSame(closeFailure, assertThrows(closeFailure.getClass(), output::rollback));
+        assertEquals(3, physicalOutput.channels.get(0).closeAttempts);
+        assertEquals(0, physicalOutput.rollbackAttempts);
+        assertEquals(0, physicalOutput.closeAttempts);
+
+        output.commit();
+        output.rollback();
+        assertEquals(4, physicalOutput.channels.get(0).closeAttempts);
+        assertEquals(1, physicalOutput.channels.size());
+        assertEquals(1, target.openAttempts);
+        assertEquals(0, physicalOutput.commitAttempts);
+        assertEquals(1, physicalOutput.rollbackAttempts);
+        assertEquals(1, physicalOutput.closeAttempts);
+        assertTrue(physicalOutput.allChannelsClosed());
+        assertTrue(physicalOutput.rolledBack);
+    }
+
+    /// Retries caller-owned volume closure through the public streaming writer without republishing.
+    @Test
+    void streamingWriterRetriesPhysicalVolumeClose() throws IOException {
+        RecordingVolumeOutput physicalOutput = new RecordingVolumeOutput();
+        physicalOutput.firstVolumeCloseFailures = 3;
+        RecordingVolumeTarget target = new RecordingVolumeTarget(physicalOutput);
+        SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(target, 8L);
+        try (var body = writer.beginFile("entry").openOutputStream()) {
+            body.write(new byte[]{1, 2, 3});
+        }
+
+        assertThrows(IOException.class, writer::close);
+        assertEquals(0, physicalOutput.rollbackAttempts);
+        assertThrows(IOException.class, writer::close);
+        assertEquals(0, physicalOutput.rollbackAttempts);
+        writer.close();
+        writer.close();
+        assertEquals(4, physicalOutput.channels.get(0).closeAttempts);
+        assertEquals(1, target.openAttempts);
+        assertEquals(0, physicalOutput.commitAttempts);
+        assertEquals(1, physicalOutput.rollbackAttempts);
+        assertEquals(1, physicalOutput.closeAttempts);
+        assertTrue(physicalOutput.allChannelsClosed());
+    }
+
     /// Verifies publication preserves one shared volume-write and volume-close failure without self-suppression.
     @Test
     void preservesSharedVolumeWriteAndCloseFailure() throws IOException {
@@ -205,6 +276,28 @@ final class SevenZipSplitArchiveOutputTest {
         assertEquals(0, physicalOutput.commitAttempts);
         assertEquals(0, physicalOutput.rollbackAttempts);
         assertEquals(0, physicalOutput.closeAttempts);
+    }
+
+    /// Releases a destination owned before publication without opening a physical volume or writing archive bytes.
+    @ParameterizedTest
+    @MethodSource("volumeCloseFailures")
+    void rollbackBeforePublicationRetriesOwnedChannelClose(Throwable failure, boolean afterClose) throws IOException {
+        RecordingVolumeChannel channel = new RecordingVolumeChannel(null, 2, failure, afterClose);
+        SevenZipSingleVolumeTarget target = new SevenZipSingleVolumeTarget(channel);
+        SevenZipSplitArchiveOutput output = completedOutput(target, Long.MAX_VALUE);
+
+        assertSame(failure, assertThrows(failure.getClass(), output::rollback));
+        assertEquals(1, channel.closeAttempts);
+        assertThrows(IOException.class, target::openOutput);
+        assertSame(failure, assertThrows(failure.getClass(), output::commit));
+        assertEquals(2, channel.closeAttempts);
+        output.rollback();
+        output.commit();
+        target.close();
+        assertEquals(3, channel.closeAttempts);
+        assertFalse(channel.isOpen());
+        assertEquals(0, channel.bytes.size());
+        assertThrows(IOException.class, target::openOutput);
     }
 
     /// Opens and finalizes an empty temporary 7z archive ready for publication.
@@ -284,7 +377,10 @@ final class SevenZipSplitArchiveOutputTest {
         private @Nullable IOException firstVolumeWriteFailure;
 
         /// Failure reported by scheduled first-volume close failures, or `null` for the default failure.
-        private @Nullable IOException firstVolumeCloseFailure;
+        private @Nullable Throwable firstVolumeCloseFailure;
+
+        /// Whether the first volume reports closure before throwing a scheduled cleanup failure.
+        private boolean closeBeforeFailure;
 
         /// Number of commit attempts.
         private int commitAttempts;
@@ -322,7 +418,8 @@ final class SevenZipSplitArchiveOutputTest {
             RecordingVolumeChannel channel = new RecordingVolumeChannel(
                     channels.isEmpty() ? firstVolumeWriteFailure : null,
                     channels.isEmpty() ? firstVolumeCloseFailures : 0,
-                    channels.isEmpty() ? firstVolumeCloseFailure : null
+                    channels.isEmpty() ? firstVolumeCloseFailure : null,
+                    closeBeforeFailure
             );
             channels.add(channel);
             return channel;
@@ -354,19 +451,13 @@ final class SevenZipSplitArchiveOutputTest {
         @Override
         public void rollback() throws IOException {
             rollbackAttempts++;
+            assertTrue(allChannelsClosed(), "Caller must close physical volumes before rollback");
             if (finished) {
                 return;
             }
             if (rollbackFailures > 0) {
                 rollbackFailures--;
                 throw new IOException("rollback failure");
-            }
-            @SuppressWarnings("resource")
-            @Unmodifiable List<RecordingVolumeChannel> openedChannels = List.copyOf(channels);
-            for (RecordingVolumeChannel channel : openedChannels) {
-                if (channel.isOpen()) {
-                    channel.close();
-                }
             }
             rolledBack = true;
             finished = true;
@@ -376,6 +467,7 @@ final class SevenZipSplitArchiveOutputTest {
         @Override
         public void close() throws IOException {
             closeAttempts++;
+            assertTrue(allChannelsClosed(), "Caller must close physical volumes before closing the output");
             if (closeFailures > 0) {
                 closeFailures--;
                 throw new IOException("output close failure");
@@ -418,7 +510,10 @@ final class SevenZipSplitArchiveOutputTest {
         private int closeFailures;
 
         /// Failure reported by scheduled close failures, or `null` for the default failure.
-        private final @Nullable IOException closeFailure;
+        private final @Nullable Throwable closeFailure;
+
+        /// Whether a failed close has already made the channel report closure.
+        private final boolean closeBeforeFailure;
 
         /// Number of close attempts.
         private int closeAttempts;
@@ -430,11 +525,13 @@ final class SevenZipSplitArchiveOutputTest {
         private RecordingVolumeChannel(
                 @Nullable IOException writeFailure,
                 int closeFailures,
-                @Nullable IOException closeFailure
+                @Nullable Throwable closeFailure,
+                boolean closeBeforeFailure
         ) {
             this.writeFailure = writeFailure;
             this.closeFailures = closeFailures;
             this.closeFailure = closeFailure;
+            this.closeBeforeFailure = closeBeforeFailure;
         }
 
         /// Writes every remaining source byte.
@@ -457,16 +554,18 @@ final class SevenZipSplitArchiveOutputTest {
             return open;
         }
 
-        /// Closes this volume or performs one scheduled failure while leaving it open.
+        /// Closes this volume or performs one scheduled failure before or after changing its open state.
         @Override
         public void close() throws IOException {
             closeAttempts++;
-            if (!open) {
-                return;
-            }
             if (closeFailures > 0) {
                 closeFailures--;
-                throw closeFailure != null ? closeFailure : new IOException("volume close failure");
+                if (closeBeforeFailure) {
+                    open = false;
+                }
+                if (closeFailure instanceof RuntimeException exception) throw exception;
+                if (closeFailure instanceof Error exception) throw exception;
+                throw closeFailure != null ? (IOException) closeFailure : new IOException("volume close failure");
             }
             open = false;
         }

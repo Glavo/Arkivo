@@ -19,7 +19,6 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -117,12 +116,10 @@ public final class ArkivoFormats {
     ///
     /// @param path the archive path to probe
     /// @return the highest-priority matching installed format, or {@code null} if none matches
-    /// @throws IOException if the path cannot be opened or read
+    /// @throws IOException if the probe channel cannot be opened, read, restored, or closed
     public static @Nullable ArkivoFormat detect(Path path) throws IOException {
         Objects.requireNonNull(path, "path");
-        try (SeekableByteChannel channel = Files.newByteChannel(path, StandardOpenOption.READ)) {
-            return detect(channel);
-        }
+        return detectAndClose(Files.newByteChannel(path, StandardOpenOption.READ));
     }
 
     /// Detects an installed archive format through one independently opened seekable channel.
@@ -134,9 +131,7 @@ public final class ArkivoFormats {
     /// @throws IOException if a probe channel cannot be opened, read, restored, or closed
     public static @Nullable ArkivoFormat detect(ArkivoSeekableChannelSource source) throws IOException {
         Objects.requireNonNull(source, "source");
-        try (SeekableByteChannel channel = source.openChannel()) {
-            return detect(channel);
-        }
+        return detectAndClose(source.openChannel());
     }
 
     /// Detects an installed archive format from the first independently opened archive volume.
@@ -148,8 +143,24 @@ public final class ArkivoFormats {
     /// @throws IOException if volume zero cannot be opened, read, restored, or closed
     public static @Nullable ArkivoFormat detect(ArkivoVolumeSource source) throws IOException {
         Objects.requireNonNull(source, "source");
-        try (@Nullable SeekableByteChannel channel = source.openVolume(0L)) {
-            return channel == null ? null : detect(channel);
+        @Nullable SeekableByteChannel channel = source.openVolume(0L);
+        return channel == null ? null : detectAndClose(channel);
+    }
+
+    /// Detects through an owned probe channel and closes it without masking an earlier probe failure.
+    private static @Nullable ArkivoFormat detectAndClose(SeekableByteChannel channel) throws IOException {
+        @Nullable Throwable failure = null;
+        try {
+            return detect(channel);
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            if (failure == null) {
+                channel.close();
+            } else {
+                closeAfterFailedOpen(channel, failure);
+            }
         }
     }
 
@@ -357,10 +368,7 @@ public final class ArkivoFormats {
                         && transformed.format() instanceof ArkivoFormat.FileSystem fileSystemFormat) {
                     return fileSystemFormat.open(owned, options);
                 }
-                ArkivoFileSystem fileSystem;
-                try (SeekableByteChannel channel = owned.openChannel()) {
-                    fileSystem = openTransformedFileSystem(channel, options);
-                }
+                ArkivoFileSystem fileSystem = openTransformedFileSystem(owned.openChannel(), options);
                 closeSupersededSource(owned, fileSystem);
                 return fileSystem;
             }
@@ -410,10 +418,7 @@ public final class ArkivoFormats {
                 if (channel == null) {
                     throw new IOException("Unrecognized archive format");
                 }
-                ArkivoFileSystem fileSystem;
-                try (channel) {
-                    fileSystem = openTransformedFileSystem(channel, options);
-                }
+                ArkivoFileSystem fileSystem = openTransformedFileSystem(channel, options);
                 closeSupersededSource(owned, fileSystem);
                 return fileSystem;
             }
@@ -1235,6 +1240,7 @@ public final class ArkivoFormats {
     }
 
     /// Decodes installed outer compression layers and opens a detected archive file system from a temporary source.
+    /// Takes ownership of the source and closes it on success or failure.
     private static ArkivoFileSystem openTransformedFileSystem(
             ReadableByteChannel source,
             ArchiveReadOptions options
@@ -1343,7 +1349,7 @@ public final class ArkivoFormats {
             throws ArkivoReadLimitException {
         long actual = previous == Long.MAX_VALUE ? Long.MAX_VALUE : previous + 1L;
         long maximum = limits.maximumOuterCompressionLayers();
-        if (maximum >= 0L && actual > maximum) {
+        if (maximum >= 0L && previous >= maximum) {
             throw new ArkivoReadLimitException(
                     ArkivoReadLimitKind.OUTER_COMPRESSION_LAYERS,
                     maximum,
@@ -1599,9 +1605,6 @@ public final class ArkivoFormats {
 
     /// Closes a consumed endpoint after setup fails without hiding the primary failure.
     private static void closeAfterFailedOpen(Closeable endpoint, Throwable failure) {
-        if (endpoint instanceof Channel channel && !channel.isOpen()) {
-            return;
-        }
         try {
             endpoint.close();
         } catch (IOException | RuntimeException | Error exception) {

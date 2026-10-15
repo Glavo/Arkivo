@@ -36,6 +36,9 @@ public abstract class ArkivoStreamingReader implements Closeable {
     /// Whether this reader rejects all further cursor operations.
     private boolean closed;
 
+    /// Whether an earlier body or reader cleanup reported a failure.
+    private boolean closeFailed;
+
     /// Creates a streaming archive reader positioned before its first entry.
     protected ArkivoStreamingReader() {
     }
@@ -51,7 +54,12 @@ public abstract class ArkivoStreamingReader implements Closeable {
     public final boolean next() throws IOException {
         requireOpen();
         entryAvailable = false;
-        closeCurrentChannel();
+        try {
+            closeCurrentChannel();
+        } catch (IOException | RuntimeException | Error exception) {
+            closeFailed = true;
+            throw exception;
+        }
         entryAvailable = advance();
         return entryAvailable;
     }
@@ -150,6 +158,8 @@ public abstract class ArkivoStreamingReader implements Closeable {
     ///
     /// The reader rejects cursor operations as soon as closing starts, even if cleanup fails. Body-close failure remains
     /// primary and a reader-cleanup failure is suppressed on it. Repeated calls allow incomplete cleanup to be retried.
+    /// Close failures after an earlier cleanup failure, including body cleanup during [#next()], are wrapped in a new
+    /// `IOException` whose cause preserves the cleanup failure, avoiding try-with-resources self-suppression.
     ///
     /// @throws IOException if the current body or format-specific reader resources cannot be closed
     @Override
@@ -174,6 +184,12 @@ public abstract class ArkivoStreamingReader implements Closeable {
             }
         }
 
+        if (failure != null) {
+            if (closeFailed) {
+                throw new IOException("Archive reader cleanup failed again", failure);
+            }
+            closeFailed = true;
+        }
         if (failure instanceof IOException exception) {
             throw exception;
         }

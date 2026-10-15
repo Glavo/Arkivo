@@ -41,8 +41,8 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     /// A deferred target or transform failure.
     private @Nullable Throwable failure;
 
-    /// The failure most recently delivered by close, used to avoid self-suppression on retry.
-    private @Nullable Throwable previousCloseFailure;
+    /// Whether an earlier close attempt failed.
+    private boolean closeFailed;
 
     /// Whether all pending filter bytes have been forwarded.
     private boolean finished;
@@ -131,7 +131,7 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     /// finish failure, and later calls retry only an incomplete owned-target close.
     /// If a write or explicit finish already failed, finalization is skipped and an `IOException` with that failure
     /// as its cause is reported. The distinct exception permits suppression by try-with-resources.
-    /// A target-close retry that repeats the previously reported exception is wrapped in the same way.
+    /// Failures from target-close retries are wrapped in the same way.
     @Override
     public void close() throws IOException {
         @Nullable Throwable closeFailure = null;
@@ -150,10 +150,11 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         try {
             targetCloser.closeAfter(closeFailure);
         } catch (IOException | RuntimeException | Error exception) {
-            if (exception == previousCloseFailure) {
+            boolean retry = closeFailed;
+            closeFailed = true;
+            if (retry) {
                 throw new IOException("Transform channel target close failed again", exception);
             }
-            previousCloseFailure = exception;
             throw exception;
         }
     }

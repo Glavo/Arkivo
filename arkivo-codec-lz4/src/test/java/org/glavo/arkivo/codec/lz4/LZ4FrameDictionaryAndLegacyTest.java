@@ -252,11 +252,20 @@ public final class LZ4FrameDictionaryAndLegacyTest {
         try (CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> decoder =
                      new LZ4Codec().newDecoder()) {
             ByteBuffer source = ByteBuffer.wrap(frame);
-            ByteBuffer target = ByteBuffer.allocate(1);
+            ByteBuffer target = ByteBuffer.allocate(input.length + 1);
             assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.decode(source, target));
             assertEquals(23L, decoder.dictionaryRequest().dictionaryId());
-            assertThrows(IOException.class, () -> decoder.provideDictionary(wrong));
+            int waitingPosition = source.position();
+            assertThrows(IllegalArgumentException.class, () -> decoder.provideDictionary(wrong));
+            assertEquals(23L, decoder.dictionaryRequest().dictionaryId());
+            assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.finish(source, target));
+            assertEquals(waitingPosition, source.position());
+            assertEquals(0, target.position());
             decoder.provideDictionary(requested);
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
+            assertFalse(source.hasRemaining());
+            assertEquals(input.length, target.position());
+            assertArrayEquals(input, bytes(target.flip()));
         }
     }
 

@@ -13,6 +13,10 @@ import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -27,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -58,6 +63,210 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests end-to-end AR streaming, writing, file-system, update, metadata, and corruption behavior.
 @NotNullByDefault
 public final class ArArchiveIntegrationTest {
+    /// Rejects NUL names before reserving parents, staging bodies, or replacing indexed members.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void rejectsNulFileSystemMemberNames(boolean update, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("nul-names.a");
+        if (update) {
+            try (var writer = ArArkivoStreamingWriter.create(archive)) {
+                writer.beginFile("source").close();
+            }
+        }
+        try (var fs = update ? ArArkivoFileSystem.update(archive) : ArArkivoFileSystem.create(archive)) {
+            Path source = fs.getPath("/source");
+            if (!update) {
+                Files.write(source, new byte[0]);
+            }
+            for (String name : List.of("\0entry", "entry\0suffix", "entry\0", "parent\0/child",
+                    "abcdefghijklmnop\0")) {
+                Path target = fs.getPath("/" + name);
+                assertThrows(FileSystemException.class, () -> Files.writeString(target, "lost"));
+                assertThrows(FileSystemException.class, () -> Files.createDirectory(target));
+                assertThrows(FileSystemException.class, () -> Files.createSymbolicLink(target, fs.getPath("source")));
+                if (update) {
+                    assertThrows(FileSystemException.class, () -> Files.copy(source, target));
+                    assertThrows(FileSystemException.class, () -> Files.move(source, target));
+                    assertEquals(true, Files.exists(source));
+                    assertEquals(false, Files.exists(target));
+                }
+            }
+            Files.write(fs.getPath("/after"), new byte[]{7});
+        }
+        try (var reader = ArArkivoStreamingReader.open(Files.newInputStream(archive))) {
+            assertEquals(true, reader.next());
+            assertEquals("source", reader.readAttributes().path());
+            assertEquals(true, reader.next());
+            assertEquals("after", reader.readAttributes().path());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{7}, body.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Rejects NUL names before entry state changes and keeps the writer usable for a valid member.
+    @ParameterizedTest
+    @ValueSource(strings = {"\0name", "a\0b", "name\0", "abcdefghijklmnop\0", "dir/\0child"})
+    public void rejectsNulStreamingMemberNames(String name) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var writer = ArArkivoStreamingWriter.open(output)) {
+            int size = output.size();
+            assertThrows(IllegalArgumentException.class, () -> writer.beginFile(name));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory(name));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink(name, "target"));
+            assertEquals(size, output.size());
+            try (var body = writer.beginFile("valid").openOutputStream()) {
+                body.write(42);
+            }
+        }
+        try (var reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            assertEquals("valid", reader.readAttributes().path());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{42}, body.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Rejects embedded NUL characters in standard, BSD, GNU, and caller-decoded member names.
+    @ParameterizedTest
+    @ValueSource(strings = {"\0name", "a\0b"})
+    public void rejectsNulDecodedMemberNames(String name) throws IOException {
+        byte[] bytes = name.getBytes(StandardCharsets.UTF_8);
+        byte[][] archives = {
+                archive(member(name + "/", 0, 0, 0, 0100644, new byte[0])),
+                archive(member("#1/" + bytes.length, 0, 0, 0, 0100644, bytes)),
+                archive(member("//", 0, 0, 0, 0, (name + "/\n").getBytes(StandardCharsets.UTF_8)),
+                        member("/0", 0, 0, 0, 0100644, new byte[0]))
+        };
+        for (byte[] content : archives) {
+            try (var reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(content))) {
+                assertEquals("AR member path must not contain NUL", assertThrows(IOException.class, reader::next)
+                        .getMessage());
+            }
+        }
+        byte[] ordinary = archive(member("ordinary/", 0, 0, 0, 0100644, new byte[0]));
+        try (var reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(ordinary),
+                ArArchiveOptions.READ_DEFAULTS.withMetadataDecoder(ignored -> name))) {
+            assertEquals("AR member path must not contain NUL", assertThrows(IOException.class, reader::next)
+                    .getMessage());
+        }
+    }
+
+    /// Symbol-table names are rejected before streaming entry state or output changes.
+    @ParameterizedTest
+    @ValueSource(strings = {"__.SYMDEF", "__.SYMDEF SORTED", "__.SYMDEF_64", "__.SYMDEF_64 SORTED"})
+    public void rejectsReservedStreamingMemberNames(String name) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        List<String> ordinary = List.of(name + "X", "nested/" + name, name + "/child");
+        try (var writer = ArArkivoStreamingWriter.open(output)) {
+            for (String spelling : List.of(name, "./" + name, name + "/")) {
+                int size = output.size();
+                assertThrows(IllegalArgumentException.class, () -> writer.beginFile(spelling));
+                assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory(spelling));
+                assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink(spelling, "target"));
+                assertEquals(size, output.size());
+            }
+            for (String path : ordinary) {
+                try (var body = writer.beginFile(path).openOutputStream()) {
+                    body.write(new byte[]{1, 2, 3});
+                }
+            }
+        }
+        ArrayList<String> actual = new ArrayList<>();
+        try (var reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            while (reader.next()) {
+                actual.add(reader.readAttributes().path());
+                try (var body = reader.openInputStream()) {
+                    assertArrayEquals(new byte[]{1, 2, 3}, body.readAllBytes());
+                }
+            }
+        }
+        assertEquals(ordinary, actual);
+    }
+
+    /// File-system mutations reject symbol-table names before publishing or replacing a node.
+    @ParameterizedTest
+    @CsvSource({"__.SYMDEF,false", "__.SYMDEF SORTED,false", "__.SYMDEF_64,false",
+            "__.SYMDEF_64 SORTED,false", "__.SYMDEF,true", "__.SYMDEF SORTED,true",
+            "__.SYMDEF_64,true", "__.SYMDEF_64 SORTED,true"})
+    public void rejectsReservedFileSystemMemberNames(String name, boolean update, @TempDir Path directory)
+            throws IOException {
+        Path archive = directory.resolve("names.a");
+        if (update) {
+            try (var writer = ArArkivoStreamingWriter.create(archive);
+                 var body = writer.beginFile("source").openOutputStream()) {
+                body.write(new byte[]{4, 5});
+            }
+        }
+        try (var fs = update ? ArArkivoFileSystem.update(archive) : ArArkivoFileSystem.create(archive)) {
+            Path reserved = fs.getPath("./" + name);
+            assertThrows(FileSystemException.class, () -> Files.writeString(reserved, "lost"));
+            assertThrows(FileSystemException.class, () -> Files.createDirectory(reserved));
+            assertThrows(FileSystemException.class, () -> Files.createSymbolicLink(reserved, fs.getPath("target")));
+            if (update) {
+                assertThrows(FileSystemException.class, () -> Files.move(fs.getPath("source"), reserved));
+                assertArrayEquals(new byte[]{4, 5}, Files.readAllBytes(fs.getPath("source")));
+            }
+            assertEquals(false, Files.exists(reserved));
+            Files.writeString(fs.getPath("nested/" + name), "kept");
+            Files.writeString(fs.getPath(name + "/child"), "implicit parent");
+        }
+        try (var fs = ArArkivoFileSystem.open(archive)) {
+            assertEquals(true, Files.isDirectory(fs.getPath(name)));
+            assertEquals("kept", Files.readString(fs.getPath("nested/" + name)));
+            assertEquals("implicit parent", Files.readString(fs.getPath(name + "/child")));
+            if (update) assertArrayEquals(new byte[]{4, 5}, Files.readAllBytes(fs.getPath("source")));
+        }
+    }
+
+    /// Existing ordinary members whose raw names normalize to symbol-table names survive snapshot rewrites.
+    @ParameterizedTest
+    @ValueSource(strings = {"__.SYMDEF", "__.SYMDEF SORTED", "__.SYMDEF_64", "__.SYMDEF_64 SORTED"})
+    public void preservesNormalizedSymbolTableNameDuringUpdate(String name, @TempDir Path directory)
+            throws IOException {
+        Path file = directory.resolve("normalized.a");
+        byte[] content = {1, 2, 3};
+        for (String prefix : List.of("./", "././", ".\\")) {
+            String rawPath = prefix + name;
+            byte[] rawName = rawPath.getBytes(StandardCharsets.UTF_8);
+            ByteArrayOutputStream body = new ByteArrayOutputStream();
+            body.write(rawName);
+            body.write(content);
+            byte[] bytes = archive(member("#1/" + rawName.length, 0, 0, 0, 0100644, body.toByteArray()));
+            try (var reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+                assertEquals(true, reader.next());
+                assertEquals(rawPath, reader.readAttributes().path());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+            Files.write(file, bytes);
+            try (var fs = ArArkivoFileSystem.update(file)) {
+                assertArrayEquals(content, Files.readAllBytes(fs.getPath(name)));
+                Files.writeString(fs.getPath("other"), "kept");
+            }
+            try (var fs = ArArkivoFileSystem.open(file)) {
+                assertArrayEquals(content, Files.readAllBytes(fs.getPath(name)));
+                assertEquals("kept", Files.readString(fs.getPath("other")));
+            }
+            try (var fs = ArArkivoFileSystem.update(file)) {
+                Files.writeString(fs.getPath(name), "updated");
+            }
+            try (var fs = ArArkivoFileSystem.update(file)) {
+                assertEquals("updated", Files.readString(fs.getPath(name)));
+                Files.move(fs.getPath(name), fs.getPath("ordinary"));
+            }
+            try (var fs = ArArkivoFileSystem.open(file)) {
+                assertEquals(false, Files.exists(fs.getPath(name)));
+                assertEquals("updated", Files.readString(fs.getPath("ordinary")));
+            }
+        }
+    }
+
     /// Verifies that ordinary AR members can be streamed with metadata.
     @Test
     public void readsOrdinaryMembers() throws IOException {
@@ -999,13 +1208,22 @@ public final class ArArchiveIntegrationTest {
     /// Verifies that the streaming writer rejects unsafe paths.
     @Test
     public void writerRejectsUnsafePaths() throws IOException {
-        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(new ByteArrayOutputStream())) {
-            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("../evil.txt"));
-            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("/absolute.txt"));
-            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("C:/evil.txt"));
-            assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory("../dir"));
-            assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("../link", "target"));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            for (String path : new String[]{"../evil.txt", "/absolute.txt", "C:/evil.txt",
+                    "./C:/escape", ".\\C:\\escape", "././C:escape", ".//c:/escape"}) {
+                assertThrows(IllegalArgumentException.class, () -> writer.beginFile(path), path);
+                assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory(path), path);
+                assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink(path, "target"), path);
+            }
             assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("link", ""));
+            writer.beginFile("./safe/file").close();
+        }
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            assertEquals("safe/file", reader.readAttributes().path());
+            assertEquals(false, reader.next());
         }
     }
 
@@ -1245,6 +1463,25 @@ public final class ArArchiveIntegrationTest {
             IOException exception = assertThrows(IOException.class, reader::next);
 
             assertEquals(true, exception.getMessage().contains("must be relative"));
+        }
+    }
+
+    /// Rejects stored paths whose normalized metadata would acquire a drive prefix.
+    @Test
+    public void rejectsDrivePrefixesExposedByFileSystemNormalization() throws IOException {
+        for (String path : new String[]{"./C:/escape", ".\\C:\\escape", "././C:escape", ".//c:/escape"}) {
+            byte[] bytes = archive(member(path + "/", 0, 0, 0, 0100644, new byte[0]));
+            Path archivePath = createTemporaryArchivePath("ar-normalized-drive-");
+            try {
+                Files.write(archivePath, bytes);
+                assertEquals("AR entry path must be relative",
+                        assertThrows(IOException.class, () -> ArArkivoFileSystem.open(archivePath).close()).getMessage());
+                assertEquals("AR entry path must be relative",
+                        assertThrows(IOException.class, () -> ArArkivoFileSystem.update(archivePath).close()).getMessage());
+                assertArrayEquals(bytes, Files.readAllBytes(archivePath));
+            } finally {
+                deleteTemporaryArchive(archivePath);
+            }
         }
     }
 

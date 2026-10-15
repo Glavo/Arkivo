@@ -6,11 +6,16 @@ package org.glavo.arkivo.archive.dmg;
 import org.glavo.arkivo.codec.deflate.ZlibCodec;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -35,6 +40,7 @@ import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.concatenate;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.sector;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.writeImage;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -244,6 +250,41 @@ final class UDIFValidationTest {
         assertEquals("Invalid UDIF XML property list", exception.getMessage());
     }
 
+    /// Bounds XML nesting even when the process-wide parser configuration disables its depth limit.
+    @ParameterizedTest
+    @ValueSource(strings = {"data", "key", "ignored"})
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void rejectsDeepPropertyListElements(String location) throws IOException {
+        String opening = "<array>".repeat(128);
+        String closing = "</array>".repeat(128);
+        Path path = writeMutatedPropertyListImage("nested-" + location, propertyList -> switch (location) {
+            case "data" -> replaceRequired(replaceRequired(propertyList, "<data>", "<data>" + opening),
+                    "</data>", closing + "</data>");
+            case "key" -> replaceRequired(propertyList, "<key>Data</key>",
+                    "<key>" + opening + "Data" + closing + "</key>");
+            case "ignored" -> replaceRequired(propertyList, "<key>resource-fork</key>",
+                    "<key>ignored</key>" + opening + closing + "<key>resource-fork</key>");
+            default -> throw new AssertionError(location);
+        });
+        @Nullable String previous = System.getProperty("jdk.xml.maxElementDepth");
+        System.setProperty("jdk.xml.maxElementDepth", "0");
+        try {
+            IOException failure = assertThrows(IOException.class, () -> {
+                try (var ignored = DMGImage.open(path)) {
+                    // A successful open is the regression; still release the unexpected image.
+                }
+            });
+            assertEquals("Invalid UDIF XML property list", failure.getMessage());
+            assertInstanceOf(SAXException.class, failure.getCause());
+        } finally {
+            if (previous == null) {
+                System.clearProperty("jdk.xml.maxElementDepth");
+            } else {
+                System.setProperty("jdk.xml.maxElementDepth", previous);
+            }
+        }
+    }
+
     /// Rejects well-formed property lists whose resource-fork structure cannot describe block tables.
     ///
     /// @param testCase the deterministic property-list mutation and expected diagnostic
@@ -291,11 +332,11 @@ final class UDIFValidationTest {
         assertEquals("Overlapping UDIF data runs at decoded offset 0", exception.getMessage());
     }
 
-    /// Rejects an encoded run that begins before the trailer-declared data-fork lower bound.
+    /// Rejects an encoded run whose fork-relative range exceeds the declared data-fork length.
     @Test
-    void rejectsPhysicalRunBeforeDataFork() throws IOException {
+    void rejectsPhysicalRunBeyondDataFork() throws IOException {
         Path path = writeImage(
-                temporaryDirectory.resolve("run-before-data-fork.dmg"),
+                temporaryDirectory.resolve("run-beyond-data-fork.dmg"),
                 List.of(new DMGTestFixtures.Run(RAW_RUN, sector(66)))
         );
         byte[] image = Files.readAllBytes(path);
@@ -306,7 +347,7 @@ final class UDIFValidationTest {
 
         IOException exception = assertThrows(IOException.class, () -> DMGImage.open(path));
 
-        assertEquals("UDIF physical run precedes the data fork", exception.getMessage());
+        assertEquals("UDIF physical run range exceeds the disk image", exception.getMessage());
     }
 
     /// Rejects malformed ADC commands and payload termination states.

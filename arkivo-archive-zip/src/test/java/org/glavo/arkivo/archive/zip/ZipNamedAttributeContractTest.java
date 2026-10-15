@@ -6,11 +6,16 @@ package org.glavo.arkivo.archive.zip;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.NotLinkException;
 import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardOpenOption;
@@ -27,9 +32,12 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -39,6 +47,161 @@ final class ZipNamedAttributeContractTest {
     /// Temporary directory used for path-backed ZIP archives.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Raw type changes use the currently visible body instead of the source archive's previous file type.
+    @ParameterizedTest
+    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+    void readsLinkTargetAfterRawTypeChange(boolean written, boolean renamed) throws IOException {
+        Path archive = temporaryDirectory.resolve("file-type.zip");
+        try (var fileSystem = ZipArkivoFileSystem.create(archive)) {
+            Files.writeString(fileSystem.getPath("/target"), "content");
+            if (!written) Files.writeString(fileSystem.getPath("/file"), "target");
+        }
+        String name = renamed ? "/renamed" : "/file";
+        try (var fileSystem = ZipArkivoFileSystem.update(archive)) {
+            Path file = fileSystem.getPath("/file");
+            if (written) Files.writeString(file, "target");
+            var view = Objects.requireNonNull(Files.getFileAttributeView(file,
+                    ZipArkivoEntryAttributeView.class, LinkOption.NOFOLLOW_LINKS));
+            view.setPermissions(Set.of(PosixFilePermission.OWNER_READ));
+            view.setExternalAttributes((long) 0120777 << 16);
+            assertTrue(view.readAttributes().isSymbolicLink());
+            assertEquals(fileSystem.getPath("target"), Files.readSymbolicLink(file));
+            assertEquals("content", Files.readString(file));
+            if (renamed) Files.move(file, fileSystem.getPath(name));
+            assertEquals(fileSystem.getPath("target"), Files.readSymbolicLink(fileSystem.getPath(name)));
+            assertEquals("content", Files.readString(fileSystem.getPath(name)));
+        }
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            Path link = fileSystem.getPath(name);
+            assertTrue(Files.isSymbolicLink(link));
+            assertEquals(fileSystem.getPath("target"), Files.readSymbolicLink(link));
+            assertEquals("content", Files.readString(link));
+        }
+    }
+
+    /// Explicit directories retain their type when raw Unix attributes contain symbolic-link bits.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void directoryTypeTakesPrecedenceOverRawLinkBits(boolean written) throws IOException {
+        Path archive = temporaryDirectory.resolve("directory-type.zip");
+        try (var fileSystem = ZipArkivoFileSystem.create(archive)) {
+            if (!written) {
+                Files.createDirectory(fileSystem.getPath("/directory"));
+                Files.writeString(fileSystem.getPath("/directory/child"), "content");
+            }
+        }
+        long rawAttributes = ((long) 0120777 << 16) | 0x10;
+        try (var fileSystem = ZipArkivoFileSystem.update(archive)) {
+            Path directory = fileSystem.getPath("/directory");
+            if (written) {
+                Files.createDirectory(directory);
+                Files.writeString(directory.resolve("child"), "content");
+            }
+            var view = Objects.requireNonNull(Files.getFileAttributeView(directory,
+                    ZipArkivoEntryAttributeView.class, LinkOption.NOFOLLOW_LINKS));
+            view.setPermissions(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
+            view.setExternalAttributes(rawAttributes);
+            assertTrue(view.readAttributes().isDirectory());
+            assertFalse(view.readAttributes().isSymbolicLink());
+        }
+        for (boolean update : new boolean[]{false, true, false}) {
+            try (var fileSystem = update ? ZipArkivoFileSystem.update(archive) : ZipArkivoFileSystem.open(archive)) {
+                Path directory = fileSystem.getPath("/directory");
+                var attributes = Files.readAttributes(directory, ZipArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS);
+                assertTrue(attributes.isDirectory());
+                assertFalse(attributes.isSymbolicLink());
+                assertFalse(attributes.isRegularFile());
+                assertEquals(rawAttributes, attributes.externalAttributes());
+                assertThrows(NotLinkException.class, () -> Files.readSymbolicLink(directory));
+                assertEquals("content", Files.readString(directory.resolve("child")));
+                if (update) Files.writeString(fileSystem.getPath("/another"), "update");
+            }
+        }
+    }
+
+    /// Updating a link's own permissions preserves its DOS word without changing the target's permissions.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesLinkDosFlagsWhenChangingPermissions(boolean written) throws IOException {
+        Path archive = temporaryDirectory.resolve("link-permissions.zip");
+        try (var fileSystem = ZipArkivoFileSystem.create(archive)) {
+            Files.write(fileSystem.getPath("/target"), new byte[]{42});
+            if (!written) Files.createSymbolicLink(fileSystem.getPath("/link"), fileSystem.getPath("target"));
+        }
+        Set<PosixFilePermission> permissions = Set.of(PosixFilePermission.OWNER_READ);
+        try (var fileSystem = ZipArkivoFileSystem.update(archive)) {
+            Path link = fileSystem.getPath("/link");
+            if (written) Files.createSymbolicLink(link, fileSystem.getPath("target"));
+            var targetPermissions = Files.getPosixFilePermissions(fileSystem.getPath("/target"));
+            var view = Objects.requireNonNull(Files.getFileAttributeView(link, ZipArkivoEntryAttributeView.class,
+                    LinkOption.NOFOLLOW_LINKS));
+            view.setExternalAttributes((view.readAttributes().externalAttributes() & 0xffff_0000L) | 0x27L);
+            view.setPermissions(permissions);
+            var attributes = view.readAttributes();
+            assertTrue(attributes.isSymbolicLink());
+            assertEquals(0x27L, attributes.externalAttributes() & 0xffffL);
+            assertEquals(permissions, attributes.permissions());
+            assertEquals(targetPermissions, Files.getPosixFilePermissions(fileSystem.getPath("/target")));
+        }
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            Path link = fileSystem.getPath("/link");
+            var attributes = Files.readAttributes(link, ZipArkivoEntryAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            assertTrue(attributes.isSymbolicLink());
+            assertEquals(0x27L, attributes.externalAttributes() & 0xffffL);
+            assertEquals(permissions, attributes.permissions());
+            assertEquals(fileSystem.getPath("target"), Files.readSymbolicLink(link));
+            assertArrayEquals(new byte[]{42}, Files.readAllBytes(link));
+        }
+    }
+
+    /// Permission changes preserve DOS flags on both copied and newly written central-directory records.
+    @ParameterizedTest
+    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+    void preservesDosFlagsWhenChangingPermissions(boolean written, boolean unix) throws IOException {
+        Path archive = temporaryDirectory.resolve("permissions.zip");
+        try (var output = new ZipOutputStream(Files.newOutputStream(archive))) {
+            output.putNextEntry(new ZipEntry("existing-file"));
+            output.write(42);
+            output.closeEntry();
+            output.putNextEntry(new ZipEntry("existing-directory/"));
+            output.closeEntry();
+        }
+        String prefix = written ? "/written-" : "/existing-";
+        Set<PosixFilePermission> permissions = Set.of(PosixFilePermission.OWNER_READ);
+        try (var fileSystem = ZipArkivoFileSystem.update(archive)) {
+            if (written) {
+                Files.write(fileSystem.getPath(prefix + "file"), new byte[]{42});
+                Files.createDirectory(fileSystem.getPath(prefix + "directory"));
+            }
+            for (boolean directory : new boolean[]{false, true}) {
+                Path path = fileSystem.getPath(prefix + (directory ? "directory" : "file"));
+                if (unix) Files.setPosixFilePermissions(path, Set.of(PosixFilePermission.OWNER_WRITE));
+                var initial = Files.readAttributes(path, ZipArkivoEntryAttributes.class);
+                assertEquals(unix ? 3 : 0, initial.versionMadeBy() >>> 8);
+                long dosAttributes = directory ? 0x2737L : 0x2727L;
+                Files.setAttribute(path, "zip:externalAttributes",
+                        (initial.externalAttributes() & 0xffff_0000L) | dosAttributes);
+                Files.setPosixFilePermissions(path, permissions);
+                var updated = Files.readAttributes(path, ZipArkivoEntryAttributes.class);
+                assertEquals(dosAttributes, updated.externalAttributes() & 0xffffL);
+                assertEquals(permissions, updated.permissions());
+                assertEquals(directory, updated.isDirectory());
+            }
+        }
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            for (boolean directory : new boolean[]{false, true}) {
+                Path path = fileSystem.getPath(prefix + (directory ? "directory" : "file"));
+                var attributes = Files.readAttributes(path, ZipArkivoEntryAttributes.class);
+                assertEquals(directory ? 0x2737L : 0x2727L, attributes.externalAttributes() & 0xffffL);
+                assertEquals(permissions, attributes.permissions());
+                assertEquals(directory, attributes.isDirectory());
+                assertEquals(3, attributes.versionMadeBy() >>> 8);
+            }
+            assertArrayEquals(new byte[]{42}, Files.readAllBytes(fileSystem.getPath(prefix + "file")));
+        }
+    }
 
     /// Verifies wildcard and explicit named reads for existing, written, and synthetic entries.
     @Test

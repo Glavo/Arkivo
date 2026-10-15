@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies archive-wide limit defaults, construction, and effective decoder bounds.
 @NotNullByDefault
@@ -139,7 +140,21 @@ public final class ArchiveReadLimitsTest {
         );
     }
 
-    /// Verifies read-limit failures require a category and an observation strictly beyond a nonnegative maximum.
+    /// Distinguishes an unrepresentable observation from merely reaching a maximum-long limit.
+    @Test
+    public void readLimitExceptionReportsSaturatedObservation() {
+        ArkivoReadLimitException failure = new ArkivoReadLimitException(
+                ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, Long.MAX_VALUE, Long.MAX_VALUE, "entry.bin");
+        assertEquals(Long.MAX_VALUE, failure.maximum());
+        assertEquals(Long.MAX_VALUE, failure.actual());
+        assertTrue(failure.getMessage().contains("actual greater than " + Long.MAX_VALUE));
+        assertThrows(IllegalArgumentException.class, () -> new ArkivoReadLimitException(
+                ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, Long.MAX_VALUE, Long.MAX_VALUE - 1L, null));
+        assertThrows(IllegalArgumentException.class, () -> new ArkivoReadLimitException(
+                ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, Long.MAX_VALUE - 1L, Long.MAX_VALUE - 1L, null));
+    }
+
+    /// Verifies read-limit failures reject missing categories and observations below or equal to ordinary limits.
     @Test
     @SuppressWarnings("DataFlowIssue")
     public void readLimitExceptionRejectsInvalidConstruction() {

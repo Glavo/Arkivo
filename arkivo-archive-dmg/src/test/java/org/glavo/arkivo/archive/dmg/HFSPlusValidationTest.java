@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.SECTOR_SIZE;
@@ -25,6 +26,26 @@ final class HFSPlusValidationTest {
     /// The generated test directory.
     @TempDir
     Path temporaryDirectory;
+
+    /// Resolves a descendant-first hierarchy without recursive Java calls.
+    @Test
+    void resolvesDeepCatalogHierarchy() throws IOException {
+        int depth = 2048;
+        Path image = writeRawImage(temporaryDirectory.resolve("deep-hierarchy.dmg"),
+                DMGTestFixtures.createDeepHFSPlusDisk(depth));
+        try (var fileSystem = DMGArkivoFileSystem.open(image)) {
+            assertTrue(Files.isDirectory(fileSystem.getPath("/x".repeat(depth))));
+            assertTrue(Files.isDirectory(fileSystem.getPath("/x")));
+        }
+    }
+
+    /// Rejects a deep ancestor cycle with an I/O diagnostic rather than a stack overflow.
+    @Test
+    void rejectsDeepCatalogCycle() throws IOException {
+        byte[] disk = DMGTestFixtures.createDeepHFSPlusDisk(4096);
+        ByteArrayAccess.writeIntBigEndian(disk, 6 * SECTOR_SIZE + 14 + 2, 16);
+        assertRejected(disk, "deep-cycle.dmg", "Cyclic HFS Plus catalog hierarchy");
+    }
 
     /// Rejects invalid allocation sizes, free-space counts, and capacities in the volume header.
     @Test

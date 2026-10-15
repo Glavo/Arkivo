@@ -35,9 +35,9 @@ final class SevenZipPathVolumeTargetTest {
     @TempDir
     private Path temporaryDirectory;
 
-    /// Verifies constructor normalization, defensive option copying, and first-volume validation.
+    /// Verifies traversal components are preserved alongside defensive option copying and first-volume validation.
     @Test
-    void normalizesAndValidatesConfiguration() {
+    void preservesAndValidatesConfiguration() {
         Path first = temporaryDirectory.resolve("nested").resolve("..").resolve("sample.7z.001");
         HashSet<OpenOption> options = new HashSet<>(Set.of(
                 StandardOpenOption.CREATE,
@@ -46,7 +46,7 @@ final class SevenZipPathVolumeTargetTest {
         SevenZipPathVolumeTarget target = new SevenZipPathVolumeTarget(first, options);
         options.clear();
 
-        assertEquals(first.toAbsolutePath().normalize(), target.firstVolumePath());
+        assertEquals(first.toAbsolutePath(), target.firstVolumePath());
         assertEquals(Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE), target.openOptions());
         assertThrows(UnsupportedOperationException.class, () -> target.openOptions().clear());
         assertThrows(

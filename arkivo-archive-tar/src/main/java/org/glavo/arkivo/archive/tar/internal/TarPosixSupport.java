@@ -24,6 +24,28 @@ final class TarPosixSupport {
     private TarPosixSupport() {
     }
 
+    /// Rejects principal names that cannot be preserved in USTAR or PAX fields.
+    ///
+    /// @param name the replacement name, or `null` to clear it
+    /// @throws IllegalArgumentException if the name contains NUL or an unpaired UTF-16 surrogate
+    static void validateName(@Nullable String name) {
+        if (name == null) {
+            return;
+        }
+        for (int index = 0; index < name.length(); index++) {
+            char value = name.charAt(index);
+            if (value == 0) {
+                throw new IllegalArgumentException("TAR principal names cannot contain NUL");
+            }
+            if (Character.isHighSurrogate(value) && index + 1 < name.length()
+                    && Character.isLowSurrogate(name.charAt(index + 1))) {
+                index++;
+            } else if (Character.isSurrogate(value)) {
+                throw new IllegalArgumentException("TAR principal names cannot contain unpaired surrogates");
+            }
+        }
+    }
+
     /// Returns the owner principal represented by a TAR user name.
     static UserPrincipal owner(@Nullable String userName) {
         return userName != null ? new NamedUserPrincipal(userName) : DEFAULT_OWNER;

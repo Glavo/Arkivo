@@ -147,6 +147,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
+        options = ArkivoFileSystemProviderSupport.normalizeChannelOptions(options);
         return readFileSystem(path).newByteChannel(
                 ArkivoFileSystemProviderSupport.resolveReadChannelPath(path, options),
                 options,

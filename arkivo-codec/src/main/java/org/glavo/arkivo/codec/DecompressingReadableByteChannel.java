@@ -17,9 +17,9 @@ import java.util.Objects;
 /// Reads compressed bytes from a backing channel and exposes decoded bytes.
 ///
 /// Contexts are stateful and not safe for concurrent data operations. A read may block while obtaining compressed input
-/// and advances the target position by the positive count it returns; an empty target returns zero without reading the
-/// source. Arkivo-provided contexts fail with `IOException` when a nonempty operation cannot make codec or transport
-/// progress.
+/// and advances the target position by the positive count it returns; an empty writable target returns zero without
+/// reading the source. Arkivo-provided contexts fail with `IOException` when a nonempty operation cannot make codec or
+/// transport progress.
 ///
 /// Closing always releases decoder state. A borrowed backing source remains open; an owned source is closed. Closing does
 /// not drain compressed input or verify that the current encoding is complete.
@@ -40,6 +40,7 @@ public interface DecompressingReadableByteChannel extends ReadableByteChannel {
     /// @param target the destination for decoded bytes
     /// @return this call's progress and active or end-of-input status
     /// @throws IOException if compressed input cannot be read or decoded
+    /// @throws IllegalArgumentException if the target is read-only
     default CodecResult decode(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         long inputBefore = inputBytes();
@@ -82,6 +83,8 @@ public interface DecompressingReadableByteChannel extends ReadableByteChannel {
     ///
     /// The decoder is no longer open after release is attempted. If owned-source closure fails, a later `close()` retries
     /// only source closure and does not release decoder state again.
+    /// Arkivo's default adapters wrap a close failure after any reported source or decoder failure, and any close-retry
+    /// failure, in a new `IOException` to prevent exception self-suppression during try-with-resources cleanup.
     ///
     /// @throws IOException if decoder release or owned-source closure fails
     @Override
@@ -99,6 +102,7 @@ public interface DecompressingReadableByteChannel extends ReadableByteChannel {
         /// @param target the destination for decoded bytes
         /// @return this call's progress and active, frame-finished, or end-of-input status
         /// @throws IOException if compressed input cannot be read or decoded
+        /// @throws IllegalArgumentException if the target is read-only
         CodecResult decodeFrame(ByteBuffer target) throws IOException;
     }
 }

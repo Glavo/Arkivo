@@ -322,7 +322,7 @@ public final class LZ4FrameDecoder
         requireOpen();
         LZ4DictionaryRequest request = dictionaryRequest();
         if (!request.matches(dictionary)) {
-            throw new IOException("Configured LZ4 dictionary does not satisfy " + request);
+            throw new IllegalArgumentException("Configured LZ4 dictionary does not satisfy " + request);
         }
         installDictionary(dictionary);
         beginStandardFrame();

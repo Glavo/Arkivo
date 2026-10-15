@@ -164,15 +164,11 @@ final class SevenZipPosixSupport {
     ) {
         Objects.requireNonNull(permissions, "permissions");
         int unixMode = unixMode(windowsAttributes);
-        int fileType;
-        if (unixMode != SevenZipArkivoEntryAttributes.UNKNOWN_UNIX_MODE) {
-            fileType = unixMode & PosixModes.FILE_TYPE_MASK;
-        } else if (directory) {
-            fileType = PosixModes.DIRECTORY_FILE_TYPE;
-        } else if (isSymbolicLink(windowsAttributes)) {
-            fileType = PosixModes.SYMBOLIC_LINK_FILE_TYPE;
-        } else {
-            fileType = PosixModes.REGULAR_FILE_TYPE;
+        int fileType = unixMode == SevenZipArkivoEntryAttributes.UNKNOWN_UNIX_MODE
+                ? 0 : unixMode & PosixModes.FILE_TYPE_MASK;
+        if (fileType == 0) {
+            // A zero high word means absent Unix metadata, not an explicitly empty permission set.
+            fileType = directory ? PosixModes.DIRECTORY_FILE_TYPE : PosixModes.REGULAR_FILE_TYPE;
         }
         int lowAttributes = windowsAttributes == SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES
                 ? 0

@@ -49,8 +49,10 @@ import java.util.Objects;
 /// policy.
 ///
 /// Entry creation accepts `posix:permissions` and `basic:lastModifiedTime` initial attributes. Modification times
-/// are [java.nio.file.attribute.FileTime] values, serialized at 100-nanosecond resolution. Creation attributes do
-/// not change an existing entry opened for writing. When a supported attribute is repeated, its last value is used.
+/// are [java.nio.file.attribute.FileTime] values, serialized as unsigned 64-bit counts of 100-nanosecond intervals
+/// since 1601-01-01T00:00:00Z. Fractional intervals are truncated toward the past; out-of-range values are rejected
+/// with [IllegalArgumentException]. Creation attributes do not change an existing entry opened for writing.
+/// When a supported attribute is repeated, its last value is used.
 ///
 /// Single-volume channel-source updates require an explicit commit target because no source path is
 /// available for replacement. General volume sources remain read-only through `open`; use `update` with an explicit

@@ -10,6 +10,9 @@ import java.io.IOException;
 import java.util.Objects;
 
 /// Reports that archive metadata or decoded entry data exceeded a configured reading limit.
+///
+/// Observations beyond the range of `long` are reported as [Long#MAX_VALUE]. In particular, equal maximum and actual
+/// values of `Long.MAX_VALUE` indicate that the observed count exceeded that value, not that the limit was reached.
 @NotNullByDefault
 public final class ArkivoReadLimitException extends IOException {
     /// The serialization version for this exception type.
@@ -21,7 +24,7 @@ public final class ArkivoReadLimitException extends IOException {
     /// The maximum permitted value.
     private final long maximum;
 
-    /// The value that exceeded the configured maximum.
+    /// The observed value, saturated at `Long.MAX_VALUE`.
     private final long actual;
 
     /// The archive-local entry path associated with the failure, or `null` for archive-wide failures.
@@ -31,9 +34,11 @@ public final class ArkivoReadLimitException extends IOException {
     ///
     /// @param kind      the resource category whose limit was exceeded
     /// @param maximum   the configured non-negative maximum
-    /// @param actual    the observed value, which must be greater than {@code maximum}
+    /// @param actual    the observed value, saturated at [Long#MAX_VALUE]; it must exceed `maximum` unless both are
+    ///                  `Long.MAX_VALUE`, which represents an observation beyond the range of `long`
     /// @param entryPath the affected archive-local entry path, or {@code null} for an archive-wide limit
-    /// @throws IllegalArgumentException if {@code maximum} is negative or {@code actual} does not exceed it
+    /// @throws IllegalArgumentException if `maximum` is negative, or `actual` does not exceed it and the values are
+    ///                                  not both `Long.MAX_VALUE`
     public ArkivoReadLimitException(
             ArkivoReadLimitKind kind,
             long maximum,
@@ -44,7 +49,7 @@ public final class ArkivoReadLimitException extends IOException {
         if (maximum < 0L) {
             throw new IllegalArgumentException("maximum must not be negative");
         }
-        if (actual <= maximum) {
+        if (actual <= maximum && !(maximum == Long.MAX_VALUE && actual == Long.MAX_VALUE)) {
             throw new IllegalArgumentException("actual must exceed maximum");
         }
         this.kind = Objects.requireNonNull(kind, "kind");
@@ -67,9 +72,9 @@ public final class ArkivoReadLimitException extends IOException {
         return maximum;
     }
 
-    /// Returns the value that exceeded the configured maximum.
+    /// Returns the observed value, saturated at [Long#MAX_VALUE].
     ///
-    /// @return the observed value greater than {@link #maximum()}
+    /// @return the observed value, which exceeds [#maximum()] unless both values are `Long.MAX_VALUE`
     public long actual() {
         return actual;
     }
@@ -98,7 +103,9 @@ public final class ArkivoReadLimitException extends IOException {
             case OUTER_COMPRESSION_LAYERS -> "Outer compression layer count";
         };
         String pathSuffix = entryPath != null ? " for " + entryPath : "";
+        String observation = maximum == Long.MAX_VALUE && actual == Long.MAX_VALUE
+                ? "greater than " + Long.MAX_VALUE : Long.toString(actual);
         return subject + pathSuffix + " exceeds the configured maximum of " + maximum
-                + " (actual " + actual + ")";
+                + " (actual " + observation + ")";
     }
 }

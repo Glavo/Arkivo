@@ -6,11 +6,15 @@ package org.glavo.arkivo.archive.rar.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.IOException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,6 +27,20 @@ final class RarSplitVolumePathsTest {
     /// Temporary directory containing synthetic volume names.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Discovers modern and legacy volumes without switching file-system providers.
+    @ParameterizedTest
+    @CsvSource({"sample.part001.rar,sample.part002.rar", "sample.rar,sample.part2.rar", "sample.rar,sample.r00"})
+    void discoversVolumesInAnotherFileSystem(String firstName, String secondName) throws IOException {
+        try (var fs = FileSystems.newFileSystem(temporaryDirectory.resolve("container.zip"), Map.of("create", "true"))) {
+            Files.createDirectory(fs.getPath("/dir"));
+            for (String prefix : List.of("", "/", "/dir/")) {
+                Path first = Files.write(fs.getPath(prefix + firstName), new byte[0]);
+                Path second = Files.write(fs.getPath(prefix + secondName), new byte[0]);
+                assertEquals(List.of(first, second), RarSplitVolumePaths.discover(first));
+            }
+        }
+    }
 
     /// Verifies modern `partN` discovery preserves width and stops at the first missing volume.
     @Test

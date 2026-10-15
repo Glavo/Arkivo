@@ -37,6 +37,9 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
+        if (target.isReadOnly()) {
+            throw new IllegalArgumentException("Target buffer is read-only");
+        }
         if (!target.hasRemaining()) {
             return 0;
         }

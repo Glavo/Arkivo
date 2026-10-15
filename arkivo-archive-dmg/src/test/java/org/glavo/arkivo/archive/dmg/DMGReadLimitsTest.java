@@ -11,6 +11,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -28,6 +30,19 @@ final class DMGReadLimitsTest {
     /// The directory containing each generated disk image.
     @TempDir
     Path temporaryDirectory;
+
+    /// Enforces a small entry limit without exhausting the stack on a descendant-first directory chain.
+    @ParameterizedTest
+    @ValueSource(ints = {64, 16384})
+    void rejectsDeepCatalogAtEntryLimit(int depth) throws IOException {
+        Path image = writeRawImage(temporaryDirectory.resolve("deep-limit.dmg"),
+                DMGTestFixtures.createDeepHFSPlusDisk(depth));
+        DMGArchiveOptions options = DMGArchiveOptions.DEFAULT.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
+                ArchiveReadLimits.builder().maximumEntryCount(1).build()));
+        ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class,
+                () -> DMGArkivoFileSystem.open(image, options));
+        assertLimit(failure, ArkivoReadLimitKind.ENTRY_COUNT, 1, 2, null);
+    }
 
     /// Rejects the second indexed HFS Plus entry at the configured count boundary.
     @Test

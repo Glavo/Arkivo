@@ -162,7 +162,7 @@ public final class LZMA2Codec implements CompressionCodec<LZMA2Codec> {
     public CompressionDecoder newDecoder() throws IOException {
         CompressionDecoderSupport.requireWindowSize(
                 CompressionDecoderSupport.effectiveMaximumWindowSize(maximumWindowSize, maximumMemorySize),
-                properties.dictionarySize()
+                Math.max(properties.dictionarySize(), LZMAProperties.MINIMUM_DICTIONARY_SIZE)
         );
         return CompressionDecoderSupport.limitEngineOutput(
                 new LZMA2Decoder(properties.dictionarySize()),

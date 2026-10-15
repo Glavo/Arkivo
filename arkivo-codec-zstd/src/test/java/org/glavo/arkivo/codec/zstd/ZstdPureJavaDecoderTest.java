@@ -270,7 +270,7 @@ public final class ZstdPureJavaDecoderTest {
             ZstdDictionaryRequest request = decoder.dictionaryRequest();
             assertEquals(127L, request.dictionaryId());
             assertEquals(false, request.matches(rawDictionary));
-            assertThrows(IOException.class, () -> decoder.provideDictionary(rawDictionary));
+            assertThrows(IllegalArgumentException.class, () -> decoder.provideDictionary(rawDictionary));
             assertEquals(request, decoder.dictionaryRequest());
         }
     }

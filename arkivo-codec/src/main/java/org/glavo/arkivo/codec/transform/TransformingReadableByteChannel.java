@@ -10,7 +10,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
@@ -22,7 +21,8 @@ import java.util.Objects;
 /// retained by the transform is returned unchanged before this channel reports `-1`.
 ///
 /// A source or transform failure (`IOException`, `RuntimeException`, or `Error`) is retained and rethrown by later
-/// nonempty reads without reading or transforming more data. Bytes already delivered to the target remain there.
+/// nonempty reads into writable targets without reading or transforming more data. Bytes already delivered to the
+/// target remain there.
 /// Rejected arguments do not put this channel into a failed state. Closing
 /// does not drain input. It leaves a borrowed source open and closes an owned source; a failed owned-source close can be
 /// retried by calling [#close()] again.
@@ -39,6 +39,9 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
 
     /// A deferred source or transform failure.
     private @Nullable Throwable failure;
+
+    /// Whether an earlier source-close attempt failed.
+    private boolean closeFailed;
 
     /// Whether the upstream source reached end-of-input.
     private boolean endReached;
@@ -74,22 +77,22 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
 
     /// Reads transformed bytes into the target buffer.
     ///
-    /// An empty target returns zero without reading the source. Otherwise this method returns a positive count or `-1`;
-    /// a source that returns zero before producing data causes `IOException` rather than a zero-progress result.
-    /// A nonempty read-only target is rejected before consuming input or buffered data.
+    /// An empty writable target returns zero without reading the source. Otherwise this method returns a positive count
+    /// or `-1`; a source that returns zero before producing data causes `IOException` rather than a zero-progress result.
+    /// A read-only target is rejected before consuming input or buffered data.
     ///
-    /// @throws ReadOnlyBufferException if this channel is open and has not failed, and the target is nonempty and read-only
+    /// @throws IllegalArgumentException if this channel is open and the target is read-only
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
+        if (target.isReadOnly()) {
+            throw new IllegalArgumentException("Target buffer is read-only");
+        }
         if (!target.hasRemaining()) {
             return 0;
         }
         rethrowFailure();
-        if (target.isReadOnly()) {
-            throw new ReadOnlyBufferException();
-        }
 
         try {
             int total = 0;
@@ -129,10 +132,21 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     /// Marks this channel closed and applies its source-ownership policy.
     ///
     /// `isOpen()` becomes false even if closing an owned source throws. A later call retries only source closure.
+    /// A close failure identical to the reported read failure, or any failure from a close retry, is wrapped in an
+    /// `IOException` so try-with-resources can preserve the original failure without self-suppression.
     @Override
     public void close() throws IOException {
         open = false;
-        sourceCloser.close();
+        try {
+            sourceCloser.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            boolean retry = closeFailed;
+            closeFailed = true;
+            if (exception == failure || retry) {
+                throw new IOException("Transform channel source close failed after an earlier failure", exception);
+            }
+            throw exception;
+        }
     }
 
     /// Rethrows a retained read failure without invoking the source or transform again.

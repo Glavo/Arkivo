@@ -231,9 +231,9 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
     protected void finishCurrentEntry() throws IOException {
         lock();
         try {
-            ensureOpen();
             PendingEntry entry = requirePendingEntry();
-            entry.ensurePending();
+            entry.metadataFrozen = true;
+            ensureOpen();
             SevenZipEntryWriteMetadata metadata = entry.attributes.metadata();
             switch (entry.type) {
                 case FILE -> {
@@ -392,6 +392,9 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         /// Whether this entry has been committed.
         private boolean committed;
 
+        /// Whether entry completion has begun, including an unsuccessful attempt that can be retried.
+        private boolean metadataFrozen;
+
         /// Creates a pending entry.
         private PendingEntry(String path, EntryType type, @Nullable String linkTarget) {
             this.path = Objects.requireNonNull(path, "path");
@@ -403,8 +406,8 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
 
         /// Requires this entry to remain configurable.
         private void ensurePending() {
-            if (committed || pendingEntry != this) {
-                throw new IllegalStateException("7z streaming entry has already been committed");
+            if (metadataFrozen || committed || pendingEntry != this) {
+                throw new IllegalStateException("7z streaming entry is no longer configurable");
             }
         }
     }
@@ -465,6 +468,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             lock();
             try {
                 entry.ensurePending();
+                SevenZipEntryWriteMetadata.validateTimes(lastModifiedTime, lastAccessTime, createTime);
                 if (lastModifiedTime != null) {
                     this.lastModifiedTime = lastModifiedTime;
                 }

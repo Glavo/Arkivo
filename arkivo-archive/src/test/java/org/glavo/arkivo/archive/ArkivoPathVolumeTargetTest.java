@@ -7,6 +7,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -37,6 +39,49 @@ final class ArkivoPathVolumeTargetTest {
     /// Temporary output directory for each test invocation.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Restores relative links even when moving them into staging makes their targets unavailable.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void restoresRelativeVolumeLinksAfterPublicationFailure(boolean dangling) throws IOException {
+        TestLayout layout = new TestLayout(temporaryDirectory);
+        Path target = temporaryDirectory.resolve("original.bin");
+        if (!dangling) {
+            Files.writeString(target, "original");
+        }
+        Path link = Files.createSymbolicLink(layout.numberedPath(0), target.getFileName());
+        try (ArkivoVolumeOutput output = new ArkivoPathVolumeTarget(layout).openOutput()) {
+            writeVolume(output, 0, "new-first");
+            writeVolume(output, 1, "new-final");
+            Files.delete(singleStagingDirectory().resolve("volume-1"));
+            assertThrows(NoSuchFileException.class, () -> output.commit(1));
+        }
+        assertTrue(Files.isSymbolicLink(link));
+        assertEquals(target.getFileName(), Files.readSymbolicLink(link));
+        if (dangling) {
+            assertFalse(Files.exists(target));
+        } else {
+            assertEquals("original", Files.readString(target));
+            assertEquals("original", Files.readString(link));
+        }
+        assertNoStagingDirectories();
+    }
+
+    /// Replaces a dangling destination link itself without creating or modifying its target.
+    @Test
+    void replacesDanglingVolumeLink() throws IOException {
+        TestLayout layout = new TestLayout(temporaryDirectory);
+        Path target = temporaryDirectory.resolve("missing.bin");
+        Files.createSymbolicLink(layout.finalPath(), target.getFileName());
+        try (ArkivoVolumeOutput output = new ArkivoPathVolumeTarget(layout).openOutput()) {
+            writeVolume(output, 0, "replacement");
+            output.commit(0);
+        }
+        assertFalse(Files.isSymbolicLink(layout.finalPath()));
+        assertEquals("replacement", Files.readString(layout.finalPath()));
+        assertFalse(Files.exists(target));
+        assertNoStagingDirectories();
+    }
 
     /// Existing directories, including stale volumes, must never become publication backups.
     @Test
@@ -107,10 +152,10 @@ final class ArkivoPathVolumeTargetTest {
         Files.write(oldNumberedPath, bytes("old-numbered"));
         Files.write(oldFinalPath, bytes("old-final"));
 
-        ArkivoVolumePathLayout failingLayout = new FailingLayout(successfulLayout);
-        try (ArkivoVolumeOutput output = new ArkivoPathVolumeTarget(failingLayout).openOutput()) {
+        try (ArkivoVolumeOutput output = new ArkivoPathVolumeTarget(successfulLayout).openOutput()) {
             writeVolume(output, 0L, "new-numbered");
             writeVolume(output, 1L, "new-final");
+            Files.delete(singleStagingDirectory().resolve("volume-1"));
             assertThrows(IOException.class, () -> output.commit(1L));
         }
 
@@ -128,13 +173,13 @@ final class ArkivoPathVolumeTargetTest {
         Path secondOutput = successfulLayout.numberedPath(1L);
         Files.write(firstOutput, bytes("old-first"));
         Files.write(secondOutput, bytes("old-second"));
-        ArkivoVolumePathLayout failingLayout = new FailingLayout(successfulLayout);
-        ArkivoVolumeOutput output = new ArkivoPathVolumeTarget(failingLayout).openOutput();
+        ArkivoVolumeOutput output = new ArkivoPathVolumeTarget(successfulLayout).openOutput();
         writeVolume(output, 0L, "first");
         writeVolume(output, 1L, "second");
         writeVolume(output, 2L, "third");
 
         Path stagingDirectory = singleStagingDirectory();
+        Files.delete(stagingDirectory.resolve("volume-2"));
         Path stagedFirstDirectory = stagingDirectory.resolve("volume-0");
         Files.delete(stagedFirstDirectory);
         Files.createDirectory(stagedFirstDirectory);
@@ -363,6 +408,85 @@ final class ArkivoPathVolumeTargetTest {
                 NullPointerException.class,
                 () -> new ArkivoPathVolumeTarget(layout, optionsWithNull)
         );
+    }
+
+    /// Rejects absent publication parents before backing up existing volumes or moving staged output.
+    @Test
+    void rejectsMissingParentBeforePublication() throws IOException {
+        TestLayout layout = new TestLayout(temporaryDirectory);
+        Files.writeString(layout.numberedPath(0), "old-first");
+        Files.writeString(layout.finalPath(), "old-final");
+        try (var output = new ArkivoPathVolumeTarget(new FailingLayout(layout)).openOutput()) {
+            writeVolume(output, 0, "new-first");
+            writeVolume(output, 1, "new-final");
+            assertThrows(NoSuchFileException.class, () -> output.commit(1));
+            assertEquals("old-first", Files.readString(layout.numberedPath(0)));
+            assertEquals("old-final", Files.readString(layout.finalPath()));
+            assertTrue(Files.exists(singleStagingDirectory().resolve("volume-0")));
+            assertTrue(Files.exists(singleStagingDirectory().resolve("volume-1")));
+            try (var entries = Files.list(singleStagingDirectory())) {
+                assertFalse(entries.anyMatch(path -> path.getFileName().toString().startsWith("backup-")));
+            }
+        }
+        assertNoStagingDirectories();
+    }
+
+    /// Ignores stale discovery entries whose entire parent directory disappeared before commit.
+    @Test
+    void ignoresVanishedDiscoveredParent() throws IOException {
+        Path vanishedParent = Files.createDirectory(temporaryDirectory.resolve("old"));
+        Path vanishedVolume = Files.writeString(vanishedParent.resolve("archive.bin"), "old");
+        TestLayout layout = new TestLayout(temporaryDirectory);
+        ArkivoVolumePathLayout reportedLayout = new ArkivoVolumePathLayout() {
+            /// Returns the still-existing publication directory.
+            @Override
+            public Path outputDirectory() {
+                return temporaryDirectory;
+            }
+
+            /// Returns the selected final target.
+            @Override
+            public Path volumePath(long index, long finalVolumeIndex) {
+                return layout.volumePath(index, finalVolumeIndex);
+            }
+
+            /// Retains a discovery result that becomes stale after staging opens.
+            @Override
+            public @Unmodifiable List<Path> existingVolumePaths() {
+                return List.of(vanishedVolume);
+            }
+        };
+        try (var output = new ArkivoPathVolumeTarget(reportedLayout).openOutput()) {
+            writeVolume(output, 0, "new");
+            Files.delete(vanishedVolume);
+            Files.delete(vanishedParent);
+            output.commit(0);
+        }
+        assertEquals("new", Files.readString(layout.finalPath()));
+        assertNoStagingDirectories();
+    }
+
+    /// Keeps staging and cleanup attached to the opened directory when a layout's parent link changes.
+    @Test
+    void retainsStagingDirectoryAfterParentLinkChanges() throws IOException {
+        Path first = Files.createDirectory(temporaryDirectory.resolve("first"));
+        Path second = Files.createDirectory(temporaryDirectory.resolve("second"));
+        Path alias = Files.createSymbolicLink(temporaryDirectory.resolve("alias"), first);
+        TestLayout layout = new TestLayout(alias);
+        Path retained = Files.writeString(first.resolve("archive.bin"), "retained");
+        try (var output = new ArkivoPathVolumeTarget(layout).openOutput()) {
+            writeVolume(output, 0, "new");
+            Files.delete(alias);
+            Files.createSymbolicLink(alias, second);
+            output.commit(0);
+        }
+        assertEquals("retained", Files.readString(retained));
+        assertEquals("new", Files.readString(second.resolve("archive.bin")));
+        for (Path directory : List.of(first, second)) {
+            try (var entries = Files.list(directory)) {
+                assertFalse(entries.anyMatch(path -> path.getFileName().toString().startsWith(".arkivo-volumes-")));
+            }
+        }
     }
 
     /// Verifies duplicate final paths are rejected before existing output is modified.

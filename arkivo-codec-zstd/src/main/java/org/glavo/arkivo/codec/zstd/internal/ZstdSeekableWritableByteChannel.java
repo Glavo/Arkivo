@@ -92,6 +92,9 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
     /// Whether terminal processing has already been attempted.
     private boolean finished;
 
+    /// Whether finalization or target cleanup has already delivered a failure to the caller.
+    private boolean finalizationFailed;
+
     /// Creates a seekable writer and applies endpoint ownership if setup fails.
     ///
     /// @param codec     the immutable standard-frame Zstandard configuration
@@ -235,7 +238,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
     @Override
     public void finish() throws IOException {
         if (finished) {
-            targetCloser.close();
+            closeTargetAfter(null);
             return;
         }
         finished = true;
@@ -257,7 +260,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
         }
-        targetCloser.closeAfter(failure);
+        closeTargetAfter(failure);
     }
 
     /// Returns the complete accepted logical byte count.
@@ -279,6 +282,9 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
     }
 
     /// Finishes this seekable encoding.
+    ///
+    /// Failed target closure may be retried without emitting more output. Cleanup failures after an earlier
+    /// finalization failure are wrapped in a new `IOException` to prevent self-suppression during automatic close.
     @Override
     public void close() throws IOException {
         finish();
@@ -287,7 +293,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
     /// Releases codec state after terminal cancellation without writing a seek table.
     private void abort() throws IOException {
         if (finished) {
-            targetCloser.close();
+            closeTargetAfter(null);
             return;
         }
         finished = true;
@@ -299,7 +305,21 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
             failure = exception;
         }
         outputBytes = encoder.outputBytes();
-        targetCloser.closeAfter(failure);
+        closeTargetAfter(failure);
+    }
+
+    /// Applies target ownership without redelivering a failed finalization's exception during cleanup.
+    private void closeTargetAfter(@Nullable Throwable failure) throws IOException {
+        try {
+            targetCloser.closeAfter(failure);
+        } catch (IOException | RuntimeException | Error exception) {
+            boolean retry = finalizationFailed;
+            finalizationFailed = true;
+            if (retry) {
+                throw new IOException("Zstandard target cleanup failed after an earlier failure", exception);
+            }
+            throw exception;
+        }
     }
 
     /// Finishes and records the active frame, or only releases the framed encoder when no frame is active.

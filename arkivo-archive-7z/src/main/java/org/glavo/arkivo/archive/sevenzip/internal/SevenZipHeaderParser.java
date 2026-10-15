@@ -241,8 +241,12 @@ public final class SevenZipHeaderParser {
                     archiveLimits
             ));
         }
+        byte[] header = decodedHeader.toByteArray();
+        if (header.length == 0 || header[0] != K_HEADER) {
+            throw new IOException("Decoded 7z header must begin with kHeader");
+        }
         return parseEntries(
-                decodedHeader.toByteArray(),
+                header,
                 packedStreamOpener,
                 passwordProvider,
                 readLimits,
@@ -469,6 +473,11 @@ public final class SevenZipHeaderParser {
                             throw new IOException("7z substream count is negative");
                         }
                     }
+                    long minimumSizeBytes = 0;
+                    for (int count : counts) {
+                        minimumSizeBytes += Math.max(0, count - 1);
+                    }
+                    input.requireAvailable(minimumSizeBytes, "substream sizes");
                 }
                 case K_SIZE -> {
                     countsLocked = true;
@@ -603,6 +612,7 @@ public final class SevenZipHeaderParser {
     private static PackInfo readPackInfo(HeaderInput input) throws IOException {
         long packPosition = input.readNumber();
         int streamCount = input.readIntNumber("pack stream count");
+        input.requireAvailable(streamCount, "pack stream sizes");
         long[] packSizes = new long[streamCount];
         long[] packCrc32s = unknownCrc32s(streamCount);
         boolean sizesRead = false;
@@ -724,6 +734,7 @@ public final class SevenZipHeaderParser {
 
     /// Reads inline folder definitions.
     private static FolderInfo[] readInlineFolders(HeaderInput input, int folderCount) throws IOException {
+        input.requireAvailable(folderCount, "folder definitions");
         FolderInfo[] folders = new FolderInfo[folderCount];
         for (int index = 0; index < folderCount; index++) {
             folders[index] = readFolder(input);
@@ -738,6 +749,7 @@ public final class SevenZipHeaderParser {
             throw new IOException("7z folder has no coders");
         }
 
+        input.requireAvailable(coderCount, "coder definitions");
         CoderInfo[] coders = new CoderInfo[coderCount];
         int totalInputStreams = 0;
         int totalOutputStreams = 0;
@@ -783,6 +795,12 @@ public final class SevenZipHeaderParser {
         }
 
         int bindPairCount = totalOutputStreams - 1;
+        int packedStreamCount = totalInputStreams - bindPairCount;
+        if (packedStreamCount <= 0) {
+            throw new IOException("7z folder has no packed input stream");
+        }
+        input.requireAvailable(2L * bindPairCount + (packedStreamCount == 1 ? 0 : packedStreamCount),
+                "folder stream bindings");
         int[] bindPairInputs = new int[bindPairCount];
         int[] bindPairOutputs = new int[bindPairCount];
         boolean[] inputIsBound = new boolean[totalInputStreams];
@@ -808,10 +826,6 @@ public final class SevenZipHeaderParser {
             bindPairOutputs[index] = outputStreamIndex;
         }
 
-        int packedStreamCount = totalInputStreams - bindPairCount;
-        if (packedStreamCount <= 0) {
-            throw new IOException("7z folder has no packed input stream");
-        }
         int[] packedInputStreamIndexes = new int[packedStreamCount];
         if (packedStreamCount == 1) {
             for (int inputStreamIndex = 0; inputStreamIndex < totalInputStreams; inputStreamIndex++) {
@@ -847,6 +861,7 @@ public final class SevenZipHeaderParser {
             ExternalData externalData
     ) throws IOException {
         int fileCount = input.readIntNumber("file count");
+        validateFileCount(input, fileCount, externalData);
         String[] names = new String[fileCount];
         boolean[] emptyStreams = new boolean[fileCount];
         boolean[] emptyFiles = new boolean[fileCount];
@@ -887,6 +902,41 @@ public final class SevenZipHeaderParser {
                 default -> input.position(end);
             }
             input.requirePosition(end);
+        }
+    }
+
+    /// Checks that the name payload can hold the declared files before allocating per-file arrays.
+    private static void validateFileCount(HeaderInput input, int fileCount, ExternalData externalData)
+            throws IOException {
+        if (fileCount == 0) {
+            return;
+        }
+        HeaderInput properties = new HeaderInput(input.bytes());
+        properties.position(input.position());
+        while (true) {
+            int property = properties.readId();
+            if (property == K_END) {
+                throw new IOException("7z file entry is missing a name");
+            }
+            int end = properties.checkedEnd(properties.readIntNumber("file property size"));
+            if (property == K_NAME) {
+                int external = properties.readUnsignedByte();
+                long available;
+                if (external == 0) {
+                    available = end - properties.position();
+                } else {
+                    int dataIndex = properties.readIntNumber("file names data index");
+                    properties.requirePosition(end);
+                    HeaderInput names = externalData.input(dataIndex, "file names");
+                    available = names.bytes().length - names.position();
+                }
+                // Each name requires at least its UTF-16 terminator, including external names.
+                if (2L * fileCount > available) {
+                    throw new IOException("7z file count exceeds name payload size");
+                }
+                return;
+            }
+            properties.position(end);
         }
     }
 
@@ -1848,6 +1898,13 @@ public final class SevenZipHeaderParser {
                 throw new IOException("7z property exceeds header size");
             }
             return (int) end;
+        }
+
+        /// Rejects counts whose mandatory encoded data cannot fit in the remaining header.
+        private void requireAvailable(long size, String description) throws IOException {
+            if (size > bytes.length - position) {
+                throw new IOException("7z " + description + " exceed remaining header size");
+            }
         }
 
         /// Requires this input to be fully consumed.

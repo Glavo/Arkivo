@@ -28,6 +28,9 @@ import java.util.Objects;
 ///
 /// Exceeding an entry-size or total-entry-size limit prevents further cursor advancement. Closing the entry or reader
 /// then releases resources without draining the rejected body or validating its remaining data descriptor.
+/// For a stored entry with a data descriptor, a bulk read that produces bytes before a later read or validation failure
+/// returns those bytes. Unless a read limit has already been exceeded, the failure is reported by the next nonempty
+/// read or by closing or advancing past that entry.
 ///
 /// A successfully returned reader owns the supplied stream, channel, or volume source and every volume channel it
 /// opens. Reader close releases them; closing an entry body does not close the reader. The cursor is stateful, and its

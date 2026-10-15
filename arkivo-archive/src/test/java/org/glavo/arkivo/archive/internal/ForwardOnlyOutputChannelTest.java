@@ -35,6 +35,10 @@ final class ForwardOnlyOutputChannelTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ForwardOnlyOutputChannel channel = new ForwardOnlyOutputChannel(output);
 
+        assertSame(channel, channel.truncate(1L));
+        assertSame(channel, channel.truncate(Long.MAX_VALUE));
+        assertEquals(0L, channel.position());
+        assertEquals(0L, channel.size());
         assertEquals(3, channel.write(ByteBuffer.wrap(new byte[]{1, 2, 3})));
         ByteBuffer direct = ByteBuffer.allocateDirect(2).put(new byte[]{4, 5}).flip();
         assertEquals(2, channel.write(direct));
@@ -43,6 +47,9 @@ final class ForwardOnlyOutputChannelTest {
         assertEquals(5L, channel.size());
         assertEquals(channel, channel.position(5L));
         assertEquals(channel, channel.truncate(5L));
+        assertSame(channel, channel.truncate(6L));
+        assertSame(channel, channel.truncate(Long.MAX_VALUE));
+        assertEquals(5L, channel.size());
         assertThrows(IllegalArgumentException.class, () -> channel.position(-1L));
         assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1L));
         assertEquals(5L, channel.position());
@@ -53,6 +60,7 @@ final class ForwardOnlyOutputChannelTest {
         channel.close();
         assertArrayEquals(new byte[]{1, 2, 3, 4, 5}, output.toByteArray());
         assertThrows(ClosedChannelException.class, channel::position);
+        assertThrows(ClosedChannelException.class, () -> channel.truncate(Long.MAX_VALUE));
     }
 
     /// Verifies a failed forward-only output close remains retryable.

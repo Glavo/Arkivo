@@ -195,7 +195,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 return false;
             }
 
-            TarEntryAttributes attributes = parseHeader(header);
+            ParsedHeader parsedHeader = parseHeader(header);
+            TarEntryAttributes attributes = parsedHeader.attributes();
             currentAttributes = null;
             currentBodyRemaining = attributes.bodySize();
             currentPaddingRemaining = paddingSize(currentBodyRemaining);
@@ -248,7 +249,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             @Nullable OldGnuSparseSpec oldGnuSparseSpec = typeFlag == TarEntryAttributes.OLD_GNU_SPARSE_TYPE
                     ? readOldGnuSparseSpec(header)
                     : null;
-            ResolvedEntry resolvedEntry = applyPendingEntryMetadata(attributes, oldGnuSparseSpec);
+            ResolvedEntry resolvedEntry = applyPendingEntryMetadata(parsedHeader, oldGnuSparseSpec);
             TarEntryAttributes resolvedAttributes = resolvedEntry.attributes();
             currentBodyRemaining = resolvedEntry.storedBodySize();
             currentPaddingRemaining = paddingSize(currentBodyRemaining);
@@ -375,8 +376,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         sourceClosed = true;
     }
 
-    /// Parses one TAR header block.
-    private TarEntryAttributes parseHeader(byte[] header) throws IOException {
+    /// Parses one TAR header block and decodes optional PAX strings needed to select fixed-field fallbacks.
+    private ParsedHeader parseHeader(byte[] header) throws IOException {
         byte typeFlag = header[156];
         int unsignedTypeFlag = Byte.toUnsignedInt(typeFlag);
         TarMetadataDecoder.HeaderDialect dialect = headerDialect(header);
@@ -394,7 +395,19 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         if (rawPath.length == 0) {
             throw new IOException("TAR entry is missing a path");
         }
-        String path = decodeMetadata(
+        boolean realEntry = switch (typeFlag) {
+            case TarEntryAttributes.GNU_LONG_PATH_TYPE, TarEntryAttributes.GNU_LONG_LINK_TYPE,
+                 TarEntryAttributes.PAX_EXTENDED_HEADER_TYPE, TarEntryAttributes.SOLARIS_EXTENDED_HEADER_TYPE,
+                 TarEntryAttributes.PAX_GLOBAL_EXTENDED_HEADER_TYPE -> false;
+            default -> true;
+        };
+        @Nullable String paxLinkPath = realEntry ? paxOptionalStringValue("linkpath") : null;
+        @Nullable String sparseName = realEntry ? paxOptionalStringValue("GNU.sparse.name") : null;
+        boolean pathOverridden = realEntry && (pendingLongPath != null || rawPaxValue("path") != null
+                || sparseName != null);
+        // Overridden strings are filled by applyPendingEntryMetadata before attributes become observable.
+        // In particular, do not invoke a legacy decoder on bytes that are not used by this entry.
+        String path = pathOverridden ? "" : decodeMetadata(
                 rawPath,
                 TarMetadataDecoder.MetadataKind.ENTRY_NAME,
                 TarMetadataDecoder.Source.HEADER,
@@ -433,29 +446,31 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                     "xstar status change time"
             );
         }
-        return new TarEntryAttributes(
+        TarEntryAttributes attributes = new TarEntryAttributes(
                 path,
                 typeFlag,
                 typeFlag == TarEntryAttributes.DIRECTORY_TYPE
-                        || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE && path.endsWith("/"),
+                        || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE
+                        && (pathOverridden ? rawPath[rawPath.length - 1] == '/' : path.endsWith("/")),
                 parseIntNumeric(header, 100, 8, "entry mode"),
                 parseNonNegativeNumeric(header, 108, 8, "user id"),
                 parseNonNegativeNumeric(header, 116, 8, "group id"),
-                decodeOptionalMetadata(
+                realEntry && rawPaxValue("uname") != null ? null : decodeOptionalMetadata(
                         readFieldBytes(header, 265, 32),
                         TarMetadataDecoder.MetadataKind.USER_NAME,
                         TarMetadataDecoder.Source.HEADER,
                         dialect,
                         unsignedTypeFlag
                 ),
-                decodeOptionalMetadata(
+                realEntry && rawPaxValue("gname") != null ? null : decodeOptionalMetadata(
                         readFieldBytes(header, 297, 32),
                         TarMetadataDecoder.MetadataKind.GROUP_NAME,
                         TarMetadataDecoder.Source.HEADER,
                         dialect,
                         unsignedTypeFlag
                 ),
-                decodeOptionalMetadata(
+                realEntry && (pendingLongLink != null || isPaxValueDeleted("linkpath")
+                        || paxLinkPath != null) ? null : decodeOptionalMetadata(
                         readFieldBytes(header, 157, 100),
                         TarMetadataDecoder.MetadataKind.LINK_NAME,
                         TarMetadataDecoder.Source.HEADER,
@@ -468,6 +483,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 recordedStatusChangeTime,
                 null
         );
+        return new ParsedHeader(attributes, paxLinkPath, sparseName);
     }
 
     /// Parses an optional fixed-width time whose non-positive sentinel means the field is absent.
@@ -505,6 +521,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (extension.length != RECORD_SIZE) {
                 throw new EOFException("Unexpected end of old GNU sparse extension header");
             }
+            readLimits.acceptMetadata(extension.length, null);
             appendOldGnuSparseBlocks(extension, 0, OLD_GNU_EXTENSION_SPARSE_COUNT, blocks);
             hasExtension = extension[OLD_GNU_EXTENSION_FLAG_OFFSET] != 0;
         }
@@ -1024,10 +1041,11 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
     /// Applies pending GNU and PAX metadata to a real TAR entry.
     private ResolvedEntry applyPendingEntryMetadata(
-            TarEntryAttributes attributes,
+            ParsedHeader header,
             @Nullable OldGnuSparseSpec oldGnuSparseSpec
     ) throws IOException {
         try {
+            TarEntryAttributes attributes = header.attributes();
             String path = pendingLongPath != null ? pendingLongPath : attributes.path();
             @Nullable String linkName = pendingLongLink != null ? pendingLongLink : attributes.linkName();
             int mode = attributes.mode();
@@ -1045,7 +1063,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (paxPath != null) {
                 path = paxPath;
             }
-            @Nullable String paxLinkPath = paxOptionalStringValue("linkpath");
+            @Nullable String paxLinkPath = header.paxLinkPath();
             if (paxLinkPath != null) {
                 linkName = paxLinkPath;
             } else if (isPaxValueDeleted("linkpath")) {
@@ -1092,7 +1110,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (paxCreationTime != null) {
                 recordedCreationTime = parsePaxFileTime(paxCreationTime, "LIBARCHIVE.creationtime");
             }
-            @Nullable SparseSpec sparseSpec = parseSparseSpec(path);
+            @Nullable SparseSpec sparseSpec = parseSparseSpec(path, header.sparseName());
             if (sparseSpec != null && oldGnuSparseSpec != null) {
                 throw new IOException("Old GNU and GNU PAX sparse metadata cannot be combined");
             }
@@ -1136,14 +1154,13 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Parses GNU PAX sparse metadata for the pending entry, or returns `null` for a contiguous entry.
-    private @Nullable SparseSpec parseSparseSpec(String defaultPath) throws IOException {
+    private @Nullable SparseSpec parseSparseSpec(String defaultPath, @Nullable String sparseName) throws IOException {
         @Nullable String majorText = paxValue("GNU.sparse.major");
         @Nullable String minorText = paxValue("GNU.sparse.minor");
         @Nullable String realSizeText = paxValue("GNU.sparse.realsize");
         @Nullable String sparseSizeText = paxValue("GNU.sparse.size");
         @Nullable String blockCountText = paxValue("GNU.sparse.numblocks");
         @Nullable String mapText = paxValue("GNU.sparse.map");
-        @Nullable String sparseName = paxOptionalStringValue("GNU.sparse.name");
         boolean hasRepeatedMap = hasPendingPaxRecord("GNU.sparse.offset")
                 || hasPendingPaxRecord("GNU.sparse.numbytes");
         if (majorText == null && minorText == null
@@ -1584,6 +1601,19 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             }
             blocks = List.copyOf(blocks);
         }
+    }
+
+    /// Carries a fixed header and optional PAX strings already decoded while selecting its fallback fields.
+    ///
+    /// @param attributes the fixed-header attributes, with placeholders for fields replaced by extended metadata
+    /// @param paxLinkPath the nonempty decoded PAX link target, or `null` when absent or decoded as empty
+    /// @param sparseName the nonempty decoded GNU sparse name, or `null` when absent or decoded as empty
+    @NotNullByDefault
+    private record ParsedHeader(
+            TarEntryAttributes attributes,
+            @Nullable String paxLinkPath,
+            @Nullable String sparseName
+    ) {
     }
 
     /// Stores resolved entry metadata and the physical body size used by TAR framing.

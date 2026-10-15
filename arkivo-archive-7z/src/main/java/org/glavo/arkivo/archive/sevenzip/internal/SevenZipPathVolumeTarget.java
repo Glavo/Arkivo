@@ -31,8 +31,7 @@ record SevenZipPathVolumeTarget(Path firstVolumePath, @Unmodifiable Set<OpenOpti
     /// Creates a path-backed 7z volume target.
     SevenZipPathVolumeTarget(Path firstVolumePath, Set<OpenOption> openOptions) {
         this.firstVolumePath = Objects.requireNonNull(firstVolumePath, "firstVolumePath")
-                .toAbsolutePath()
-                .normalize();
+                .toAbsolutePath();
         this.openOptions = Set.copyOf(openOptions);
         SevenZipSplitVolumePaths.requireFirstVolumePath(this.firstVolumePath);
     }
@@ -55,7 +54,7 @@ record SevenZipPathVolumeTarget(Path firstVolumePath, @Unmodifiable Set<OpenOpti
 
     /// Maps conventional numbered 7z volumes to final paths.
     ///
-    /// @param firstVolumePath the normalized first-volume path
+    /// @param firstVolumePath the absolute first-volume path with its traversal components preserved
     @NotNullByDefault
     private record PathLayout(Path firstVolumePath) implements ArkivoVolumePathLayout {
         /// Creates one 7z path layout.

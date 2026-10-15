@@ -11,9 +11,11 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -31,6 +33,22 @@ final class SevenZipSplitVolumePathsTest {
     /// Temporary directory containing synthetic split volumes.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Keeps absolute and parentless relative volume paths in their original file system.
+    @Test
+    void discoversVolumesInAnotherFileSystem() throws IOException {
+        try (var fs = FileSystems.newFileSystem(temporaryDirectory.resolve("container.zip"), Map.of("create", "true"))) {
+            Files.createDirectory(fs.getPath("/dir"));
+            for (String prefix : List.of("", "/", "/dir/")) {
+                Path first = fs.getPath(prefix + "sample.7z.001");
+                Path second = fs.getPath(prefix + "sample.7z.002");
+                Files.write(first, new byte[]{1});
+                Files.write(second, new byte[]{2});
+                assertEquals(second, SevenZipSplitVolumePaths.numberedVolumePath(first, 2));
+                assertEquals(List.of(first, second), SevenZipSplitVolumePaths.discover(first));
+            }
+        }
+    }
 
     /// Verifies suffix width, numbering, and first-volume validation.
     @Test

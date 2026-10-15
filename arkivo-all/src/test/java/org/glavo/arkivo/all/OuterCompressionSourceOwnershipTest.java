@@ -8,6 +8,8 @@ import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
 import org.glavo.arkivo.codec.CompressionFormats;
@@ -24,6 +26,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SeekableByteChannel;
@@ -46,6 +49,150 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies source ownership when generic readers and file systems adapt non-native outer compression.
 @NotNullByDefault
 final class OuterCompressionSourceOwnershipTest {
+    /// Leaves transformed input cleanup to its owner and preserves the first read failure.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void doesNotCloseTransferredInputTwice(boolean volume) throws IOException {
+        byte[] compressed = gzip(zipArchive());
+        for (int kind = 0; kind < 3; kind++) {
+            for (boolean shared : new boolean[]{false, true}) {
+                Throwable primary = switch (kind) {
+                    case 0 -> new IOException("transformed read failed");
+                    case 1 -> new IllegalStateException("transformed read failed");
+                    default -> new AssertionError("transformed read failed");
+                };
+                Throwable cleanup = shared ? primary : new IOException("transformed close failed");
+                int[] calls = new int[3];
+                SeekableByteChannel failing = (SeekableByteChannel) Proxy.newProxyInstance(
+                        SeekableByteChannel.class.getClassLoader(), new Class<?>[]{SeekableByteChannel.class},
+                        (proxy, method, arguments) -> switch (method.getName()) {
+                            case "read" -> throw primary;
+                            case "close" -> {
+                                calls[1]++;
+                                throw cleanup;
+                            }
+                            case "position" -> arguments == null ? 0L : proxy;
+                            case "size" -> 32L;
+                            case "isOpen" -> true;
+                            default -> throw new UnsupportedOperationException(method.getName());
+                        });
+                ArkivoSeekableChannelSource source = new ArkivoSeekableChannelSource() {
+                    /// Supplies healthy detection handles before the failing materialization handle.
+                    @Override
+                    public SeekableByteChannel openChannel() {
+                        return ++calls[0] <= (volume ? 1 : 2)
+                                ? new ReadOnlyByteArrayChannel(compressed) : failing;
+                    }
+
+                    /// Records release of the source factory independently of its handles.
+                    @Override
+                    public void close() {
+                        calls[2]++;
+                    }
+                };
+                assertSame(primary, assertThrows(primary.getClass(), () -> {
+                    try (ArkivoFileSystem ignored = volume
+                            ? ArkivoFormats.openFileSystem((ArkivoVolumeSource) source)
+                            : ArkivoFormats.openFileSystem(source)) {
+                        throw new AssertionError("Failed input was accepted");
+                    }
+                }));
+                assertArrayEquals(shared ? new Throwable[0] : new Throwable[]{cleanup}, primary.getSuppressed());
+                assertArrayEquals(new int[]{volume ? 2 : 3, 1, 1}, calls);
+            }
+        }
+    }
+
+    /// Retries a logically closed slice when malformed outer compression interrupts source cleanup.
+    @Test
+    void retriesSliceCleanupAfterOuterDecodingFailure() throws IOException {
+        byte[] invalidGzip = {31, (byte) 139, 8, 0, 0, 0, 0, 0, 0, 0, (byte) 255};
+        RetryCloseChannel physical = new RetryCloseChannel(invalidGzip);
+        try (SeekableByteChannel slice = ArchiveSliceChannel.open(physical, 0, invalidGzip.length)) {
+            IOException failure = assertThrows(IOException.class, () -> ArkivoFormats.openFileSystem(slice));
+            assertNotSame(physical.closeFailure, failure);
+            assertTrue(failure.getMessage().contains("deflate"));
+            assertEquals(1, failure.getSuppressed().length);
+            IOException cleanup = assertInstanceOf(IOException.class, failure.getSuppressed()[0]);
+            assertSame(physical.closeFailure, cleanup.getCause());
+            assertFalse(slice.isOpen());
+            assertFalse(physical.isOpen());
+            assertEquals(2, physical.closeAttempts);
+        }
+    }
+
+    /// Supplies immutable bytes while failing the first physical cleanup attempt.
+    @NotNullByDefault
+    private static final class RetryCloseChannel implements SeekableByteChannel {
+        /// The independently owned physical source.
+        private final ReadOnlyByteArrayChannel delegate;
+        /// The first cleanup failure.
+        private final IOException closeFailure = new IOException("source close failed");
+        /// Number of cleanup attempts.
+        private int closeAttempts;
+
+        /// Creates a source containing a copied byte sequence.
+        private RetryCloseChannel(byte[] bytes) {
+            delegate = new ReadOnlyByteArrayChannel(bytes);
+        }
+
+        /// Reads physical bytes.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            return delegate.read(target);
+        }
+
+        /// Rejects writes to the source.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            return delegate.write(source);
+        }
+
+        /// Returns the physical position.
+        @Override
+        public long position() throws IOException {
+            return delegate.position();
+        }
+
+        /// Changes the physical position.
+        @Override
+        public SeekableByteChannel position(long position) throws IOException {
+            delegate.position(position);
+            return this;
+        }
+
+        /// Returns the physical size.
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        /// Rejects truncation of the source.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            delegate.truncate(size);
+            return this;
+        }
+
+        /// Returns whether physical cleanup remains pending.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Releases the physical source only after the first failed attempt.
+        @Override
+        public void close() throws IOException {
+            if (!delegate.isOpen()) {
+                return;
+            }
+            if (++closeAttempts == 1) {
+                throw closeFailure;
+            }
+            delegate.close();
+        }
+    }
+
     /// Archive-local path of the generated ZIP entry.
     private static final String ENTRY_PATH = "payload.txt";
 

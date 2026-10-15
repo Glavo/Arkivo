@@ -5,6 +5,8 @@ package org.glavo.arkivo.archive.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
@@ -18,6 +20,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests shared archive path matcher behavior.
 @NotNullByDefault
 public final class ArkivoPathMatchersTest {
+    /// Syntax names ignore case while the pattern and matched path retain their original case.
+    @ParameterizedTest
+    @ValueSource(strings = {"glob", "GLOB", "GlOb", "regex", "REGEX", "ReGeX"})
+    public void syntaxNamesIgnoreCase(String syntax) {
+        String pattern = syntax.equalsIgnoreCase("glob") ? "/dir/Name.*" : "/dir/Name\\..*";
+        PathMatcher matcher = ArkivoPathMatchers.create(syntax + ":" + pattern);
+        assertTrue(matcher.matches(path("/dir/Name.txt")));
+        assertFalse(matcher.matches(path("/dir/name.txt")));
+        assertThrows(PatternSyntaxException.class, () -> ArkivoPathMatchers.create(syntax + ":["));
+    }
+
     /// Verifies that glob matchers use the configured separator.
     @Test
     public void globMatcherUsesConfiguredSeparator() {
@@ -52,6 +65,20 @@ public final class ArkivoPathMatchersTest {
         assertTrue(singleCharacter.matches(path("/root/file1.txt")));
         assertFalse(singleCharacter.matches(path("/root/file12.txt")));
         assertFalse(singleCharacter.matches(path("/root/file/.txt")));
+    }
+
+    /// Recursive globs include line terminators in names without changing regular-expression semantics.
+    @ParameterizedTest
+    @ValueSource(strings = {"\n", "\r", "\r\n", "\u0085", "\u2028", "\u2029"})
+    public void recursiveWildcardsMatchLineTerminators(String separator) {
+        Path name = path("file" + separator + "name.txt");
+        Path nested = path("/root/dir" + separator + "name/file.txt");
+        assertTrue(ArkivoPathMatchers.create("glob:*.txt").matches(name));
+        assertTrue(ArkivoPathMatchers.create("glob:**.txt").matches(name));
+        assertTrue(ArkivoPathMatchers.create("glob:/root/**/file.txt").matches(nested));
+        assertFalse(ArkivoPathMatchers.create("glob:*.txt").matches(nested));
+        assertFalse(ArkivoPathMatchers.create("regex:.*").matches(name));
+        assertTrue(ArkivoPathMatchers.create("regex:(?s).*").matches(name));
     }
 
     /// Verifies glob character classes support ranges, negation, and leading literals.

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.rar.internal;
 
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -136,9 +137,10 @@ final class RarVolumeInputStreamTest {
         }
     }
 
-    /// Verifies ordinary zero-progress reads are observable without causing a premature volume transition.
-    @Test
-    void preservesCurrentVolumeAfterZeroProgressRead() throws IOException {
+    /// Rejects zero-progress reads without fabricating bytes or advancing to the next volume.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesCurrentVolumeAfterZeroProgressRead(boolean singleByte) throws IOException {
         TestSeekableByteChannel first = channel(new byte[]{30, 31});
         first.returnZeroOnRead(1);
         TestVolumeSource volumes = new TestVolumeSource(List.of(first), false);
@@ -148,8 +150,16 @@ final class RarVolumeInputStreamTest {
             assertEquals(0, volumes.openCount());
             assertThrows(IndexOutOfBoundsException.class, () -> input.read(target, 3, 2));
             assertThrows(NullPointerException.class, () -> input.read(null, 0, 0));
-            assertEquals(0, input.read(target));
+            IOException failure = assertThrows(IOException.class, () -> {
+                if (singleByte) {
+                    input.read();
+                } else {
+                    input.read(target);
+                }
+            });
+            assertEquals("RAR volume channel made no progress", failure.getMessage());
             assertEquals(0L, first.position());
+            assertEquals(1, volumes.openCount());
             assertEquals(2, input.read(target));
             assertArrayEquals(new byte[]{30, 31, 0, 0}, target);
         }
@@ -171,6 +181,26 @@ final class RarVolumeInputStreamTest {
         byte[] invalid = RAR5_SIGNATURE.clone();
         invalid[invalid.length - 1] = 1;
         assertContinuationFailure(invalid, 0, "Invalid RAR continuation volume signature");
+    }
+
+    /// Retains a logically closed volume wrapper until its underlying cleanup succeeds.
+    @Test
+    void retriesFailedSliceCleanup() throws IOException {
+        TestSeekableByteChannel physical = channel(new byte[]{40, 41});
+        physical.failFirstClose();
+        SeekableByteChannel slice = ArchiveSliceChannel.open(physical, 0, 2);
+        RarVolumeInputStream input = new RarVolumeInputStream(index -> index == 0 ? slice : null);
+        try {
+            assertEquals(40, input.read());
+            assertThrows(IOException.class, input::close);
+            assertFalse(slice.isOpen());
+            assertTrue(physical.isOpen());
+            input.close();
+            assertFalse(physical.isOpen());
+            assertEquals(2, physical.closeCount());
+        } finally {
+            slice.close();
+        }
     }
 
     /// Verifies close retries both a retained current channel and an owned volume source after combined failures.

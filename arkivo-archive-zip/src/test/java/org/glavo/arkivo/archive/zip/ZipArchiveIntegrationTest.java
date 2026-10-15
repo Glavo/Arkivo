@@ -4150,11 +4150,11 @@ public final class ZipArchiveIntegrationTest {
         assertEquals(readOnly, fileStore.isReadOnly());
         assertEquals(true, fileStore.supportsFileAttributeView(BasicFileAttributeView.class));
         assertEquals(true, fileStore.supportsFileAttributeView(ZipArkivoEntryAttributeView.class));
-        assertEquals(false, fileStore.supportsFileAttributeView(PosixFileAttributeView.class));
+        assertEquals(true, fileStore.supportsFileAttributeView(PosixFileAttributeView.class));
         assertEquals(true, fileStore.supportsFileAttributeView("basic"));
         assertEquals(true, fileStore.supportsFileAttributeView("zip"));
-        assertEquals(false, fileStore.supportsFileAttributeView("owner"));
-        assertEquals(false, fileStore.supportsFileAttributeView("posix"));
+        assertEquals(true, fileStore.supportsFileAttributeView("owner"));
+        assertEquals(true, fileStore.supportsFileAttributeView("posix"));
     }
 
     /// Returns a minimal seekable ZIP archive with mismatched local and central directory names.

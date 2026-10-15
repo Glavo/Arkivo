@@ -205,7 +205,7 @@ final class CompressionDecoderSupportTest {
         }
     }
 
-    /// Verifies excess bytes produced before a delegate failure leave the limiter in a terminal state.
+    /// Verifies interruption closes the limiter even when its probe observed excess output.
     @Test
     void retainsExcessOutputAfterProbeFailure() {
         for (int operation = 0; operation < 3; operation++) {
@@ -226,10 +226,71 @@ final class CompressionDecoderSupportTest {
             }
             assertEquals(0, target.position());
             assertEquals(0L, decoder.outputBytes());
-            assertThrows(DecompressionLimitException.class, () -> decoder.read(target));
-            assertThrows(DecompressionLimitException.class, () -> decoder.decode(target));
-            assertThrows(DecompressionLimitException.class, () -> decoder.decodeFrame(target));
+            assertFalse(decoder.isOpen());
+            assertThrows(ClosedChannelException.class, () -> decoder.read(target));
+            assertThrows(ClosedChannelException.class, () -> decoder.decode(target));
+            assertThrows(ClosedChannelException.class, () -> decoder.decodeFrame(target));
         }
+    }
+
+    /// Rejects read-only targets before delegating or probing for output beyond the limit.
+    @Test
+    void rejectsReadOnlyTargetsBeforeOutputLimitProbe() throws IOException {
+        for (long limit : new long[]{0L, 2L}) {
+            for (byte[] content : new byte[][]{new byte[0], new byte[]{1, 2}}) {
+                var delegate = new FramedTestChannel(content);
+                var decoder = CompressionDecoderSupport.limitChannelOutput(delegate, limit);
+                for (int size : new int[]{0, 8}) {
+                    ByteBuffer target = ByteBuffer.allocate(size).asReadOnlyBuffer();
+                    assertThrows(IllegalArgumentException.class, () -> decoder.read(target));
+                    assertThrows(IllegalArgumentException.class, () -> decoder.decode(target));
+                    assertThrows(IllegalArgumentException.class, () -> decoder.decodeFrame(target));
+                    assertEquals(0, target.position());
+                    assertEquals(size, target.limit());
+                    assertEquals(0L, delegate.inputBytes());
+                    assertEquals(0L, delegate.outputBytes());
+                    assertEquals(0L, decoder.outputBytes());
+                }
+                ByteBuffer writable = ByteBuffer.allocate(8);
+                if (content.length > limit) {
+                    assertThrows(DecompressionLimitException.class, () -> decoder.read(writable));
+                } else {
+                    assertEquals(content.length == 0 ? -1 : content.length, decoder.read(writable));
+                }
+                decoder.close();
+                ByteBuffer target = ByteBuffer.allocate(8).asReadOnlyBuffer();
+                assertThrows(ClosedChannelException.class, () -> decoder.read(target));
+                assertThrows(ClosedChannelException.class, () -> decoder.decode(target));
+                assertThrows(ClosedChannelException.class, () -> decoder.decodeFrame(target));
+            }
+        }
+    }
+
+    /// Keeps empty operations inert after excess output and reports closure before a latched limit failure.
+    @Test
+    void preservesEmptyAndClosedOperationsAfterOutputLimit() throws IOException {
+        var delegate = new FramedTestChannel(new byte[]{1, 2});
+        var decoder = CompressionDecoderSupport.limitChannelOutput(delegate, 0L);
+        ByteBuffer target = ByteBuffer.allocate(1);
+        assertThrows(DecompressionLimitException.class, () -> decoder.read(target));
+        assertTrue(decoder.isOpen());
+        long consumed = decoder.inputBytes();
+        ByteBuffer empty = ByteBuffer.allocate(0);
+        assertEquals(0, decoder.read(empty));
+        assertEquals(0L, decoder.decode(empty).outputBytes());
+        assertEquals(0L, decoder.decodeFrame(empty).outputBytes());
+        assertEquals(consumed, decoder.inputBytes());
+        assertThrows(DecompressionLimitException.class, () -> decoder.read(target));
+        assertThrows(DecompressionLimitException.class, () -> decoder.decode(target));
+        assertThrows(DecompressionLimitException.class, () -> decoder.decodeFrame(target));
+        decoder.close();
+        for (ByteBuffer buffer : new ByteBuffer[]{empty, target}) {
+            assertThrows(ClosedChannelException.class, () -> decoder.read(buffer));
+            assertThrows(ClosedChannelException.class, () -> decoder.decode(buffer));
+            assertThrows(ClosedChannelException.class, () -> decoder.decodeFrame(buffer));
+        }
+        assertEquals(consumed, decoder.inputBytes());
+        assertEquals(0L, decoder.outputBytes());
     }
 
     /// Verifies exact-limit output reaches EOF and restores a caller buffer's original limit.

@@ -109,6 +109,25 @@ final class ArchiveOutputStreamTest {
         }
     }
 
+    /// Rejects a stalled body source without retrying it or losing completed output.
+    @Test
+    void stopsAfterStalledBodyRead() throws IOException {
+        Target target = new Target();
+        try (ArchiveOutputStream output = new ArchiveOutputStream(target);
+             FailingSource source = new FailingSource(new AssertionError("Stalled read was retried"))) {
+            source.stallSecondRead = true;
+            output.write(7);
+            IOException failure = assertThrows(IOException.class, () -> output.writeBody(source, 3L));
+            assertEquals(2, source.reads);
+            assertEquals(2L, output.bytesWritten());
+            assertArrayEquals(new byte[]{7, 1}, target.bytes.toByteArray());
+            assertSame(failure, assertThrows(IOException.class, output::ensureWritable).getCause());
+            assertSame(failure, assertThrows(IOException.class, output::flush).getCause());
+            output.close();
+            assertTrue(source.isOpen());
+        }
+    }
+
     /// Verifies caller validation does not make an otherwise writable archive unusable.
     @Test
     void permitsWritesAfterInvalidArguments() throws IOException {
@@ -160,6 +179,43 @@ final class ArchiveOutputStreamTest {
         assertSame(failure, failure.getSuppressed()[0].getCause());
         output.close();
         assertTrue(output.isClosed());
+    }
+
+    /// Preserves the first close failure when automatic cleanup repeats the same target exception.
+    @ParameterizedTest
+    @MethodSource("repeatedCloseFailures")
+    void retainsRepeatedCloseFailure(Throwable failure, boolean failedWrite) throws IOException {
+        Target target = new Target();
+        target.closeFailure = failure;
+        ArchiveOutputStream output = new ArchiveOutputStream(target);
+        if (failedWrite) {
+            target.failure = new IOException("Earlier write failure");
+            assertSame(target.failure, assertThrows(IOException.class, () -> output.write(1)));
+        }
+        assertSame(failure, assertThrows(failure.getClass(), () -> {
+            try (output) {
+                try {
+                    output.close();
+                } finally {
+                    target.closeFailure = failure;
+                }
+            }
+        }));
+        assertEquals(1, failure.getSuppressed().length);
+        assertSame(failure, failure.getSuppressed()[0].getCause());
+        assertEquals(2, target.closes);
+        assertFalse(output.isClosed());
+        assertThrows(IOException.class, () -> output.write(1));
+        output.close();
+        output.close();
+        assertTrue(output.isClosed());
+        assertEquals(3, target.closes);
+    }
+
+    /// Supplies close failures with and without a preceding, distinct output failure.
+    private static Stream<Arguments> repeatedCloseFailures() {
+        return Stream.of(false, true).flatMap(failedWrite ->
+                failureKinds().map(failure -> Arguments.of(failure, failedWrite)));
     }
 
     /// Supplies fresh checked, unchecked, and error failures.
@@ -255,6 +311,8 @@ final class ArchiveOutputStreamTest {
         private final Throwable failure;
         /// Number of attempted reads.
         private int reads;
+        /// Whether the second read returns zero before a later read fails.
+        private boolean stallSecondRead;
         /// Whether the caller has closed this source.
         private boolean open = true;
 
@@ -269,6 +327,9 @@ final class ArchiveOutputStreamTest {
             if (++reads == 1) {
                 destination.put((byte) 1);
                 return 1;
+            }
+            if (stallSecondRead && reads == 2) {
+                return 0;
             }
             throwFailure(failure);
             throw new AssertionError("Unreachable");

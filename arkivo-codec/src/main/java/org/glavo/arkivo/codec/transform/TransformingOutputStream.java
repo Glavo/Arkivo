@@ -39,8 +39,8 @@ public final class TransformingOutputStream extends OutputStream {
     /// A deferred output or filter failure.
     private @Nullable Throwable failure;
 
-    /// The failure most recently delivered by close, used to avoid self-suppression on retry.
-    private @Nullable Throwable previousCloseFailure;
+    /// Whether an earlier flush or close failure has been delivered to the caller.
+    private boolean flushOrCloseFailed;
 
     /// Whether all pending filter bytes have been forwarded.
     private boolean finished;
@@ -94,11 +94,17 @@ public final class TransformingOutputStream extends OutputStream {
     /// Flushes the downstream coder while retaining an incomplete transform tail.
     ///
     /// This method remains valid after a successful [#finish()] but not after [#close()].
+    /// A downstream flush failure is propagated without discarding the pending suffix or disabling later writes.
     @Override
     public void flush() throws IOException {
         ensureOpen();
         rethrow(failure);
-        output.flush();
+        try {
+            output.flush();
+        } catch (IOException | RuntimeException | Error exception) {
+            flushOrCloseFailed = true;
+            throw exception;
+        }
     }
 
     /// Forwards the incomplete tail unchanged without closing the downstream coder.
@@ -128,7 +134,7 @@ public final class TransformingOutputStream extends OutputStream {
     /// failure is suppressed on the finish failure; later calls retry only downstream closure.
     /// If a write or explicit finish already failed, finalization is skipped and an `IOException` with that failure
     /// as its cause is reported. The distinct exception permits suppression by try-with-resources.
-    /// A downstream-close retry that repeats the previously reported exception is wrapped in the same way.
+    /// Cleanup failures after a reported flush or close failure are wrapped in the same way.
     @Override
     public void close() throws IOException {
         @Nullable Throwable closeFailure = null;
@@ -157,10 +163,11 @@ public final class TransformingOutputStream extends OutputStream {
             }
         }
         if (closeFailure != null) {
-            if (closeFailure == previousCloseFailure) {
-                throw new IOException("Transform stream target close failed again", closeFailure);
+            boolean retry = flushOrCloseFailed;
+            flushOrCloseFailed = true;
+            if (retry) {
+                throw new IOException("Transform stream cleanup failed after an earlier failure", closeFailure);
             }
-            previousCloseFailure = closeFailure;
         }
         rethrow(closeFailure);
     }

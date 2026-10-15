@@ -116,9 +116,8 @@ public final class RarSplitVolumePaths {
         String prefix = fileName.substring(0, numberStart);
         int width = rarExtensionStart - numberStart;
         String suffix = fileName.substring(rarExtensionStart);
-        Path parent = firstVolumePath.getParent();
         return new NumberedPathResolver(
-                parent,
+                firstVolumePath,
                 prefix,
                 width,
                 suffix,
@@ -137,9 +136,8 @@ public final class RarSplitVolumePaths {
         int rarExtensionStart = fileName.length() - ".rar".length();
         String prefix = fileName.substring(0, rarExtensionStart) + ".part";
         String suffix = fileName.substring(rarExtensionStart);
-        Path parent = firstVolumePath.getParent();
         return new NumberedPathResolver(
-                parent,
+                firstVolumePath,
                 prefix,
                 1,
                 suffix,
@@ -156,7 +154,7 @@ public final class RarSplitVolumePaths {
         }
 
         String prefix = fileName.substring(0, fileName.length() - ".rar".length()) + ".";
-        return new LegacyPathResolver(firstVolumePath.getParent(), prefix);
+        return new LegacyPathResolver(firstVolumePath, prefix);
     }
 
     /// Returns the ASCII decimal number encoded in the given string range, or `NO_VOLUME_NUMBER`.
@@ -210,8 +208,8 @@ public final class RarSplitVolumePaths {
     /// Resolves modern numbered `partN.rar` volume paths.
     @NotNullByDefault
     private static final class NumberedPathResolver implements VolumePathResolver {
-        /// The parent directory for resolved volume paths, or `null` for relative file names.
-        private final @Nullable Path parent;
+        /// The first volume whose sibling paths retain its file-system provider.
+        private final Path firstVolumePath;
 
         /// The file-name prefix before the numeric volume number.
         private final String prefix;
@@ -230,14 +228,14 @@ public final class RarSplitVolumePaths {
 
         /// Creates a modern numbered volume resolver.
         private NumberedPathResolver(
-                @Nullable Path parent,
+                Path firstVolumePath,
                 String prefix,
                 int width,
                 String suffix,
                 int firstContinuationVolumeNumber,
                 int maximumVolumeNumber
         ) {
-            this.parent = parent;
+            this.firstVolumePath = firstVolumePath;
             this.prefix = Objects.requireNonNull(prefix, "prefix");
             this.width = width;
             this.suffix = Objects.requireNonNull(suffix, "suffix");
@@ -260,23 +258,22 @@ public final class RarSplitVolumePaths {
         /// Returns the path for a continuation volume number.
         @Override
         public Path path(int volumeNumber) {
-            Path fileName = Path.of(prefix + paddedNumber(volumeNumber, width) + suffix);
-            return parent != null ? parent.resolve(fileName) : fileName;
+            return firstVolumePath.resolveSibling(prefix + paddedNumber(volumeNumber, width) + suffix);
         }
     }
 
     /// Resolves legacy `r00`, `r01`, ..., `z99` continuation volume paths.
     @NotNullByDefault
     private static final class LegacyPathResolver implements VolumePathResolver {
-        /// The parent directory for resolved volume paths, or `null` for relative file names.
-        private final @Nullable Path parent;
+        /// The first volume whose sibling paths retain its file-system provider.
+        private final Path firstVolumePath;
 
         /// The file-name prefix before the legacy continuation extension.
         private final String prefix;
 
         /// Creates a legacy volume resolver.
-        private LegacyPathResolver(@Nullable Path parent, String prefix) {
-            this.parent = parent;
+        private LegacyPathResolver(Path firstVolumePath, String prefix) {
+            this.firstVolumePath = firstVolumePath;
             this.prefix = Objects.requireNonNull(prefix, "prefix");
         }
 
@@ -297,8 +294,7 @@ public final class RarSplitVolumePaths {
         public Path path(int volumeNumber) {
             char extensionPrefix = (char) ('r' + volumeNumber / LEGACY_VOLUMES_PER_EXTENSION_LETTER);
             int extensionNumber = volumeNumber % LEGACY_VOLUMES_PER_EXTENSION_LETTER;
-            Path fileName = Path.of(prefix + extensionPrefix + paddedNumber(extensionNumber, 2));
-            return parent != null ? parent.resolve(fileName) : fileName;
+            return firstVolumePath.resolveSibling(prefix + extensionPrefix + paddedNumber(extensionNumber, 2));
         }
     }
 }

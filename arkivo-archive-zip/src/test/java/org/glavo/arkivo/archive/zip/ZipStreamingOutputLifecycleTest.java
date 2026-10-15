@@ -129,8 +129,8 @@ final class ZipStreamingOutputLifecycleTest {
         assertTrue(closeActionRan[0]);
         assertEquals(1, exception.getSuppressed().length);
         assertEquals("close action failed", exception.getSuppressed()[0].getMessage());
-        IllegalStateException retryFailure = assertThrows(IllegalStateException.class, fileSystem::close);
-        assertEquals("close failed", retryFailure.getMessage());
+        IOException retryFailure = assertThrows(IOException.class, fileSystem::close);
+        assertSame(exception, retryFailure.getCause());
     }
 
     /// Verifies one shared output-close and close-action failure remains primary without self-suppression.

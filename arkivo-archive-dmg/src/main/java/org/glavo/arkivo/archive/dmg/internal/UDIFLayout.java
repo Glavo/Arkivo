@@ -42,6 +42,9 @@ record UDIFLayout(long size, @Unmodifiable List<UDIFRun> runs) {
     /// The encoded size of one `mish` run descriptor.
     private static final int RUN_SIZE = 40;
 
+    /// Bounds DOM nesting before recursive text extraction; block-table data requires only six element levels.
+    private static final int MAXIMUM_XML_ELEMENT_DEPTH = 100;
+
     /// Copies the run sequence into this immutable layout.
     UDIFLayout {
         runs = List.copyOf(runs);
@@ -117,6 +120,7 @@ record UDIFLayout(long size, @Unmodifiable List<UDIFRun> runs) {
             factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
             factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+            factory.setAttribute("jdk.xml.maxElementDepth", MAXIMUM_XML_ELEMENT_DEPTH);
             var builder = factory.newDocumentBuilder();
             builder.setErrorHandler(XMLParsingErrorHandler.INSTANCE);
             InputSource input = new InputSource(new ByteArrayInputStream(xml));
@@ -251,16 +255,14 @@ record UDIFLayout(long size, @Unmodifiable List<UDIFRun> runs) {
             if (compressedLength == 0L) {
                 throw new IOException("Encoded UDIF run has no physical bytes");
             }
-            long physicalOffset = ChannelIO.add(dataStart, compressedOffset, "UDIF run physical offset");
+            long relativeOffset = ChannelIO.add(dataStart, compressedOffset, "UDIF run physical offset");
             ChannelIO.requireRange(
-                    physicalOffset,
+                    relativeOffset,
                     compressedLength,
-                    ChannelIO.add(trailer.dataForkOffset(), trailer.dataForkLength(), "UDIF data-fork end"),
+                    trailer.dataForkLength(),
                     "UDIF physical run"
             );
-            if (physicalOffset < trailer.dataForkOffset()) {
-                throw new IOException("UDIF physical run precedes the data fork");
-            }
+            long physicalOffset = ChannelIO.add(trailer.dataForkOffset(), relativeOffset, "UDIF run physical offset");
             if (type == UDIFConstants.BLOCK_RAW && compressedLength != logicalLength) {
                 throw new IOException("Raw UDIF run length differs from its decoded length");
             }

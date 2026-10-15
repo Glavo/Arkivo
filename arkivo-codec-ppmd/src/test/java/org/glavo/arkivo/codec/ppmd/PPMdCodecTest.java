@@ -18,6 +18,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
@@ -36,6 +37,74 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the public raw PPMd7 codec contract.
 @NotNullByDefault
 final class PPMdCodecTest {
+    /// Retries incomplete owned-source cleanup without replacing a decoder setup failure.
+    @Test
+    void retriesSourceCleanupAfterSetupFailure() throws IOException {
+        for (ResourceOwnership ownership : ResourceOwnership.values()) {
+            RetryCloseChannel source = new RetryCloseChannel();
+            try {
+                IllegalStateException failure = assertThrows(IllegalStateException.class,
+                        () -> CompressionFormats.newReadableByteChannel(PPMdFormat.NAME, source, ownership));
+                if (ownership == ResourceOwnership.OWNED) {
+                    assertFalse(source.isOpen());
+                    assertTrue(source.released);
+                    assertEquals(2, source.closeAttempts);
+                    assertArrayEquals(new Throwable[]{source.closeFailure}, failure.getSuppressed());
+                } else {
+                    assertTrue(source.isOpen());
+                    assertEquals(0, source.closeAttempts);
+                    assertEquals(0, failure.getSuppressed().length);
+                }
+            } finally {
+                if (source.closeAttempts == 0) {
+                    assertThrows(IOException.class, source::close);
+                }
+                source.close();
+            }
+        }
+    }
+
+    /// Separates logical closure from cleanup that succeeds on a second attempt.
+    @NotNullByDefault
+    private static final class RetryCloseChannel implements ReadableByteChannel {
+        /// The first cleanup failure.
+        private final IOException closeFailure = new IOException("source close failed");
+        /// Whether reads remain allowed.
+        private boolean open = true;
+        /// Whether cleanup has completed.
+        private boolean released;
+        /// Number of cleanup attempts.
+        private int closeAttempts;
+
+        /// Returns EOF while open.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+            return target.hasRemaining() ? -1 : 0;
+        }
+
+        /// Returns whether reads remain allowed.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Fails the first cleanup after rejecting further reads.
+        @Override
+        public void close() throws IOException {
+            if (released) {
+                return;
+            }
+            open = false;
+            if (++closeAttempts == 1) {
+                throw closeFailure;
+            }
+            released = true;
+        }
+    }
+
     /// Verifies official format discovery and immutable PPMd configuration.
     @Test
     void exposesImmutableConfiguration() {
@@ -233,6 +302,7 @@ final class PPMdCodecTest {
         assertEquals(maximumMemorySize, exception.maximumMemorySize());
         assertEquals(codec.memorySize(), exception.requiredMemorySize());
         assertEquals(DecompressionLimitException.Kind.MEMORY_SIZE, exception.kind());
+        assertDoesNotThrow(() -> codec.withMaximumMemorySize(codec.memorySize()).newDecoder().close());
 
         assertThrows(
                 DecompressionLimitException.class,

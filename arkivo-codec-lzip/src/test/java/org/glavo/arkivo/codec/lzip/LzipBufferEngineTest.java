@@ -305,7 +305,7 @@ public final class LzipBufferEngineTest {
         }
     }
 
-    /// Verifies all defined dictionary header codes round-trip and all other exponent codes are rejected.
+    /// Verifies dictionary codes against the lzip rule, including the eight aliases for the 4 KiB minimum.
     @Test
     public void dictionaryHeaderCodeDomain() {
         for (int code = 0; code <= 0xff; code++) {
@@ -313,13 +313,27 @@ public final class LzipBufferEngineTest {
             int logarithm = current & 0x1f;
             if (logarithm >= 12 && logarithm <= 29) {
                 int dictionarySize = LzipSupport.decodeDictionarySize(current);
-                assertEquals(current, LzipSupport.encodeDictionarySize(dictionarySize));
+                int expected = 1 << logarithm;
+                if (expected > 4096) {
+                    expected -= (expected / 16) * (current >>> 5);
+                }
+                assertEquals(expected, dictionarySize);
+                assertEquals(logarithm == 12 ? 12 : current, LzipSupport.encodeDictionarySize(dictionarySize));
             } else {
                 assertThrows(IllegalArgumentException.class, () -> LzipSupport.decodeDictionarySize(current));
             }
         }
         assertThrows(IllegalArgumentException.class, () -> LzipSupport.decodeDictionarySize(-1));
         assertThrows(IllegalArgumentException.class, () -> LzipSupport.decodeDictionarySize(0x100));
+    }
+
+    /// Rejects sizes below the format minimum and sizes without an exact header representation.
+    @ParameterizedTest
+    @ValueSource(ints = {-1, 0, 2304, 2560, 2816, 3072, 3328, 3584, 3840, 4095, 5000, 536870913})
+    public void rejectsUnrepresentableDictionarySizes(int dictionarySize) {
+        assertThrows(IllegalArgumentException.class, () -> LzipSupport.encodeDictionarySize(dictionarySize));
+        assertThrows(IllegalArgumentException.class, () -> new LzipCodec(dictionarySize));
+        assertThrows(IllegalArgumentException.class, () -> CODEC.withDictionarySize(dictionarySize));
     }
 
     /// Verifies zero-capacity targets and closed-engine operations obey lifecycle contracts.

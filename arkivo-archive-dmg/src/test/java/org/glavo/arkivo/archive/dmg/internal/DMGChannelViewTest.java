@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.dmg.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
+import org.glavo.arkivo.codec.deflate.ZlibCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -34,6 +35,86 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the bounded-read, extent-mapping, capability, and cleanup contracts of DMG channel views.
 @NotNullByDefault
 final class DMGChannelViewTest {
+    /// Combines compressed and raw reads with shared or distinct cleanup failures.
+    private static Stream<Arguments> cleanupFailures() {
+        return Stream.of(false, true).flatMap(compressed -> Stream.of(0, 1, 2).flatMap(kind ->
+                Stream.of(false, true).flatMap(shared -> Stream.of(false, true)
+                        .map(closed -> Arguments.of(compressed, kind, shared, closed)))));
+    }
+
+    /// Preserves read failures during automatic cleanup and retries cleanup even after physical closure.
+    @ParameterizedTest
+    @MethodSource("cleanupFailures")
+    void udifPreservesReadFailureDuringClose(boolean compressed, int kind, boolean shared, boolean closed)
+            throws IOException {
+        byte[] content = sequence(32);
+        ByteBuffer encoded = compressed ? ZlibCodec.DEFAULT.compress(ByteBuffer.wrap(content))
+                : ByteBuffer.wrap(content);
+        byte[] bytes = new byte[encoded.remaining()];
+        encoded.get(bytes);
+        Throwable failure = switch (kind) {
+            case 0 -> new IOException("physical read failure");
+            case 1 -> new IllegalStateException("physical read failure");
+            default -> new AssertionError("physical read failure");
+        };
+        Throwable cleanup = shared ? failure : new IOException("physical cleanup failure");
+        TestSeekableByteChannel physical = new TestSeekableByteChannel(bytes, bytes.length);
+        physical.failedRead = 1;
+        physical.readFailure = failure;
+        physical.closeFailure = cleanup;
+        physical.closeFailures = 2;
+        physical.closeBeforeFailure = closed;
+        UDIFLayout layout = new UDIFLayout(content.length, List.of(new UDIFRun(
+                compressed ? UDIFConstants.BLOCK_ZLIB : UDIFConstants.BLOCK_RAW,
+                0, content.length, 0, bytes.length)));
+        SeekableByteChannel channel = UDIFBlockChannel.open(physical, layout, ArchiveReadLimits.UNLIMITED);
+        try {
+            Throwable actual = assertThrows(failure.getClass(), () -> {
+                try (channel) {
+                    channel.read(ByteBuffer.allocate(content.length));
+                }
+            });
+            assertSame(failure, actual);
+            assertEquals(1, actual.getSuppressed().length);
+            if (shared) {
+                assertInstanceOf(IOException.class, actual.getSuppressed()[0]);
+                assertSame(cleanup, actual.getSuppressed()[0].getCause());
+            } else {
+                assertSame(cleanup, actual.getSuppressed()[0]);
+            }
+            assertFalse(channel.isOpen());
+            assertThrows(ClosedChannelException.class, () -> channel.read(ByteBuffer.allocate(1)));
+            IOException repeated = assertThrows(IOException.class, channel::close);
+            assertSame(cleanup, repeated.getCause());
+            channel.close();
+            channel.close();
+            assertEquals(3, physical.closeAttempts);
+            assertFalse(physical.isOpen());
+        } finally {
+            physical.closeFailures = 0;
+            channel.close();
+        }
+    }
+
+    /// Retries source cleanup through a slice that already rejects new I/O after its first failed close.
+    @Test
+    void udifRetriesClosedSliceCleanup() throws IOException {
+        TestSeekableByteChannel physical = new TestSeekableByteChannel(sequence(4), 4);
+        physical.closeFailures = 1;
+        SeekableByteChannel slice = ArchiveSliceChannel.open(physical, 0, 4);
+        SeekableByteChannel channel = UDIFBlockChannel.open(slice, rawLayout(4), ArchiveReadLimits.UNLIMITED);
+        try {
+            assertThrows(IOException.class, channel::close);
+            assertFalse(slice.isOpen());
+            assertTrue(physical.isOpen());
+            channel.close();
+            assertFalse(physical.isOpen());
+            assertEquals(2, physical.closeAttempts);
+        } finally {
+            slice.close();
+        }
+    }
+
     /// Combines failure kinds, partial-byte counts, and destination storage kinds.
     private static Stream<Arguments> readFailures() {
         return Stream.of(
@@ -279,7 +360,7 @@ final class DMGChannelViewTest {
         }
     }
 
-    /// Verifies closing a UDIF view retries an encoded source left open by an earlier close failure.
+    /// Verifies closing a UDIF view retries failed cleanup regardless of the source's open state.
     @Test
     void udifChannelRetriesIncompleteSourceClose() throws IOException {
         TestSeekableByteChannel retryingSource = new TestSeekableByteChannel(new byte[0], 1);
@@ -314,7 +395,7 @@ final class DMGChannelViewTest {
         assertThrows(IOException.class, completed::close);
         completed.close();
         assertFalse(closedOnFailure.isOpen());
-        assertEquals(1, closedOnFailure.closeAttempts);
+        assertEquals(2, closedOnFailure.closeAttempts);
     }
 
     /// Returns one raw UDIF layout with matching logical and physical sizes.
@@ -359,6 +440,9 @@ final class DMGChannelViewTest {
 
         /// Number of close failures still scheduled.
         private int closeFailures;
+
+        /// The configured cleanup exception, or `null` to create a fresh I/O failure on each attempt.
+        private @Nullable Throwable closeFailure;
 
         /// Whether a scheduled close failure also closes the channel.
         private boolean closeBeforeFailure;
@@ -464,13 +548,19 @@ final class DMGChannelViewTest {
         @Override
         public void close() throws IOException {
             closeAttempts++;
-            if (!open) {
-                return;
-            }
             if (closeFailures > 0) {
                 closeFailures--;
                 if (closeBeforeFailure) {
                     open = false;
+                }
+                if (closeFailure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (closeFailure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                if (closeFailure instanceof Error error) {
+                    throw error;
                 }
                 throw new IOException("close failure");
             }

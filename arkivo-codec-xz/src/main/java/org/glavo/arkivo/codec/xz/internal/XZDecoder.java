@@ -29,8 +29,8 @@ import java.util.zip.CRC32;
 /// Incrementally decodes one XZ Stream without retaining caller-owned buffers.
 ///
 /// Fixed-size metadata is collected transactionally, LZMA2 payloads are decoded directly from the current source, and
-/// preprocessing filters retain only bounded lookahead. A Stream completes at its Footer; after reset, legal inter-Stream
-/// padding is consumed before the next Stream Header without retaining caller input.
+/// preprocessing filters retain only bounded lookahead. A Stream completes at its Footer; resetting after completion
+/// allows legal inter-Stream padding before the next Stream Header without retaining caller input.
 @NotNullByDefault
 public final class XZDecoder implements CompressionDecoder.Framed {
     /// The largest XZ Block Header size.
@@ -286,10 +286,11 @@ public final class XZDecoder implements CompressionDecoder.Framed {
         }
     }
 
-    /// Abandons the current Stream and restores the decoder's initial state.
+    /// Abandons the current Stream, accepting leading Stream Padding only when resetting a completed Stream.
     @Override
     public void reset() {
         requireOpen();
+        boolean afterCompletedStream = phase == Phase.FINISHED;
         @Nullable BlockContext current = block;
         if (current != null) {
             current.close();
@@ -307,7 +308,7 @@ public final class XZDecoder implements CompressionDecoder.Framed {
         resetVli();
         completedVli = 0L;
         streamPadding = 0L;
-        phase = Phase.STREAM_PREFIX_PADDING;
+        phase = afterCompletedStream ? Phase.STREAM_PREFIX_PADDING : Phase.STREAM_HEADER;
     }
 
     /// Releases decoder-owned state without consuming additional source bytes.

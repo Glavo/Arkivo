@@ -9,14 +9,23 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
+import java.io.EOFException;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 
@@ -29,6 +38,83 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies RAR streaming-entry boundaries and owned-source cleanup retry behavior.
 @NotNullByDefault
 final class RarStreamingReaderLifecycleTest {
+    /// The directory containing file-backed source fixtures.
+    @TempDir
+    Path directory;
+
+    /// Rejects missing body bytes when advancing past or closing an unread checksum-free entry.
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void rejectsTruncatedUncheckedBody(boolean fileSource, boolean closeBody) throws IOException {
+        byte[] content = {1, 2, 3, 4, 5, 6};
+        byte[] archive = RarTestArchiveFixtures.storedBlockWithoutChecksum(false, content);
+        for (int length = 0; length < content.length; length++) {
+            byte[] truncated = Arrays.copyOf(archive, archive.length - content.length + length);
+            try (InputStream source = openSource(truncated, fileSource);
+                 RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source)) {
+                assertTrue(reader.next());
+                if (closeBody) {
+                    InputStream body = reader.openInputStream();
+                    if (length > 0) {
+                        assertEquals(content[0], body.read());
+                    }
+                    assertThrows(EOFException.class, body::close);
+                } else {
+                    assertThrows(EOFException.class, reader::next);
+                }
+            }
+        }
+    }
+
+    /// Rejects missing service-block data even when source skips can move beyond EOF.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsTruncatedServiceData(boolean fileSource) throws IOException {
+        byte[] content = {1, 2, 3, 4, 5, 6};
+        byte[] archive = RarTestArchiveFixtures.storedBlockWithoutChecksum(true, content);
+        for (int length = 0; length < content.length; length++) {
+            byte[] truncated = Arrays.copyOf(archive, archive.length - content.length + length);
+            try (InputStream source = openSource(truncated, fileSource);
+                 RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source)) {
+                assertThrows(EOFException.class, reader::next);
+            }
+        }
+    }
+
+    /// Accepts complete checksum-free data areas, including empty and single-byte blocks.
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void skipsCompleteUncheckedBlocks(boolean fileSource, boolean service) throws IOException {
+        byte[] followingContent = {7, 8, 9};
+        for (int length : new int[]{0, 1, 6, 257}) {
+            byte[] archive = RarTestArchiveFixtures.storedArchiveWithUncheckedBlock(
+                    service, new byte[length], followingContent
+            );
+            try (InputStream source = openSource(archive, fileSource);
+                 RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source)) {
+                if (!service) {
+                    assertTrue(reader.next());
+                    reader.openInputStream().close();
+                }
+                assertTrue(reader.next());
+                try (InputStream body = reader.openInputStream()) {
+                    assertArrayEquals(followingContent, body.readAllBytes());
+                }
+                assertFalse(reader.next());
+            }
+        }
+    }
+
+    /// Opens an in-memory source or a file stream whose skips may seek past EOF.
+    private InputStream openSource(byte[] archive, boolean fileSource) throws IOException {
+        if (!fileSource) {
+            return new ByteArrayInputStream(archive);
+        }
+        Path path = directory.resolve("source.rar");
+        Files.write(path, archive);
+        return new FileInputStream(path.toFile());
+    }
+
     /// Verifies stored entry streams implement bounded reads, skips, availability, and close-time draining.
     @Test
     void storedEntryStreamsPreserveBoundariesAcrossPartialConsumption() throws IOException {

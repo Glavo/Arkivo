@@ -422,6 +422,58 @@ public final class ArkivoFileSystemConcurrencyTest {
         assertStrictCloseFailure(new AssertionError("error close failure"));
     }
 
+    /// Preserves new failure identities and wraps repeated identities even when another failure intervenes.
+    @ParameterizedTest
+    @EnumSource(ArkivoFileSystemThreadSafety.class)
+    void retainsNonconsecutiveCleanupFailures(ArkivoFileSystemThreadSafety mode) throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(mode);
+        IOException first = new IOException("First cleanup failure");
+        IOException second = new IOException("Second cleanup failure");
+        assertSame(first, assertThrows(IOException.class, () -> fileSystem.closeWithFailure(first)));
+        assertSame(second, assertThrows(IOException.class, () -> fileSystem.closeWithFailure(second)));
+        assertSame(first, assertThrows(IOException.class, () -> fileSystem.closeWithFailure(first)).getCause());
+        assertSame(second, assertThrows(IOException.class, () -> fileSystem.closeWithFailure(second)).getCause());
+        assertFalse(fileSystem.isOpen());
+        fileSystem.close();
+        fileSystem.close();
+    }
+
+    /// Retains a strict-resource failure when automatic cleanup retries the same exception.
+    @Test
+    void strictCloseRetainsRepeatedResourceFailure() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
+        TrackingInputStream delegate = new TrackingInputStream("Repeated resource failure", 4);
+        fileSystem.managedInputStream(delegate);
+        assertSame(delegate.closeFailure, assertThrows(IOException.class, () -> {
+            try (fileSystem) {
+                fileSystem.close();
+            }
+        }));
+        assertEquals(4, delegate.closeCalls());
+        assertEquals(1, delegate.closeFailure.getSuppressed().length);
+        assertSame(delegate.closeFailure, delegate.closeFailure.getSuppressed()[0].getCause());
+        assertFalse(fileSystem.isOpen());
+        fileSystem.close();
+        fileSystem.close();
+        assertEquals(5, delegate.closeCalls());
+        assertFalse(delegate.isOpen());
+    }
+
+    /// Keeps subclass cleanup primary while attaching a different strict-resource failure exactly once.
+    @Test
+    void strictCloseSuppressesResourceFailureOnCleanupFailure() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
+        TrackingInputStream delegate = new TrackingInputStream("resource close failure", 1);
+        fileSystem.managedInputStream(delegate);
+        IOException primary = new IOException("subclass cleanup failure");
+        assertSame(primary, assertThrows(IOException.class, () -> fileSystem.closeWithFailure(primary)));
+        assertEquals(1, primary.getSuppressed().length);
+        assertEquals("resource close failure", primary.getSuppressed()[0].getMessage());
+        assertFalse(fileSystem.isOpen());
+        assertEquals(2, delegate.closeCalls());
+        fileSystem.close();
+    }
+
     /// Verifies that strict close terminates a blocking interruptible read before waiting for its operation lock.
     @Test
     public void strictCloseReleasesBlockingInterruptibleRead() throws Exception {
@@ -458,8 +510,9 @@ public final class ArkivoFileSystemConcurrencyTest {
     }
 
     /// A staged close waiting for exclusive completion does not prevent strict close from releasing another reader.
-    @Test
-    void strictCloseCompletesStagedBodyWithoutResourceMonitorInversion() throws Exception {
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void strictCloseCompletesStagedBodyWithoutResourceMonitorInversion(int binding) throws Exception {
         TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
         ExecutorService executor = Executors.newFixedThreadPool(3);
         CountDownLatch readEntered = new CountDownLatch(1);
@@ -474,7 +527,13 @@ public final class ArkivoFileSystemConcurrencyTest {
                     assertTrue(commit);
                     completions.incrementAndGet();
                 });
-        SeekableByteChannel writer = fileSystem.managedWriteChannel(staged);
+        java.io.Closeable writer = switch (binding) {
+            case 0 -> fileSystem.managedWriteChannel(staged);
+            case 1 -> fileSystem.managedWriteChannel(staged, staged::closeStorage);
+            case 2 -> fileSystem.managedOutputStream(java.nio.channels.Channels.newOutputStream(staged),
+                    staged::closeStorage);
+            default -> throw new AssertionError(binding);
+        };
         try {
             Future<Integer> read = executor.submit(() -> reader.read(ByteBuffer.allocate(1)));
             assertTrue(readEntered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
@@ -786,6 +845,19 @@ public final class ArkivoFileSystemConcurrencyTest {
             operation.close();
         }
 
+        /// Fails subclass cleanup while transferring pending strict-resource failures before releasing the token.
+        private void closeWithFailure(IOException failure) throws IOException {
+            CloseOperation operation = beginCloseOperation();
+            try {
+                open = false;
+                throw failure;
+            } catch (IOException exception) {
+                operation.rethrowFailure(exception);
+            } finally {
+                operation.close();
+            }
+        }
+
         /// Opens and closes a managed input stream inside one shared operation.
         private void readAndCloseManagedInput(InputStream input) throws IOException {
             try (Operation ignored = beginReadOperation();
@@ -809,6 +881,11 @@ public final class ArkivoFileSystemConcurrencyTest {
             return manageWriteChannel(channel);
         }
 
+        /// Exposes writable channel management with independently bound storage closure.
+        private SeekableByteChannel managedWriteChannel(SeekableByteChannel channel, Runnable prepareClose) {
+            return manageWriteChannel(channel, prepareClose);
+        }
+
         /// Exposes input stream management.
         private InputStream managedInputStream(InputStream input) {
             return manageInputStream(input);
@@ -817,6 +894,11 @@ public final class ArkivoFileSystemConcurrencyTest {
         /// Exposes output stream management.
         private OutputStream managedOutputStream(OutputStream output) {
             return manageOutputStream(output);
+        }
+
+        /// Exposes output stream management with independently bound storage closure.
+        private OutputStream managedOutputStream(OutputStream output, Runnable prepareClose) {
+            return manageOutputStream(output, prepareClose);
         }
 
         /// Exposes directory stream management.

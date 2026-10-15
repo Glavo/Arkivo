@@ -53,6 +53,8 @@ import java.util.Objects;
 /// representable range of an existing timestamp extra field causes `IOException` without changing the entry metadata.
 /// Recorded access and creation times and unrelated extra-field bytes are retained.
 ///
+/// Updating POSIX permissions retains the entry's DOS attribute flags.
+///
 /// A successfully returned file system owns an explicitly supplied stream, channel, channel source, or volume source
 /// and closes it with the file system. An `ArkivoVolumeTarget` remains caller-owned; only the transaction opened from it
 /// is owned by the file system. Path creation uses create-or-truncate semantics and the path is not a complete ZIP

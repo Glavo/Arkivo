@@ -9,6 +9,8 @@ import org.glavo.arkivo.codec.xz.XZCheckType;
 import org.glavo.arkivo.codec.xz.XZCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
@@ -101,6 +103,47 @@ final class XZDecoderLifecycleTest {
                 IllegalStateException.class,
                 () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
         );
+    }
+
+    /// Reset before completion requires a new Stream rather than accepting empty input as trailing padding.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 11, 12, 13, 20, 31})
+    void resetOfIncompleteStreamRequiresNewHeader(int prefixLength) throws IOException {
+        byte[] valid = encode(XZCodec.DEFAULT, new byte[0]);
+        for (boolean finishPrefix : new boolean[]{false, true}) {
+            for (int paddingSize : new int[]{0, 4, 8}) {
+                try (XZDecoder decoder = newDecoder()) {
+                    ByteBuffer prefix = ByteBuffer.wrap(Arrays.copyOf(valid, prefixLength));
+                    if (finishPrefix) {
+                        assertThrows(EOFException.class, () -> decoder.finish(prefix, ByteBuffer.allocate(1)));
+                    } else if (prefixLength != 0) {
+                        assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(prefix, ByteBuffer.allocate(1)));
+                    }
+                    decoder.reset();
+                    ByteBuffer input = ByteBuffer.wrap(new byte[paddingSize]);
+                    assertThrows(EOFException.class, () -> decoder.finish(input, ByteBuffer.allocate(1)));
+                    decoder.reset();
+                    assertArrayEquals(new byte[0], decode(decoder, valid));
+                }
+            }
+        }
+    }
+
+    /// A rejected Footer does not grant the next decoding attempt permission to accept only padding.
+    @Test
+    void resetAfterInvalidFooterRequiresNewHeader() throws IOException {
+        byte[] valid = encode(XZCodec.DEFAULT, new byte[0]);
+        byte[] invalid = valid.clone();
+        invalid[invalid.length - 1] ^= 1;
+        try (XZDecoder decoder = newDecoder()) {
+            assertThrows(IOException.class,
+                    () -> decoder.finish(ByteBuffer.wrap(invalid), ByteBuffer.allocate(1)));
+            decoder.reset();
+            assertThrows(EOFException.class,
+                    () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1)));
+            decoder.reset();
+            assertArrayEquals(new byte[0], decode(decoder, valid));
+        }
     }
 
     /// Verifies every proper prefix of an empty Stream is reported as truncated at end of input.

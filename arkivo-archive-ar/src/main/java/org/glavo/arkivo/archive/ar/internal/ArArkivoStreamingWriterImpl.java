@@ -8,6 +8,7 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.internal.ArchiveOutputStream;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
+import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
@@ -19,7 +20,6 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -31,6 +31,7 @@ import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileTime;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.Set;
 
 /// Implements the public forward-only AR streaming writer API.
@@ -172,8 +173,12 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             throw new IllegalStateException("An AR streaming member body is still open");
         }
 
+        // Indexed input may contain an ordinary member such as ./__.SYMDEF. Keep the normalized
+        // logical name distinguishable from a symbol-table record when rewriting that member.
+        String path = attributes.path();
+        String storedPath = ArMemberNames.isBsdSymbolTable(path) ? "./" + path : memberPathText(path);
         PendingMember member = new PendingMember(
-                memberPathText(attributes.path()),
+                storedPath,
                 attributes.mode(),
                 MemberKind.REGULAR_FILE,
                 null
@@ -216,8 +221,8 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         }
         member.ensurePending();
         byte @Unmodifiable [] body = member.fixedBodyOrEmpty();
-        ensureMemberBodySize(member, body.length);
         pendingMember = null;
+        ensureMemberBodySize(member, body.length);
         writeMember(member, body);
     }
 
@@ -225,6 +230,23 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     @Override
     protected WritableByteChannel openCurrentChannel() throws IOException {
         return StreamChannelAdapters.writableChannel(openBodyStream());
+    }
+
+    /// Captures storage-only closure for the staged body opened by the file system's current operation.
+    ///
+    /// The returned action remains bound to this body even after another member becomes current. Its caller must
+    /// subsequently close the entry stream under exclusive coordination, after active writes have returned.
+    Runnable currentBodyClosePreparation() {
+        if (!(currentBody instanceof StoredMemberBodyOutputStream body)) {
+            throw new IllegalStateException("No staged AR body is open");
+        }
+        return body.storageChannel::closeStorage;
+    }
+
+    /// Captures whether the current staged body has been emitted, independently of later cleanup failures.
+    BooleanSupplier currentBodyPublication() {
+        StoredMemberBodyOutputStream body = (StoredMemberBodyOutputStream) Objects.requireNonNull(currentBody, "currentBody");
+        return () -> body.emitted;
     }
 
     /// Opens an output stream for the current pending member and commits it when the stream is closed.
@@ -461,6 +483,9 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// Converts a logical member path to normalized AR path text.
     private static String memberPathText(String path) {
         Objects.requireNonNull(path, "path");
+        if (path.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException("AR member path must not contain NUL");
+        }
         String normalizedSeparators = path.replace('\\', '/');
         if (normalizedSeparators.startsWith("/") || normalizedSeparators.length() >= 2
                 && normalizedSeparators.charAt(1) == ':') {
@@ -489,7 +514,14 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         if (builder.isEmpty()) {
             throw new IllegalArgumentException("AR streaming member path is empty");
         }
-        return builder.toString();
+        String memberPath = builder.toString();
+        if (memberPath.length() >= 2 && memberPath.charAt(1) == ':') {
+            throw new IllegalArgumentException("AR streaming member paths must be relative");
+        }
+        if (ArMemberNames.isBsdSymbolTable(memberPath)) {
+            throw new IllegalArgumentException("AR member name is reserved for a symbol table: " + memberPath);
+        }
+        return memberPath;
     }
 
     /// Converts a symbolic link target to AR member body text.
@@ -849,6 +881,9 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// Stages one unknown-size member body before committing its AR header and body.
     @NotNullByDefault
     private final class StoredMemberBodyOutputStream extends OutputStream {
+        /// Whether all header and body bytes were written successfully, even if subsequent cleanup failed.
+        private boolean emitted;
+
         /// The member metadata to commit.
         private final PendingMember member;
 
@@ -873,7 +908,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
                         StandardOpenOption.TRUNCATE_EXISTING,
                         StandardOpenOption.WRITE
                 )), false, true, false, true, (channel, commit) -> completeBody(commit));
-                this.storageOutput = Channels.newOutputStream(storageChannel);
+                this.storageOutput = storageChannel.newOutputStream();
             } catch (IOException | RuntimeException | Error exception) {
                 releaseBody(content);
                 throw exception;
@@ -921,8 +956,16 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             try {
                 if (commit) {
                     long size = content.size();
-                    try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
+                    SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ));
+                    @Nullable Throwable failure = null;
+                    try {
                         writeStoredMember(member, input, size);
+                        emitted = true;
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                        throw exception;
+                    } finally {
+                        StoredContentSupport.closeAfterTransfer(input, failure);
                     }
                 }
             } finally {

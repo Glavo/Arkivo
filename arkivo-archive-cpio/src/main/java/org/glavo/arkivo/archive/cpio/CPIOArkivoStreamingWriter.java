@@ -21,13 +21,16 @@ import java.util.Objects;
 /// storage configured by `CPIOArchiveOptions.Create` selects the staging policy; default factories use temporary files
 /// under the system temporary directory. The writer owns and closes the selected storage.
 ///
+/// Entry names and symbolic-link targets must round-trip through the configured metadata charset without replacement
+/// or NUL bytes. A value that cannot be preserved is rejected with `IOException` before its entry is emitted.
+///
 /// A write failure in staged storage disables further body writes. Closing that body discards the entry and reports
-/// an `IOException` with the write failure as its cause; subsequent body close calls do not emit the entry. Argument
-/// and body-size validation failures leave the body usable.
+/// an `IOException` whose cause chain retains the write failure; subsequent body close calls do not emit the entry.
+/// Argument and body-size validation failures leave the body usable.
 ///
 /// A target write failure, or a body read failure after its header has been emitted, leaves the archive incomplete.
-/// No further entries or trailer records are written. Closing the writer reports the earlier failure as the cause of
-/// an `IOException` and releases owned resources. Bytes already sent to the output are not rolled back.
+/// No further entries or trailer records are written. Closing the writer releases owned resources and reports an
+/// `IOException` whose cause chain retains the earlier failure. Bytes already sent to the output are not rolled back.
 ///
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits the fixed body or an empty regular
 /// file; a regular-file body owns completion until it closes successfully. Metadata views are configurable only before

@@ -81,7 +81,7 @@ final class CodecEngineResetContractTest {
         }
     }
 
-    /// Verifies reset discards failed header and body decoding, including a separately reported end of input.
+    /// Verifies reset discards failed decoding after an empty target and a separately reported end of input.
     @ParameterizedTest(name = "{0}")
     @MethodSource("installedFormats")
     void resetsAfterTruncatedInput(String formatName) throws IOException {
@@ -91,8 +91,11 @@ final class CodecEngineResetContractTest {
             encoded = encode(encoder, FIRST_CONTENT, formatName);
         }
         // Unix compress has no end marker; a shorter sequence of complete codes can be a valid stream.
-        int[] prefixSizes = formatName.equals("compress")
-                ? new int[]{1} : new int[]{1, encoded.length / 2};
+        int[] prefixSizes = switch (formatName) {
+            case "compress" -> new int[]{1};
+            case "gzip", "zlib", "lzip", "lz4" -> new int[]{1, encoded.length / 2, encoded.length - 1};
+            default -> new int[]{1, encoded.length / 2};
+        };
         CompressionCodec<?> configured = CodecContractConfigurations.decoderCodec(codec, CONTENT_SIZE)
                 .withMaximumOutputSize(CONTENT_SIZE);
         try (CompressionDecoder decoder = configured.newDecoder()) {
@@ -105,14 +108,15 @@ final class CodecEngineResetContractTest {
                     ByteArrayOutputStream partial = new ByteArrayOutputStream();
                     assertThrows(IOException.class, () -> {
                         for (int calls = 0; calls < CONTENT_SIZE; calls++) {
-                            ByteBuffer target = ByteBuffer.allocate(31);
+                            int capacity = calls == 0 ? 0 : 31;
+                            ByteBuffer target = ByteBuffer.allocate(capacity);
                             CodecOutcome outcome;
                             try {
                                 outcome = incremental && input.hasRemaining()
                                         ? decoder.decode(input, target) : decoder.finish(input, target);
                             } finally {
                                 assertEquals(prefixSize + 2, input.limit(), context);
-                                assertEquals(31, target.limit(), context);
+                                assertEquals(capacity, target.limit(), context);
                                 drain(target, partial);
                             }
                             if (outcome == CodecOutcome.FINISHED) {

@@ -63,6 +63,30 @@ final class TarArkivoFileSystemContractTest {
     @TempDir
     private Path temporaryDirectory;
 
+    /// Rejected hard-link targets do not create implicit directories in the update index.
+    @Test
+    void rejectsHardLinksWithoutCreatingParents() throws IOException {
+        Path archive = temporaryDirectory.resolve("failed-hard-links.tar");
+        try (var fs = TarArkivoFileSystem.create(archive)) {
+            Files.writeString(fs.getPath("original"), "body");
+            Files.createDirectory(fs.getPath("directory"));
+            Files.createSymbolicLink(fs.getPath("symbolic"), fs.getPath("original"));
+        }
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            for (String target : List.of("missing", "directory", "symbolic")) {
+                Path link = fs.getPath("ghost/nested/link");
+                assertThrows(IOException.class, () -> Files.createLink(link, fs.getPath(target)));
+                assertFalse(Files.exists(fs.getPath("ghost")));
+                assertFalse(Files.exists(fs.getPath("ghost/nested")));
+            }
+            Files.createLink(fs.getPath("ghost/nested/link"), fs.getPath("original"));
+            assertEquals("body", Files.readString(fs.getPath("ghost/nested/link")));
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            assertEquals("body", Files.readString(fs.getPath("ghost/nested/link")));
+        }
+    }
+
     /// Surviving hard links retain shared content after unlinking or replacing a group member.
     @ParameterizedTest
     @ValueSource(strings = {"original", "alias", "replace-original", "replace-alias"})
@@ -203,6 +227,10 @@ final class TarArkivoFileSystemContractTest {
 
             Iterator<FileStore> stores = fileSystem.getFileStores().iterator();
             FileStore store = stores.next();
+            assertThrows(NullPointerException.class,
+                    () -> store.supportsFileAttributeView((Class<BasicFileAttributeView>) null));
+            assertThrows(NullPointerException.class, () -> store.supportsFileAttributeView((String) null));
+            assertThrows(NullPointerException.class, () -> store.getFileStoreAttributeView(null));
             assertFalse(stores.hasNext());
             assertSame(store, Files.getFileStore(file));
             assertEquals(Files.size(archive), store.getTotalSpace());
@@ -595,7 +623,7 @@ final class TarArkivoFileSystemContractTest {
                     () -> Files.newByteChannel(file, Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))
             );
             assertThrows(
-                    IllegalArgumentException.class,
+                    NoSuchFileException.class,
                     () -> Files.newByteChannel(missing, Set.of(StandardOpenOption.CREATE))
             );
             assertThrows(

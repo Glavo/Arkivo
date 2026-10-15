@@ -26,6 +26,7 @@ import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -145,7 +146,61 @@ public final class ZstdBufferEngineTest {
         }
     }
 
-    /// Verifies late dictionary binding through a formatted dictionary identifier.
+    /// Rejects further encoding after a source-size failure and restores a clean, deterministic frame on reset.
+    @ParameterizedTest
+    @CsvSource({"0, finish", "2, finish", "0, finishFrame", "2, finishFrame", "0, encode", "2, encode"})
+    void sourceSizeFailureRequiresReset(int workers, String operation) throws IOException {
+        ZstdCodec codec = ZstdCodec.builder().workerCount(workers).frameChecksum(true).build();
+        byte[] complete = {1, 2, 3, 4};
+        for (boolean flushed : new boolean[]{false, true}) {
+            try (var encoder = codec.newEncoder(EncodingOptions.ofSourceSize(complete.length))) {
+                ByteBuffer output = ByteBuffer.allocate(128);
+                assertEquals(CodecOutcome.NEEDS_INPUT,
+                        encoder.encode(ByteBuffer.wrap(new byte[]{1, 2, 3}), output));
+                if (flushed) {
+                    assertEquals(CodecOutcome.FLUSHED, encoder.flush(output));
+                }
+                ByteBuffer excess = ByteBuffer.wrap(new byte[]{0, 4, 5, 0});
+                excess.position(1).limit(3);
+                IOException failure = assertThrows(IOException.class, () -> {
+                    switch (operation) {
+                        case "finish" -> encoder.finish(output);
+                        case "finishFrame" -> encoder.finishFrame(output);
+                        case "encode" -> encoder.encode(excess, output);
+                        default -> throw new AssertionError(operation);
+                    }
+                });
+                assertTrue(failure.getMessage().contains("pledged"));
+                assertEquals(1, excess.position());
+                assertEquals(3, excess.limit());
+
+                int failedPosition = output.position();
+                ByteBuffer remaining = ByteBuffer.wrap(new byte[]{4});
+                for (int retry = 0; retry < 2; retry++) {
+                    assertThrows(IllegalStateException.class, () -> encoder.finish(output));
+                    assertThrows(IllegalStateException.class, () -> encoder.finishFrame(output));
+                    assertThrows(IllegalStateException.class, () -> encoder.flush(output));
+                    assertThrows(IllegalStateException.class, () -> encoder.encode(remaining, output));
+                    assertThrows(IllegalStateException.class, encoder::startFrame);
+                    assertEquals(failedPosition, output.position());
+                    assertEquals(0, remaining.position());
+                }
+
+                encoder.reset();
+                ByteArrayOutputStream recovered = new ByteArrayOutputStream();
+                encodeSource(encoder, ByteBuffer.wrap(complete), recovered, 1);
+                finish(encoder, recovered, 1);
+                byte[] fresh = encode(complete, codec.newEncoder(EncodingOptions.ofSourceSize(complete.length)),
+                        complete.length, 1, false);
+                assertArrayEquals(fresh, recovered.toByteArray());
+                try (var reference = new ZstdInputStream(new ByteArrayInputStream(recovered.toByteArray()))) {
+                    assertArrayEquals(complete, reference.readAllBytes());
+                }
+            }
+        }
+    }
+
+    /// Rejects a mismatched dictionary without losing the pending request, then decodes with the matching dictionary.
     @Test
     public void requestsAndAcceptsDictionary() throws IOException {
         byte[] samples = testData(8192);
@@ -177,6 +232,10 @@ public final class ZstdBufferEngineTest {
 
             int waitingSourcePosition = source.position();
             ByteBuffer waitingTarget = ByteBuffer.allocate(1);
+            ZstdDictionary wrongDictionary = ZstdDictionary.rawContent(samples);
+            assertFalse(decoder.dictionaryRequest().matches(wrongDictionary));
+            assertThrows(IllegalArgumentException.class, () -> decoder.provideDictionary(wrongDictionary));
+            assertEquals(dictionary.dictionaryId(), decoder.dictionaryRequest().dictionaryId());
             assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.finish(source, waitingTarget));
             assertEquals(waitingSourcePosition, source.position());
             assertEquals(0, waitingTarget.position());

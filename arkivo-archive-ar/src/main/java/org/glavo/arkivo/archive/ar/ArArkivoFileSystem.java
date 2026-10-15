@@ -32,10 +32,18 @@ import java.util.Objects;
 /// [org.glavo.arkivo.archive.ArchiveUpdateOptions#commitTarget()] can select another publication target. AR symbol
 /// indexes are omitted from rewritten archives because member offsets
 /// change; callers that require a linker index must rebuild it with a platform tool such as `ranlib`.
+/// Creating or renaming an explicit member to the root-level names `__.SYMDEF`, `__.SYMDEF SORTED`,
+/// `__.SYMDEF_64`, or `__.SYMDEF_64 SORTED` throws [java.nio.file.FileSystemException]; these names are
+/// reserved for BSD symbol tables. Existing ordinary members whose stored paths normalize to these names remain
+/// readable and updatable; rewriting keeps their records distinct from symbol tables.
+/// Creating or renaming a member to a name containing NUL throws [java.nio.file.FileSystemException] before changing
+/// the archive index or writing member bytes.
 /// Indexed sessions stage member bodies through the configured edit storage, using temporary files under the system
 /// temporary directory by default. The file system owns and closes the selected edit storage.
 /// A member being replaced through an open writable channel is hidden from new reads until that channel closes;
 /// channels and attribute snapshots opened before the replacement retain the preceding member state.
+/// For a new member opened through a writable channel, its name and any missing parent directories enter the index
+/// only when the staged body is committed.
 /// If a storage write or truncation fails on an update channel, further mutations through that channel fail. Closing
 /// it discards the staged body and reports an `IOException` with the mutation failure as its cause. An existing member
 /// remains unchanged, and a new member is not added. Argument and member-size validation failures do not discard a body.

@@ -24,6 +24,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -829,6 +830,57 @@ public final class ZipAutoMetadataDecoderTest {
                 stream.iterator().hasNext();
             }
         });
+    }
+
+    /// Both reader entry points reject malformed authoritative Unicode without invoking a custom legacy decoder.
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    public void unicodeMetadataPrecedesCustomDecoders(boolean utf8, boolean zipSpecific,
+                                                     @TempDir Path directory) throws IOException {
+        ArchiveMetadataDecoder decoder = zipSpecific
+                ? (ZipLegacyMetadataDecoder) context -> { throw new AssertionError("Legacy decoder must not be invoked"); }
+                : bytes -> { throw new AssertionError("Legacy decoder must not be invoked"); };
+        var options = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(decoder);
+        byte[] valid = archive(new Sample("legacy.txt", "windows-1252", null, true, 0));
+        int centralOffset = ByteArrayAccess.readIntLittleEndian(valid, valid.length - 6);
+        short flags = (short) (utf8 ? 0x800 : 0);
+        ByteArrayAccess.writeShortLittleEndian(valid, 6, flags);
+        ByteArrayAccess.writeShortLittleEndian(valid, centralOffset + 8, flags);
+        int localExtra = 30 + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(valid, 26));
+        int centralExtra = centralOffset + 46
+                + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(valid, centralOffset + 28));
+        assertEquals(0x7075, Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(valid, localExtra)));
+        assertEquals(0x7075, Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(valid, centralExtra)));
+        Path file = directory.resolve("unicode.zip");
+        Files.write(file, valid);
+        try (var fs = ZipArkivoFileSystem.open(file, options)) {
+            assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(fs.getPath("legacy.txt")));
+        }
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(valid), options)) {
+            assertTrue(reader.next());
+            assertEquals("legacy.txt", reader.readAttributes().path());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{1, 2, 3}, input.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+
+        byte[] malformed = valid.clone();
+        // Keep the ASCII raw name, field length, version, and name CRC valid; corrupt only Unicode text.
+        malformed[localExtra + 9] = (byte) 0xff;
+        malformed[centralExtra + 9] = (byte) 0xff;
+        Files.write(file, malformed);
+        IOException indexedFailure = assertThrows(IOException.class, () -> {
+            try (var fs = ZipArkivoFileSystem.open(file, options);
+                 var entries = Files.newDirectoryStream(fs.getPath("/"))) {
+                entries.iterator().hasNext();
+            }
+        });
+        assertInstanceOf(CharacterCodingException.class, indexedFailure.getCause());
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(malformed), options)) {
+            IOException streamingFailure = assertThrows(IOException.class, reader::next);
+            assertInstanceOf(CharacterCodingException.class, streamingFailure.getCause());
+        }
     }
 
     /// Constructs mixed-encoding archives from JDK-generated records without storing binary fixtures.

@@ -6,6 +6,8 @@ package org.glavo.arkivo.archive;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -35,6 +37,106 @@ public final class ArkivoEditStorageContractTest {
     /// Temporary storage used by file-backed strategy tests.
     @TempDir
     public Path temporaryDirectory;
+
+    /// Rejects read-only destinations consistently for memory and temporary-file content.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void rejectsReadOnlyDestinations(boolean temporaryFiles) throws IOException {
+        try (ArkivoEditStorage storage = openStorage(temporaryFiles);
+             ArkivoStoredContent stored = storage.createContent("entry.bin", 3)) {
+            try (SeekableByteChannel writer = stored.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                writer.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
+            }
+            try (SeekableByteChannel reader = stored.openChannel(Set.of(StandardOpenOption.READ))) {
+                for (long position : new long[]{0L, 3L, 8L}) {
+                    reader.position(position);
+                    for (int size : new int[]{0, 8}) {
+                        ByteBuffer target = ByteBuffer.allocateDirect(size).asReadOnlyBuffer();
+                        assertThrows(IllegalArgumentException.class, () -> reader.read(target));
+                        assertEquals(position, reader.position());
+                        assertEquals(0, target.position());
+                    }
+                }
+                reader.position(0L);
+                ByteBuffer result = ByteBuffer.allocate(3);
+                while (result.hasRemaining()) {
+                    assertTrue(reader.read(result) > 0);
+                }
+                assertArrayEquals(new byte[]{1, 2, 3}, result.array());
+            }
+        }
+    }
+
+    /// Verifies creation and truncation options alone never enable writes or discard retained bytes.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void readOnlyOptionsPreserveContent(boolean temporaryFiles) throws IOException {
+        try (ArkivoEditStorage storage = openStorage(temporaryFiles);
+             ArkivoStoredContent stored = storage.createContent("entry.bin", 3)) {
+            byte[] expected = {1, 2, 3};
+            try (SeekableByteChannel writer = stored.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                writer.write(ByteBuffer.wrap(expected));
+            }
+            for (Set<StandardOpenOption> options : List.of(
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.TRUNCATE_EXISTING),
+                    Set.of(StandardOpenOption.TRUNCATE_EXISTING),
+                    Set.of(StandardOpenOption.CREATE),
+                    Set.of(StandardOpenOption.CREATE_NEW))) {
+                try (SeekableByteChannel reader = stored.openChannel(options)) {
+                    assertEquals(3, stored.size(), options.toString());
+                    assertArrayEquals(expected, readRemaining(reader));
+                    assertThrows(NonWritableChannelException.class,
+                            () -> reader.write(ByteBuffer.wrap(new byte[]{9})));
+                    assertThrows(NonWritableChannelException.class, () -> reader.truncate(0));
+                }
+            }
+        }
+    }
+
+    /// Verifies append opens start at the end and each write uses the shared content's latest end.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void appendUsesCurrentEndAfterPositionChanges(boolean temporaryFiles) throws IOException {
+        try (ArkivoEditStorage storage = openStorage(temporaryFiles);
+             ArkivoStoredContent stored = storage.createContent("entry.bin", 3)) {
+            try (SeekableByteChannel writer = stored.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                writer.write(ByteBuffer.wrap(new byte[]{1}));
+            }
+            try (SeekableByteChannel first = stored.openChannel(Set.of(StandardOpenOption.APPEND));
+                 SeekableByteChannel second = stored.openChannel(Set.of(StandardOpenOption.APPEND))) {
+                assertEquals(1, first.position());
+                assertThrows(NonReadableChannelException.class, () -> first.read(ByteBuffer.allocate(1)));
+                first.position(0).write(ByteBuffer.wrap(new byte[]{2}));
+                second.position(0).write(ByteBuffer.wrap(new byte[]{3}));
+                assertEquals(3, second.position());
+            }
+            try (SeekableByteChannel reader = stored.openChannel(Set.of())) {
+                assertArrayEquals(new byte[]{1, 2, 3}, readRemaining(reader));
+            }
+        }
+    }
+
+    /// Verifies conflicting append options fail before truncating existing content.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void invalidAppendOptionsDoNotChangeContent(boolean temporaryFiles) throws IOException {
+        try (ArkivoEditStorage storage = openStorage(temporaryFiles);
+             ArkivoStoredContent stored = storage.createContent("entry.bin", 1)) {
+            try (SeekableByteChannel writer = stored.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                writer.write(ByteBuffer.wrap(new byte[]{1}));
+            }
+            assertThrows(IllegalArgumentException.class,
+                    () -> stored.openChannel(Set.of(StandardOpenOption.READ, StandardOpenOption.APPEND)));
+            assertThrows(IllegalArgumentException.class, () -> stored.openChannel(Set.of(
+                    StandardOpenOption.APPEND, StandardOpenOption.TRUNCATE_EXISTING)));
+            assertEquals(1, stored.size());
+        }
+    }
+
+    /// Creates one backend for common stored-content channel assertions.
+    private ArkivoEditStorage openStorage(boolean temporaryFiles) {
+        return temporaryFiles ? ArkivoEditStorage.temporaryFiles(temporaryDirectory) : ArkivoEditStorage.memory();
+    }
 
     /// Verifies memory channels enforce access modes and maintain independent positions over shared content.
     @Test

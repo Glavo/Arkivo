@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.zip.internal;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
+import org.glavo.arkivo.archive.internal.ArkivoCommitTargetSupport;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
@@ -26,6 +27,7 @@ import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
+import org.glavo.arkivo.archive.internal.StoredContentSupport;
 
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
@@ -413,7 +415,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 throw new UnsupportedOperationException("ZIP split streaming writes do not support commit targets");
             }
             requireCommitTargetSourceOptions(archivePath, config.openOptions());
-            ArkivoCommitOutput openedCommitOutput = commitTarget.openOutput(archivePath);
+            ArkivoCommitOutput openedCommitOutput = ArkivoCommitTargetSupport.openManagedOutput(commitTarget, archivePath);
             @Nullable SeekableByteChannel outputChannel = null;
             @Nullable OutputStream outputStream = null;
             try {
@@ -877,7 +879,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// Closes this ZIP file system and finishes the output archive.
     @Override
     public void close() throws IOException {
-        try (CloseOperation ignored = beginCloseOperation()) {
+        CloseOperation operation = beginCloseOperation();
+        try {
             lock();
             try {
                 if (!open) {
@@ -952,6 +955,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             } finally {
                 unlock();
             }
+        } catch (IOException | RuntimeException | Error exception) {
+            operation.rethrowFailure(exception);
+        } finally {
+            operation.close();
         }
     }
 
@@ -1006,8 +1013,11 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 Objects.requireNonNull(rewriteSnapshot, "rewriteSnapshot");
         relocatedExistingEntryOffsets.clear();
 
-        try (SeekableByteChannel source = openExistingArchiveChannel();
-             SeekableByteChannel staged = records.openChannel(Set.of(StandardOpenOption.READ))) {
+        SeekableByteChannel source = openExistingArchiveChannel();
+        @Nullable SeekableByteChannel staged = null;
+        @Nullable Throwable failure = null;
+        try {
+            staged = records.openChannel(Set.of(StandardOpenOption.READ));
             copyRange(source, snapshot.preambleOffset(), snapshot.preambleSize(), output);
 
             ArrayList<ExistingEntry> survivingEntries = new ArrayList<>();
@@ -1062,6 +1072,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                         rewrite
                 );
             }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            try {
+                if (staged != null) StoredContentSupport.closeAfterTransfer(staged, failure);
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+                throw exception;
+            } finally {
+                StoredContentSupport.closeAfterTransfer(source, failure);
+            }
         }
     }
 
@@ -1087,17 +1109,28 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             target = ArkivoCommitTarget.atomicReplace(defaultEditStorageDirectory(path));
         }
 
-        ArkivoCommitOutput openedOutput = target.openOutput(sourcePath);
+        ArkivoCommitOutput openedOutput = ArkivoCommitTargetSupport.openManagedOutput(target, sourcePath);
         commitOutput = openedOutput;
         @Nullable Throwable failure = null;
         try {
-            try (SeekableByteChannel source = assembledArchive.openChannel(Set.of(StandardOpenOption.READ));
-                 SeekableByteChannel destination = openedOutput.openChannel(Set.of(
-                         StandardOpenOption.CREATE,
-                         StandardOpenOption.TRUNCATE_EXISTING,
-                         StandardOpenOption.WRITE
-                 )); OutputStream destinationOutput = Channels.newOutputStream(destination)) {
-                copyRange(source, 0L, assembledArchive.size(), destinationOutput);
+            SeekableByteChannel source = assembledArchive.openChannel(Set.of(StandardOpenOption.READ));
+            @Nullable SeekableByteChannel destination = null;
+            try {
+                destination = openedOutput.openChannel(Set.of(
+                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE));
+                copyRange(source, 0L, assembledArchive.size(), Channels.newOutputStream(destination));
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+                throw exception;
+            } finally {
+                try {
+                    if (destination != null) StoredContentSupport.closeAfterTransfer(destination, failure);
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                    throw exception;
+                } finally {
+                    StoredContentSupport.closeAfterTransfer(source, failure);
+                }
             }
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
@@ -1571,27 +1604,31 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         ZipArkivoEntryAttributes zipAttributes = readZipAttributes(path);
         PosixFileAttributes posixAttributes = zipAttributes;
         LinkedHashMap<String, Object> values = new LinkedHashMap<>();
-        if ("*".equals(names)) {
-            if ("owner".equals(view)) {
-                addOwnerAttributes(values, posixAttributes);
-            } else {
-                addBasicAttributes(values, zipAttributes);
-            }
-            if ("zip".equals(view)) {
-                addZipAttributes(values, zipAttributes);
-            } else if ("posix".equals(view)) {
-                addPosixAttributes(values, posixAttributes);
-            }
-            return Collections.unmodifiableMap(values);
+        String[] requestedNames = names.split(",");
+        if (requestedNames.length == 0) {
+            throw new IllegalArgumentException("No attributes specified");
         }
-
-        for (String name : names.split(",")) {
-            addNamedAttribute(values, zipAttributes, posixAttributes, name.trim(), view);
+        for (String requestedName : requestedNames) {
+            String name = requestedName.trim();
+            if ("*".equals(name)) {
+                if ("owner".equals(view)) {
+                    addOwnerAttributes(values, posixAttributes);
+                } else {
+                    addBasicAttributes(values, zipAttributes);
+                }
+                if ("zip".equals(view)) {
+                    addZipAttributes(values, zipAttributes);
+                } else if ("posix".equals(view)) {
+                    addPosixAttributes(values, posixAttributes);
+                }
+            } else {
+                addNamedAttribute(values, zipAttributes, posixAttributes, name, view);
+            }
         }
         return Collections.unmodifiableMap(values);
     }
 
-    /// Reads a symbolic link target written in the current output session.
+    /// Reads the symbolic link target visible in the current session.
     public Path readSymbolicLink(Path link) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             return readSymbolicLinkLocked(link);
@@ -1608,15 +1645,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 throw new NotLinkException(link.toString());
             }
 
-            String target = writtenSymbolicLinkTargets.get(entryName);
+            @Nullable String target = writtenSymbolicLinkTargets.get(entryName);
             if (target == null) {
-                ZipArkivoReadOnlyFileSystemImpl reader = Objects.requireNonNull(
-                        existingArchiveReader,
-                        "existingArchiveReader"
-                );
-                return getPath(reader.readSymbolicLink(
-                        reader.getPath("/" + existingSourceEntryName(entryName))
-                ).toString());
+                // The current metadata may describe a link even when the source archive stored a regular file.
+                try (InputStream input = Channels.newInputStream(openVisibleEntryContent(entryName))) {
+                    target = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                }
             }
             return getPath(target);
         } finally {
@@ -1890,7 +1924,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE
             ));
-            OutputStream stagedOutput = Channels.newOutputStream(channel);
+            OutputStream stagedOutput = new PhysicalOutputStream(StreamChannelAdapters.outputStream(channel));
             channel = null;
             stagedEntryContents.put(entryName, content);
             return stagedOutput;
@@ -1938,7 +1972,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 EntryMetadata metadata = rewriteSnapshot != null && visibleEntry(name)
                         ? replacementMetadata(readZipAttributesLocked(path, name))
                         : EntryMetadata.deflated(config.defaultEncryption());
-                return manageOutputStream(newOutputStreamLocked(path, metadata, options));
+                EntryOutputStream entry = newOutputStreamLocked(path, metadata, options);
+                return manageOutputStream(entry, entry::prepareClose);
             } finally {
                 unlock();
             }
@@ -1976,12 +2011,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     false,
                     attributes
             );
-            OutputStream outputStream = newOutputStreamLocked(
+            EntryOutputStream outputStream = newOutputStreamLocked(
                     path,
                     metadata,
                     options.toArray(OpenOption[]::new)
             );
-            return manageWriteChannel(new ForwardOnlyOutputChannel(outputStream));
+            return manageWriteChannel(new ForwardOnlyOutputChannel(outputStream), outputStream::prepareClose);
         }
     }
 
@@ -2227,23 +2262,33 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             EntryMetadata metadata,
             ArkivoStoredContent content
     ) throws IOException {
-        if (visibleWrittenEntry(entryName)) {
-            removeWrittenEntry(entryName);
-        }
-        OpenOption[] outputOptions = visibleExistingEntry(entryName)
-                ? new OpenOption[]{StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING}
-                : new OpenOption[]{StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW};
-        try (SeekableByteChannel source = content.openChannel(Set.of(StandardOpenOption.READ));
-             OutputStream target = newOutputStreamLocked(
-                     getPath("/" + entryName),
-                     metadata,
-                     outputOptions
-             )) {
-            ByteBuffer buffer = ByteBuffer.allocate(COPY_BUFFER_SIZE);
-            while (source.read(buffer) >= 0) {
-                target.write(buffer.array(), 0, buffer.position());
-                buffer.clear();
+        try (SeekableByteChannel source = content.openChannel(Set.of(StandardOpenOption.READ))) {
+            if (visibleWrittenEntry(entryName)) {
+                removeWrittenEntry(entryName);
             }
+            OpenOption[] outputOptions = visibleExistingEntry(entryName)
+                    ? new OpenOption[]{StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING}
+                    : new OpenOption[]{StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW};
+            try (OutputStream target = newOutputStreamLocked(getPath("/" + entryName), metadata, outputOptions)) {
+                try {
+                    ByteBuffer buffer = ByteBuffer.allocate(COPY_BUFFER_SIZE);
+                    int count;
+                    while ((count = source.read(buffer)) >= 0) {
+                        if (count == 0) {
+                            throw new IOException("ZIP staged content made no read progress");
+                        }
+                        target.write(buffer.array(), 0, buffer.position());
+                        buffer.clear();
+                    }
+                } catch (IOException | RuntimeException | Error exception) {
+                    // A source failure is not EOF: abort before closing the output can finish a partial entry.
+                    output.fail(exception);
+                    throw exception;
+                }
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            output.fail(exception);
+            throw exception;
         }
     }
 
@@ -2295,7 +2340,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// Opens an output stream for the next ZIP entry with central directory attributes.
     OutputStream newOutputStream(Path path, EntryMetadata metadata, OpenOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
-            return manageOutputStream(newOutputStreamLocked(path, metadata, options));
+            EntryOutputStream entry = newOutputStreamLocked(path, metadata, options);
+            return manageOutputStream(entry, entry::prepareClose);
         }
     }
 
@@ -2333,7 +2379,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Opens an entry output stream while the caller holds the exclusive operation lock.
-    private OutputStream newOutputStreamLocked(Path path, EntryMetadata metadata, OpenOption... options)
+    private EntryOutputStream newOutputStreamLocked(Path path, EntryMetadata metadata, OpenOption... options)
             throws IOException {
         lock();
         try {
@@ -2395,9 +2441,22 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         }
     }
 
-    /// Creates a directory entry.
+    /// Creates a directory at an unoccupied path, rejecting root and implicit directories as existing entries.
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
-        createDirectory(directory, EntryMetadata.directory(), attributes);
+        try (Operation ignored = beginWriteOperation()) {
+            lock();
+            try {
+                checkOpen();
+                directory = resolveMutationPath(directory, false);
+                String key = entryNameKey(directoryEntryName(directory));
+                if (key.isEmpty() || visibleEntry(key) || visibleDirectory(key)) {
+                    throw new java.nio.file.FileAlreadyExistsException(directory.toString());
+                }
+                createDirectoryLocked(directory, EntryMetadata.directory(), attributes);
+            } finally {
+                unlock();
+            }
+        }
     }
 
     /// Creates a symbolic link entry.
@@ -2415,6 +2474,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 attributes
         );
         String targetText = linkTargetText(target);
+        link = resolveMutationPath(link, false);
         writeStoredEntry(link, targetText.getBytes(StandardCharsets.UTF_8), metadata, targetText);
     }
 
@@ -2443,12 +2503,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 throw new UnsupportedOperationException("ZIP directory entries cannot be encrypted");
             }
 
-            directory = resolveMutationPath(directory, false);
             String entryName = directoryEntryName(directory);
             if (entryName.isEmpty()) {
                 return;
             }
             requireNoActiveEntry();
+            if (metadata.expectedUncompressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE
+                    && metadata.expectedUncompressedSize != 0L) {
+                throw new IOException("ZIP entry size does not match the configured size: " + entryName);
+            }
+            if (metadata.expectedCrc32 != ZipArkivoEntryAttributes.UNKNOWN_CRC32 && metadata.expectedCrc32 != 0L) {
+                throw new IOException("ZIP entry CRC-32 does not match the configured CRC-32: " + entryName);
+            }
             requireNewEntry(entryName);
             byte[] rawName = metadata.rawName(entryName);
             int flags = metadata.generalPurposeFlags() & ~DATA_DESCRIPTOR_FLAG;
@@ -2518,7 +2584,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             if (metadata.method != STORED_METHOD) {
                 throw new UnsupportedOperationException("In-memory ZIP entries must use the stored method");
             }
-            path = resolveMutationPath(path, false);
             String entryName = regularEntryName(path);
             requireNoActiveEntry();
             checkNewEntry(entryName);
@@ -2684,12 +2749,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             target = resolveMutationPath(target, false);
             String sourceName = entryName(source);
             String targetName = entryName(target);
-            if (sourceName.isEmpty() || targetName.isEmpty()) {
-                throw new FileSystemException(source.toString(), target.toString(), "The ZIP root cannot be moved");
-            }
             ZipArkivoEntryAttributes sourceAttributes = readZipAttributesLocked(source, sourceName);
             if (sourceName.equals(targetName)) {
                 return;
+            }
+            if (sourceName.isEmpty() || targetName.isEmpty()) {
+                throw new FileSystemException(source.toString(), target.toString(), "The ZIP root cannot be moved");
             }
             boolean sourceDirectory = sourceAttributes.isDirectory();
             if (sourceDirectory && targetName.startsWith(sourceName + "/")) {
@@ -2937,15 +3002,15 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         );
     }
 
-    /// Returns ZIP external file attributes for permissions without changing the entry type.
+    /// Encodes updated permissions and retains existing low-word flags.
     private static long externalAttributes(
             Set<PosixFilePermission> permissions,
             ZipArkivoEntryAttributes attributes
     ) {
-        if (attributes.isSymbolicLink()) {
-            return ZipPosixSupport.symbolicLinkExternalAttributes(permissions);
-        }
-        return ZipPosixSupport.externalAttributes(permissions, attributes.isDirectory());
+        long unixAttributes = attributes.isSymbolicLink()
+                ? ZipPosixSupport.symbolicLinkExternalAttributes(permissions)
+                : ZipPosixSupport.externalAttributes(permissions, attributes.isDirectory());
+        return unixAttributes | (attributes.externalAttributes() & 0xffffL);
     }
 
     /// Validates a synthesized owner assignment and the target entry.
@@ -3119,6 +3184,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Rejects occupied entry names, allowing only directory records to materialize an implicit directory.
     private void checkNewEntry(String entryName) throws IOException {
+        requireDirectoryParents(entryName);
         String key = entryNameKey(entryName);
         if (visibleWrittenEntry(key) || visibleExistingEntry(key)
                 || !entryName.endsWith("/") && visibleDirectory(key)) {
@@ -3128,6 +3194,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Checks whether an entry body can replace a visible entry in this output session.
     private boolean checkWritableFileEntry(String entryName, OpenOption... options) throws IOException {
+        requireDirectoryParents(entryName);
         requireFileBodyEntry(entryName);
         boolean writtenEntry = visibleWrittenEntry(entryName);
         if (writtenEntry && rewriteSnapshot == null) {
@@ -3236,14 +3303,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         return false;
     }
 
-    /// Removes a written entry and its staged readable body from the final archive state.
-    private void removeWrittenEntry(String entryName) throws IOException {
+    /// Removes a written entry, leaving unsuccessful body cleanup owned by the storage pool for retry.
+    private void removeWrittenEntry(String entryName) {
         writtenEntries.remove(entryName);
         centralEntries.removeIf(entry -> entryNameKey(entry.entryName).equals(entryName));
         writtenSymbolicLinkTargets.remove(entryName);
         ArkivoStoredContent content = stagedEntryContents.remove(entryName);
         if (content != null) {
-            content.close();
+            try {
+                content.close();
+            } catch (IOException | RuntimeException | Error ignored) {
+                // Cleanup must not interrupt a namespace mutation; the pool retries it when the file system closes.
+            }
         }
     }
 
@@ -3333,23 +3404,32 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     /// Returns a normalized symbolic link target path text.
     private static String linkTargetText(Path target) {
         String text = Objects.requireNonNull(target, "target").toString().replace('\\', '/');
+        ArkivoFileSystemProviderSupport.validateLinkTarget(text);
         if (text.isEmpty()) {
             throw new IllegalArgumentException("ZIP symbolic link target must not be empty");
         }
         return text;
     }
 
-    /// Resolves update parents before selecting a mutation target, optionally following the terminal link.
-    /// Missing terminal entries remain available for the operation's own creation checks.
+    /// Resolves NIO mutation parents, retaining missing directories only during forward-only creation.
     private Path resolveMutationPath(Path path, boolean followFinalLink) throws IOException {
         if (path.getFileSystem() != this) {
             throw new java.nio.file.ProviderMismatchException();
         }
-        if (rewriteSnapshot != null) {
-            return ArkivoFileSystemProviderSupport.resolveMutationPath(path, followFinalLink);
+        return ArkivoFileSystemProviderSupport.resolveMutationPath(path, followFinalLink, rewriteSnapshot == null);
+    }
+
+    /// Validates physical entry names and rejects non-directory parents without rewriting streaming-writer names.
+    private void requireDirectoryParents(String entryName) throws IOException {
+        ArkivoFileSystemProviderSupport.validateWritablePath(getPath("/" + entryName));
+        for (int separator = entryName.indexOf('/'); separator >= 0;
+             separator = entryName.indexOf('/', separator + 1)) {
+            String parent = entryName.substring(0, separator);
+            if (visibleEntry(parent)
+                    && !readZipAttributesLocked(getPath("/" + parent), parent).isDirectory()) {
+                throw new java.nio.file.NotDirectoryException(parent);
+            }
         }
-        ArkivoFileSystemProviderSupport.validateWritablePath(path);
-        return path;
     }
 
     /// Rejects body writes to explicit and synthetic directories before any output or staging is created.
@@ -4035,6 +4115,27 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Whether this entry output stream is open.
         private boolean entryOpen = true;
 
+        /// The archive destination bound to this entry, including its current split volume.
+        private final CountingOutputStream archiveOutput = output;
+
+        /// Coordinates write admission with asynchronous close without covering physical I/O.
+        private final Object activityLock = new Object();
+
+        /// Serializes preparations without acquiring the file-system or ZIP state locks.
+        private final Object preparationLock = new Object();
+
+        /// Whether a body write or entry completion is active, guarded by activityLock.
+        private boolean activeOutput;
+
+        /// Whether further entry writes are forbidden, guarded by activityLock.
+        private boolean closeRequested;
+
+        /// Whether active entry output was cancelled, guarded by activityLock.
+        private boolean cancelled;
+
+        /// Failures from asynchronous physical cleanup, guarded by preparationLock.
+        private @Nullable Throwable preparationFailure;
+
         /// Creates an entry output stream.
         private EntryOutputStream(
                 String entryName,
@@ -4133,6 +4234,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             try {
                 ensureEntryOpen();
                 long nextSize = Math.addExact(uncompressedSize, 1L);
+                beginWrite();
                 try {
                     @Nullable OutputStream stagedOutput = stagedEntryOutput;
                     if (stagedOutput != null) {
@@ -4141,9 +4243,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     entryOutput.write(value);
                     crc32.update(value);
                     uncompressedSize = nextSize;
+                    checkCancellation();
                 } catch (IOException | RuntimeException | Error exception) {
                     output.fail(exception);
                     throw exception;
+                } finally {
+                    endOutput();
                 }
             } finally {
                 unlock();
@@ -4161,6 +4266,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 if (length == 0) {
                     return;
                 }
+                beginWrite();
                 try {
                     @Nullable OutputStream stagedOutput = stagedEntryOutput;
                     if (stagedOutput != null) {
@@ -4169,12 +4275,57 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     entryOutput.write(bytes, offset, length);
                     crc32.update(bytes, offset, length);
                     uncompressedSize = nextSize;
+                    checkCancellation();
                 } catch (IOException | RuntimeException | Error exception) {
                     output.fail(exception);
                     throw exception;
+                } finally {
+                    endOutput();
                 }
             } finally {
                 unlock();
+            }
+        }
+
+        /// Admits one write unless close has already requested completion or cancellation.
+        private void beginWrite() throws IOException {
+            synchronized (activityLock) {
+                if (closeRequested) throw new IOException("ZIP entry output stream is closing");
+                activeOutput = true;
+            }
+        }
+
+        /// Rejects successful physical progress when close cancelled the enclosing entry operation.
+        private void checkCancellation() throws IOException {
+            synchronized (activityLock) {
+                if (cancelled) throw new IOException("ZIP entry output was cancelled by close");
+            }
+        }
+
+        /// Releases the active output marker after its result has been recorded.
+        private void endOutput() {
+            synchronized (activityLock) {
+                activeOutput = false;
+            }
+        }
+
+        /// Stops new writes and releases physical I/O only while body output or entry completion is active.
+        private void prepareClose() {
+            synchronized (preparationLock) {
+                synchronized (activityLock) {
+                    closeRequested = true;
+                    if (!activeOutput) return;
+                    cancelled = true;
+                }
+                @Nullable Throwable failure = archiveOutput.cancel();
+                if (failure != null) preparationFailure = appendFailure(preparationFailure, failure);
+                if (stagedEntryOutput != null) {
+                    try {
+                        stagedEntryOutput.close();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        preparationFailure = appendFailure(preparationFailure, exception);
+                    }
+                }
             }
         }
 
@@ -4187,8 +4338,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     return;
                 }
                 entryOpen = false;
+                synchronized (activityLock) {
+                    activeOutput = true;
+                }
                 try {
                     output.ensureWritable();
+                    checkCancellation();
                     @Nullable OutputStream stagedOutput = stagedEntryOutput;
                     if (stagedOutput != null) {
                         stagedOutput.close();
@@ -4221,6 +4376,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                         }
                         writeDataDescriptor(crcValue, compressedSize, uncompressedSize, zip64DataDescriptor);
                     }
+                    checkCancellation();
                     centralEntries.add(new CentralEntry(
                             entryName,
                             rawName,
@@ -4239,6 +4395,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     ));
                 } catch (IOException | RuntimeException | Error exception) {
                     output.fail(exception);
+                    synchronized (preparationLock) {
+                        if (preparationFailure != null) appendFailure(exception, preparationFailure);
+                    }
                     // Cleanup may try to drain an encoder, but the archive guard rejects further target writes.
                     try {
                         if (compressionEncoder != null) {
@@ -4258,6 +4417,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     }
                     throw exception;
                 } finally {
+                    endOutput();
                     currentEntryOutput = null;
                 }
             } finally {
@@ -4284,18 +4444,64 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// The number of bytes written.
         protected long position;
 
+        /// Coordinates publication of a new physical volume with asynchronous cancellation.
+        private final Object targetLock = new Object();
+
+        /// The physical destination, guarded by targetLock.
+        private PhysicalOutputStream target;
+
+        /// Whether active entry output has been cancelled.
+        private volatile boolean cancelled;
+
         /// Creates a counting output stream.
         private CountingOutputStream(OutputStream output, long initialPosition) {
             if (initialPosition < 0) {
                 throw new IllegalArgumentException("initialPosition must not be negative");
             }
-            this.output = new ArchiveOutputStream(output);
+            this.target = new PhysicalOutputStream(output);
+            this.output = new ArchiveOutputStream(target);
             this.position = initialPosition;
         }
 
         /// Rejects writes after incomplete output or target closure.
         void ensureWritable() throws IOException {
             output.ensureWritable();
+            if (cancelled) throw new IOException("ZIP output was cancelled by close");
+        }
+
+        /// Cancels writes and closes only the current physical destination, without finalizing the archive.
+        final @Nullable Throwable cancel() {
+            PhysicalOutputStream current;
+            synchronized (targetLock) {
+                cancelled = true;
+                current = target;
+            }
+            try {
+                current.close();
+                return null;
+            } catch (IOException | RuntimeException | Error exception) {
+                return exception;
+            }
+        }
+
+        /// Installs a new volume and closes it immediately if cancellation raced with opening it.
+        final void replaceTarget(OutputStream stream) throws IOException {
+            PhysicalOutputStream next = new PhysicalOutputStream(stream);
+            output = new ArchiveOutputStream(next);
+            boolean abort;
+            synchronized (targetLock) {
+                target = next;
+                abort = cancelled;
+            }
+            if (abort) {
+                IOException failure = new IOException("ZIP volume opened after output cancellation");
+                try {
+                    next.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    appendFailure(failure, exception);
+                }
+                throw failure;
+            }
         }
 
         /// Prevents further output after an entry or archive operation fails.
@@ -4337,6 +4543,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Writes one byte.
         @Override
         public void write(int value) throws IOException {
+            ensureWritable();
             long nextPosition = Math.addExact(position, 1L);
             output.write(value);
             position = nextPosition;
@@ -4346,6 +4553,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         @Override
         public void write(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureWritable();
             long nextPosition = Math.addExact(position, length);
             output.write(bytes, offset, length);
             position = nextPosition;
@@ -4354,6 +4562,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Flushes the wrapped output stream.
         @Override
         public void flush() throws IOException {
+            ensureWritable();
             output.flush();
         }
 
@@ -4361,6 +4570,62 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         @Override
         public void close() throws IOException {
             output.close();
+        }
+    }
+
+    /// Allows asynchronous physical closure without serializing it behind a pending write.
+    @NotNullByDefault
+    private static final class PhysicalOutputStream extends OutputStream {
+        /// The transport adapter closed independently of entry encoding and archive finalization.
+        private final OutputStream target;
+
+        /// Whether physical closure has been requested.
+        private volatile boolean closing;
+
+        /// Whether physical closure succeeded, guarded by this stream's monitor.
+        private boolean closed;
+
+        /// Takes ownership of the transport adapter used to release pending physical I/O.
+        private PhysicalOutputStream(OutputStream target) {
+            this.target = target;
+        }
+
+        /// Rejects new writes as soon as closure is requested, including after a failed close attempt.
+        private void ensureOpen() throws IOException {
+            if (closing) throw new IOException("ZIP physical output is closing");
+        }
+
+        /// Writes one byte without holding the closure monitor.
+        @Override
+        public void write(int value) throws IOException {
+            ensureOpen();
+            target.write(value);
+            ensureOpen();
+        }
+
+        /// Writes bytes without holding the closure monitor.
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            ensureOpen();
+            target.write(bytes, offset, length);
+            ensureOpen();
+        }
+
+        /// Flushes only while physical output remains writable.
+        @Override
+        public void flush() throws IOException {
+            ensureOpen();
+            target.flush();
+            ensureOpen();
+        }
+
+        /// Serializes close attempts, retaining the target for retry until closure succeeds.
+        @Override
+        public synchronized void close() throws IOException {
+            if (closed) return;
+            closing = true;
+            target.close();
+            closed = true;
         }
     }
 
@@ -4387,14 +4652,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Maps conventional split ZIP disks to their final published paths.
     ///
-    /// @param archivePath the normalized final ZIP archive path
+    /// @param archivePath the absolute final ZIP archive path with its traversal components preserved
     @NotNullByDefault
     private record PathVolumeLayout(Path archivePath) implements ArkivoVolumePathLayout {
         /// Creates one conventional ZIP path layout.
         private PathVolumeLayout(Path archivePath) {
             this.archivePath = Objects.requireNonNull(archivePath, "archivePath")
-                    .toAbsolutePath()
-                    .normalize();
+                    .toAbsolutePath();
         }
 
         /// Returns the common output directory for the ZIP archive and its numbered disks.
@@ -4452,15 +4716,20 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         /// Returns whether a file name is a conventional numbered disk for the output base name.
         private static boolean isNumberedVolumeName(String fileName, String baseName) {
             String prefix = baseName + ".z";
-            if (!fileName.startsWith(prefix) || fileName.length() == prefix.length()) {
+            int digits = fileName.length() - prefix.length();
+            if (!fileName.startsWith(prefix) || digits < 2 || digits > 10
+                    || (digits > 2 && fileName.charAt(prefix.length()) == '0')) {
                 return false;
             }
+            long volumeNumber = 0L;
             for (int index = prefix.length(); index < fileName.length(); index++) {
-                if (!Character.isDigit(fileName.charAt(index))) {
+                char digit = fileName.charAt(index);
+                if (digit < '0' || digit > '9') {
                     return false;
                 }
+                volumeNumber = volumeNumber * 10L + digit - '0';
             }
-            return true;
+            return volumeNumber > 0L && volumeNumber <= Integer.MAX_VALUE;
         }
     }
 
@@ -4724,6 +4993,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
         /// Opens the next volume when the current one is full.
         private void ensureWritableDisk() throws IOException {
+            ensureWritable();
             if (currentDiskPosition < splitSize) {
                 return;
             }
@@ -4740,7 +5010,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             );
             currentDiskNumber = nextDiskNumber;
             currentDiskPosition = 0;
-            output = new ArchiveOutputStream(StreamChannelAdapters.outputStream(nextChannel));
+            replaceTarget(StreamChannelAdapters.outputStream(nextChannel));
         }
     }
 

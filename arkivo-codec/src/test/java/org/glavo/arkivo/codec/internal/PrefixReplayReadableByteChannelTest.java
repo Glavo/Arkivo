@@ -6,11 +6,14 @@ package org.glavo.arkivo.codec.internal;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
@@ -23,6 +26,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,6 +41,103 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class PrefixReplayReadableByteChannelTest {
     /// Maximum time allowed for a blocking test operation.
     private static final long TIMEOUT_SECONDS = 5L;
+
+    /// Supplies fresh failure identities for read, close, and forced-close cleanup paths.
+    private static Stream<Arguments> repeatedFailures() {
+        Stream.Builder<Arguments> cases = Stream.builder();
+        for (boolean interruptible : new boolean[]{false, true}) {
+            for (boolean nested : new boolean[]{false, true}) {
+                for (ResourceOwnership ownership : ResourceOwnership.values()) {
+                    for (int operation = 0; operation < 3; operation++) {
+                        if (operation == 1 && ownership == ResourceOwnership.BORROWED) continue;
+                        for (Throwable failure : List.of(new IOException("source failure"),
+                                new IllegalStateException("source failure"), new AssertionError("source failure"))) {
+                            cases.add(Arguments.of(interruptible, nested, ownership, operation, failure));
+                        }
+                    }
+                }
+            }
+        }
+        return cases.build();
+    }
+
+    /// Preserves the primary failure when automatic cleanup repeats an endpoint exception.
+    @ParameterizedTest
+    @MethodSource("repeatedFailures")
+    void preservesRepeatedEndpointFailure(boolean interruptible, boolean nested, ResourceOwnership ownership,
+                                         int operation, Throwable failure) throws IOException {
+        TrackingReadableByteChannel source = interruptible
+                ? new InterruptibleTrackingReadableByteChannel(new byte[]{3, 4})
+                : new TrackingReadableByteChannel(new byte[]{3, 4});
+        source.closeFailure = failure;
+        source.nextReadFailure = failure;
+        source.bytesBeforeReadFailure = 1;
+        PrefixReplayReadableByteChannel inner = PrefixReplayReadableByteChannel.create(
+                ByteBuffer.allocate(0), source, ownership);
+        PrefixReplayReadableByteChannel replay = nested ? PrefixReplayReadableByteChannel.create(
+                ByteBuffer.allocate(0), inner, ownership) : inner;
+        ByteBuffer target = ByteBuffer.allocateDirect(5).position(1).limit(4).mark();
+        assertSame(failure, assertThrows(failure.getClass(), () -> {
+            try (replay) {
+                switch (operation) {
+                    case 0 -> replay.read(target);
+                    case 1 -> replay.close();
+                    case 2 -> replay.forceClose();
+                    default -> throw new AssertionError("Unknown operation");
+                }
+            }
+        }));
+        boolean borrowedRead = operation == 0 && ownership == ResourceOwnership.BORROWED;
+        assertEquals(borrowedRead ? 0 : 1, failure.getSuppressed().length);
+        if (!borrowedRead) {
+            assertInstanceOf(IOException.class, failure.getSuppressed()[0]);
+            assertSame(failure, failure.getSuppressed()[0].getCause());
+        }
+        assertEquals(operation == 0 ? 2 : 1, target.position());
+        assertEquals(4, target.limit());
+        assertEquals(1, target.reset().position());
+        assertFalse(replay.isOpen());
+        assertTrue(source.isOpen());
+        assertEquals(borrowedRead ? 0 : operation == 0 ? 1 : 2, source.closeCalls);
+        source.closeFailure = null;
+        int closeCalls = source.closeCalls;
+        replay.close();
+        replay.close();
+        assertEquals(borrowedRead ? closeCalls : closeCalls + 1, source.closeCalls);
+        assertEquals(borrowedRead, source.isOpen());
+        source.close();
+    }
+
+    /// Retains identities across distinct failed cleanup attempts without wrapping a new endpoint failure.
+    @Test
+    void retainsNonconsecutiveCleanupFailures() throws IOException {
+        for (boolean forced : new boolean[]{false, true}) {
+            TrackingReadableByteChannel source = new TrackingReadableByteChannel(new byte[0]);
+            PrefixReplayReadableByteChannel replay = PrefixReplayReadableByteChannel.create(
+                    ByteBuffer.allocate(0), source, ResourceOwnership.OWNED);
+            IOException first = new IOException("first cleanup failure");
+            IllegalStateException second = new IllegalStateException("second cleanup failure");
+            Throwable @Unmodifiable [] failures = {first, second, first, second};
+            for (int attempt = 0; attempt < failures.length; attempt++) {
+                source.closeFailure = failures[attempt];
+                Throwable actual = assertThrows(Exception.class, () -> {
+                    if (forced) replay.forceClose();
+                    else replay.close();
+                });
+                if (attempt < 2) {
+                    assertSame(failures[attempt], actual);
+                } else {
+                    assertInstanceOf(IOException.class, actual);
+                    assertSame(failures[attempt], actual.getCause());
+                }
+            }
+            source.closeFailure = null;
+            replay.close();
+            replay.close();
+            assertEquals(5, source.closeCalls);
+            assertFalse(source.isOpen());
+        }
+    }
 
     /// Verifies a plain source produces a plain replay channel without changing replay order.
     @Test
@@ -117,15 +218,20 @@ final class PrefixReplayReadableByteChannelTest {
                     ByteBuffer.wrap(new byte[]{1, 2}), source, ResourceOwnership.OWNED)) {
                 ByteBuffer target = ByteBuffer.allocate(3);
                 ByteBuffer rejected = target.asReadOnlyBuffer().mark();
-                assertThrows(ReadOnlyBufferException.class, () -> replay.read(rejected));
+                assertThrows(IllegalArgumentException.class, () -> replay.read(rejected));
                 assertEquals(0, rejected.position());
                 assertEquals(0, rejected.reset().position());
                 assertEquals(0, source.readCalls());
-                assertEquals(0, replay.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
+                assertThrows(IllegalArgumentException.class,
+                        () -> replay.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
                 assertEquals(2, replay.read(target));
+                assertEquals(0, source.readCalls());
+                assertThrows(IllegalArgumentException.class, () -> replay.read(rejected));
                 assertEquals(0, source.readCalls());
                 assertEquals(1, replay.read(target));
                 assertArrayEquals(new byte[]{1, 2, 3}, target.array());
+                assertThrows(IllegalArgumentException.class, () -> replay.read(rejected));
+                assertEquals(1, source.readCalls());
             }
         }
     }
@@ -545,6 +651,12 @@ final class PrefixReplayReadableByteChannelTest {
         /// The number of read calls received.
         private int readCalls;
 
+        /// Number of source close attempts.
+        private int closeCalls;
+
+        /// Failure repeated by source closure until cleared.
+        private @Nullable Throwable closeFailure;
+
         /// Failure thrown once after transferring a configured prefix of the next source read.
         private @Nullable Throwable nextReadFailure;
 
@@ -609,6 +721,10 @@ final class PrefixReplayReadableByteChannelTest {
         /// Closes this source.
         @Override
         public void close() throws IOException {
+            closeCalls++;
+            if (closeFailure instanceof IOException failure) throw failure;
+            if (closeFailure instanceof RuntimeException failure) throw failure;
+            if (closeFailure instanceof Error failure) throw failure;
             open = false;
         }
     }

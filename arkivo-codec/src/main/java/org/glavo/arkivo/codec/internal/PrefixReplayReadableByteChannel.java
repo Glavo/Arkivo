@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
@@ -14,7 +15,10 @@ import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 
 /// Replays an owned prefix before continuing from a readable channel.
 @NotNullByDefault
@@ -39,6 +43,12 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
 
     /// The number of interruptible reads that have begun but not returned.
     private int activeReads;
+
+    /// Protects exception bookkeeping independently of source closure and interruptible read state.
+    private final Object failureLock = new Object();
+
+    /// Exception identities already reported before source cleanup succeeds, guarded by the failure lock.
+    private @Nullable Set<Throwable> reportedFailures;
 
     /// Creates a prefix-replaying channel that preserves source interruption support.
     ///
@@ -80,6 +90,9 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
+        if (target.isReadOnly()) {
+            throw new IllegalArgumentException("Target buffer is read-only");
+        }
         if (!target.hasRemaining()) {
             return 0;
         }
@@ -91,7 +104,12 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
             prefix.position(prefix.position() + count);
             return count;
         }
-        return source.read(target);
+        try {
+            return source.read(target);
+        } catch (IOException | RuntimeException | Error failure) {
+            recordFailure(failure);
+            throw failure;
+        }
     }
 
     /// Returns whether this channel and its backing source remain open.
@@ -101,6 +119,9 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
     }
 
     /// Closes this channel and optionally closes the backing source.
+    ///
+    /// Failed source cleanup can be retried. An exception already reported by a read or close is wrapped in a new
+    /// `IOException` if it recurs during cleanup, so automatic resource closure preserves the primary exception.
     @Override
     public synchronized void close() throws IOException {
         if (open) {
@@ -114,13 +135,7 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
             }
         }
         if (sourceCloseRequired) {
-            if (forceSourceCloseRequired) {
-                ForceCloseableChannel.forceClose(source);
-            } else {
-                source.close();
-            }
-            sourceCloseRequired = false;
-            forceSourceCloseRequired = false;
+            closeSource();
         }
     }
 
@@ -132,9 +147,40 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
         open = false;
         sourceCloseRequired = true;
         forceSourceCloseRequired = true;
-        ForceCloseableChannel.forceClose(source);
-        sourceCloseRequired = false;
-        forceSourceCloseRequired = false;
+        closeSource();
+    }
+
+    /// Performs pending source cleanup while the caller holds the lifecycle monitor.
+    private void closeSource() throws IOException {
+        try {
+            if (forceSourceCloseRequired) {
+                ForceCloseableChannel.forceClose(source);
+            } else {
+                source.close();
+            }
+            sourceCloseRequired = false;
+            forceSourceCloseRequired = false;
+            synchronized (failureLock) {
+                reportedFailures = null;
+            }
+        } catch (IOException | RuntimeException | Error failure) {
+            if (!recordFailure(failure)) {
+                IOException cleanup = new IOException("Replay source cleanup repeated an earlier failure", failure);
+                recordFailure(cleanup);
+                throw cleanup;
+            }
+            throw failure;
+        }
+    }
+
+    /// Records an exception without waiting for the lifecycle monitor held during source closure.
+    private boolean recordFailure(Throwable failure) {
+        synchronized (failureLock) {
+            if (reportedFailures == null) {
+                reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+            }
+            return reportedFailures.add(failure);
+        }
     }
 
     /// Requires this channel and its source to remain open.
@@ -153,7 +199,7 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
         try {
             forceClose();
         } catch (IOException | RuntimeException | Error exception) {
-            if (failure != exception) {
+            if (failure != exception && failure != exception.getCause()) {
                 failure.addSuppressed(exception);
             }
         }

@@ -6,7 +6,9 @@ package org.glavo.arkivo.codec.all;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CodecResult;
+import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
@@ -25,6 +27,7 @@ import org.glavo.arkivo.codec.lz4.LZ4Dictionary;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -32,6 +35,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.ReadOnlyBufferException;
@@ -45,6 +49,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -52,6 +57,52 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the first-class channel contract across default codecs for all installed formats.
 @NotNullByDefault
 final class CodecChannelContractTest {
+    /// Public stream factories preserve source errors when automatic cleanup repeats the same exception.
+    @Test
+    void preservesSourceReadFailureDuringStreamCleanup() throws IOException {
+        for (String name : new String[]{"gzip", "deflate", "bzip2", "zstd"}) {
+            var source = new SharedReadCloseFailureInputStream();
+            var input = CompressionFormats.require(name).defaultCodec().newInputStream(source, ResourceOwnership.OWNED);
+            assertSame(source.failure, assertThrows(IOException.class, () -> {
+                try (input) {
+                    input.readNBytes(1);
+                }
+            }), name);
+            assertEquals(1, source.failure.getSuppressed().length, name);
+            Throwable cleanup = source.failure.getSuppressed()[0];
+            var visited = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Throwable, Boolean>());
+            while (cleanup != source.failure) {
+                assertTrue(visited.add(cleanup), "Cyclic cleanup cause chain: " + name);
+                assertInstanceOf(IOException.class, cleanup, name);
+                cleanup = java.util.Objects.requireNonNull(cleanup.getCause(), "Missing source failure: " + name);
+            }
+            input.close();
+            assertEquals(2, source.closeCalls, name);
+        }
+    }
+
+    /// Reuses a source failure for the first close attempt and then permits cleanup retry.
+    @NotNullByDefault
+    private static final class SharedReadCloseFailureInputStream extends InputStream {
+        /// The source failure delivered by reads and the first close.
+        private final IOException failure = new IOException("source unavailable");
+
+        /// The number of source cleanup attempts.
+        private int closeCalls;
+
+        /// Fails before producing a source byte.
+        @Override
+        public int read() throws IOException {
+            throw failure;
+        }
+
+        /// Reports the shared failure once and completes subsequent cleanup attempts.
+        @Override
+        public void close() throws IOException {
+            if (++closeCalls == 1) throw failure;
+        }
+    }
+
     /// Sentinel retained outside caller-visible output ranges.
     private static final byte BUFFER_GUARD = (byte) 0xa5;
 
@@ -120,6 +171,48 @@ final class CodecChannelContractTest {
             assertTrue(compressedSource.isOpen(), codec.format().name());
             assertTrue(decodedTarget.isOpen(), codec.format().name());
             assertArrayEquals(input, decodedBytes.toByteArray(), codec.format().name());
+        }
+    }
+
+    /// Rejects read-only output before reading compressed data, including zero-limit completion probes.
+    @Test
+    void rejectsReadOnlyTargetsAcrossAllCodecs() throws IOException {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec<?> codec = format.defaultCodec();
+            for (byte[] content : new byte[][]{new byte[0], new byte[]{1, 2, 3}}) {
+                byte[] compressed = compressFrame(codec, content);
+                for (long maximum : new long[]{-1L, 0L, 3L}) {
+                    CompressionCodec<?> configured = CodecContractConfigurations
+                            .decoderCodec(codec, content.length).withMaximumOutputSize(maximum);
+                    try (var decoder = configured.newReadableByteChannel(
+                            Channels.newChannel(new ByteArrayInputStream(compressed)))) {
+                        for (int size : new int[]{0, 8}) {
+                            ByteBuffer target = ByteBuffer.allocate(size).asReadOnlyBuffer();
+                            assertThrows(IllegalArgumentException.class, () -> decoder.read(target), format.name());
+                            assertThrows(IllegalArgumentException.class, () -> decoder.decode(target), format.name());
+                            if (decoder instanceof DecompressingReadableByteChannel.Framed framed) {
+                                assertThrows(IllegalArgumentException.class,
+                                        () -> framed.decodeFrame(target), format.name());
+                            }
+                            assertEquals(0L, decoder.sourceBytes(), format.name());
+                            assertEquals(0L, decoder.inputBytes(), format.name());
+                            assertEquals(0L, decoder.outputBytes(), format.name());
+                            assertEquals(0, target.position(), format.name());
+                        }
+                        ByteBuffer writable = ByteBuffer.allocate(8);
+                        if (maximum == 0L && content.length != 0) {
+                            assertThrows(DecompressionLimitException.class,
+                                    () -> decoder.read(writable), format.name());
+                        } else {
+                            while (decoder.read(writable) >= 0) {
+                                assertTrue(writable.hasRemaining(), format.name());
+                            }
+                            assertArrayEquals(content, Arrays.copyOf(writable.array(), writable.position()),
+                                    format.name());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -507,7 +600,7 @@ final class CodecChannelContractTest {
         }
     }
 
-    /// Verifies one-shot frame decompression preserves following compressed frames across every codec.
+    /// Verifies one-shot and reset-based frame decompression preserve following frames across every framed codec.
     @Test
     void decompressesOneFrameAtATimeAcrossEveryCodec() throws IOException {
         byte[] first = (
@@ -527,6 +620,43 @@ final class CodecChannelContractTest {
             byte[] emptyEncoded = compressFrame(codec, new byte[0]);
             byte[] firstEncoded = compressFrame(codec, first);
             byte[] secondEncoded = compressFrame(codec, second);
+
+            byte @Unmodifiable [] @Unmodifiable [] frames = {emptyEncoded, firstEncoded, secondEncoded};
+            byte @Unmodifiable [] @Unmodifiable [] contents = {new byte[0], first, second};
+            ByteBuffer concatenated = ByteBuffer.allocateDirect(
+                    2 + emptyEncoded.length + firstEncoded.length + secondEncoded.length + 1
+            );
+            concatenated.position(2).put(emptyEncoded).put(firstEncoded).put(secondEncoded).put(BUFFER_GUARD);
+            concatenated.flip().position(2);
+            ByteBuffer framedSource = concatenated.asReadOnlyBuffer();
+            try (CompressionDecoder decoder = framedCodec.newDecoder()) {
+                int boundary = 2;
+                for (int frame = 0; frame < frames.length; frame++) {
+                    String context = format.name() + " frame=" + frame;
+                    boundary += frames[frame].length;
+                    ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+                    while (true) {
+                        ByteBuffer target = ByteBuffer.allocateDirect(7);
+                        CodecOutcome outcome = decoder.finish(framedSource, target);
+                        assertEquals(concatenated.limit(), framedSource.limit(), context);
+                        assertEquals(7, target.limit(), context);
+                        target.flip();
+                        decoded.writeBytes(bufferBytes(target));
+                        assertTrue(decoded.size() <= contents[frame].length, context);
+                        if (outcome == CodecOutcome.FINISHED) {
+                            break;
+                        }
+                        assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome, context);
+                        assertEquals(7, target.limit(), context);
+                    }
+                    assertArrayEquals(contents[frame], decoded.toByteArray(), context);
+                    assertEquals(boundary, framedSource.position(), context);
+                    decoder.reset();
+                }
+            }
+            assertEquals(1, framedSource.remaining(), format.name());
+            assertEquals(BUFFER_GUARD, framedSource.get(), format.name());
+            assertEquals(2, concatenated.position(), format.name());
 
             ByteBuffer emptySource = ByteBuffer.allocate(emptyEncoded.length + firstEncoded.length);
             emptySource.put(emptyEncoded).put(firstEncoded).flip();

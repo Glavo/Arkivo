@@ -24,6 +24,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
 import java.nio.file.ReadOnlyFileSystemException;
@@ -89,6 +90,10 @@ final class RarArkivoFileSystemContractTest {
 
             Iterator<FileStore> stores = fileSystem.getFileStores().iterator();
             FileStore store = stores.next();
+            assertThrows(NullPointerException.class,
+                    () -> store.supportsFileAttributeView((Class<BasicFileAttributeView>) null));
+            assertThrows(NullPointerException.class, () -> store.supportsFileAttributeView((String) null));
+            assertThrows(NullPointerException.class, () -> store.getFileStoreAttributeView(null));
             assertFalse(stores.hasNext());
             assertSame(store, Files.getFileStore(file));
             assertEquals(archive.toString(), store.name());
@@ -221,6 +226,20 @@ final class RarArkivoFileSystemContractTest {
         );
 
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archive)) {
+            for (StandardOpenOption option : new StandardOpenOption[]{StandardOpenOption.CREATE,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.TRUNCATE_EXISTING}) {
+                try (SeekableByteChannel read = Files.newByteChannel(fileSystem.getPath("/value.txt"), option)) {
+                    ByteBuffer bytes = ByteBuffer.allocate(content.length);
+                    while (bytes.hasRemaining() && read.read(bytes) >= 0) {
+                        // Read the complete cached body.
+                    }
+                    assertEquals(content.length, bytes.position());
+                    assertArrayEquals(content, bytes.array());
+                    assertThrows(NonWritableChannelException.class, () -> read.truncate(0));
+                }
+                assertThrows(NoSuchFileException.class,
+                        () -> Files.newByteChannel(fileSystem.getPath("/missing"), option));
+            }
             SeekableByteChannel channel = Files.newByteChannel(
                     fileSystem.getPath("/value.txt"),
                     StandardOpenOption.READ
@@ -362,6 +381,10 @@ final class RarArkivoFileSystemContractTest {
     /// Verifies wildcard named views expose their complete immutable attribute sets.
     private static void assertNamedAttributes(Path file) throws IOException {
         Map<String, Object> basic = Files.readAttributes(file, "basic:*");
+        assertEquals(basic, Files.readAttributes(file, "basic:*,size,*"));
+        assertEquals(Map.of("size", Files.size(file)), Files.readAttributes(file, "basic:size,size"));
+        assertThrows(IllegalArgumentException.class, () -> Files.getAttribute(file, "basic:doesNotExist"));
+        assertThrows(IllegalArgumentException.class, () -> Files.readAttributes(file, "basic:*,doesNotExist"));
         assertEquals(Set.of(
                 "size",
                 "lastModifiedTime",
@@ -428,8 +451,9 @@ final class RarArkivoFileSystemContractTest {
 
         assertThrows(UnsupportedOperationException.class, () -> basic.put("size", 0L));
         assertThrows(IllegalArgumentException.class, () -> Files.readAttributes(file, "basic:"));
+        assertThrows(IllegalArgumentException.class, () -> Files.readAttributes(file, "basic:,,"));
         assertThrows(UnsupportedOperationException.class, () -> Files.readAttributes(file, "dos:*"));
-        assertEquals(Map.of("size", Files.size(file)), Files.readAttributes(file, "size,unknown"));
+        assertThrows(IllegalArgumentException.class, () -> Files.readAttributes(file, "size,unknown"));
     }
 
     /// Reports configurable volume-open and source-close failures.

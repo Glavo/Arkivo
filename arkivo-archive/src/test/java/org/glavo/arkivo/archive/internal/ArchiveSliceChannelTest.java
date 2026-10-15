@@ -16,7 +16,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
@@ -28,6 +27,11 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -41,6 +45,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests bounded archive slice channel behavior.
 @NotNullByDefault
 public final class ArchiveSliceChannelTest {
+    /// Bounds coordination waits so lock regressions fail instead of hanging the test process.
+    private static final long TIMEOUT_SECONDS = 10;
+
     /// Holds files used to verify interruption of an owned file channel.
     @TempDir
     private Path temporaryDirectory;
@@ -187,9 +194,9 @@ public final class ArchiveSliceChannelTest {
         try (SeekableByteChannel channel = ArchiveSliceChannel.open(source, Long.MAX_VALUE, 0)) {
             assertEquals(0, channel.read(ByteBuffer.allocate(0)));
             assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
-            assertThrows(ReadOnlyBufferException.class,
+            assertThrows(IllegalArgumentException.class,
                     () -> channel.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
-            assertThrows(ReadOnlyBufferException.class,
+            assertThrows(IllegalArgumentException.class,
                     () -> channel.read(ByteBuffer.allocate(1).asReadOnlyBuffer()));
             assertEquals(0, source.position());
             assertEquals(0, source.readCount);
@@ -326,9 +333,180 @@ public final class ArchiveSliceChannelTest {
         assertEquals(2, delegate.closeCount());
     }
 
+    /// Preserves source failures and buffer progress when cleanup repeats the same exception.
+    @ParameterizedTest
+    @MethodSource("sharedOperationFailures")
+    public void preservesFailureDuringAutomaticClose(Throwable failure, int operation, boolean nested, boolean direct)
+            throws IOException {
+        TestChannel source = new TestChannel(new byte[]{9, 1, 2, 3, 8});
+        source.closeFailure = failure;
+        if (operation == 0) source.seekFailure = failure;
+        if (operation == 1) {
+            source.readFailure = failure;
+            source.bytesBeforeFailure = 2;
+        }
+        SeekableByteChannel outer = ArchiveSliceChannel.open(source, 1, 3);
+        SeekableByteChannel channel = nested ? ArchiveSliceChannel.open(outer, 0, 3) : outer;
+        ByteBuffer target = direct ? ByteBuffer.allocateDirect(8) : ByteBuffer.allocate(8);
+        target.position(1).mark().limit(7);
+        assertSame(failure, assertThrows(failure.getClass(), () -> {
+            try (channel) {
+                if (operation == 2) {
+                    try {
+                        channel.close();
+                    } finally {
+                        source.closeFailure = failure;
+                    }
+                } else {
+                    channel.read(target);
+                }
+            }
+        }));
+        assertEquals(1, failure.getSuppressed().length);
+        assertInstanceOf(IOException.class, failure.getSuppressed()[0]);
+        assertSame(failure, failure.getSuppressed()[0].getCause());
+        assertEquals(operation == 1 ? 3 : 1, target.position());
+        assertEquals(7, target.limit());
+        target.reset();
+        assertEquals(1, target.position());
+        assertFalse(channel.isOpen());
+        assertTrue(source.isOpen());
+        channel.close();
+        channel.close();
+        assertFalse(source.isOpen());
+        assertEquals(operation == 2 ? 3 : 2, source.closeCount());
+    }
+
+    /// Supplies failures shared by source operations and automatic cleanup without sharing exception state across tests.
+    private static Stream<Arguments> sharedOperationFailures() {
+        return Stream.of(0, 1, 2).flatMap(operation -> Stream.of(false, true).flatMap(nested ->
+                Stream.of(false, true).flatMap(direct ->
+                        failures().map(failure -> Arguments.of(failure, operation, nested, direct)))));
+    }
+
+    /// Allows a failed read to escape while concurrent source closure waits for that read to finish.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 3})
+    public void reportsReadFailureWhileCloseWaitsForReader(int depth) throws Exception {
+        for (boolean direct : new boolean[]{false, true}) {
+            for (boolean sharedFailure : new boolean[]{false, true}) {
+                CloseWaitingChannel source = new CloseWaitingChannel(sharedFailure);
+                SeekableByteChannel current = source;
+                for (int index = 0; index < depth; index++) {
+                    current = ArchiveSliceChannel.open(current, 0, 4);
+                }
+                SeekableByteChannel channel = current;
+                ByteBuffer target = direct ? ByteBuffer.allocateDirect(8) : ByteBuffer.allocate(8);
+                target.position(1).mark().limit(7);
+                ExecutorService executor = Executors.newFixedThreadPool(3, task -> {
+                    Thread thread = new Thread(task, "slice-close-test");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+                try {
+                    Future<IOException> reading = executor.submit(() -> {
+                        try {
+                            return assertThrows(IOException.class, () -> channel.read(target));
+                        } finally {
+                            source.readObserved.countDown();
+                        }
+                    });
+                    assertTrue(source.readEntered.await(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    Future<IOException> closing = executor.submit(() -> assertThrows(IOException.class, channel::close));
+                    assertTrue(source.closeEntered.await(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    Future<Boolean> retrying = executor.submit(() -> {
+                        channel.close();
+                        return true;
+                    });
+                    assertSame(source.readFailure, reading.get(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    IOException cleanup = closing.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                    if (sharedFailure) {
+                        assertSame(source.readFailure, cleanup.getCause());
+                    } else {
+                        assertSame(source.closeFailure, cleanup);
+                    }
+                    assertTrue(retrying.get(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    channel.close();
+                    assertEquals(2, source.closeAttempts);
+                    assertFalse(source.isOpen());
+                    assertFalse(channel.isOpen());
+                    assertEquals(3, target.position());
+                    assertEquals(7, target.limit());
+                    assertEquals(1, target.reset().position());
+                } finally {
+                    source.closeEntered.countDown();
+                    source.readObserved.countDown();
+                    executor.shutdownNow();
+                    assertTrue(executor.awaitTermination(TIMEOUT_SECONDS, TimeUnit.SECONDS), "Worker leaked");
+                    channel.close();
+                }
+            }
+        }
+    }
+
+    /// Releases a partial read from close, then waits for that failure to pass through every slice layer.
+    @NotNullByDefault
+    private static final class CloseWaitingChannel extends TestChannel {
+        /// Signals that the read has reached the source.
+        private final CountDownLatch readEntered = new CountDownLatch(1);
+
+        /// Releases the pending read when source closure begins.
+        private final CountDownLatch closeEntered = new CountDownLatch(1);
+
+        /// Signals that the caller has observed the read failure.
+        private final CountDownLatch readObserved = new CountDownLatch(1);
+
+        /// Failure delivered after partial input.
+        private final IOException readFailure = new IOException("read failure");
+
+        /// Failure delivered by the first close attempt.
+        private final IOException closeFailure;
+
+        /// Number of source close attempts, serialized by the slice's close monitor.
+        private int closeAttempts;
+
+        /// Selects whether the read and close reuse one exception identity.
+        private CloseWaitingChannel(boolean sharedFailure) {
+            super(new byte[4]);
+            closeFailure = sharedFailure ? readFailure : new IOException("close failure");
+        }
+
+        /// Delivers two bytes and waits for closure before reporting failure.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            target.put((byte) 1).put((byte) 2);
+            readEntered.countDown();
+            await(closeEntered);
+            throw readFailure;
+        }
+
+        /// Fails the first close only after the caller has received its read exception.
+        @Override
+        public void close() throws IOException {
+            if (++closeAttempts == 1) {
+                closeEntered.countDown();
+                await(readObserved);
+                throw closeFailure;
+            }
+            super.close();
+        }
+
+        /// Waits for a test event without swallowing cancellation or blocking indefinitely.
+        private static void await(CountDownLatch latch) throws IOException {
+            try {
+                if (!latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IOException("Coordination timed out");
+                }
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new IOException(failure);
+            }
+        }
+    }
+
     /// Provides an in-memory source with one-shot read, seek, and close failures.
     @NotNullByDefault
-    private static final class TestChannel implements SeekableByteChannel {
+    private static class TestChannel implements SeekableByteChannel {
         /// The channel content.
         private final byte @Unmodifiable [] content;
 

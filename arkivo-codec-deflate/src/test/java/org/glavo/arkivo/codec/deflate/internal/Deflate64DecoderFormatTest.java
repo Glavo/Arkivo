@@ -3,10 +3,15 @@
 
 package org.glavo.arkivo.codec.deflate.internal;
 
+import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInputStream;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -108,6 +113,138 @@ final class Deflate64DecoderFormatTest {
         byte[] expected = Arrays.copyOf(history, history.length + 3);
         System.arraycopy(history, 0, expected, history.length, 3);
         assertArrayEquals(expected, decode(writer.toByteArray()));
+    }
+
+    /// Maximum-length matches wrap the history window at both ordinary and extended distance boundaries.
+    ///
+    /// @param distance the backward match distance
+    /// @param symbol the fixed distance code
+    /// @param extraValue the distance extension value
+    /// @param extraBits the width of the distance extension
+    @ParameterizedTest
+    @CsvSource({"1, 0, 0, 0", "32768, 29, 8191, 13", "32769, 30, 0, 14",
+            "65535, 31, 16382, 14", "65536, 31, 16383, 14"})
+    void maximumLengthMatchesCrossDistanceBoundaries(
+            int distance, int symbol, int extraValue, int extraBits
+    ) throws IOException {
+        byte[] expected = new byte[distance + 65_538];
+        for (int index = 0; index < distance; index++) {
+            expected[index] = (byte) (index * 31 + index / 251);
+        }
+        for (int index = distance; index < expected.length; index++) {
+            expected[index] = expected[index - distance];
+        }
+        BitWriter writer = new BitWriter();
+        for (int offset = 0; offset < distance; offset += 0xffff) {
+            writer.writeStoredBlock(false, Arrays.copyOfRange(expected, offset, Math.min(distance, offset + 0xffff)));
+        }
+        writer.writeFixedBlockHeader();
+        writer.writeFixedLiteralLength(285);
+        writer.writeBits(0xffff, 16);
+        writer.writeFixedDistance(symbol);
+        writer.writeBits(extraValue, extraBits);
+        writer.writeFixedLiteralLength(256);
+        byte[] compressed = writer.toByteArray();
+        try (var reference = new Deflate64CompressorInputStream(new ByteArrayInputStream(compressed))) {
+            assertArrayEquals(expected, reference.readAllBytes());
+        }
+
+        try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE64, null)) {
+            for (boolean direct : new boolean[]{false, true}) {
+                decoder.reset();
+                assertFragmentedMatch(decoder, compressed, expected, direct);
+                decoder.reset();
+                ByteBuffer emptyFrame = ByteBuffer.wrap(new byte[]{3, 0});
+                ByteBuffer output = ByteBuffer.allocate(1);
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(emptyFrame, output));
+                assertEquals(0, output.position());
+                assertEquals(2, emptyFrame.position());
+            }
+        }
+    }
+
+    /// Reset clears both an incomplete extended length and a match suspended by a full output buffer.
+    ///
+    /// @param truncated whether to fail inside the length extension instead of suspending its output
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void resetsIncompleteExtendedMatch(boolean truncated) throws IOException {
+        BitWriter writer = new BitWriter();
+        writer.writeFixedBlockHeader();
+        writer.writeFixedLiteralLength('x');
+        writer.writeFixedLiteralLength(285);
+        writer.writeBits(0xffff, 16);
+        writer.writeFixedDistance(0);
+        writer.writeFixedLiteralLength(256);
+        byte[] compressed = writer.toByteArray();
+        byte[] expected = new byte[65_539];
+        Arrays.fill(expected, (byte) 'x');
+        try (var decoder = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE64, null)) {
+            ByteBuffer output = ByteBuffer.allocate(2);
+            if (truncated) {
+                // Three header bits and two eight-bit codes leave only five length-extension bits.
+                ByteBuffer input = ByteBuffer.wrap(compressed, 0, 3);
+                assertThrows(IOException.class, () -> decoder.finish(input, output));
+                assertEquals(1, output.position());
+            } else {
+                assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(ByteBuffer.wrap(compressed), output));
+                assertArrayEquals(new byte[]{'x', 'x'}, output.array());
+            }
+            decoder.reset();
+            ByteBuffer emptyFrame = ByteBuffer.wrap(new byte[]{3, 0});
+            output.clear();
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(emptyFrame, output));
+            assertEquals(0, output.position());
+            decoder.reset();
+            assertFragmentedMatch(decoder, compressed, expected, true);
+        }
+    }
+
+    /// Checks a long match through fresh input views, empty targets, and an untouched frame suffix.
+    private static void assertFragmentedMatch(
+            DeflateDecoderEngine decoder, byte[] compressed, byte[] expected, boolean direct
+    ) throws IOException {
+        byte[] framed = Arrays.copyOf(compressed, compressed.length + 8);
+        Arrays.fill(framed, compressed.length, framed.length, (byte) 0xa5);
+        int chunkSize = direct ? 7 : framed.length;
+        int outputSize = direct ? 257 : 65_536;
+        ByteBuffer inputStorage = direct ? ByteBuffer.allocateDirect(chunkSize + 3)
+                : ByteBuffer.allocate(chunkSize + 3);
+        ByteBuffer output = direct ? ByteBuffer.allocateDirect(outputSize + 5)
+                : ByteBuffer.allocate(outputSize + 5);
+        byte[] scratch = new byte[outputSize];
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+        int offset = 0;
+        for (int call = 0; call < 2 * (framed.length + expected.length); call++) {
+            int offered = Math.min(chunkSize, framed.length - offset);
+            inputStorage.clear().position(3);
+            inputStorage.put(framed, offset, offered).flip().position(3);
+            ByteBuffer input = inputStorage.asReadOnlyBuffer().order(ByteOrder.LITTLE_ENDIAN);
+            input.mark();
+            output.clear().position(5).limit(call % 17 == 0 ? 5 : output.capacity()).mark();
+            int outputLimit = output.limit();
+            CodecOutcome outcome = decoder.decode(input, output);
+            offset += input.position() - 3;
+            int produced = output.position() - 5;
+            output.get(5, scratch, 0, produced);
+            decoded.write(scratch, 0, produced);
+            assertTrue(decoded.size() <= expected.length);
+            assertEquals(offered + 3, input.limit());
+            assertEquals(outputLimit, output.limit());
+            input.reset();
+            output.reset();
+            if (outcome == CodecOutcome.FINISHED) {
+                assertEquals(compressed.length, offset);
+                assertArrayEquals(expected, decoded.toByteArray());
+                return;
+            }
+            if (outcome == CodecOutcome.NEEDS_INPUT) {
+                assertTrue(offset < compressed.length);
+            } else {
+                assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome);
+            }
+        }
+        throw new AssertionError("Deflate64 decoding did not finish");
     }
 
     /// Verifies the common dynamic Huffman grammar against a raw JDK Deflater stream.

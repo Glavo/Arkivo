@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.ReadableByteChannel;
@@ -66,6 +67,26 @@ public final class OuterCompressionMatrixTest {
 
     /// Creates an outer-compression matrix test instance for JUnit.
     public OuterCompressionMatrixTest() {
+    }
+
+    /// Distinguishes outer LZ4 and Zstandard wrappers after their shared skippable-frame prefix.
+    @Test
+    void detectsOuterCompressionAfterSkippableFrames() throws IOException {
+        for (String name : List.of("lz4", "zstd")) {
+            byte[] encoded = compress(name, createArchive("tar"));
+            byte[] wrapped = ByteBuffer.allocate(1032 + encoded.length).order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(0x184d2a50).putInt(1024).put(new byte[1024]).put(encoded).array();
+            var source = new FragmentedSeekableByteChannel(wrapped, 7);
+            try (var reader = ArkivoFormats.openStreamingReader((ReadableByteChannel) source)) {
+                verifyStreamingArchive(reader);
+            }
+            assertFalse(source.isOpen());
+            var seekable = new FragmentedSeekableByteChannel(wrapped, 11);
+            try (var fs = ArkivoFormats.openFileSystem(seekable)) {
+                assertArrayEquals(ENTRY_CONTENT, Files.readAllBytes(fs.getPath('/' + ENTRY_PATH)));
+            }
+            assertFalse(seekable.isOpen());
+        }
     }
 
     /// Opens every forward-only archive format through every detectable compression format and fragmented input.

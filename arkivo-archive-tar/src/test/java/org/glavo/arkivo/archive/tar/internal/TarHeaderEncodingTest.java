@@ -7,10 +7,12 @@ import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
+import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -21,20 +23,177 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
+import java.nio.file.FileSystemException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFileAttributeView;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies TAR metadata preparation and identical header rules for streamed and rewritten entries.
 @NotNullByDefault
 final class TarHeaderEncodingTest {
+    /// Rejects NUL before creating pending entries or emitting fixed-width and PAX name fields.
+    @ParameterizedTest
+    @ValueSource(strings = {"\0entry", "entry\0suffix", "entry\0", "parent\0/child"})
+    void rejectsNulStreamingEntryNames(String invalid) throws IOException {
+        for (String name : List.of(invalid, "p".repeat(101) + invalid)) {
+            ByteArrayOutputStream target = new ByteArrayOutputStream();
+            try (var writer = TarArkivoStreamingWriter.open(target, ArkivoEditStorage.memory())) {
+                assertThrows(IllegalArgumentException.class, () -> writer.beginFile(name));
+                assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory(name));
+                assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink(name, "source"));
+                assertThrows(IllegalArgumentException.class, () -> writer.beginHardLink(name, "source"));
+                assertThrows(IllegalArgumentException.class, () -> writer.beginHardLink("link", name));
+                assertEquals(0, target.size());
+                try (var body = writer.beginFile("source").openOutputStream()) {
+                    body.write(7);
+                }
+            }
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(target.toByteArray()))) {
+                assertTrue(reader.next());
+                assertEquals("source", reader.readAttributes().path());
+                try (var body = reader.openInputStream()) {
+                    assertArrayEquals(new byte[]{7}, body.readAllBytes());
+                }
+                assertFalse(reader.next());
+            }
+        }
+    }
+
+    /// Rejects NUL names before changing the index, reserving parents, or replacing an existing entry.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsNulFileSystemEntryNames(boolean update, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("names.tar");
+        if (update) {
+            try (var writer = TarArkivoStreamingWriter.create(archive)) {
+                writer.beginFile("source").close();
+            }
+        }
+        try (var fs = update ? TarArkivoFileSystem.update(archive) : TarArkivoFileSystem.create(archive)) {
+            Path source = fs.getPath("/source");
+            if (!update) {
+                Files.write(source, new byte[0]);
+            }
+            for (String invalid : List.of("\0entry", "entry\0suffix", "entry\0", "parent\0/child",
+                    "p".repeat(101) + "\0suffix")) {
+                Path target = fs.getPath("/" + invalid);
+                assertThrows(FileSystemException.class, () -> Files.write(target, new byte[]{1}));
+                assertThrows(FileSystemException.class, () -> Files.createDirectory(target));
+                assertThrows(FileSystemException.class, () -> Files.createSymbolicLink(target, fs.getPath("source")));
+                assertThrows(FileSystemException.class, () -> Files.createLink(target, source));
+                if (update) {
+                    assertThrows(FileSystemException.class, () -> Files.copy(source, target));
+                    assertThrows(FileSystemException.class, () -> Files.move(source, target));
+                    assertTrue(Files.exists(source));
+                    assertFalse(Files.exists(target));
+                }
+            }
+            Files.write(fs.getPath("/after"), new byte[]{7});
+        }
+        try (var reader = TarArkivoStreamingReader.open(Files.newInputStream(archive))) {
+            assertTrue(reader.next());
+            assertEquals("source", reader.readAttributes().path());
+            assertTrue(reader.next());
+            assertEquals("after", reader.readAttributes().path());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{7}, body.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Rejects malformed principal names before mutation while preserving valid USTAR and PAX text.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsMalformedPrincipalNames(boolean update, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("principals.tar");
+        String user = "user\uD83D\uDE00";
+        String group = "group\uD83D\uDE00".repeat(8);
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archive)) {
+            try (ArkivoStreamingWriter.Entry entry = writer.beginFile("entry")) {
+                if (!update) {
+                    verifyPrincipalNames(Objects.requireNonNull(entry.attributeView(TarArkivoEntryAttributeView.class)),
+                            Objects.requireNonNull(entry.attributeView(PosixFileAttributeView.class)), user, group);
+                }
+                try (OutputStream body = entry.openOutputStream()) {
+                    body.write(7);
+                }
+            }
+            writer.beginFile("following").close();
+        }
+        if (update) {
+            try (var fs = TarArkivoFileSystem.update(archive)) {
+                Path path = fs.getPath("/entry");
+                TarArkivoEntryAttributeView tar = Objects.requireNonNull(
+                        Files.getFileAttributeView(path, TarArkivoEntryAttributeView.class));
+                verifyPrincipalNames(tar, Objects.requireNonNull(
+                        Files.getFileAttributeView(path, PosixFileAttributeView.class)), user, group);
+                TarArkivoEntryAttributes snapshot = tar.readAttributes();
+                assertThrows(IllegalArgumentException.class,
+                        () -> Files.setAttribute(path, "tar:userName", "bad\0name"));
+                assertThrows(IllegalArgumentException.class,
+                        () -> Files.setAttribute(path, "tar:groupName", "bad\uD800name"));
+                assertEquals(user, snapshot.userName());
+                assertEquals(group, snapshot.groupName());
+                assertEquals(user, tar.readAttributes().userName());
+                assertEquals(group, tar.readAttributes().groupName());
+            }
+        }
+        try (var reader = TarArkivoStreamingReader.open(Files.newInputStream(archive))) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals(user, attributes.userName());
+            assertEquals(group, attributes.groupName());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{7}, body.readAllBytes());
+            }
+            assertTrue(reader.next());
+            assertEquals("following", reader.readAttributes().path());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Exercises both attribute views without allowing an invalid assignment to replace the preceding value.
+    private static void verifyPrincipalNames(
+            TarArkivoEntryAttributeView tar, PosixFileAttributeView posix, String user, String group
+    ) throws IOException {
+        tar.setUserName("original-user");
+        tar.setGroupName("original-group");
+        for (String invalid : List.of("x\0y", "x\uD800", "x\uDC00", "x\uDC00\uD800",
+                "x".repeat(33) + "\0tail", "x".repeat(33) + "\uD800tail")) {
+            assertThrows(IllegalArgumentException.class, () -> tar.setUserName(invalid));
+            assertThrows(IllegalArgumentException.class, () -> tar.setGroupName(invalid));
+            assertThrows(IllegalArgumentException.class, () -> posix.setOwner(() -> invalid));
+            assertThrows(IllegalArgumentException.class, () -> posix.setGroup(() -> invalid));
+            assertEquals("original-user", tar.readAttributes().userName());
+            assertEquals("original-group", tar.readAttributes().groupName());
+        }
+        tar.setUserName(null);
+        tar.setGroupName(null);
+        assertNull(tar.readAttributes().userName());
+        assertNull(tar.readAttributes().groupName());
+        tar.setUserName("");
+        tar.setGroupName("");
+        assertEquals("", tar.readAttributes().userName());
+        assertEquals("", tar.readAttributes().groupName());
+        posix.setOwner(() -> user);
+        posix.setGroup(() -> group);
+        assertEquals(user, tar.readAttributes().userName());
+        assertEquals(group, tar.readAttributes().groupName());
+    }
+
     /// Verifies an invalid fixed header cannot leave PAX records that affect the following entry.
     @ParameterizedTest
     @MethodSource("completionFailures")

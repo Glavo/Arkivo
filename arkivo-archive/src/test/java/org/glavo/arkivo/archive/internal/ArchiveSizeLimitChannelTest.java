@@ -6,17 +6,27 @@ package org.glavo.arkivo.archive.internal;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.Channels;
+import java.nio.channels.ClosedByInterruptException;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.spi.AbstractInterruptibleChannel;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,6 +39,145 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies decoded archive size enforcement, probe boundaries, and channel ownership.
 @NotNullByDefault
 final class ArchiveSizeLimitChannelTest {
+    /// Preserves interruption and asynchronous-close failures when partial output also exceeds the limit.
+    @ParameterizedTest
+    @CsvSource({"true,0", "true,1", "false,0", "false,1"})
+    void preservesCancellationAfterPartialProgress(boolean interrupt, long maximum) throws Exception {
+        BlockingPartialChannel delegate = new BlockingPartialChannel();
+        ReadableByteChannel limited = ArchiveSizeLimitChannel.wrap(delegate, maximum);
+        ByteBuffer target = ByteBuffer.allocateDirect(8).position(2).limit(6).mark();
+        AtomicReference<@Nullable Throwable> failure = new AtomicReference<>();
+        AtomicBoolean interrupted = new AtomicBoolean();
+        Thread reader = new Thread(() -> {
+            try {
+                limited.read(target);
+            } catch (Throwable exception) {
+                failure.set(exception);
+            } finally {
+                interrupted.set(Thread.currentThread().isInterrupted());
+            }
+        }, "archive-limit-reader");
+        reader.start();
+        try {
+            assertTrue(delegate.started.await(5L, TimeUnit.SECONDS));
+            if (interrupt) {
+                reader.interrupt();
+            } else {
+                limited.close();
+            }
+            reader.join(5_000L);
+            assertFalse(reader.isAlive());
+            AsynchronousCloseException cancellation = assertInstanceOf(AsynchronousCloseException.class, failure.get());
+            assertEquals(interrupt ? ClosedByInterruptException.class : AsynchronousCloseException.class,
+                    cancellation.getClass());
+            assertEquals(interrupt, interrupted.get());
+            assertEquals(3, target.position());
+            assertEquals(6, target.limit());
+            assertEquals(1, target.get(2));
+            assertEquals(2, target.reset().position());
+            assertFalse(limited.isOpen());
+            assertFalse(delegate.isOpen());
+            if (maximum == 0L) {
+                assertEquals(1, cancellation.getSuppressed().length);
+                ArkivoReadLimitException limitFailure = assertInstanceOf(
+                        ArkivoReadLimitException.class, cancellation.getSuppressed()[0]
+                );
+                assertEquals(ArkivoReadLimitKind.DECODED_ARCHIVE_SIZE, limitFailure.kind());
+                assertEquals(0L, limitFailure.maximum());
+                assertEquals(1L, limitFailure.actual());
+            } else {
+                assertEquals(0, cancellation.getSuppressed().length);
+            }
+            assertThrows(ClosedChannelException.class, () -> limited.read(ByteBuffer.allocate(0)));
+            assertThrows(ClosedChannelException.class, () -> limited.read(ByteBuffer.allocate(1)));
+        } finally {
+            limited.close();
+            reader.interrupt();
+            reader.join(5_000L);
+            assertFalse(reader.isAlive());
+        }
+    }
+
+    /// Blocks after producing one byte until interrupted or closed by another thread.
+    @NotNullByDefault
+    private static final class BlockingPartialChannel extends AbstractInterruptibleChannel
+            implements ReadableByteChannel {
+        /// Signals that the read has produced its partial output.
+        private final CountDownLatch started = new CountDownLatch(1);
+
+        /// Releases the blocked read when the channel closes.
+        private final CountDownLatch closed = new CountDownLatch(1);
+
+        /// Produces one byte and lets the JDK report cancellation from the unfinished operation.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            begin();
+            try {
+                target.put((byte) 1);
+                started.countDown();
+                try {
+                    closed.await();
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                }
+                return 1;
+            } finally {
+                end(false);
+            }
+        }
+
+        /// Unblocks the active read without modifying its buffer.
+        @Override
+        protected void implCloseChannel() {
+            closed.countDown();
+        }
+    }
+
+    /// Distinguishes an exact maximum-long count from one additional byte without transferring exabytes of data.
+    @Test
+    void rejectsBytesBeyondMaximumLongCount() throws Exception {
+        ByteArrayInputStream input = new ByteArrayInputStream(new byte[]{1, 2, 3});
+        try (ReadableByteChannel limited = ArchiveSizeLimitChannel.wrap(Channels.newChannel(input), Long.MAX_VALUE)) {
+            var count = ArchiveSizeLimitChannel.class.getDeclaredField("count");
+            count.setAccessible(true);
+            count.setLong(limited, Long.MAX_VALUE - 1L);
+            assertEquals(1, limited.read(ByteBuffer.allocate(1)));
+            ByteBuffer target = ByteBuffer.allocate(4).position(1).mark();
+            ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> limited.read(target));
+            assertEquals(ArkivoReadLimitKind.DECODED_ARCHIVE_SIZE, failure.kind());
+            assertEquals(Long.MAX_VALUE, failure.maximum());
+            assertEquals(Long.MAX_VALUE, failure.actual());
+            assertEquals(2, target.position());
+            assertEquals(4, target.limit());
+            assertEquals(1, target.reset().position());
+            assertEquals(1, input.available());
+            assertThrows(ArkivoReadLimitException.class, () -> limited.read(target));
+            assertEquals(1, input.available());
+        }
+    }
+
+    /// Preserves empty-read and closed-channel behavior after the archive allowance has been exceeded.
+    @Test
+    void preservesChannelStateAfterLimitFailure() throws IOException {
+        ByteArrayInputStream input = new ByteArrayInputStream(new byte[]{1, 2});
+        ReadableByteChannel delegate = Channels.newChannel(input);
+        ReadableByteChannel limited = ArchiveSizeLimitChannel.wrap(delegate, 0L);
+        try (limited) {
+            ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class,
+                    () -> limited.read(ByteBuffer.allocate(1)));
+            assertEquals(1, input.available());
+            assertEquals(0, limited.read(ByteBuffer.allocate(0)));
+            assertEquals(1, input.available());
+            assertSame(failure, assertThrows(ArkivoReadLimitException.class,
+                    () -> limited.read(ByteBuffer.allocate(1))));
+            delegate.close();
+            assertFalse(limited.isOpen());
+            assertThrows(ClosedChannelException.class, () -> limited.read(ByteBuffer.allocate(0)));
+            assertThrows(ClosedChannelException.class, () -> limited.read(ByteBuffer.allocate(1)));
+            assertEquals(1, input.available());
+        }
+    }
+
     /// Verifies the maximum long allowance does not overflow when reserving its probe byte.
     @Test
     void acceptsMaximumAllowanceWithDirectBufferWindow() throws IOException {

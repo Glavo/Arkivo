@@ -128,11 +128,8 @@ final class LZ4BlockDecompression {
             inputPosition += literalLength;
             outputSize = requiredOutput;
 
-            int matchCode = token & 15;
             if (inputPosition == compressedLength) {
-                if (matchCode != 0) {
-                    throw new IOException("Final LZ4 sequence declares a missing match");
-                }
+                // The final sequence has no match; its low token nibble is unused.
                 if (decodedMatch && literalLength < 5) {
                     throw new IOException("Final LZ4 sequence contains fewer than five literals");
                 }
@@ -150,6 +147,7 @@ final class LZ4BlockDecompression {
             }
             CompressionDecoderSupport.requireWindowSize(maximumWindowSize, matchOffset);
 
+            int matchCode = token & 15;
             int matchLength = matchCode + 4;
             if (matchCode == 15) {
                 int extension;

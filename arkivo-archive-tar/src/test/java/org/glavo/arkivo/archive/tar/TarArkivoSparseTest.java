@@ -3,6 +3,10 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
+import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -574,6 +578,48 @@ final class TarArkivoSparseTest {
                 assertArrayEquals(expandedContent, body.readAllBytes());
             }
             org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Counts every sparse extension record before accepting its descriptors or reading the body.
+    @ParameterizedTest
+    @ValueSource(ints = {5, 26})
+    void countsOldGnuSparseExtensionsAgainstMetadataLimit(int blockCount) throws IOException {
+        List<OldGnuSparseBlock> blocks = new ArrayList<>();
+        byte[] packed = new byte[blockCount];
+        byte[] expanded = new byte[blockCount * 2];
+        for (int index = 0; index < blockCount; index++) {
+            blocks.add(new OldGnuSparseBlock(index * 2L, 1));
+            packed[index] = (byte) (index + 1);
+            expanded[index * 2] = packed[index];
+        }
+        byte[] archive = oldGnuSparseArchive(blocks, expanded.length, packed, false);
+        int metadataSize = (1 + (blockCount - 4 + 20) / 21) * 512;
+        for (int maximum : new int[]{512, metadataSize - 1, metadataSize}) {
+            TarArchiveOptions.Read options = TarArchiveOptions.READ_DEFAULTS.withoutCompression().withCommon(
+                    ArchiveReadOptions.DEFAULT.withLimits(
+                            ArchiveReadLimits.builder().maximumMetadataSize(maximum).build()));
+            ByteArrayInputStream source = new ByteArrayInputStream(archive);
+            int remaining;
+            try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(source, options)) {
+                if (maximum < metadataSize) {
+                    ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, reader::next);
+                    assertEquals(ArkivoReadLimitKind.METADATA_SIZE, failure.kind());
+                    assertEquals(maximum, failure.maximum());
+                    assertEquals((maximum / 512 + 1) * 512L, failure.actual());
+                    remaining = source.available();
+                    assertEquals(archive.length - failure.actual(), remaining);
+                    assertThrows(ArkivoReadLimitException.class, reader::next);
+                    assertEquals(remaining, source.available());
+                } else {
+                    assertTrue(reader.next());
+                    try (InputStream body = reader.openInputStream()) {
+                        assertArrayEquals(expanded, body.readAllBytes());
+                    }
+                    remaining = source.available();
+                }
+            }
+            assertEquals(remaining, source.available());
         }
     }
 

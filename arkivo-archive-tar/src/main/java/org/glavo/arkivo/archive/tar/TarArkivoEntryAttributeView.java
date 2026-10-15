@@ -51,12 +51,16 @@ public interface TarArkivoEntryAttributeView extends BasicFileAttributeView {
     /// Sets the user name stored by the TAR header, or clears it when `null`.
     ///
     /// @param userName the replacement decoded user name, or `null` to omit it
+    /// @throws IllegalArgumentException if the name contains NUL or an unpaired UTF-16 surrogate;
+    ///                                  the previous name is retained
     /// @throws IOException if the entry is unavailable or its pending metadata cannot be updated
     void setUserName(@Nullable String userName) throws IOException;
 
     /// Sets the group name stored by the TAR header, or clears it when `null`.
     ///
     /// @param groupName the replacement decoded group name, or `null` to omit it
+    /// @throws IllegalArgumentException if the name contains NUL or an unpaired UTF-16 surrogate;
+    ///                                  the previous name is retained
     /// @throws IOException if the entry is unavailable or its pending metadata cannot be updated
     void setGroupName(@Nullable String groupName) throws IOException;
 

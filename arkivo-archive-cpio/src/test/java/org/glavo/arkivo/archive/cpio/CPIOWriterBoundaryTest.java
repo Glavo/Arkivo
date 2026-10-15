@@ -3,9 +3,14 @@
 
 package org.glavo.arkivo.archive.cpio;
 
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -14,6 +19,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.List;
@@ -40,6 +46,117 @@ public final class CPIOWriterBoundaryTest {
 
     /// Largest eleven-digit old-ASCII octal field value.
     private static final long MAXIMUM_ELEVEN_DIGIT_OCTAL = 077777777777L;
+
+    /// Rejects aliases that would silently change a name when decoded with the same charset.
+    @ParameterizedTest
+    @ValueSource(strings = {"Shift_JIS", "windows-31j"})
+    public void rejectsNonRoundTrippingNames(String charsetName) throws IOException {
+        Charset charset = Charset.forName(charsetName);
+        for (CPIODialect dialect : CPIODialect.values()) {
+            for (String name : List.of("a\u00a5b", "a\u203eb")) {
+                for (boolean directory : new boolean[]{false, true}) {
+                    ByteArrayOutputStream target = new ByteArrayOutputStream();
+                    CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(target,
+                            CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(dialect)
+                                    .withMetadataCharset(charset).withBlockSize(1));
+                    ArkivoStreamingWriter.Entry entry = directory
+                            ? writer.beginDirectory(name) : writer.beginFile(name);
+                    assertThrows(IOException.class, entry::close);
+                    assertEquals(0, target.size());
+                    assertThrows(IOException.class, writer::close);
+                    writer.close();
+                    assertArchiveIsEmpty(target.toByteArray());
+                }
+            }
+        }
+    }
+
+    /// Discards an unrepresentable staged entry before output and leaves surrounding entries readable.
+    @ParameterizedTest
+    @ValueSource(strings = {"Shift_JIS", "windows-31j"})
+    public void rejectsNonRoundTrippingStagedNames(String charsetName) throws IOException {
+        Charset charset = Charset.forName(charsetName);
+        for (CPIODialect dialect : CPIODialect.values()) {
+            for (String name : List.of("a\u00a5b", "a\u203eb")) {
+                ByteArrayOutputStream target = new ByteArrayOutputStream();
+                try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(target,
+                        CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(dialect).withMetadataCharset(charset))) {
+                    writer.beginFile("before").close();
+                    int committedSize = target.size();
+                    OutputStream body = writer.beginFile(name).openOutputStream();
+                    body.write(new byte[]{1, 2, 3});
+                    assertThrows(IOException.class, body::close);
+                    assertEquals(committedSize, target.size());
+                    body.close();
+                    writer.beginFile("after").close();
+                }
+                try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
+                        new ByteArrayInputStream(target.toByteArray()))) {
+                    assertTrue(reader.next());
+                    assertEquals("before", reader.readAttributes().path());
+                    assertTrue(reader.next());
+                    assertEquals("after", reader.readAttributes().path());
+                    assertFalse(reader.next());
+                }
+            }
+        }
+    }
+
+    /// Rejects encoding aliases in link targets before publishing a pending entry.
+    @ParameterizedTest
+    @ValueSource(strings = {"Shift_JIS", "windows-31j"})
+    public void rejectsNonRoundTrippingLinkTargets(String charsetName) throws IOException {
+        Charset charset = Charset.forName(charsetName);
+        for (CPIODialect dialect : CPIODialect.values()) {
+            ByteArrayOutputStream target = new ByteArrayOutputStream();
+            try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(target,
+                    CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(dialect).withMetadataCharset(charset))) {
+                for (String name : List.of("a\u00a5b", "a\u203eb")) {
+                    assertThrows(IOException.class, () -> writer.beginSymbolicLink("link", name));
+                    assertEquals(0, target.size());
+                }
+                writer.beginSymbolicLink("link", "\u65e5\u672c").close();
+            }
+            try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
+                    new ByteArrayInputStream(target.toByteArray()))) {
+                assertTrue(reader.next());
+                assertEquals("link", reader.readAttributes().path());
+                assertEquals("\u65e5\u672c", charset.decode(ByteBuffer.wrap(readCurrentBody(reader))).toString());
+                assertFalse(reader.next());
+            }
+        }
+    }
+
+    /// Preserves ordinary legacy characters and UTF-8 characters that are aliases in other charsets.
+    @ParameterizedTest
+    @ValueSource(strings = {"UTF-8", "Shift_JIS", "windows-31j"})
+    public void roundTripsMetadataText(String charsetName) throws IOException {
+        Charset charset = Charset.forName(charsetName);
+        @Unmodifiable List<String> names = charsetName.equals("UTF-8")
+                ? List.of("a\u00a5b", "a\u203eb", "\u65e5\u672c", "\uD83D\uDE00")
+                : List.of("\u65e5\u672c", "plain", "a~b");
+        for (CPIODialect dialect : CPIODialect.values()) {
+            ByteArrayOutputStream target = new ByteArrayOutputStream();
+            try (CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(target,
+                    CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(dialect).withMetadataCharset(charset))) {
+                for (String name : names) {
+                    try (var body = writer.beginFile(name).openOutputStream()) {
+                        body.write(42);
+                    }
+                }
+            }
+            try (CPIOArkivoStreamingReader reader = CPIOArkivoStreamingReader.open(
+                    new ByteArrayInputStream(target.toByteArray()),
+                    CPIOArchiveOptions.READ_DEFAULTS.withMetadataDecoder(ArchiveMetadataDecoder.forCharset(charset)))) {
+                for (String name : names) {
+                    assertTrue(reader.next());
+                    assertEquals(name, reader.readAttributes().path());
+                    assertArrayEquals(new byte[]{42}, readCurrentBody(reader));
+                }
+                assertFalse(reader.next());
+            }
+        }
+    }
 
     /// Verifies every dialect preserves its maximum representable metadata values.
     @Test
@@ -144,6 +261,47 @@ public final class CPIOWriterBoundaryTest {
                 view -> view.setTimes(FileTime.from(Instant.ofEpochSecond(beyondUnsignedInt)), null, null),
                 "modification time"
         );
+    }
+
+    /// Freezes cached metadata views after a failed completion while retaining the original failure on retry.
+    @ParameterizedTest
+    @EnumSource(CPIODialect.class)
+    public void freezesMetadataAfterFailedEntryClose(CPIODialect dialect) throws IOException {
+        for (boolean invalidSize : new boolean[]{false, true}) {
+            ByteArrayOutputStream target = new ByteArrayOutputStream();
+            CPIOArkivoStreamingWriter writer = CPIOArkivoStreamingWriter.open(
+                    target, CPIOArchiveOptions.CREATE_DEFAULTS.withDialect(dialect).withBlockSize(1));
+            ArkivoStreamingWriter.Entry entry = writer.beginFile("invalid.bin");
+            CPIOArkivoEntryAttributeView view = attributeView(entry);
+            if (invalidSize) {
+                view.setSize(1);
+            } else {
+                view.setUserId(maximumSmallField(dialect) + 1);
+            }
+            IOException failure = assertThrows(IOException.class, entry::close);
+            assertEquals(0, target.size());
+            assertThrows(IOException.class, () -> entry.attributeView(CPIOArkivoEntryAttributeView.class));
+            assertThrows(IOException.class, entry::openChannel);
+            assertThrows(IOException.class, () -> view.setSize(0));
+            assertThrows(IOException.class, () -> view.setInode(2));
+            assertThrows(IOException.class, () -> view.setUserId(42));
+            assertThrows(IOException.class, () -> view.setGroupId(42));
+            assertThrows(IOException.class, () -> view.setLinkCount(2));
+            assertThrows(IOException.class, () -> view.setMode(0100600));
+            assertThrows(IOException.class, () -> view.setDevice(1));
+            assertThrows(IOException.class, () -> view.setRemoteDevice(1));
+            assertThrows(IOException.class, () -> view.setDeviceNumbers(1, 2));
+            assertThrows(IOException.class, () -> view.setRemoteDeviceNumbers(1, 2));
+            assertThrows(IOException.class, () -> view.setTimes(FileTime.fromMillis(1000), null, null));
+            assertEquals(invalidSize ? 1 : CPIOArkivoEntryAttributes.UNKNOWN_SIZE, view.readAttributes().size());
+            assertEquals(invalidSize ? 0 : maximumSmallField(dialect) + 1, view.readAttributes().userId());
+            assertEquals(failure.getMessage(), assertThrows(IOException.class, entry::close).getMessage());
+            assertEquals(0, target.size());
+            assertEquals(failure.getMessage(), assertThrows(IOException.class, writer::close).getMessage());
+            assertThrows(IOException.class, () -> view.setUserId(42));
+            assertDoesNotThrow(writer::close);
+            assertArchiveIsEmpty(target.toByteArray());
+        }
     }
 
     /// Verifies an impossible declared body size is rejected before body storage is opened.

@@ -261,10 +261,6 @@ public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
                 maximumWindowSize,
                 maximumMemorySize
         );
-        CompressionDecoderSupport.requireWindowSize(
-                effectiveMaximumWindowSize,
-                properties.dictionarySize()
-        );
         return CompressionDecoderSupport.limitEngineOutput(
                 new LZMARawDecoder(properties, decodedSize, effectiveMaximumWindowSize),
                 maximumOutputSize

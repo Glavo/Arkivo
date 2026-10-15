@@ -62,6 +62,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -597,6 +598,64 @@ final class ArkivoFormatsIntegrationTest {
         assertNull(ArkivoFormats.detect((ArkivoVolumeSource) missingVolume));
         assertEquals(0, missingVolume.closeCount());
         missingVolume.close();
+    }
+
+    /// Preserves probe failures when the owned probe channel reports the same or a distinct cleanup failure.
+    @Test
+    void preservesSourceDetectionFailureDuringCleanup() throws IOException {
+        for (boolean volume : new boolean[]{false, true}) {
+            for (boolean shared : new boolean[]{false, true}) {
+                for (Throwable failure : new Throwable[]{new IOException("probe failed"),
+                        new IllegalStateException("probe failed"), new AssertionError("probe failed")}) {
+                    Throwable cleanup = shared ? failure : new IOException("probe cleanup failed");
+                    ProbeChannel channel = new ProbeChannel(new byte[32], failure, cleanup);
+                    assertSame(failure, assertThrows(failure.getClass(), () -> detectProbe(volume, channel)));
+                    assertArrayEquals(shared ? new Throwable[0] : new Throwable[]{cleanup}, failure.getSuppressed());
+                    assertEquals(1, channel.closeCount);
+                    assertEquals(0, channel.sourceCloseCount);
+                    assertEquals(3L, channel.position());
+                    assertTrue(channel.readCount > 0);
+                }
+            }
+        }
+    }
+
+    /// Reports probe-channel cleanup failures even when detection itself succeeded or found no matching format.
+    @Test
+    void reportsSourceDetectionCleanupFailure() throws IOException {
+        for (boolean volume : new boolean[]{false, true}) {
+            for (byte[] archive : new byte[][]{zipArchive(), new byte[32]}) {
+                byte[] prefixed = new byte[archive.length + 3];
+                System.arraycopy(archive, 0, prefixed, 3, archive.length);
+                for (Throwable failure : new Throwable[]{new IOException("probe cleanup failed"),
+                        new IllegalStateException("probe cleanup failed"), new AssertionError("probe cleanup failed")}) {
+                    ProbeChannel channel = new ProbeChannel(prefixed, null, failure);
+                    assertSame(failure, assertThrows(failure.getClass(), () -> detectProbe(volume, channel)));
+                    assertEquals(0, failure.getSuppressed().length);
+                    assertEquals(1, channel.closeCount);
+                    assertEquals(0, channel.sourceCloseCount);
+                    assertEquals(3L, channel.position());
+                }
+            }
+        }
+    }
+
+    /// Borrows a source factory and exposes any unexpected factory closure separately from probe-channel closure.
+    private static @Nullable ArkivoFormat detectProbe(boolean volume, ProbeChannel channel) throws IOException {
+        ArkivoSeekableChannelSource source = new ArkivoSeekableChannelSource() {
+            /// Returns the probe channel owned by this detect operation.
+            @Override
+            public SeekableByteChannel openChannel() {
+                return channel;
+            }
+
+            /// Records an invalid ownership transfer of the borrowed source.
+            @Override
+            public void close() {
+                channel.sourceCloseCount++;
+            }
+        };
+        return volume ? ArkivoFormats.detect((ArkivoVolumeSource) source) : ArkivoFormats.detect(source);
     }
 
     /// Verifies the installed formats that advertise multi-volume file-system access.
@@ -1481,6 +1540,96 @@ final class ArkivoFormatsIntegrationTest {
     private interface StreamingWriterFactory {
         /// Opens one owning streaming writer.
         ArkivoStreamingWriter open(WritableByteChannel target) throws IOException;
+    }
+
+    /// Injects independent probe-read and cleanup failures while retaining observable position and ownership state.
+    @NotNullByDefault
+    private static final class ProbeChannel implements SeekableByteChannel {
+        /// The immutable archive bytes with a three-byte prefix outside the probe extent.
+        private final ReadOnlyByteArrayChannel delegate;
+
+        /// Optional failure reported by the probe read.
+        private final @Nullable Throwable readFailure;
+
+        /// Failure reported by probe-channel cleanup.
+        private final Throwable closeFailure;
+
+        /// Number of probe reads.
+        private int readCount;
+
+        /// Number of channel cleanup attempts.
+        private int closeCount;
+
+        /// Number of unexpected close attempts on the borrowed source factory.
+        private int sourceCloseCount;
+
+        /// Positions one in-memory channel at a nonzero probe origin.
+        private ProbeChannel(byte[] archive, @Nullable Throwable readFailure, Throwable closeFailure) throws IOException {
+            delegate = new ReadOnlyByteArrayChannel(archive);
+            delegate.position(3L);
+            this.readFailure = readFailure;
+            this.closeFailure = closeFailure;
+        }
+
+        /// Reads archive bytes or reports the configured probe failure.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            readCount++;
+            fail(readFailure);
+            return delegate.read(target);
+        }
+
+        /// Rejects writes to the read-only archive.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            return delegate.write(source);
+        }
+
+        /// Returns the observable probe position.
+        @Override
+        public long position() throws IOException {
+            return delegate.position();
+        }
+
+        /// Restores or changes the probe position.
+        @Override
+        public SeekableByteChannel position(long position) throws IOException {
+            delegate.position(position);
+            return this;
+        }
+
+        /// Returns the physical extent including the prefix.
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        /// Rejects truncation of the read-only archive.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            delegate.truncate(size);
+            return this;
+        }
+
+        /// Returns whether the delegate remains open after failed cleanup.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Records and reports the configured cleanup failure.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            fail(closeFailure);
+        }
+
+        /// Throws a configured checked or unchecked failure without changing its identity.
+        private static void fail(@Nullable Throwable failure) throws IOException {
+            if (failure instanceof IOException exception) throw exception;
+            if (failure instanceof RuntimeException exception) throw exception;
+            if (failure instanceof Error error) throw error;
+        }
     }
 
     /// Provides repeatable channels over one logical archive and tracks ownership closure.

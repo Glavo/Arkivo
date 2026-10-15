@@ -6,6 +6,8 @@ package org.glavo.arkivo.archive.zip.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -13,12 +15,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PushbackInputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -127,6 +132,42 @@ final class ZipStreamingEntryLifecycleTest {
         input.close();
     }
 
+    /// Retains ciphertext read while checking an incomplete descriptor signature if the next source read fails.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3})
+    void retriesEncryptedDescriptorSignaturePrefix(int prefixLength) throws IOException {
+        byte[] password = {'p'};
+        ByteArrayOutputStream header = new ByteArrayOutputStream();
+        try (var ignored = ZipTraditionalCrypto.openEncryptingStream(header, password, 0)) {
+            // Only the encryption header is needed to establish a reproducible decryption state.
+        }
+        byte[] encrypted = new byte[100];
+        System.arraycopy(dataDescriptorSignature(), 0, encrypted, 32, 3);
+        // The fourth byte is zero: the signature prefix is encrypted content, not the actual descriptor.
+        var reference = ZipTraditionalCrypto.openDecryptor(new ByteArrayInputStream(header.toByteArray()), password, 0);
+        byte[] expected = new byte[encrypted.length];
+        for (int index = 0; index < encrypted.length; index++) {
+            expected[index] = (byte) reference.decrypt(Byte.toUnsignedInt(encrypted[index]));
+        }
+        byte[] inputBytes = ByteBuffer.allocate(encrypted.length + 16).order(ByteOrder.LITTLE_ENDIAN)
+                .put(encrypted).put(dataDescriptorSignature()).putInt((int) crc32(expected))
+                .putInt(ZipTraditionalCrypto.HEADER_SIZE + encrypted.length).putInt(expected.length).array();
+        var source = new RuntimeReadFailingInputStream(inputBytes, 32 + prefixLength);
+        source.remainingFailures = 1;
+        var decryptor = ZipTraditionalCrypto.openDecryptor(new ByteArrayInputStream(header.toByteArray()), password, 0);
+        try (var reader = newReader();
+             InputStream body = reader.new EncryptedStoredDataDescriptorInputStream(
+                     new PushbackInputStream(source, 32), decryptor, false)) {
+            byte[] actual = new byte[expected.length];
+            int count = body.read(actual);
+            assertEquals(32, count);
+            assertThrows(IllegalStateException.class, body::read);
+            assertEquals(actual.length - count, body.readNBytes(actual, count, actual.length - count));
+            assertArrayEquals(expected, actual);
+            assertEquals(-1, body.read());
+        }
+    }
+
     /// Creates an otherwise empty streaming reader used as an entry-wrapper owner.
     private static ZipArkivoStreamingReaderImpl newReader() {
         return new ZipArkivoStreamingReaderImpl(
@@ -225,6 +266,9 @@ final class ZipStreamingEntryLifecycleTest {
     /// Input stream that fails reads at a configured offset and records closure.
     @NotNullByDefault
     private static final class RuntimeReadFailingInputStream extends InputStream {
+        /// The remaining failures to emit at or after the configured boundary.
+        private int remainingFailures = Integer.MAX_VALUE;
+
         /// Source bytes owned by this stream.
         private final byte @Unmodifiable [] content;
 
@@ -249,7 +293,8 @@ final class ZipStreamingEntryLifecycleTest {
         /// Reads one byte or reports the configured runtime failure.
         @Override
         public int read() {
-            if (position >= failureOffset) {
+            if (position >= failureOffset && remainingFailures > 0) {
+                remainingFailures--;
                 throw new IllegalStateException("read failed");
             }
             if (position >= content.length) {
@@ -265,13 +310,15 @@ final class ZipStreamingEntryLifecycleTest {
             if (length == 0) {
                 return 0;
             }
-            if (position >= failureOffset) {
+            if (position >= failureOffset && remainingFailures > 0) {
+                remainingFailures--;
                 throw new IllegalStateException("read failed");
             }
             if (position >= content.length) {
                 return -1;
             }
-            int count = Math.min(length, Math.min(failureOffset, content.length) - position);
+            int end = remainingFailures > 0 ? Math.min(failureOffset, content.length) : content.length;
+            int count = Math.min(length, end - position);
             if (count == 0) {
                 throw new IllegalStateException("read failed");
             }

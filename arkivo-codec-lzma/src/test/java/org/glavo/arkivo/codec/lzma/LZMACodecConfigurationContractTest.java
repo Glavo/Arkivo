@@ -4,13 +4,17 @@
 package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -108,32 +112,52 @@ final class LZMACodecConfigurationContractTest {
         assertThrows(NullPointerException.class, () -> configured.withProperties(null));
     }
 
-    /// Verifies raw LZMA and LZMA2 apply their external dictionary size to both limit axes.
-    @Test
-    void enforcesExternalDictionaryAcrossLimitAxes() throws IOException {
-        int dictionarySize = 65_536;
-        assertEngineWindow(RawLZMACodec.DEFAULT.withDictionarySize(dictionarySize), dictionarySize);
-        assertEngineWindow(LZMA2Codec.DEFAULT.withDictionarySize(dictionarySize), dictionarySize);
+    /// Verifies raw LZMA and LZMA2 apply their allocated dictionary size to both limit axes.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 4095, 4096, 65_536})
+    void enforcesExternalDictionaryAcrossLimitAxes(int dictionarySize) throws IOException {
+        int requiredSize = Math.max(dictionarySize, LZMAProperties.MINIMUM_DICTIONARY_SIZE);
+        assertEngineWindow(RawLZMACodec.DEFAULT.withDictionarySize(dictionarySize), requiredSize);
+        assertEngineWindow(LZMA2Codec.DEFAULT.withDictionarySize(dictionarySize), requiredSize);
     }
 
-    /// Verifies an LZMA-alone header dictionary is checked against the configured memory limit during decoding.
-    @Test
-    void enforcesLzmaAloneHeaderDictionaryAgainstMemoryLimit() throws IOException {
-        int dictionarySize = 65_536;
+    /// Verifies an LZMA-alone header retains its declared dictionary but limits its allocated dictionary.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 4095, 4096, 65_536})
+    void enforcesLzmaAloneHeaderDictionaryAcrossLimitAxes(int dictionarySize) throws IOException {
+        int requiredSize = Math.max(dictionarySize, LZMAProperties.MINIMUM_DICTIONARY_SIZE);
         byte[] content = {1, 2, 3, 4, 5};
         LZMACodec codec = LZMACodec.DEFAULT.withDictionarySize(dictionarySize);
         ByteBuffer encoded = codec.compress(ByteBuffer.wrap(content));
+        assertEquals(dictionarySize, encoded.duplicate().order(ByteOrder.LITTLE_ENDIAN).getInt(1));
 
         DecompressionWindowLimitException failure = assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> codec.withMaximumMemorySize(dictionarySize - 1L)
+                () -> codec.withMaximumMemorySize(requiredSize - 1L)
                         .decompress(encoded.duplicate(), ByteBuffer.allocate(content.length))
         );
-        assertEquals(dictionarySize - 1L, failure.maximumWindowSize());
-        assertEquals(dictionarySize, failure.requiredWindowSize());
+        assertEquals(requiredSize - 1L, failure.maximumWindowSize());
+        assertEquals(requiredSize, failure.requiredWindowSize());
+
+        DecompressionWindowLimitException windowFailure = assertThrows(
+                DecompressionWindowLimitException.class,
+                () -> codec.withMaximumWindowSize(requiredSize - 1L)
+                        .decompress(encoded.duplicate(), ByteBuffer.allocate(content.length))
+        );
+        assertEquals(requiredSize - 1L, windowFailure.maximumWindowSize());
+        assertEquals(requiredSize, windowFailure.requiredWindowSize());
+
+        DecompressionWindowLimitException zeroFailure = assertThrows(
+                DecompressionWindowLimitException.class,
+                () -> codec.withMaximumWindowSize(0L)
+                        .decompress(encoded.duplicate(), ByteBuffer.allocate(content.length))
+        );
+        assertEquals(0L, zeroFailure.maximumWindowSize());
+        assertEquals(requiredSize, zeroFailure.requiredWindowSize());
 
         ByteBuffer decoded = ByteBuffer.allocate(content.length);
-        codec.withMaximumMemorySize(dictionarySize).decompress(encoded.duplicate(), decoded);
+        codec.withMaximumMemorySize(requiredSize).withMaximumWindowSize(requiredSize)
+                .decompress(encoded.duplicate(), decoded);
         assertArrayEquals(content, decoded.array());
     }
 
@@ -146,25 +170,36 @@ final class LZMACodecConfigurationContractTest {
 
     /// Verifies an externally known dictionary at the exact limit and one byte below it.
     private static void assertEngineWindow(CompressionCodec<?> codec, long dictionarySize) throws IOException {
-        DecompressionWindowLimitException windowFailure = assertThrows(
-                DecompressionWindowLimitException.class,
-                () -> codec.withMaximumWindowSize(dictionarySize - 1L).newDecoder()
-        );
-        assertEquals(dictionarySize - 1L, windowFailure.maximumWindowSize());
-        assertEquals(dictionarySize, windowFailure.requiredWindowSize());
+        for (long maximum : new long[]{0L, dictionarySize - 1L}) {
+            DecompressionWindowLimitException windowFailure = assertThrows(
+                    DecompressionWindowLimitException.class,
+                    () -> codec.withMaximumWindowSize(maximum).newDecoder()
+            );
+            assertEquals(maximum, windowFailure.maximumWindowSize());
+            assertEquals(dictionarySize, windowFailure.requiredWindowSize());
 
-        DecompressionWindowLimitException memoryFailure = assertThrows(
-                DecompressionWindowLimitException.class,
-                () -> codec.withMaximumMemorySize(dictionarySize - 1L).newDecoder()
-        );
-        assertEquals(dictionarySize - 1L, memoryFailure.maximumWindowSize());
-        assertEquals(dictionarySize, memoryFailure.requiredWindowSize());
-
-        try (CompressionDecoder ignored = codec.withMaximumWindowSize(dictionarySize).newDecoder()) {
-            assertEquals(dictionarySize, codec.withMaximumWindowSize(dictionarySize).maximumWindowSize());
+            DecompressionWindowLimitException memoryFailure = assertThrows(
+                    DecompressionWindowLimitException.class,
+                    () -> codec.withMaximumMemorySize(maximum).newDecoder()
+            );
+            assertEquals(maximum, memoryFailure.maximumWindowSize());
+            assertEquals(dictionarySize, memoryFailure.requiredWindowSize());
         }
-        try (CompressionDecoder ignored = codec.withMaximumMemorySize(dictionarySize).newDecoder()) {
-            assertEquals(dictionarySize, codec.withMaximumMemorySize(dictionarySize).maximumMemorySize());
+
+        byte[] content = new byte[1_500];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index % 15);
+        }
+        ByteBuffer encoded = codec.compress(ByteBuffer.wrap(content));
+        try (CompressionDecoder decoder = codec.withMaximumWindowSize(dictionarySize)
+                .withMaximumMemorySize(dictionarySize).newDecoder()) {
+            for (int pass = 0; pass < 2; pass++) {
+                ByteBuffer decoded = ByteBuffer.allocate(content.length + 1);
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(encoded.asReadOnlyBuffer(), decoded));
+                assertEquals(content.length, decoded.position());
+                assertEquals(ByteBuffer.wrap(content), decoded.flip());
+                decoder.reset();
+            }
         }
     }
 }

@@ -13,7 +13,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
@@ -369,15 +368,15 @@ public final class TransformingChannelContractsTest {
                     Channels.newChannel(new ByteArrayInputStream(new byte[]{1, 2, 3})), IDENTITY, ResourceOwnership.OWNED)) {
                 ByteBuffer storage = direct ? ByteBuffer.allocateDirect(3) : ByteBuffer.allocate(3);
                 ByteBuffer rejected = storage.asReadOnlyBuffer().position(1).limit(2).mark();
-                assertThrows(ReadOnlyBufferException.class, () -> input.read(rejected));
+                assertThrows(IllegalArgumentException.class, () -> input.read(rejected));
                 ByteBuffer accepted = ByteBuffer.allocate(1);
                 assertEquals(1, input.read(accepted));
                 assertEquals(1, accepted.get(0));
-                assertThrows(ReadOnlyBufferException.class, () -> input.read(rejected));
+                assertThrows(IllegalArgumentException.class, () -> input.read(rejected));
                 assertEquals(1, rejected.position());
                 assertEquals(2, rejected.limit());
                 assertEquals(1, rejected.reset().position());
-                assertEquals(0, input.read(rejected.position(2)));
+                assertThrows(IllegalArgumentException.class, () -> input.read(rejected.position(2)));
                 accepted.clear();
                 assertEquals(1, input.read(accepted));
                 assertEquals(2, accepted.get(0));
@@ -385,6 +384,7 @@ public final class TransformingChannelContractsTest {
                 assertEquals(1, input.read(accepted));
                 assertEquals(3, accepted.get(0));
                 assertEquals(-1, input.read(accepted.clear()));
+                assertThrows(IllegalArgumentException.class, () -> input.read(rejected.clear()));
             }
         }
     }

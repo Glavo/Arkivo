@@ -10,7 +10,11 @@ import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -44,6 +48,7 @@ import static org.glavo.arkivo.archive.zip.ZipTestArchiveFixtures.splitVolumePat
 import static org.glavo.arkivo.archive.zip.ZipTestArchiveFixtures.updateSourceZip;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -361,7 +366,12 @@ public final class ZipSplitArchiveIntegrationTest {
             );
 
             assertSame(sharedFailure, exception, stage.name());
-            assertEquals(0, exception.getSuppressed().length, stage.name());
+            assertEquals(stage == CleanupFailureStage.CHANNEL_CLOSE ? 1 : 0,
+                    exception.getSuppressed().length, stage.name());
+            if (stage == CleanupFailureStage.CHANNEL_CLOSE) {
+                assertEquals(IOException.class, exception.getSuppressed()[0].getClass());
+                assertSame(sharedFailure, exception.getSuppressed()[0].getCause());
+            }
             assertEquals(1, target.channelCloseCount(), stage.name());
             assertEquals(1, target.rollbackCount(), stage.name());
             assertEquals(1, target.closeCount(), stage.name());
@@ -480,6 +490,46 @@ public final class ZipSplitArchiveIntegrationTest {
             }
         } finally {
             deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Preserves noncanonical neighboring names during replacement and excludes them from create-new checks.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void splitOutputPreservesUnrelatedNumberedNames(boolean createNew, @TempDir Path directory) throws IOException {
+        Path archivePath = directory.resolve("archive.zip");
+        @Unmodifiable List<String> unrelatedNames = List.of(
+                "archive.z\u0660\u0661", "archive.z\uff10\uff11", "archive.z0", "archive.z00", "archive.z1",
+                "archive.z001", "archive.z0001", "archive.z010", "archive.z2147483648",
+                "archive.z999999999999999999999999", "archive.z+01", "archive.z-01", "archive.z",
+                "archive.z01.bak", "another.z01"
+        );
+        @Unmodifiable List<String> staleNames = List.of("archive.z01", "archive.z09", "archive.z10", "archive.z100",
+                "archive.z2147483647");
+        for (String name : unrelatedNames) {
+            Files.writeString(directory.resolve(name), "preserve " + name);
+        }
+        if (!createNew) {
+            for (String name : staleNames) {
+                Files.writeString(directory.resolve(name), "stale volume");
+            }
+        }
+        @Unmodifiable Set<StandardOpenOption> options = createNew
+                ? Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+                : Set.of(StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystemProvider.instance().newFileSystem(
+                archivePath, Map.of("arkivo.openOptions", options, "arkivo.zip.splitSize", (long) TEST_SPLIT_SIZE))) {
+            Files.writeString(fileSystem.getPath("/entry"), "replacement");
+        }
+
+        for (String name : unrelatedNames) {
+            assertEquals("preserve " + name, Files.readString(directory.resolve(name)), name);
+        }
+        for (String name : staleNames) {
+            assertFalse(Files.exists(directory.resolve(name)), name);
+        }
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+            assertEquals("replacement", Files.readString(fileSystem.getPath("/entry")));
         }
     }
 

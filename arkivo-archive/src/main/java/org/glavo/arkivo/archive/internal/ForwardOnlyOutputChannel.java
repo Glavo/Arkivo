@@ -85,14 +85,14 @@ public final class ForwardOnlyOutputChannel implements SeekableByteChannel {
         return position;
     }
 
-    /// Accepts only the current size because prior output cannot be truncated.
+    /// Leaves output unchanged when the requested size is at least the current size; rejects size reductions.
     @Override
     public SeekableByteChannel truncate(long size) throws IOException {
         ensureOpen();
         if (size < 0L) {
             throw new IllegalArgumentException("size must not be negative");
         }
-        if (size != position) {
+        if (size < position) {
             throw new UnsupportedOperationException("Forward-only output cannot be truncated");
         }
         return this;

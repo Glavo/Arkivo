@@ -11,6 +11,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -22,6 +23,55 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests 7z metadata header parsing behavior.
 @NotNullByDefault
 public final class SevenZipHeaderParserTest {
+    /// Rejects metadata counts whose required payload is absent before allocating count-sized arrays.
+    @ParameterizedTest
+    @MethodSource("impossibleCounts")
+    public void rejectsImpossibleCounts(byte[] header) {
+        assertThrows(IOException.class, () -> SevenZipHeaderParser.parseEntries(header));
+    }
+
+    /// Supplies compact headers with impossible file, stream, folder, coder, and substream counts.
+    private static Stream<byte[]> impossibleCounts() {
+        return Stream.of(
+                oversizedCount(new int[]{1, 5}, new int[]{0, 0}),
+                oversizedCount(new int[]{1, 5}, new int[]{0x11, 1, 0, 0, 0}),
+                oversizedCount(new int[]{1, 4, 6, 0}, new int[]{0, 0, 0}),
+                oversizedCount(new int[]{1, 4, 7, 0x0b}, new int[]{0, 0, 0}),
+                oversizedCount(new int[]{1, 4, 7, 0x0b, 1, 0}, new int[]{0, 0, 0}),
+                oversizedCount(new int[]{1, 4, 7, 0x0b, 1, 0, 1, 0x11, 0}, new int[]{1, 0}),
+                oversizedCount(new int[]{1, 4, 7, 0x0b, 1, 0, 1, 1, 0, 0x0c, 0, 0, 8, 0x0d},
+                        new int[]{9, 0, 0, 0}));
+    }
+
+    /// Inserts an encoded Integer.MAX_VALUE between the supplied header fragments.
+    private static byte[] oversizedCount(int[] prefix, int[] suffix) {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        for (int value : prefix) {
+            bytes.write(value);
+        }
+        bytes.writeBytes(new byte[]{(byte) 0xf0, (byte) 0xff, (byte) 0xff, (byte) 0xff, 0x7f});
+        for (int value : suffix) {
+            bytes.write(value);
+        }
+        return bytes.toByteArray();
+    }
+
+    /// Rejects an encoded header that decodes to another encoded header without opening it recursively.
+    @Test
+    public void encodedHeaderMustDecodeToPlainHeader() {
+        byte[] header = {0x17, 6, 0, 1, 9, 18, 0, 7, 0x0b, 1, 0, 1, 1, 0, 0x0c, 18, 0, 0};
+        AtomicInteger opens = new AtomicInteger();
+        IOException failure = assertThrows(IOException.class, () -> SevenZipHeaderParser.parseEntries(
+                header, (offset, size) -> {
+                    if (opens.incrementAndGet() > 1) {
+                        throw new IOException("Unexpected recursive stream open");
+                    }
+                    return new ByteArrayInputStream(header);
+                }));
+        assertEquals("Decoded 7z header must begin with kHeader", failure.getMessage());
+        assertEquals(1, opens.get());
+    }
+
     /// Verifies that empty streams may omit unpack metadata before empty substream metadata.
     @Test
     public void emptyStreamsAllowSubStreamsInfoWithoutUnpackInfo() throws IOException {
@@ -172,12 +222,12 @@ public final class SevenZipHeaderParserTest {
                 ),
                 Arguments.of(
                         "missing bind input",
-                        new byte[]{0x01, 0x11, 0x00, 0x01, 0x02, 0x01, 0x00},
+                        new byte[]{0x01, 0x11, 0x00, 0x02, 0x02, 0x02, 0x00},
                         "7z folder bind pair references a missing input stream"
                 ),
                 Arguments.of(
                         "missing bind output",
-                        new byte[]{0x01, 0x11, 0x00, 0x01, 0x02, 0x00, 0x02},
+                        new byte[]{0x01, 0x11, 0x00, 0x02, 0x02, 0x00, 0x02},
                         "7z folder bind pair references a missing output stream"
                 ),
                 Arguments.of(
@@ -197,12 +247,12 @@ public final class SevenZipHeaderParserTest {
                 ),
                 Arguments.of(
                         "missing packed input",
-                        new byte[]{0x01, 0x11, 0x00, 0x02, 0x01, 0x02},
+                        new byte[]{0x01, 0x11, 0x00, 0x02, 0x01, 0x02, 0x00},
                         "7z folder references a missing packed input stream"
                 ),
                 Arguments.of(
                         "bound packed input",
-                        new byte[]{0x01, 0x11, 0x00, 0x03, 0x02, 0x00, 0x00, 0x00},
+                        new byte[]{0x01, 0x11, 0x00, 0x03, 0x02, 0x00, 0x00, 0x00, 0x01},
                         "7z folder packed input stream is already bound"
                 ),
                 Arguments.of(

@@ -12,7 +12,6 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
@@ -132,7 +131,8 @@ final class SharedSeekableChannelSourceTest {
                 new TrackingSeekableByteChannel(new byte[]{1, 2})
         )) {
             SeekableByteChannel view = source.openChannel();
-            assertThrows(ReadOnlyBufferException.class, () -> view.read(ByteBuffer.allocate(1).asReadOnlyBuffer()));
+            assertThrows(IllegalArgumentException.class, () -> view.read(ByteBuffer.allocate(1).asReadOnlyBuffer()));
+            assertThrows(IllegalArgumentException.class, () -> view.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
             assertEquals(0L, view.position());
             ByteBuffer sourceBuffer = ByteBuffer.wrap(new byte[]{3});
             assertThrows(NonWritableChannelException.class, () -> view.write(sourceBuffer));

@@ -16,6 +16,7 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.Channel;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
@@ -43,6 +44,9 @@ import java.util.Set;
 public final class CompressionFormats {
     /// Immutable catalog of official format modules present when this class is initialized.
     private static final Catalog INSTALLED_FORMATS = Catalog.loadBuiltins();
+
+    /// Default forward-only lookahead budget for distinguishing LZ4 and Zstandard skippable prefixes.
+    private static final int SKIPPABLE_PROBE_LIMIT = 64 * 1024;
 
     /// Creates no instances.
     private CompressionFormats() {
@@ -77,7 +81,8 @@ public final class CompressionFormats {
 
     /// Returns the matching installed format with the largest preferred probe size.
     ///
-    /// The supplied buffer is not modified.
+    /// The supplied buffer is not modified. Leading LZ4/Zstandard skippable frames are passed over to find a
+    /// format-specific frame signature. An incomplete or exclusively skippable prefix does not identify a format.
     ///
     /// @param prefix the buffer whose remaining bytes contain the candidate prefix
     /// @return the best matching installed format, or `null` when no signature matches
@@ -90,6 +95,8 @@ public final class CompressionFormats {
     /// The result owns a replay channel until `takeChannel()` transfers it into the caller's read pipeline. Ordinary idle
     /// closure leaves the borrowed original channel open. Interruption or concurrent close during an active replay read
     /// closes the source to unblock that read.
+    /// Skippable-frame disambiguation uses the bounded lookahead described by
+    /// [#probe(ReadableByteChannel, long, ResourceOwnership)].
     ///
     /// @param source the borrowed forward-only source to probe
     /// @return a probe result containing the detected format, retained prefix, and replay channel
@@ -99,6 +106,7 @@ public final class CompressionFormats {
     }
 
     /// Detects an installed format from a forward-only channel with explicit source ownership.
+    /// Uses the same lookahead budget as [#probe(ReadableByteChannel)].
     ///
     /// @param source    the forward-only source to probe
     /// @param ownership whether the probe result ultimately owns `source`
@@ -117,6 +125,10 @@ public final class CompressionFormats {
     /// allows a container parser to reject signature collisions without reading the original channel twice. Call
     /// `takeChannel()` to transfer the replay channel; otherwise close the result. With OWNED, the source is closed when
     /// the owning result or transferred replay channel closes, or when probing fails after argument validation.
+    ///
+    /// Leading skippable frames are shared by LZ4 and Zstandard. To distinguish them, probing may retain up to
+    /// 64 KiB, or `minimumPrefixSize` if larger. If no format-specific signature fits within that budget, the format
+    /// is `null`; all bytes consumed by the probe are still replayed. Such streams can instead be opened by name.
     ///
     /// @param source            the forward-only source to probe
     /// @param minimumPrefixSize the minimum number of prefix bytes to retain, between zero and [Integer#MAX_VALUE]
@@ -149,6 +161,7 @@ public final class CompressionFormats {
                 }
             }
             prefix.flip();
+            prefix = extendSkippablePrefix(source, prefix, Math.max(probeSize, SKIPPABLE_PROBE_LIMIT));
             @Nullable CompressionFormat format = INSTALLED_FORMATS.detect(prefix);
             return new CompressionProbeResult(
                     format,
@@ -168,6 +181,8 @@ public final class CompressionFormats {
     /// The channel position is restored before a normal return. If probing fails, restoration is attempted before
     /// propagating the failure. A restoration failure is thrown if there is no earlier failure; otherwise it is
     /// suppressed on the earlier failure, unless both are the same exception.
+    /// Leading skippable frames are passed over by positioning the channel; their payloads are not retained.
+    /// An incomplete or exclusively skippable stream does not identify a format.
     ///
     /// @param channel the borrowed seekable channel to probe
     /// @return the matching installed format, or `null` when no signature matches
@@ -178,18 +193,40 @@ public final class CompressionFormats {
         long originalPosition = channel.position();
         @Nullable Throwable failure = null;
         try {
-            ByteBuffer prefix = ByteBuffer.allocate(probeSize);
-            while (prefix.hasRemaining()) {
-                int read = channel.read(prefix);
-                if (read < 0) {
-                    break;
+            ByteBuffer prefix = ByteBuffer.allocate(Math.max(probeSize, 8)).order(ByteOrder.LITTLE_ENDIAN);
+            boolean skipped = false;
+            while (true) {
+                prefix.clear();
+                while (prefix.hasRemaining()) {
+                    int read = channel.read(prefix);
+                    if (read < 0) {
+                        break;
+                    }
+                    if (read == 0) {
+                        throw new IOException("Compression format probe made no progress");
+                    }
                 }
-                if (read == 0) {
-                    throw new IOException("Compression format probe made no progress");
+                prefix.flip();
+                if (!startsWithSkippableFrame(prefix)) {
+                    return skipped ? INSTALLED_FORMATS.detectAfterSkippable(prefix) : INSTALLED_FORMATS.detect(prefix);
                 }
+                if (prefix.remaining() < 8) {
+                    return null;
+                }
+                long payloadSize = Integer.toUnsignedLong(prefix.getInt(4));
+                long currentPosition = channel.position();
+                // Reads may include bytes beyond the eight-byte skippable header.
+                long skip = payloadSize - (prefix.remaining() - 8L);
+                if (skip > Long.MAX_VALUE - currentPosition) {
+                    return null;
+                }
+                long nextPosition = currentPosition + skip;
+                if (nextPosition > channel.size()) {
+                    return null;
+                }
+                channel.position(nextPosition);
+                skipped = true;
             }
-            prefix.flip();
-            return INSTALLED_FORMATS.detect(prefix);
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
@@ -198,15 +235,82 @@ public final class CompressionFormats {
         }
     }
 
+    /// Reads only enough additional prefix bytes to inspect bounded skippable headers and the following signature.
+    private static ByteBuffer extendSkippablePrefix(
+            ReadableByteChannel source,
+            ByteBuffer prefix,
+            int maximum
+    ) throws IOException {
+        int offset = 0;
+        while (true) {
+            ByteBuffer frame = prefix.asReadOnlyBuffer().order(ByteOrder.LITTLE_ENDIAN);
+            frame.position(offset);
+            if (!startsWithSkippableFrame(frame)) {
+                return prefix;
+            }
+            long required = (long) offset + 8;
+            if (frame.remaining() >= 8) {
+                required += Integer.toUnsignedLong(frame.getInt(offset + 4)) + Integer.BYTES;
+            }
+            if (required > maximum) {
+                return prefix;
+            }
+            int requested = (int) required;
+            if (requested > prefix.limit()) {
+                if (requested > prefix.capacity()) {
+                    int capacity = (int) Math.min(maximum,
+                            Math.max((long) requested, Math.max(8L, (long) prefix.capacity() * 2)));
+                    ByteBuffer expanded = ByteBuffer.allocate(capacity);
+                    expanded.put(prefix);
+                    expanded.flip();
+                    prefix = expanded;
+                }
+                prefix.position(prefix.limit());
+                prefix.limit(requested);
+                while (prefix.hasRemaining()) {
+                    int read = source.read(prefix);
+                    if (read < 0) {
+                        prefix.flip();
+                        return prefix;
+                    }
+                    if (read == 0) {
+                        throw new IOException("Compression format probe made no progress");
+                    }
+                }
+                prefix.flip();
+            }
+            if (frame.remaining() >= 8) {
+                offset = requested - Integer.BYTES;
+            }
+        }
+    }
+
+    /// Tests the shared skippable signature in a little-endian private view.
+    private static boolean startsWithSkippableFrame(ByteBuffer prefix) {
+        return prefix.remaining() >= Integer.BYTES
+                && (prefix.getInt(prefix.position()) & 0xffff_fff0) == 0x184d_2a50;
+    }
+
     /// Detects an installed format from the beginning of the given path.
     ///
     /// @param path the path whose initial bytes are probed
     /// @return the matching installed format, or `null` when no signature matches
-    /// @throws IOException if the path cannot be opened or read
+    /// @throws IOException if the path cannot be opened or read, or its channel cannot be restored or closed
     public static @Nullable CompressionFormat detect(Path path) throws IOException {
         Objects.requireNonNull(path, "path");
-        try (SeekableByteChannel channel = Files.newByteChannel(path, StandardOpenOption.READ)) {
+        SeekableByteChannel channel = Files.newByteChannel(path, StandardOpenOption.READ);
+        @Nullable Throwable failure = null;
+        try {
             return detect(channel);
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            if (failure == null) {
+                channel.close();
+            } else {
+                closeAfterOpenFailure(channel, failure);
+            }
         }
     }
 
@@ -537,11 +641,8 @@ public final class CompressionFormats {
         return require(formatName).defaultCodec();
     }
 
-    /// Closes one still-open channel after context setup fails without hiding the primary failure.
+    /// Attempts owned-channel cleanup after setup fails without hiding the primary failure.
     private static void closeAfterOpenFailure(Channel channel, Throwable failure) {
-        if (!channel.isOpen()) {
-            return;
-        }
         try {
             channel.close();
         } catch (IOException | RuntimeException | Error exception) {
@@ -711,6 +812,22 @@ public final class CompressionFormats {
         /// @return the best matching format, or {@code null} if no format recognizes the prefix
         @Nullable CompressionFormat detect(ByteBuffer prefix) {
             Objects.requireNonNull(prefix, "prefix");
+            ByteBuffer frames = prefix.asReadOnlyBuffer().order(ByteOrder.LITTLE_ENDIAN);
+            boolean skipped = false;
+            while (startsWithSkippableFrame(frames)) {
+                if (frames.remaining() < 8) {
+                    return null;
+                }
+                long frameSize = 8L + Integer.toUnsignedLong(frames.getInt(frames.position() + 4));
+                if (frameSize > frames.remaining()) {
+                    return null;
+                }
+                frames.position(frames.position() + (int) frameSize);
+                skipped = true;
+            }
+            if (skipped) {
+                return detectAfterSkippable(frames);
+            }
             @Nullable CompressionFormat detected = null;
             int detectedProbeSize = -1;
             for (CompressionFormat format : formats) {
@@ -720,6 +837,17 @@ public final class CompressionFormats {
                 }
             }
             return detected;
+        }
+
+        /// Recognizes only formats that permit a leading skippable frame, using the following non-skippable magic.
+        private @Nullable CompressionFormat detectAfterSkippable(ByteBuffer prefix) {
+            for (String name : List.of("lz4", "zstd")) {
+                @Nullable CompressionFormat format = formatsByName.get(name);
+                if (format != null && format.matches(prefix.asReadOnlyBuffer())) {
+                    return format;
+                }
+            }
+            return null;
         }
 
         /// Returns the largest preferred signature prefix requested by an installed official format.

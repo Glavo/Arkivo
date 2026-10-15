@@ -223,7 +223,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         lock();
         try {
             ZipStreamingEntry entry = requirePendingEntry();
-            entry.ensurePending();
+            entry.metadataFrozen = true;
             switch (entry.type) {
                 case FILE -> {
                     try (OutputStream ignored = fileSystem.openFile(
@@ -382,6 +382,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Whether this entry has already been committed.
         private boolean submitted;
 
+        /// Whether entry completion has begun, including an unsuccessful attempt that can be retried.
+        private boolean metadataFrozen;
+
         /// Creates a pending ZIP streaming entry.
         private ZipStreamingEntry(String entryPath, EntryType type, @Nullable String linkTarget) {
             this.entryPath = Objects.requireNonNull(entryPath, "entryPath");
@@ -389,10 +392,10 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             this.linkTarget = linkTarget;
         }
 
-        /// Requires this entry to still be pending.
+        /// Requires this entry to remain configurable.
         private void ensurePending() {
-            if (submitted || pendingEntry != this) {
-                throw new IllegalStateException("ZIP streaming entry has already been committed");
+            if (metadataFrozen || submitted || pendingEntry != this) {
+                throw new IllegalStateException("ZIP streaming entry is no longer configurable");
             }
         }
     }
@@ -434,7 +437,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             return ZipPosixSupport.DEFAULT_OWNER;
         }
 
-        /// Sets entry timestamps.
+        /// Updates non-null timestamps, leaving unspecified pending values unchanged.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
@@ -660,9 +663,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             lock();
             try {
                 entry.ensurePending();
-                this.lastModifiedTime = lastModifiedTime;
-                this.lastAccessTime = lastAccessTime;
-                this.creationTime = createTime;
+                if (lastModifiedTime != null) this.lastModifiedTime = lastModifiedTime;
+                if (lastAccessTime != null) this.lastAccessTime = lastAccessTime;
+                if (createTime != null) this.creationTime = createTime;
             } finally {
                 unlock();
             }
@@ -834,8 +837,12 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             long expectedSize = uncompressedSize;
             long expectedCrc32 = crc32;
             if (emptyFile && effectiveMethod == ZipMethod.STORED) {
-                expectedSize = 0;
-                expectedCrc32 = 0;
+                if (expectedSize == ZipArkivoEntryAttributes.UNKNOWN_SIZE) {
+                    expectedSize = 0;
+                }
+                if (expectedCrc32 == ZipArkivoEntryAttributes.UNKNOWN_CRC32) {
+                    expectedCrc32 = 0;
+                }
             }
             return new ZipEntryWriteMetadata(
                     effectiveMethod.id(),

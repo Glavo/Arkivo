@@ -62,7 +62,7 @@ final class LibarchiveCompleteFixtureCorpusTest {
 
     /// The SHA-256 digest of every fixture name and its complete stable probe outcome.
     private static final String EXPECTED_OUTCOME_DIGEST =
-            "c90c76d7c5c15a0ad81907d1873a8de446760d509a7b06d22e1d49ca92e74e96";
+            "b941687db6d99e39fba47c8f832e8a63c5df052aed12d6b74afed8c1bc9c7dc0";
 
     /// The maximum decoded stream retained while probing a compression fixture.
     private static final long MAXIMUM_DECODED_SIZE = 64L * 1024L * 1024L;
@@ -166,6 +166,14 @@ final class LibarchiveCompleteFixtureCorpusTest {
                 () -> "Complete libarchive fixture outcome counts: " + outcomeCounts
                         + "; fixture outcomes: " + fixtureOutcomes
         );
+    }
+
+    /// Recognizes Zstandard after its shared skippable prefix and reads the complete nested TAR through both APIs.
+    @Test
+    void readsZstandardArchiveWithLeadingSkippableFrame() throws IOException {
+        byte[] content = LibarchiveUuDecoder.decode(fixturePath("test_compat_zstd_2.tar.zst.uu"));
+        assertEquals("compression:zstd:success:nested=archive:tar:streaming=success:fileSystem=success",
+                probeFixture(content));
     }
 
     /// Decodes every fixture and exercises every archive or compression stream recognized by Arkivo.

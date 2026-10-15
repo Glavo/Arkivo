@@ -169,6 +169,44 @@ final class RarTestArchiveFixtures {
         return archive.toByteArray();
     }
 
+    /// Creates a RAR5 archive ending at a stored block without a body checksum.
+    ///
+    /// @param service whether to write a service block instead of a file block
+    /// @param content the complete data area
+    /// @return the archive bytes, without an end-of-archive block
+    static byte @Unmodifiable [] storedBlockWithoutChecksum(boolean service, byte[] content) throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        archive.write(RAR5_SIGNATURE);
+        writeBlock(archive, 1L, fields(writer -> writer.writeVint(0L)), new byte[0]);
+        byte[] fileFields = fields(writer -> {
+            writer.writeVint(0L);
+            writer.writeVint(content.length);
+            writer.writeVint(REGULAR_FILE_MODE);
+            writer.writeVint(0L);
+            writer.writeVint(RarArkivoEntryAttributes.HOST_OS_UNIX);
+            writer.writeVint(1L);
+            writer.write(new byte[]{'x'});
+        });
+        writeBlock(archive, service ? 3L : 2L, fileFields, content);
+        return archive.toByteArray();
+    }
+
+    /// Appends a checksummed file and an end block after a checksum-free file or service block.
+    ///
+    /// @param service whether the first block is a service block
+    /// @param content the first block's data area
+    /// @param followingContent the following file's data
+    /// @return the complete archive bytes
+    static byte @Unmodifiable [] storedArchiveWithUncheckedBlock(
+            boolean service, byte[] content, byte[] followingContent
+    ) throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        archive.write(storedBlockWithoutChecksum(service, content));
+        writeBlock(archive, 2L, storedFileFields("following.bin", followingContent), followingContent);
+        writeBlock(archive, 5L, fields(writer -> writer.writeVint(0L)), new byte[0]);
+        return archive.toByteArray();
+    }
+
     /// Creates a RAR5 archive containing empty stored regular files with the given paths.
     ///
     /// @param paths the entry paths in archive order
@@ -185,6 +223,19 @@ final class RarTestArchiveFixtures {
             Objects.requireNonNull(path, "path");
             writeBlock(archive, 2L, storedFileFields(path, new byte[0]), new byte[0]);
         }
+        writeBlock(archive, 5L, fields(writer -> writer.writeVint(0L)), new byte[0]);
+        return archive.toByteArray();
+    }
+
+    /// Wraps caller-supplied RAR5 file-header bytes in valid CRC and archive framing.
+    ///
+    /// @param header the bytes from header type through the extra area, excluding CRC and header size
+    /// @return an archive containing the header and no file body
+    static byte @Unmodifiable [] rar5ArchiveWithFileHeader(byte[] header) throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        archive.write(RAR5_SIGNATURE);
+        writeBlock(archive, 1L, fields(writer -> writer.writeVint(0L)), new byte[0]);
+        writeRar5Header(archive, header);
         writeBlock(archive, 5L, fields(writer -> writer.writeVint(0L)), new byte[0]);
         return archive.toByteArray();
     }
@@ -221,7 +272,12 @@ final class RarTestArchiveFixtures {
         }
         writer.write(fields);
 
-        byte[] header = headerData.toByteArray();
+        writeRar5Header(output, headerData.toByteArray());
+        output.write(data);
+    }
+
+    /// Writes a RAR5 header preceded by its size and CRC32.
+    private static void writeRar5Header(ByteArrayOutputStream output, byte[] header) throws IOException {
         byte[] headerSize = vint(header.length);
         CRC32 checksum = new CRC32();
         checksum.update(headerSize);
@@ -229,7 +285,6 @@ final class RarTestArchiveFixtures {
         writeUInt32(output, checksum.getValue());
         output.write(headerSize);
         output.write(header);
-        output.write(data);
     }
 
     /// Writes one RAR4 block with its truncated CRC32 header checksum.
@@ -260,7 +315,7 @@ final class RarTestArchiveFixtures {
     }
 
     /// Encodes one unsigned RAR variable-length integer.
-    private static byte @Unmodifiable [] vint(long value) {
+    static byte @Unmodifiable [] vint(long value) {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         long remaining = value;
         do {

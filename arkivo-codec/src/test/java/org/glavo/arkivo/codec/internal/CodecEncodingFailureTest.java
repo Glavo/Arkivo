@@ -160,7 +160,7 @@ final class CodecEncodingFailureTest {
         assertEquals(0, shared.getSuppressed().length);
         target.closeFailure = shared;
         IOException retry = assertThrows(IOException.class, channel::close);
-        assertSame(shared, retry.getCause());
+        assertSame(shared, interruptible ? retry.getCause().getCause() : retry.getCause());
         channel.close();
         assertEquals(1, engine.closeCalls);
         assertEquals(3, target.closeCalls);
@@ -184,7 +184,7 @@ final class CodecEncodingFailureTest {
             int calls = engine.calls;
             target.closeFailure = shared;
             IOException retry = assertThrows(IOException.class, channel::close);
-            assertSame(shared, retry.getCause());
+            assertSame(shared, interruptible ? retry.getCause().getCause() : retry.getCause());
             channel.close();
             assertEquals(calls, engine.calls);
             assertEquals(1, engine.closeCalls);

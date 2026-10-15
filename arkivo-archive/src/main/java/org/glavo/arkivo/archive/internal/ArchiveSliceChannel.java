@@ -4,16 +4,19 @@
 package org.glavo.arkivo.archive.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 
 /// Reads a fixed archive range through an owned seekable channel.
 ///
@@ -43,6 +46,12 @@ public class ArchiveSliceChannel implements SeekableByteChannel {
 
     /// Whether source cleanup completed successfully.
     private boolean sourceClosed;
+
+    /// Protects failure bookkeeping without blocking a failed read behind source closure.
+    private final Object failureLock = new Object();
+
+    /// Exception identities delivered before source cleanup completed, guarded by the failure lock.
+    private @Nullable Set<Throwable> reportedFailures;
 
     /// Creates an owning read-only view over an archive range.
     ///
@@ -78,14 +87,14 @@ public class ArchiveSliceChannel implements SeekableByteChannel {
     /// destination returns zero, including at EOF; otherwise a position at or beyond the range end returns `-1`.
     /// Source reads that make no progress return zero.
     ///
-    /// @throws ReadOnlyBufferException if the destination is read-only
+    /// @throws IllegalArgumentException if the destination is read-only
     /// @throws EOFException if the source ends before the declared range end
     @Override
     public int read(ByteBuffer destination) throws IOException {
         Objects.requireNonNull(destination, "destination");
         ensureOpen();
         if (destination.isReadOnly()) {
-            throw new ReadOnlyBufferException();
+            throw new IllegalArgumentException("Destination buffer is read-only");
         }
         if (!destination.hasRemaining()) {
             return 0;
@@ -99,15 +108,18 @@ public class ArchiveSliceChannel implements SeekableByteChannel {
         } catch (ArithmeticException exception) {
             throw new IOException("Archive slice offset is too large", exception);
         }
-        source.position(absolutePosition);
         ByteBuffer target = destination.slice();
         target.limit((int) Math.min(destination.remaining(), size - position));
         try {
+            source.position(absolutePosition);
             int count = source.read(target);
             if (count < 0) {
                 throw new EOFException("Archive source ended inside a declared range");
             }
             return count;
+        } catch (IOException | RuntimeException | Error failure) {
+            recordFailure(failure);
+            throw failure;
         } finally {
             // The temporary view records progress even when the source throws after delivering bytes.
             int transferred = target.position();
@@ -169,12 +181,39 @@ public class ArchiveSliceChannel implements SeekableByteChannel {
     ///
     /// This slice rejects further operations even if source cleanup fails. A later close retries failed cleanup;
     /// after successful cleanup, further calls have no effect.
+    /// A previously reported exception that recurs during cleanup is wrapped in a new `IOException` with that
+    /// exception as its cause, preventing self-suppression by try-with-resources.
     @Override
     public synchronized void close() throws IOException {
         open = false;
         if (!sourceClosed) {
-            source.close();
-            sourceClosed = true;
+            try {
+                source.close();
+                synchronized (failureLock) {
+                    sourceClosed = true;
+                    reportedFailures = null;
+                }
+            } catch (IOException | RuntimeException | Error failure) {
+                if (!recordFailure(failure)) {
+                    IOException cleanup = new IOException("Archive slice cleanup repeated an earlier failure", failure);
+                    recordFailure(cleanup);
+                    throw cleanup;
+                }
+                throw failure;
+            }
+        }
+    }
+
+    /// Records an exception identity without holding the bookkeeping lock during source I/O or closure.
+    private boolean recordFailure(Throwable failure) {
+        synchronized (failureLock) {
+            if (sourceClosed) {
+                return true;
+            }
+            if (reportedFailures == null) {
+                reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+            }
+            return reportedFailures.add(failure);
         }
     }
 

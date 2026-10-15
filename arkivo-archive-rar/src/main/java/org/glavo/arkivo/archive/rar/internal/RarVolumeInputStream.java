@@ -68,6 +68,8 @@ final class RarVolumeInputStream extends InputStream {
     }
 
     /// Reads bytes from the current or next volume.
+    ///
+    /// @throws IOException if a volume cannot be read or a nonempty read makes no progress
     @Override
     public int read(byte[] buffer, int offset, int length) throws IOException {
         ensureOpen();
@@ -77,7 +79,7 @@ final class RarVolumeInputStream extends InputStream {
         }
 
         while (true) {
-            SeekableByteChannel channel = currentChannel;
+            @Nullable SeekableByteChannel channel = currentChannel;
             if (channel == null) {
                 if (!openNextVolume()) {
                     return -1;
@@ -90,7 +92,7 @@ final class RarVolumeInputStream extends InputStream {
                 return read;
             }
             if (read == 0) {
-                return 0;
+                throw new IOException("RAR volume channel made no progress");
             }
             closeCurrentVolume();
         }
@@ -215,19 +217,12 @@ final class RarVolumeInputStream extends InputStream {
         }
     }
 
-    /// Closes and clears the current volume channel.
+    /// Closes the current volume channel, retaining it for retry if cleanup fails.
     private void closeCurrentVolume() throws IOException {
-        SeekableByteChannel channel = currentChannel;
+        @Nullable SeekableByteChannel channel = currentChannel;
         if (channel != null) {
-            try {
-                channel.close();
-                currentChannel = null;
-            } catch (IOException | RuntimeException | Error exception) {
-                if (!channel.isOpen()) {
-                    currentChannel = null;
-                }
-                throw exception;
-            }
+            channel.close();
+            currentChannel = null;
         }
     }
 

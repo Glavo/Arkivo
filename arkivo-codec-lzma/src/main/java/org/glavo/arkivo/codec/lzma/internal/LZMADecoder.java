@@ -131,7 +131,8 @@ public final class LZMADecoder implements CompressionDecoder {
 
         int propertyByte = Byte.toUnsignedInt(header[0]);
         long dictionarySize = readLittleEndian(1, Integer.BYTES);
-        CompressionDecoderSupport.requireWindowSize(maximumWindowSize, dictionarySize);
+        CompressionDecoderSupport.requireWindowSize(maximumWindowSize,
+                Math.max(dictionarySize, LZMAProperties.MINIMUM_DICTIONARY_SIZE));
         if (dictionarySize > LZMAProperties.MAXIMUM_DICTIONARY_SIZE) {
             throw new IOException("Unsupported LZMA dictionary size: " + dictionarySize);
         }

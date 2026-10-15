@@ -233,7 +233,7 @@ public final class ArIndexedStorageTest {
             assertTrue(storage.isContentOpen());
             assertTrue(storage.isOpen());
 
-            assertSame(sharedFailure, assertThrows(IOException.class, fileSystem::close));
+            assertSame(sharedFailure, assertThrows(IOException.class, fileSystem::close).getCause());
             assertEquals(0, sharedFailure.getSuppressed().length);
             assertFalse(storage.isContentOpen());
             assertTrue(storage.isOpen());

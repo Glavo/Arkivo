@@ -36,7 +36,7 @@ public final class LzipSupport {
     public static int encodeDictionarySize(int dictionarySize) {
         for (int logarithm = 12; logarithm <= 29; logarithm++) {
             int base = 1 << logarithm;
-            int unit = base >>> 4;
+            int unit = logarithm == 12 ? 0 : base >>> 4;
             for (int fraction = 0; fraction <= 7; fraction++) {
                 if (base - fraction * unit == dictionarySize) {
                     return fraction << 5 | logarithm;
@@ -49,6 +49,7 @@ public final class LzipSupport {
     }
 
     /// Decodes and validates the one-byte dictionary-size field from a lzip member header.
+    /// The fraction bits are ignored when the exponent denotes the minimum 4 KiB dictionary.
     ///
     /// @param encoded the unsigned value of the header byte, from {@code 0} through {@code 255}
     /// @return the decoded dictionary size, in bytes
@@ -62,7 +63,7 @@ public final class LzipSupport {
             throw new IllegalArgumentException("Invalid lzip dictionary code: " + encoded);
         }
         int base = 1 << logarithm;
-        return base - (encoded >>> 5) * (base >>> 4);
+        return logarithm == 12 ? base : base - (encoded >>> 5) * (base >>> 4);
     }
 
 }

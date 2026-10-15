@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.EOFException;
@@ -13,8 +14,11 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /// Presents a finite sequence of archive volumes as one read-only logical seekable channel.
 ///
@@ -49,6 +53,9 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
 
     /// Whether this logical channel accepts operations.
     private boolean open = true;
+
+    /// Failures already delivered to callers, allocated only after an operation fails.
+    private @Nullable Set<Throwable> reportedFailures;
 
     /// Creates a logical channel from validated volume metadata.
     private ArkivoVolumeChannel(
@@ -148,8 +155,8 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
 
     /// Reads across physical volume boundaries from the current logical position.
     ///
-    /// An empty destination returns zero. A position at or beyond the snapshotted logical size returns `-1`. If a volume
-    /// reaches EOF before its snapshotted size, this method throws [EOFException] after preserving completed progress in
+    /// An empty writable destination returns zero. A position at or beyond the snapshotted logical size returns `-1`.
+    /// If a volume reaches EOF before its snapshotted size, this method throws [EOFException] after preserving completed progress in
     /// the destination and logical position. Bytes delivered before a physical read throws also advance the logical
     /// position, and the destination limit is restored before the failure is propagated. A subsequent read resumes
     /// after those bytes if the underlying channels remain usable.
@@ -157,6 +164,9 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
     public int read(ByteBuffer destination) throws IOException {
         Objects.requireNonNull(destination, "destination");
         ensureOpen();
+        if (destination.isReadOnly()) {
+            throw new IllegalArgumentException("Destination buffer is read-only");
+        }
         if (!destination.hasRemaining()) {
             return 0;
         }
@@ -164,36 +174,41 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
             return -1;
         }
 
-        int totalRead = 0;
-        while (destination.hasRemaining() && position < size) {
-            int volumeIndex = volumeIndex(position);
-            long localPosition = position - offsets[volumeIndex];
-            long volumeRemaining = sizes[volumeIndex] - localPosition;
-            SeekableByteChannel channel = channels.get(volumeIndex);
-            channel.position(localPosition);
+        try {
+            int totalRead = 0;
+            while (destination.hasRemaining() && position < size) {
+                int volumeIndex = volumeIndex(position);
+                long localPosition = position - offsets[volumeIndex];
+                long volumeRemaining = sizes[volumeIndex] - localPosition;
+                SeekableByteChannel channel = channels.get(volumeIndex);
+                channel.position(localPosition);
 
-            int originalLimit = destination.limit();
-            int originalPosition = destination.position();
-            int chunkSize = (int) Math.min(destination.remaining(), volumeRemaining);
-            destination.limit(destination.position() + chunkSize);
-            int read;
-            try {
-                read = channel.read(destination);
-            } finally {
-                destination.limit(originalLimit);
-                // A physical read may deliver bytes before reporting a failure.
-                position += destination.position() - originalPosition;
-            }
+                int originalLimit = destination.limit();
+                int originalPosition = destination.position();
+                int chunkSize = (int) Math.min(destination.remaining(), volumeRemaining);
+                destination.limit(destination.position() + chunkSize);
+                int read;
+                try {
+                    read = channel.read(destination);
+                } finally {
+                    destination.limit(originalLimit);
+                    // A physical read may deliver bytes before reporting a failure.
+                    position += destination.position() - originalPosition;
+                }
 
-            if (read < 0) {
-                throw new EOFException("Archive volume ended before its declared size: " + volumeIndex);
+                if (read < 0) {
+                    throw new EOFException("Archive volume ended before its declared size: " + volumeIndex);
+                }
+                if (read == 0) {
+                    return totalRead > 0 ? totalRead : 0;
+                }
+                totalRead += read;
             }
-            if (read == 0) {
-                return totalRead > 0 ? totalRead : 0;
-            }
-            totalRead += read;
+            return totalRead;
+        } catch (IOException | RuntimeException | Error exception) {
+            recordFailure(exception);
+            throw exception;
         }
-        return totalRead;
     }
 
     /// Rejects writes because a logical archive volume channel is read-only.
@@ -252,10 +267,13 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
         return open;
     }
 
-    /// Closes every opened volume channel, retrying channels left open by an earlier failed close.
+    /// Closes every opened volume channel, retrying cleanup that previously failed.
     ///
     /// The logical channel rejects operations as soon as closing starts. All physical channels are attempted even when
-    /// one close fails; the first failure is thrown and later failures are suppressed on it.
+    /// one close fails; the first failure is thrown and later failures are suppressed on it. A failed physical close
+    /// remains retryable even if that channel reports itself closed; only normal return confirms completed cleanup.
+    /// If the first failure is the same exception object delivered by an earlier read or close, it is wrapped in a new
+    /// [IOException] so automatic resource cleanup does not attempt to suppress an exception onto itself.
     @Override
     public void close() throws IOException {
         if (!open && allChannelsClosed()) {
@@ -263,7 +281,7 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
         }
         open = false;
 
-        Throwable failure = null;
+        @Nullable Throwable failure = null;
         for (int index = 0; index < channels.size(); index++) {
             if (channelClosed[index]) {
                 continue;
@@ -273,13 +291,26 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
                 channel.close();
                 channelClosed[index] = true;
             } catch (IOException | RuntimeException | Error exception) {
-                if (!channel.isOpen()) {
-                    channelClosed[index] = true;
-                }
                 failure = mergeFailure(failure, exception);
             }
         }
-        throwFailure(failure);
+        if (failure == null) {
+            reportedFailures = null;
+        } else {
+            if (!recordFailure(failure)) {
+                failure = new IOException("Archive volume cleanup failed again", failure);
+                recordFailure(failure);
+            }
+            throwFailure(failure);
+        }
+    }
+
+    /// Records a delivered exception identity and returns whether it was not previously reported.
+    private boolean recordFailure(Throwable failure) {
+        if (reportedFailures == null) {
+            reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+        }
+        return reportedFailures.add(failure);
     }
 
     /// Returns the physical volume containing a logical position known to be before the logical end.
@@ -345,7 +376,7 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
     }
 
     /// Adds one cleanup failure to a previously collected failure.
-    private static Throwable mergeFailure(Throwable current, Throwable next) {
+    private static Throwable mergeFailure(@Nullable Throwable current, Throwable next) {
         if (current == null) {
             return next;
         }
@@ -356,7 +387,7 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
     }
 
     /// Throws a collected failure while preserving checked and unchecked types.
-    private static void throwFailure(Throwable failure) throws IOException {
+    private static void throwFailure(@Nullable Throwable failure) throws IOException {
         if (failure == null) {
             return;
         }

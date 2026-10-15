@@ -82,7 +82,8 @@ public final class UDIFImage implements Closeable {
         try {
             ArchiveReadLimits limits = options.limits();
             UDIFLayout layout;
-            try (SeekableByteChannel encoded = source.openChannel()) {
+            SeekableByteChannel encoded = source.openChannel();
+            try {
                 long sourceSize = encoded.size();
                 if (sourceSize < UDIFConstants.TRAILER_SIZE) {
                     throw new IOException("Disk image is too short to contain a UDIF trailer");
@@ -94,12 +95,24 @@ public final class UDIFImage implements Closeable {
                 );
                 UDIFTrailer trailer = UDIFTrailer.parse(trailerBytes, sourceSize);
                 layout = UDIFLayout.read(encoded, trailer, limits, tracker);
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+                throw exception;
+            } finally {
+                closeChannel(encoded, failure);
             }
 
             List<DMGPartition> partitions;
-            try (SeekableByteChannel encoded = source.openChannel();
-                 SeekableByteChannel disk = UDIFBlockChannel.open(encoded, layout, limits)) {
+            SeekableByteChannel disk = source.openChannel();
+            try {
+                // The decoded channel takes sole ownership after construction succeeds.
+                disk = UDIFBlockChannel.open(disk, layout, limits);
                 partitions = DMGPartitionTables.read(disk, tracker);
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+                throw exception;
+            } finally {
+                closeChannel(disk, failure);
             }
             return new UDIFImage(source, layout, limits, partitions);
         } catch (IOException | RuntimeException | Error exception) {
@@ -114,6 +127,20 @@ public final class UDIFImage implements Closeable {
                         failure.addSuppressed(closeException);
                     }
                 }
+            }
+        }
+    }
+
+    /// Closes one owned parser channel, suppressing only cleanup failures distinct from the primary failure.
+    private static void closeChannel(SeekableByteChannel channel, @Nullable Throwable failure) throws IOException {
+        try {
+            channel.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            if (failure == null) {
+                throw exception;
+            }
+            if (exception != failure) {
+                failure.addSuppressed(exception);
             }
         }
     }
@@ -142,11 +169,7 @@ public final class UDIFImage implements Closeable {
         try {
             return UDIFBlockChannel.open(encoded, layout, limits);
         } catch (RuntimeException | Error exception) {
-            try {
-                encoded.close();
-            } catch (IOException closeException) {
-                exception.addSuppressed(closeException);
-            }
+            closeChannel(encoded, exception);
             throw exception;
         }
     }

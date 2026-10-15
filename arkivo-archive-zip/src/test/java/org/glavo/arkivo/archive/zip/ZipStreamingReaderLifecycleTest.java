@@ -6,10 +6,13 @@ package org.glavo.arkivo.archive.zip;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
+import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
@@ -24,6 +27,8 @@ import java.util.Random;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -32,6 +37,85 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies streaming ZIP reader cleanup and failure-preservation behavior.
 @NotNullByDefault
 final class ZipStreamingReaderLifecycleTest {
+    /// Delivers completed stored bytes before reporting a later source failure, without losing decryption state.
+    @ParameterizedTest
+    @EnumSource(ZipEncryption.class)
+    void preservesStoredDescriptorReadProgress(ZipEncryption encryption) throws IOException {
+        byte[] content = new byte[100];
+        new Random(37L).nextBytes(content);
+        var password = ArkivoPasswordProvider.fixed(new byte[]{'p'});
+        byte[] archive = storedDescriptorArchive(encryption, content);
+        ByteBuffer header = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
+        int bodyOffset = 30 + Short.toUnsignedInt(header.getShort(26)) + Short.toUnsignedInt(header.getShort(28));
+        assertTrue((header.getShort(6) & 8) != 0, "The entry must use a data descriptor");
+        for (boolean direct : new boolean[]{false, true}) {
+            for (Throwable failure : new Throwable[]{new IOException("source failed"),
+                    new IllegalStateException("source failed"), new AssertionError("source failed")}) {
+                var source = new ReadFailingOnceInputStream(archive, bodyOffset + 64, failure);
+                try (var reader = ZipArkivoStreamingReader.open(source,
+                        ZipArchiveOptions.READ_DEFAULTS.withPasswordProvider(password))) {
+                    assertTrue(reader.next());
+                    var body = reader.openChannel();
+                    ByteBuffer buffer = direct ? ByteBuffer.allocateDirect(160) : ByteBuffer.allocate(160);
+                    buffer.position(3).limit(153).mark();
+                    int first = body.read(buffer);
+                    assertTrue(first > 0 && first < content.length);
+                    assertEquals(3 + first, buffer.position());
+                    int position = buffer.position();
+                    assertEquals(0, body.read(ByteBuffer.allocate(0)));
+                    assertSame(failure, assertThrows(failure.getClass(), () -> body.read(buffer)));
+                    assertEquals(position, buffer.position());
+                    assertEquals(153, buffer.limit());
+                    while (body.read(buffer) >= 0) {
+                        // Continue after the single source failure and validate the descriptor at EOF.
+                    }
+                    assertEquals(3 + content.length, buffer.position());
+                    buffer.reset();
+                    byte[] actual = new byte[content.length];
+                    buffer.get(actual);
+                    assertArrayEquals(content, actual);
+                    body.close();
+                    assertFalse(reader.next());
+                }
+            }
+        }
+    }
+
+    /// Reports a deferred stored-body failure when the caller reads one byte, closes, or advances instead of bulk reading.
+    @ParameterizedTest
+    @ValueSource(strings = {"read-one", "close", "next", "reader-close"})
+    void reportsDeferredStoredReadFailure(String operation) throws IOException {
+        byte[] content = new byte[100];
+        for (ZipEncryption encryption : ZipEncryption.values()) {
+            byte[] archive = storedDescriptorArchive(encryption, content);
+            ByteBuffer header = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
+            int bodyOffset = 30 + Short.toUnsignedInt(header.getShort(26)) + Short.toUnsignedInt(header.getShort(28));
+            for (Throwable failure : new Throwable[]{new IOException("source failed"),
+                    new IllegalStateException("source failed"), new AssertionError("source failed")}) {
+                var source = new ReadFailingOnceInputStream(archive, bodyOffset + 64, failure);
+                try (var reader = ZipArkivoStreamingReader.open(source, ZipArchiveOptions.READ_DEFAULTS
+                        .withPasswordProvider(ArkivoPasswordProvider.fixed(new byte[]{'p'})))) {
+                    assertTrue(reader.next());
+                    InputStream body = reader.openInputStream();
+                    byte[] buffer = new byte[150];
+                    assertTrue(body.read(buffer) > 0);
+                    assertEquals(0, body.read(buffer, 0, 0));
+                    assertSame(failure, assertThrows(failure.getClass(), () -> {
+                        switch (operation) {
+                            case "read-one" -> body.read();
+                            case "close" -> body.close();
+                            case "next" -> reader.next();
+                            case "reader-close" -> reader.close();
+                            default -> throw new AssertionError(operation);
+                        }
+                    }));
+                    reader.close();
+                    reader.close();
+                }
+            }
+        }
+    }
+
     /// Stops consuming compressed input after a size limit fails, including nested close-time cleanup.
     @ParameterizedTest
     @ValueSource(strings = {"read", "close", "next", "reader-close", "next-unopened"})
@@ -172,8 +256,9 @@ final class ZipStreamingReaderLifecycleTest {
     }
 
     /// Verifies one shared entry-read and source-close failure remains primary without self-suppression.
-    @Test
-    void closePreservesSharedEntryAndSourceFailure() throws IOException {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void closePreservesSharedEntryAndSourceFailure(boolean opened) throws IOException {
         byte[] name = "stored.txt".getBytes(StandardCharsets.UTF_8);
         byte[] content = "shared close failure".getBytes(StandardCharsets.UTF_8);
         IOException sharedFailure = new IOException("shared read and close failure");
@@ -184,20 +269,72 @@ final class ZipStreamingReaderLifecycleTest {
         );
         ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(source);
         assertTrue(reader.next());
-        InputStream entryInput = reader.openInputStream();
+        @Nullable InputStream entryInput = opened ? reader.openInputStream() : null;
 
         IOException exception = assertThrows(IOException.class, reader::close);
 
         assertSame(sharedFailure, exception);
-        assertEquals(1, exception.getSuppressed().length);
-        assertNotSame(sharedFailure, exception.getSuppressed()[0]);
-        assertEquals("ZIP entry data does not match local header", exception.getSuppressed()[0].getMessage());
-        assertThrows(IOException.class, entryInput::read);
+        assertEquals(opened ? 2 : 1, exception.getSuppressed().length);
+        Throwable sourceCleanup = exception.getSuppressed()[opened ? 1 : 0];
+        assertEquals(IOException.class, sourceCleanup.getClass());
+        assertSame(sharedFailure, sourceCleanup.getCause());
+        if (entryInput != null) {
+            assertNotSame(sharedFailure, exception.getSuppressed()[0]);
+            assertEquals("ZIP entry data does not match local header", exception.getSuppressed()[0].getMessage());
+            assertThrows(IOException.class, entryInput::read);
+        }
         assertEquals(1, source.closeCount());
+        int failurePosition = source.position;
 
         reader.close();
         assertTrue(source.closed());
         assertEquals(2, source.closeCount());
+        reader.close();
+        assertEquals(2, source.closeCount());
+        assertEquals(failurePosition, source.position);
+    }
+
+    /// Retries source cleanup without reconstructing an unopened encrypted entry after setup has failed.
+    @Test
+    void retriesCloseAfterUnopenedEntrySetupFailure() throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        var options = ZipArchiveOptions.CREATE_DEFAULTS
+                .withDefaultEncryption(ZipEncryption.ZIP_CRYPTO)
+                .withPasswordProvider(ArkivoPasswordProvider.fixed(new byte[]{'p'}));
+        try (var writer = ZipArkivoStreamingWriter.open(archive, options)) {
+            try (var body = writer.beginFile("secret").openOutputStream()) {
+                body.write(new byte[]{1, 2, 3});
+            }
+        }
+        CloseFailingOnceInputStream source = new CloseFailingOnceInputStream(archive.toByteArray());
+        ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(source);
+        assertTrue(reader.next());
+        IOException failure = assertThrows(IOException.class, reader::close);
+        assertEquals("ZIP entry requires a password: secret", failure.getMessage());
+        assertEquals(1, failure.getSuppressed().length);
+        assertEquals("close failed", failure.getSuppressed()[0].getMessage());
+        int remaining = source.available();
+        reader.close();
+        reader.close();
+        assertTrue(source.closed());
+        assertEquals(2, source.closeCount());
+        assertEquals(remaining, source.available());
+        assertThrows(IOException.class, reader::next);
+    }
+
+    /// Creates a stored entry with a signed descriptor and the selected encryption, using password `p` when needed.
+    private static byte[] storedDescriptorArchive(ZipEncryption encryption, byte[] content) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var writer = ZipArkivoStreamingWriter.open(output, ZipArchiveOptions.CREATE_DEFAULTS
+                .withDefaultEncryption(encryption)
+                .withPasswordProvider(ArkivoPasswordProvider.fixed(new byte[]{'p'})))) {
+            var entry = writer.beginFile("file");
+            entry.attributeView(ZipArkivoEntryAttributeView.class).setMethod(ZipMethod.STORED);
+            try (var body = entry.openOutputStream()) {
+                body.write(content);
+            }
+        }
+        return output.toByteArray();
     }
 
     /// Returns a minimal stored ZIP local record containing the supplied entry.
@@ -240,6 +377,66 @@ final class ZipStreamingReaderLifecycleTest {
         CRC32 crc32 = new CRC32();
         crc32.update(content);
         return crc32.getValue();
+    }
+
+    /// Fails one read at an exact byte boundary without consuming input in the failing call.
+    @NotNullByDefault
+    private static final class ReadFailingOnceInputStream extends InputStream {
+        /// The complete source bytes.
+        private final byte @Unmodifiable [] bytes;
+
+        /// The boundary at which to throw the configured failure once.
+        private final int failureOffset;
+
+        /// The failure to deliver without replacing its identity or type.
+        private final Throwable failure;
+
+        /// The next source byte to read.
+        private int position;
+
+        /// Whether the configured failure has been delivered.
+        private boolean failed;
+
+        /// Creates a source with a one-shot failure boundary.
+        private ReadFailingOnceInputStream(byte @Unmodifiable [] bytes, int failureOffset, Throwable failure) {
+            this.bytes = bytes;
+            this.failureOffset = failureOffset;
+            this.failure = failure;
+        }
+
+        /// Reads one byte or reports the configured failure.
+        @Override
+        public int read() throws IOException {
+            if (!failed && position == failureOffset) {
+                failed = true;
+                if (failure instanceof IOException exception) {
+                    throw exception;
+                } else if (failure instanceof RuntimeException exception) {
+                    throw exception;
+                } else {
+                    throw (Error) failure;
+                }
+            }
+            return position < bytes.length ? Byte.toUnsignedInt(bytes[position++]) : -1;
+        }
+
+        /// Reads a batch without crossing the configured failure boundary.
+        @Override
+        public int read(byte[] target, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, target.length);
+            if (length == 0) {
+                return 0;
+            }
+            int first = read();
+            if (first < 0) {
+                return -1;
+            }
+            target[offset] = (byte) first;
+            int count = Math.min(length - 1, (failed ? bytes.length : failureOffset) - position);
+            System.arraycopy(bytes, position, target, offset + 1, count);
+            position += count;
+            return count + 1;
+        }
     }
 
     /// Fails its first close call and records cleanup state.

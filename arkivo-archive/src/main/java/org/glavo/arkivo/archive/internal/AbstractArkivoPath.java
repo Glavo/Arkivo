@@ -294,7 +294,8 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// Resolves another path against this path's parent.
     @Override
     public final Path resolveSibling(Path other) {
-        Path parent = getParent();
+        Objects.requireNonNull(other, "other");
+        @Nullable Path parent = getParent();
         return parent != null ? parent.resolve(other) : other;
     }
 
@@ -306,10 +307,13 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
 
     /// Returns a relative path from this path to another path.
     ///
-    /// Single-dot elements are ignored in both paths. Parent elements are retained without resolving symbolic links.
+    /// Single-dot elements are ignored in both paths. Parent elements in their common prefix and in the target
+    /// suffix are retained without resolving symbolic links. An unmatched parent element in this path is rejected
+    /// because its traversal cannot be reversed by adding further parent elements.
     ///
     /// @throws ProviderMismatchException if `other` belongs to another path implementation or archive file system
-    /// @throws IllegalArgumentException if exactly one of the paths is absolute
+    /// @throws IllegalArgumentException if exactly one of the paths is absolute, or this path has a parent element
+    ///                                  after the common prefix
     @Override
     public final Path relativize(Path other) {
         AbstractArkivoPath<F> that = requireCompatiblePath(other);
@@ -330,6 +334,9 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
 
         ArrayList<String> relativeNames = new ArrayList<>();
         for (int index = sharedNames; index < baseNames.size(); index++) {
+            if ("..".equals(baseNames.get(index))) {
+                throw new IllegalArgumentException("Cannot relativize a path with unmatched parent elements");
+            }
             relativeNames.add("..");
         }
         relativeNames.addAll(targetNames.subList(sharedNames, targetNames.size()));
@@ -344,7 +351,12 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             throw new UnsupportedOperationException("Archive paths without a source URI cannot be converted to URIs");
         }
         AbstractArkivoPath<F> absolutePath = requireCompatiblePath(toAbsolutePath());
-        return URI.create(uriScheme() + ":" + sourceUri.toASCIIString().replace("!", "%21")
+        String sourceText = sourceUri.toASCIIString();
+        if (sourceUri.isOpaque()) {
+            // Preserve existing escapes while quoting the source URI's own archive delimiters.
+            sourceText = sourceText.replace("%", "%25");
+        }
+        return URI.create(uriScheme() + ":" + sourceText.replace("!", "%21")
                 + "!/" + uriPath(absolutePath.names));
     }
 

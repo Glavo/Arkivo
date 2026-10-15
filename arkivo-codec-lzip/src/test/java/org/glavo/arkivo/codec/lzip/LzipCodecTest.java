@@ -16,6 +16,8 @@ import org.glavo.arkivo.codec.lzip.internal.LzipSupport;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.LZMAInputStream;
 import org.tukaani.xz.LZMAOutputStream;
@@ -127,6 +129,31 @@ public final class LzipCodecTest {
         decoded.get(result);
         assertArrayEquals(content, result);
         assertFalse(source.hasRemaining());
+    }
+
+    /// Accepts every header alias for the minimum dictionary and applies its effective 4 KiB window limit.
+    @ParameterizedTest
+    @ValueSource(ints = {0x0c, 0x2c, 0x4c, 0x6c, 0x8c, 0xac, 0xcc, 0xec})
+    public void readsMinimumDictionaryAliases(int dictionaryCode) throws IOException {
+        byte[] content = patternedContent(8193);
+        byte[] encoded = independentMember(content, 4096);
+        encoded[5] = (byte) dictionaryCode;
+        LzipCodec codec = new LzipCodec(4096).withMaximumWindowSize(4096)
+                .withMaximumOutputSize(content.length);
+        try (InputStream input = codec.newInputStream(new ByteArrayInputStream(encoded))) {
+            assertArrayEquals(content, input.readAllBytes());
+        }
+        ByteBuffer source = ByteBuffer.allocateDirect(encoded.length).put(encoded).flip().asReadOnlyBuffer();
+        ByteBuffer result = codec.decompress(source);
+        byte[] restored = new byte[result.remaining()];
+        result.get(restored);
+        assertArrayEquals(content, restored);
+        assertFalse(source.hasRemaining());
+        DecompressionWindowLimitException failure = assertThrows(DecompressionWindowLimitException.class,
+                () -> codec.withMaximumWindowSize(4095).decompress(ByteBuffer.wrap(encoded)));
+        assertEquals(4095, failure.maximumWindowSize());
+        assertEquals(4096, failure.requiredWindowSize());
+        assertEquals(0x0c, Byte.toUnsignedInt(compress(codec, content)[5]));
     }
 
     /// Verifies an independent raw LZMA reader and direct trailer parsing accept Arkivo output.

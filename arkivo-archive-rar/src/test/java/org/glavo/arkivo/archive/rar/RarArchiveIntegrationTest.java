@@ -90,6 +90,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests end-to-end RAR streaming, file-system, volume, encryption, and corruption behavior.
 @NotNullByDefault
 public final class RarArchiveIntegrationTest {
+    /// Reports stalled volume reads without returning fabricated entry bytes or consuming source data.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsZeroProgressVolumeEntryReads(boolean singleByte) throws IOException {
+        byte[] content = {30, 31};
+        TestByteArraySeekableChannel channel = new TestByteArraySeekableChannel(
+                RarTestArchiveFixtures.storedArchive("value.txt", content));
+        ArkivoVolumeSource volumes = index -> index == 0 ? channel : null;
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(volumes)) {
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                long position = channel.position();
+                channel.zeroNextRead = true;
+                byte[] target = {(byte) 0xa5, (byte) 0xa5};
+                IOException failure = assertThrows(IOException.class, () -> {
+                    if (singleByte) {
+                        body.read();
+                    } else {
+                        body.read(target);
+                    }
+                });
+                assertEquals("RAR volume channel made no progress", failure.getMessage());
+                assertEquals(position, channel.position());
+                assertArrayEquals(new byte[]{(byte) 0xa5, (byte) 0xa5}, target);
+            }
+        }
+        assertFalse(channel.isOpen());
+    }
+
     /// Unknown-size stored entries obey the same budget during reading, closing, and cursor advancement.
     @ParameterizedTest
     @ValueSource(strings = {"entry", "total"})
@@ -4402,6 +4431,9 @@ public final class RarArchiveIntegrationTest {
         /// Whether this channel is open.
         private boolean open = true;
 
+        /// Whether the next nonempty read reports no progress without consuming bytes.
+        private boolean zeroNextRead;
+
         /// Creates a read-only channel over the given content.
         private TestByteArraySeekableChannel(byte[] content) {
             this.content = Objects.requireNonNull(content, "content").clone();
@@ -4413,6 +4445,10 @@ public final class RarArchiveIntegrationTest {
             Objects.requireNonNull(destination, "destination");
             ensureOpen();
             if (!destination.hasRemaining()) {
+                return 0;
+            }
+            if (zeroNextRead) {
+                zeroNextRead = false;
                 return 0;
             }
             if (position >= content.length) {

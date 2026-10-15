@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
@@ -62,13 +63,28 @@ final class DMGTestFixtures {
     /// @return `path`
     /// @throws IOException if the fixture cannot be written
     static Path writeImage(Path path, List<Run> runs) throws IOException {
+        return writeImage(path, runs, 0, 0, 0);
+    }
+
+    /// Writes an image with independent data-fork, block-table, and first-run byte offsets.
+    ///
+    /// @param path the output path
+    /// @param runs the encoded runs in logical sector order
+    /// @param dataForkOffset the data fork's absolute byte offset
+    /// @param tableOffset the block table's data offset relative to the data fork
+    /// @param runOffset the first run's byte offset relative to the block table's data start
+    /// @return `path`
+    /// @throws IOException if the fixture cannot be written
+    static Path writeImage(Path path, List<Run> runs, int dataForkOffset, int tableOffset, int runOffset)
+            throws IOException {
         ByteArrayOutputStream data = new ByteArrayOutputStream();
+        data.write(new byte[runOffset]);
         byte[] table = new byte[204 + (runs.size() + 1) * 40];
         ByteArrayAccess.writeIntBigEndian(table, 0, 0x6d69_7368);
         ByteArrayAccess.writeIntBigEndian(table, 4, 1);
         ByteArrayAccess.writeLongBigEndian(table, 8, 0L);
         ByteArrayAccess.writeLongBigEndian(table, 16, runs.size());
-        ByteArrayAccess.writeLongBigEndian(table, 24, 0L);
+        ByteArrayAccess.writeLongBigEndian(table, 24, tableOffset);
         ByteArrayAccess.writeIntBigEndian(table, 200, runs.size() + 1);
         for (int index = 0; index < runs.size(); index++) {
             Run run = runs.get(index);
@@ -96,13 +112,16 @@ final class DMGTestFixtures {
         ByteArrayAccess.writeIntBigEndian(trailer, 4, 4);
         ByteArrayAccess.writeIntBigEndian(trailer, 8, SECTOR_SIZE);
         ByteArrayAccess.writeIntBigEndian(trailer, 12, 1);
-        ByteArrayAccess.writeLongBigEndian(trailer, 24, 0L);
-        ByteArrayAccess.writeLongBigEndian(trailer, 32, data.size());
-        ByteArrayAccess.writeLongBigEndian(trailer, 216, data.size());
+        ByteArrayAccess.writeLongBigEndian(trailer, 24, dataForkOffset);
+        ByteArrayAccess.writeLongBigEndian(trailer, 32, (long) tableOffset + data.size());
+        ByteArrayAccess.writeLongBigEndian(trailer, 216, (long) dataForkOffset + tableOffset + data.size());
         ByteArrayAccess.writeLongBigEndian(trailer, 224, xml.length);
         ByteArrayAccess.writeLongBigEndian(trailer, 492, runs.size());
 
         ByteArrayOutputStream image = new ByteArrayOutputStream();
+        byte[] prefix = new byte[Math.addExact(dataForkOffset, tableOffset)];
+        Arrays.fill(prefix, (byte) 0x33);
+        image.write(prefix);
         data.writeTo(image);
         image.write(xml);
         image.write(trailer);
@@ -289,6 +308,30 @@ final class DMGTestFixtures {
         writeLeafNode(disk, 6 * SECTOR_SIZE, 0, 1, List.of(link));
         System.arraycopy("hello".getBytes(StandardCharsets.UTF_8), 0, disk, 7 * SECTOR_SIZE, 5);
         System.arraycopy("hello.txt".getBytes(StandardCharsets.UTF_8), 0, disk, 8 * SECTOR_SIZE, 9);
+        return disk;
+    }
+
+    /// Creates a catalog leaf chain with descendant IDs below their ancestors, in parent-ID order.
+    ///
+    /// @param depth the positive number of nested directories, each named `x`
+    /// @return a new disk containing the root and the directory chain
+    static byte[] createDeepHFSPlusDisk(int depth) {
+        if (depth < 1) throw new IllegalArgumentException("depth must be positive");
+        int nodes = Math.addExact(depth, 2);
+        byte[] disk = Arrays.copyOf(createHFSPlusDisk(), Math.multiplyExact(nodes + 4, SECTOR_SIZE));
+        Arrays.fill(disk, 4 * SECTOR_SIZE, disk.length, (byte) 0);
+        int header = 2 * SECTOR_SIZE;
+        ByteArrayAccess.writeIntBigEndian(disk, header + 44, disk.length / SECTOR_SIZE);
+        ByteArrayAccess.writeIntBigEndian(disk, header + 48, 0);
+        writeFork(disk, header + 272, (long) nodes * SECTOR_SIZE, nodes, 4, nodes);
+        writeBTreeHeader(disk, 4 * SECTOR_SIZE, 1, 1, depth + 1, 1, depth + 1, nodes, 516);
+        for (int index = 0; index <= depth; index++) {
+            long id = index == 0 ? 2 : index == 1 ? 15L + depth : 14L + index;
+            long parent = index == 0 ? 1 : index == 1 ? 2 : id + 1;
+            byte[] folder = catalogRecord(parent, "x", 1, id, 0040755, 501, 20, 0, 0, 0, 0);
+            writeLeafNode(disk, (5 + index) * SECTOR_SIZE, index == depth ? 0 : index + 2,
+                    index, List.of(folder));
+        }
         return disk;
     }
 

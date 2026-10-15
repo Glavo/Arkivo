@@ -223,6 +223,9 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
         currentAttributes = null;
         remainingEntryBytes = 0L;
         pendingDataPadding = 0;
+        // A later body-close retry must not validate entry data discarded by reader termination.
+        expectedChecksum = CPIOArkivoEntryAttributes.NOT_STORED;
+        actualChecksum = 0L;
         source.close();
         sourceClosed = true;
     }
@@ -445,6 +448,9 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
             }
             result.append(part);
         }
+        if (result.length() >= 2 && result.charAt(1) == ':') {
+            throw new IOException("CPIO entry path must be relative");
+        }
         return result.isEmpty() ? null : result.toString();
     }
 
@@ -602,7 +608,7 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
             return read < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
         }
 
-        /// Reads entry-data bytes and accounts for their checksum.
+        /// Reads body bytes, validating completion only when no body bytes remain.
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
@@ -624,9 +630,6 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
             remainingEntryBytes -= read;
             if (expectedChecksum != CPIOArkivoEntryAttributes.NOT_STORED) {
                 updateChecksum(bytes, offset, read);
-            }
-            if (remainingEntryBytes == 0L) {
-                finishCurrentBody();
             }
             return read;
         }

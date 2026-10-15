@@ -5,11 +5,14 @@ package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
+import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -47,6 +50,47 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests indexed TAR content storage ownership and cleanup behavior.
 @NotNullByDefault
 public final class TarIndexedStorageTest {
+    /// Rejects the next regular body before staging it when preceding hard links exhaust the logical-size budget.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsResolvedTotalBeforeMaterializingNextBody(boolean update) throws IOException {
+        Path archivePath = Files.createTempFile("tar-resolved-size-", ".tar");
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        try {
+            try (var writer = TarArkivoStreamingWriter.create(archivePath)) {
+                try (var body = writer.beginFile("original").openOutputStream()) {
+                    body.write(new byte[4]);
+                }
+                writer.beginHardLink("alias", "original").close();
+                try (var body = writer.beginFile("later").openOutputStream()) {
+                    body.write(new byte[4]);
+                }
+            }
+            byte[] archive = Files.readAllBytes(archivePath);
+            ArchiveReadLimits limits = ArchiveReadLimits.builder().maximumTotalEntrySize(9).build();
+            ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> {
+                try (var ignored = update
+                        ? TarArkivoFileSystem.update(archivePath, TarArchiveOptions.UPDATE_DEFAULTS
+                                .withCommon(ArchiveUpdateOptions.DEFAULT.withLimits(limits)
+                                        .withEditStorageFactory(() -> storage)))
+                        : TarArkivoFileSystem.open(archivePath, TarArchiveOptions.READ_DEFAULTS
+                                .withCommon(ArchiveReadOptions.DEFAULT.withLimits(limits)
+                                        .withEditStorageFactory(() -> storage)))) {
+                    // The final file exceeds the logical budget before any of its body is staged.
+                }
+            });
+            assertEquals(ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, failure.kind());
+            assertEquals(12, failure.actual());
+            assertEquals("later", failure.entryPath());
+            assertEquals(1, storage.createdContentCount());
+            assertEquals(1, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+            assertArrayEquals(archive, Files.readAllBytes(archivePath));
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
     /// File-system close waits for staged channel closure and metadata publication as one operation.
     @ParameterizedTest
     @EnumSource(value = ArkivoFileSystemThreadSafety.class, names = {"CONCURRENT_READ", "STRICT"})

@@ -154,7 +154,12 @@ public final class CPIOWireFormatRobustnessTest {
                 "/ayload.bin",
                 "../evil.bin",
                 "..\\evil.bin",
-                "C:evil.bin!"
+                "C:evil.bin!",
+                "./C:/ab.bin",
+                ".\\C:\\ab.bin",
+                "././C:a.bin",
+                ".//C:/a.bin",
+                "./c:foo.bin"
         );
         for (CPIODialect dialect : CPIODialect.values()) {
             for (CPIOBinaryByteOrder byteOrder : byteOrders(dialect)) {

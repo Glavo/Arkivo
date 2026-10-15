@@ -9,12 +9,14 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Objects;
 import java.util.Set;
 
@@ -29,6 +31,146 @@ public final class ArkivoCommitTargetSupport {
 
     /// Creates built-in archive editor commit targets.
     private ArkivoCommitTargetSupport() {
+    }
+
+    /// Opens an editor-owned transaction that retains channels whose closure has not completed.
+    ///
+    /// Commit requires all returned channels to have closed successfully. Rollback and close retry outstanding
+    /// channel closures before invoking the underlying transaction; a failed closure prevents that invocation.
+    /// The returned output is not safe for concurrent use.
+    ///
+    /// @param target the target that supplies the underlying transaction
+    /// @param sourcePath the source archive path, or `null` for a non-path source
+    /// @return an output owned by the editor until transaction cleanup succeeds
+    /// @throws IOException if the target cannot open its output
+    public static ArkivoCommitOutput openManagedOutput(ArkivoCommitTarget target, @Nullable Path sourcePath)
+            throws IOException {
+        return new ManagedOutput(Objects.requireNonNull(target.openOutput(sourcePath), "output"));
+    }
+
+    /// Retains caller-owned channels until successful closure before completing their transaction.
+    @NotNullByDefault
+    private static final class ManagedOutput implements ArkivoCommitOutput {
+        /// The transaction completed after its channels are released.
+        private final ArkivoCommitOutput delegate;
+
+        /// Channels whose close has not yet returned successfully.
+        private final ArrayList<ManagedChannel> channels = new ArrayList<>();
+
+        /// Creates an owner for the opened transaction.
+        private ManagedOutput(ArkivoCommitOutput delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Path path() {
+            return delegate.path();
+        }
+
+        @Override
+        public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
+            ManagedChannel channel = new ManagedChannel(delegate.openChannel(options));
+            channels.add(channel);
+            return channel;
+        }
+
+        @Override
+        public void commit() throws IOException {
+            if (!channels.isEmpty()) {
+                throw new IOException("Commit output channels have not closed successfully");
+            }
+            delegate.commit();
+        }
+
+        @Override
+        public void rollback() throws IOException {
+            closeChannels();
+            delegate.rollback();
+        }
+
+        @Override
+        public void close() throws IOException {
+            closeChannels();
+            delegate.close();
+        }
+
+        /// Attempts every pending channel without completing the transaction after a failure.
+        private void closeChannels() throws IOException {
+            @Nullable Throwable failure = null;
+            // A successful close removes its channel, so traverse a snapshot.
+            for (ManagedChannel channel : channels.toArray(ManagedChannel[]::new)) {
+                try {
+                    channel.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    if (failure == null) failure = exception;
+                    else if (failure != exception) failure.addSuppressed(exception);
+                }
+            }
+            if (failure instanceof IOException exception) throw exception;
+            if (failure instanceof RuntimeException exception) throw exception;
+            if (failure instanceof Error exception) throw exception;
+        }
+
+        /// Removes itself from the owner only after its physical channel closes successfully.
+        @NotNullByDefault
+        private final class ManagedChannel implements SeekableByteChannel {
+            /// The physical channel whose operations are forwarded.
+            private final SeekableByteChannel delegate;
+
+            /// Whether closure has returned successfully.
+            private boolean closed;
+
+            /// Takes ownership of one newly opened channel.
+            private ManagedChannel(SeekableByteChannel delegate) {
+                this.delegate = delegate;
+            }
+
+            @Override
+            public int read(ByteBuffer destination) throws IOException {
+                return delegate.read(destination);
+            }
+
+            @Override
+            public int write(ByteBuffer source) throws IOException {
+                return delegate.write(source);
+            }
+
+            @Override
+            public long position() throws IOException {
+                return delegate.position();
+            }
+
+            @Override
+            public SeekableByteChannel position(long position) throws IOException {
+                delegate.position(position);
+                return this;
+            }
+
+            @Override
+            public long size() throws IOException {
+                return delegate.size();
+            }
+
+            @Override
+            public SeekableByteChannel truncate(long size) throws IOException {
+                delegate.truncate(size);
+                return this;
+            }
+
+            @Override
+            public boolean isOpen() {
+                return delegate.isOpen();
+            }
+
+            @Override
+            public void close() throws IOException {
+                if (!closed) {
+                    delegate.close();
+                    closed = true;
+                    channels.remove(this);
+                }
+            }
+        }
     }
 
     /// Returns a target that writes directly to the original archive path.

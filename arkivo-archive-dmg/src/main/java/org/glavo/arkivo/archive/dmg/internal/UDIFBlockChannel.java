@@ -13,13 +13,15 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /// Exposes a UDIF block layout as a read-only decoded seekable channel.
 ///
@@ -41,6 +43,12 @@ class UDIFBlockChannel implements SeekableByteChannel {
 
     /// Whether this channel remains open.
     private boolean open = true;
+
+    /// Whether closing the encoded source has returned normally.
+    private boolean sourceClosed;
+
+    /// Previously delivered failures whose identities must not be repeated by automatic cleanup.
+    private @Nullable Set<Throwable> reportedFailures;
 
     /// The run whose decoded bytes are cached, or `null`.
     private @Nullable UDIFRun cachedRun;
@@ -80,7 +88,7 @@ class UDIFBlockChannel implements SeekableByteChannel {
         Objects.requireNonNull(target, "target");
         ensureOpen();
         if (target.isReadOnly()) {
-            throw new ReadOnlyBufferException();
+            throw new IllegalArgumentException("Target buffer is read-only");
         }
         if (!target.hasRemaining()) {
             return 0;
@@ -89,6 +97,16 @@ class UDIFBlockChannel implements SeekableByteChannel {
             return -1;
         }
 
+        try {
+            return readDecoded(target);
+        } catch (IOException | RuntimeException | Error failure) {
+            recordFailure(failure);
+            throw failure;
+        }
+    }
+
+    /// Reads one or more mapped runs while preserving progress from partially completed physical reads.
+    private int readDecoded(ByteBuffer target) throws IOException {
         int initialRemaining = target.remaining();
         while (target.hasRemaining() && position < layout.size()) {
             int runIndex = runIndex(position);
@@ -182,17 +200,42 @@ class UDIFBlockChannel implements SeekableByteChannel {
 
     /// Closes the encoded source and discards cached decoded bytes.
     ///
-    /// Reads are rejected as soon as closing starts. If closing the encoded source fails while leaving it open, a
-    /// later call retries that cleanup.
+    /// Reads are rejected as soon as closing starts. If closing the encoded source fails, a later call retries
+    /// that cleanup even if the source already reports itself closed. A cleanup failure already delivered by this
+    /// channel is wrapped in a new `IOException` to prevent self-suppression during automatic cleanup.
     @Override
     public void close() throws IOException {
-        if (!open && !source.isOpen()) {
+        if (sourceClosed) {
             return;
         }
         open = false;
         cachedRun = null;
         cachedBytes = null;
-        source.close();
+        try {
+            source.close();
+            synchronized (this) {
+                sourceClosed = true;
+                reportedFailures = null;
+            }
+        } catch (IOException | RuntimeException | Error failure) {
+            if (!recordFailure(failure)) {
+                IOException cleanup = new IOException("UDIF source cleanup repeated an earlier failure", failure);
+                recordFailure(cleanup);
+                throw cleanup;
+            }
+            throw failure;
+        }
+    }
+
+    /// Records an exception identity without holding the monitor during source I/O or closure.
+    private synchronized boolean recordFailure(Throwable failure) {
+        if (sourceClosed) {
+            return true;
+        }
+        if (reportedFailures == null) {
+            reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+        }
+        return reportedFailures.add(failure);
     }
 
     /// Returns the index of the run containing one logical position, or `-1` for a gap.

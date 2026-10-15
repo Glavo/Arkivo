@@ -4,10 +4,12 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.channels.Channel;
+import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
@@ -28,6 +30,89 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class InterruptibleChannelSupportTest {
     /// Maximum time allowed for one blocking test operation.
     private static final long TIMEOUT_SECONDS = 5L;
+
+    /// An endpoint may reuse the cancellation exception for the first explicit cleanup attempt.
+    @Test
+    void preservesCancellationFailureDuringFirstClose() throws Exception {
+        for (IOException failure : new IOException[]{new ClosedByInterruptException(), new AsynchronousCloseException()}) {
+            var endpoint = new TestInterruptibleChannel();
+            endpoint.closeFailure = failure;
+            var support = new InterruptibleChannelSupport(endpoint);
+            AutoCloseable wrapper = () -> support.close(endpoint::close, () -> {});
+            Throwable reported = assertThrows(failure.getClass(), () -> {
+                try (wrapper) {
+                    support.execute((InterruptibleChannelSupport.IOAction) () -> { throw failure; }, () -> {});
+                }
+            });
+            assertSame(failure, reported);
+            assertEquals(1, reported.getSuppressed().length);
+            assertSame(failure, reported.getSuppressed()[0].getCause());
+            endpoint.closeFailure = null;
+            wrapper.close();
+            assertFalse(endpoint.isOpen());
+        }
+    }
+
+    /// Successful recovery does not make a previously delivered operation failure safe to throw from close again.
+    @Test
+    void preservesRecoveredOperationFailureDuringClose() throws Exception {
+        for (Throwable failure : new Throwable[]{new IOException("operation"),
+                new IllegalStateException("operation"), new AssertionError("operation")}) {
+            var endpoint = new TestInterruptibleChannel();
+            endpoint.closeFailure = failure;
+            var support = new InterruptibleChannelSupport(endpoint);
+            AutoCloseable wrapper = () -> support.close(endpoint::close, () -> {});
+            Throwable reported = assertThrows(failure.getClass(), () -> {
+                try (wrapper) {
+                    assertSame(failure, assertThrows(failure.getClass(), () -> support.execute(
+                            (InterruptibleChannelSupport.IOAction) endpoint::close, () -> {})));
+                    assertEquals("recovered", support.execute(() -> "recovered", () -> {}));
+                    throw failure;
+                }
+            });
+            assertSame(failure, reported);
+            assertEquals(1, reported.getSuppressed().length);
+            assertSame(failure, reported.getSuppressed()[0].getCause());
+            endpoint.closeFailure = null;
+            wrapper.close();
+            assertFalse(endpoint.isOpen());
+        }
+    }
+
+    /// Retained normal and abort cleanup failures remain safe for automatic close suppression.
+    @Test
+    void preservesRetainedCloseFailureAcrossRetries() throws Exception {
+        for (boolean abortive : new boolean[]{false, true}) {
+            for (Throwable failure : new Throwable[]{new IOException("cleanup"),
+                    new IllegalStateException("cleanup"), new AssertionError("cleanup")}) {
+                var endpoint = new TestInterruptibleChannel();
+                endpoint.closeFailure = failure;
+                var support = new InterruptibleChannelSupport(endpoint);
+                if (abortive) {
+                    Thread.currentThread().interrupt();
+                    try {
+                        assertThrows(ClosedByInterruptException.class,
+                                () -> support.execute(() -> "unused", () -> { }));
+                    } finally {
+                        Thread.interrupted();
+                    }
+                }
+                AutoCloseable wrapper = () -> support.close(endpoint::close, () -> { });
+                Class<? extends Throwable> expected = abortive ? IOException.class : failure.getClass();
+                Throwable reported = assertThrows(expected, () -> {
+                    try (wrapper) {
+                        wrapper.close();
+                    }
+                });
+                assertSame(failure, abortive ? reported.getCause() : reported);
+                assertSame(failure, reported.getSuppressed()[0].getCause());
+                endpoint.closeFailure = null;
+                wrapper.close();
+                wrapper.close();
+                assertFalse(endpoint.isOpen());
+            }
+        }
+    }
 
     /// Verifies constructor and operation contracts while preserving unchecked failure identity.
     @Test
@@ -335,7 +420,7 @@ final class InterruptibleChannelSupportTest {
                         }
                 )
         );
-        assertSame(retryFailure, retryThrown);
+        assertSame(retryFailure, retryThrown.getCause());
 
         support.close(
                 () -> {
@@ -398,6 +483,9 @@ final class InterruptibleChannelSupportTest {
     /// Implements a close-observable interruptible channel.
     @NotNullByDefault
     private static final class TestInterruptibleChannel implements Channel, InterruptibleChannel {
+        /// An optional persistent physical cleanup failure.
+        private @Nullable Throwable closeFailure;
+
         /// Signals the first successful transition to closed.
         private final CountDownLatch closed = new CountDownLatch(1);
 
@@ -421,7 +509,10 @@ final class InterruptibleChannelSupportTest {
 
         /// Closes this channel and releases close observers.
         @Override
-        public void close() {
+        public void close() throws IOException {
+            if (closeFailure instanceof IOException exception) throw exception;
+            if (closeFailure instanceof RuntimeException exception) throw exception;
+            if (closeFailure instanceof Error exception) throw exception;
             if (open) {
                 open = false;
                 closed.countDown();

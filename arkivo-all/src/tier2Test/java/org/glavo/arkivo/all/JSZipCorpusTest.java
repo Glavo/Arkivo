@@ -364,12 +364,14 @@ final class JSZipCorpusTest {
         });
     }
 
-    /// Uses the upstream CP866 filename encoding without relying on host defaults.
-    @Test
-    void readsLegacyRussianNames() throws IOException {
+    /// Reads the names asserted by upstream unicode.js with inferred or explicitly configured CP866 decoding.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void readsLegacyRussianNames(boolean explicitCharset) throws IOException {
         Charset charset = Charset.forName("IBM866");
-        var options = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
-                ArchiveMetadataDecoder.forCharset(charset));
+        @Unmodifiable List<String> names = List.of("Новая папка/", "Новая папка/Новый текстовый документ.txt");
+        var options = explicitCharset ? ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
+                ArchiveMetadataDecoder.forCharset(charset)) : ZipArchiveOptions.READ_DEFAULTS;
         try (var reference = org.apache.commons.compress.archivers.zip.ZipFile.builder()
                      .setPath(fixture("local_encoding_in_name.zip")).setCharset(charset).get();
              var fileSystem = ZipArkivoFileSystem.open(fixture("local_encoding_in_name.zip"), options);
@@ -379,8 +381,15 @@ final class JSZipCorpusTest {
             while (entries.hasMoreElements()) {
                 var expected = entries.nextElement();
                 assertTrue(reader.next());
+                assertEquals(names.get(count), expected.getName());
                 String path = expected.getName().replaceAll("/$", "");
-                assertEquals(expected.getName(), reader.readAttributes().path());
+                var streamed = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                var indexed = Files.readAttributes(fileSystem.getPath("/" + path), ZipArkivoEntryAttributes.class);
+                assertEquals(expected.getName(), streamed.path());
+                assertEquals(0, streamed.generalPurposeFlags() & 0x800);
+                assertEquals(0, indexed.generalPurposeFlags() & 0x800);
+                assertArrayEquals(names.get(count).getBytes(charset), streamed.rawPath());
+                assertArrayEquals(streamed.rawPath(), indexed.rawPath());
                 assertEquals(expected.isDirectory(), Files.isDirectory(fileSystem.getPath("/" + path)));
                 if (!expected.isDirectory()) {
                     byte[] bytes;
@@ -394,7 +403,7 @@ final class JSZipCorpusTest {
                 }
                 count++;
             }
-            assertEquals(2, count);
+            assertEquals(names.size(), count);
             assertFalse(reader.next());
         }
     }

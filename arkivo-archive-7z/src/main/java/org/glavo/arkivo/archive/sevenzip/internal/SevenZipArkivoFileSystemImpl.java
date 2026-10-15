@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
+import org.glavo.arkivo.archive.internal.ArkivoCommitTargetSupport;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
@@ -386,7 +387,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             throw new IllegalArgumentException("7z splitSize requires write archive options");
         }
         this.provider = Objects.requireNonNull(provider, "provider");
-        this.archivePath = archivePath != null ? archivePath.toAbsolutePath().normalize() : null;
+        this.archivePath = archivePath != null ? archivePath.toAbsolutePath() : null;
         this.volumes = volumes;
         this.outputTarget = outputTarget;
         this.outputSplitSize = outputSplitSize;
@@ -622,7 +623,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Closes this file system.
     @Override
     public void close() throws IOException {
-        try (CloseOperation ignored = beginCloseOperation()) {
+        CloseOperation operation = beginCloseOperation();
+        try {
             if (updateMode) {
                 closeUpdate();
                 return;
@@ -707,6 +709,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
             failure = finishEditStorage(failure);
             throwFailure(failure);
+        } catch (IOException | RuntimeException | Error exception) {
+            operation.rethrowFailure(exception);
+        } finally {
+            operation.close();
         }
     }
 
@@ -872,6 +878,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     ) throws IOException {
         boolean writable = requestsWrite(options);
         try (Operation ignored = writable ? beginWriteOperation() : beginReadOperation()) {
+            if (writable && !updateMode && !isReadOnly()) {
+                WrittenEntryOutputStream output = newForwardOutputStream(path, options, attributes);
+                return manageWriteChannel(new ForwardOnlyOutputChannel(output), output::prepareClose);
+            }
             SeekableByteChannel channel = newByteChannelLocked(path, options, attributes);
             return writable ? manageWriteChannel(channel) : manageReadChannel(channel);
         }
@@ -887,10 +897,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (updateMode && requestsWrite(options)) {
             return newUpdateByteChannel(path, options, attributes);
         }
-        if (!isReadOnly() && requestsWrite(options)) {
-            return new ForwardOnlyOutputChannel(newOutputStream(path, options, attributes));
-        }
-
         requireReadableFileSystem();
         requireReadOnlyOptions(options);
         SevenZipEntryMetadata metadata = requireEntry(path);
@@ -929,6 +935,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// In update mode, the body is staged and becomes part of the pending rewrite when the stream closes. In
     /// forward-only mode, only one entry body may be open and closing the stream finalizes that entry. The archive or
     /// volume transaction itself is published only when the file system closes successfully.
+    /// With explicit options, creating a missing entry requires `CREATE` or `CREATE_NEW`.
     ///
     /// @param path the regular-file entry to create or replace
     /// @param options the creation, truncation, append, and write options; an empty array selects create, truncate, and
@@ -938,8 +945,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// @throws UnsupportedOperationException if the file system is read-only or an option is unsupported in its mode
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
-            OutputStream output = newOutputStream(path, Set.of(options));
-            return updateMode ? output : manageOutputStream(output);
+            return newOutputStream(path, Set.of(options));
         }
     }
 
@@ -950,7 +956,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             requireWritableFileSystem();
             String pathText = prepareWritableEntry(path, false);
             beginWritableEntry(pathText, false, metadata);
-            return manageOutputStream(new WrittenEntryOutputStream(pathText));
+            WrittenEntryOutputStream output = new WrittenEntryOutputStream(pathText);
+            return manageOutputStream(output, output::prepareClose);
         }
     }
 
@@ -982,7 +989,21 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
             return manageOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
         }
+        WrittenEntryOutputStream output = newForwardOutputStream(path, options, attributes);
+        return manageOutputStream(output, output::prepareClose);
+    }
+
+    /// Opens a direct entry body before choosing its managed stream or channel adapter.
+    private WrittenEntryOutputStream newForwardOutputStream(
+            Path path, Set<? extends OpenOption> options, FileAttribute<?>... attributes
+    ) throws IOException {
+        Objects.requireNonNull(attributes, "attributes");
+        requireWritableFileSystem();
         validateEntryWriteOptions(options);
+        if (!options.isEmpty() && !options.contains(StandardOpenOption.CREATE)
+                && !options.contains(StandardOpenOption.CREATE_NEW)) {
+            requireWritableKnownPath(path);
+        }
         SevenZipEntryWriteMetadata metadata = initialEntryMetadata(false, false, attributes);
         String pathText = prepareWritableEntry(path, false);
         beginWritableEntry(pathText, false, metadata);
@@ -1070,9 +1091,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             Objects.requireNonNull(target, "target");
             Objects.requireNonNull(metadata, "metadata");
             requireWritableFileSystem();
+            byte[] targetBytes = archivePathText(target).getBytes(StandardCharsets.UTF_8);
             String pathText = prepareWritableEntry(link, false);
             beginWritableEntry(pathText, false, metadata);
-            byte[] targetBytes = archivePathText(target).getBytes(StandardCharsets.UTF_8);
             requireWriter().write(targetBytes, 0, targetBytes.length);
             closeWritableEntry(pathText, false);
         }
@@ -1166,6 +1187,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         target = ArkivoFileSystemProviderSupport.resolveMutationPath(target, false);
         String sourcePath = requireExistingPath(source);
         String targetPath = normalizedPathText(target);
+        if (sourcePath.equals(targetPath)) {
+            return;
+        }
         if ("/".equals(sourcePath) || "/".equals(targetPath)) {
             throw new java.nio.file.FileSystemException(
                     source.toString(),
@@ -1173,10 +1197,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     "The 7z root cannot be moved"
             );
         }
-        if (sourcePath.equals(targetPath)) {
-            return;
-        }
-
         @Nullable SevenZipEntryMetadata sourceMetadata = entries.get(sourcePath);
         boolean sourceDirectory = sourceMetadata == null || sourceMetadata.directory();
         if (sourceDirectory && targetPath.startsWith(sourcePath + "/")) {
@@ -1510,12 +1530,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Returns a file attribute view for a path.
     ///
+    /// The basic view is available in every mode. Its read and timestamp operations are unsupported during
+    /// forward-only creation, which does not expose indexed attributes.
+    ///
     /// @param <V> the requested attribute-view interface
     /// @param path the path to which the view is bound
     /// @param type the basic, owner, POSIX, or 7z attribute-view type
     /// @param options options controlling whether view operations follow the final symbolic link
-    /// @return a new view bound to `path`, or `null` when the type is unsupported or a forward-only
-    ///         writer cannot expose indexed attributes; a 7z-specific view is also unavailable when
+    /// @return a new view bound to `path`, or `null` when the type is unsupported or a non-basic view is requested
+    ///         during forward-only creation; a 7z-specific view is also unavailable when
     ///         the path cannot be resolved to an archive entry, including the synthetic root
     public <V extends FileAttributeView> @Nullable V getFileAttributeView(
             Path path,
@@ -1524,13 +1547,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     ) {
         try (Operation ignored = beginReadOperation()) {
             Objects.requireNonNull(type, "type");
-            if (!isReadOnly() && !updateMode) {
-                return null;
-            }
             ArkivoFileSystemProviderSupport.AttributeViewPath viewPath =
                     ArkivoFileSystemProviderSupport.attributeViewPath(path, options);
             if (type == BasicFileAttributeView.class) {
                 return type.cast(new BasicAttributeView(viewPath));
+            }
+            if (!isReadOnly() && !updateMode) {
+                return null;
             }
             if (type == FileOwnerAttributeView.class) {
                 return type.cast(new OwnerAttributeView(viewPath));
@@ -1621,6 +1644,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         } else {
             putBasicAttributes(values, basicAttributes, requestedAttributes, all);
         }
+        ArkivoFileSystemProviderSupport.validateAttributeNames(requestedAttributes.names(), values);
         return Collections.unmodifiableMap(values);
     }
 
@@ -1911,13 +1935,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 }
                 volumesClosed = true;
             }
-            ArkivoCommitOutput output = target.openOutput(sourcePath);
+            ArkivoCommitOutput output = ArkivoCommitTargetSupport.openManagedOutput(target, sourcePath);
             pendingCommitOutput = output;
-            try (InputStream input = StoredContentSupport.openInputStream(assembled);
-                 SeekableByteChannel destination = output.openChannel(Set.of(
-                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
-                StoredContentSupport.copyInput(input, destination);
-            }
+            StoredContentSupport.copyToCommitOutput(assembled, output);
             if (encryption != null) {
                 encryption.applyTo(output.path());
             }
@@ -2058,9 +2078,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 if (!metadata.directory()) {
                     @Nullable ArkivoStoredContent stagedContent = stagedContents.get(pathText);
                     if (stagedContent != null) {
-                        try (SeekableByteChannel channel = stagedContent.openChannel(Set.of(StandardOpenOption.READ));
-                             InputStream input = Channels.newInputStream(channel)) {
-                            copyToArchive(input, archiveWriter, transferBuffer);
+                        SeekableByteChannel channel = stagedContent.openChannel(Set.of(StandardOpenOption.READ));
+                        try {
+                            copyToArchive(Channels.newInputStream(channel), archiveWriter, transferBuffer);
+                        } catch (IOException | RuntimeException | Error exception) {
+                            entryFailure = exception;
+                            throw exception;
+                        } finally {
+                            StoredContentSupport.closeAfterTransfer(channel, entryFailure);
                         }
                     } else if (metadata.size() > 0L) {
                         try (InputStream input = newInputStream(getPath(pathText))) {
@@ -2741,6 +2766,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             @Nullable FileTime lastAccessTime,
             @Nullable FileTime creationTime
     ) throws IOException {
+        SevenZipEntryWriteMetadata.validateTimes(lastModifiedTime, lastAccessTime, creationTime);
         mutateMetadata(path, metadata -> copyMetadataValues(
                 metadata,
                 creationTime != null ? creationTime : metadata.creationTime(),
@@ -3040,6 +3066,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Returns archive-style path text for a link target.
     private static String archivePathText(Path path) {
+        ArkivoFileSystemProviderSupport.validateLinkTarget(path.toString());
         return path.toString().replace('\\', '/');
     }
 
@@ -3268,7 +3295,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             if ("*".equals(names)) {
                 return new RequestedAttributes(view, Set.of("*"));
             }
-            return new RequestedAttributes(view, Set.of(names.split(",")));
+            return new RequestedAttributes(view, Set.copyOf(List.of(names.split(","))));
         }
 
         /// Returns whether this request targets the owner attribute view.
@@ -3301,6 +3328,24 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         /// Whether this stream has been closed.
         private boolean closed;
 
+        /// The writer bound to this entry for cancellation before the file-system operation lock is acquired.
+        private final SevenZipArchiveWriter entryWriter = requireWriter();
+
+        /// Coordinates write admission with asynchronous cancellation without covering physical I/O.
+        private final Object activityLock = new Object();
+
+        /// Serializes physical cancellation attempts without holding the file-system operation lock.
+        private final Object preparationLock = new Object();
+
+        /// Whether a complete writer.write operation is active, guarded by activityLock.
+        private boolean writing;
+
+        /// Whether new writes are forbidden, guarded by activityLock.
+        private boolean closeRequested;
+
+        /// Cleanup failures retained for coordinated entry completion, guarded by preparationLock.
+        private @Nullable Throwable preparationFailure;
+
         /// Creates a recording output stream.
         private WrittenEntryOutputStream(String path) {
             this.path = Objects.requireNonNull(path, "path");
@@ -3309,15 +3354,37 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         /// Writes one byte to the entry body.
         @Override
         public void write(int value) throws IOException {
-            ensureStreamOpen();
-            requireWriter().write(new byte[]{(byte) value}, 0, 1);
+            write(new byte[]{(byte) value}, 0, 1);
         }
 
         /// Writes bytes to the entry body.
         @Override
         public void write(byte[] buffer, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, buffer.length);
             ensureStreamOpen();
-            requireWriter().write(buffer, offset, length);
+            synchronized (activityLock) {
+                if (closeRequested) throw new ClosedChannelException();
+                writing = true;
+            }
+            try {
+                entryWriter.write(buffer, offset, length);
+            } finally {
+                synchronized (activityLock) {
+                    writing = false;
+                }
+            }
+        }
+
+        /// Releases the physical resources of an active writer operation without completing its metadata.
+        private void prepareClose() {
+            synchronized (preparationLock) {
+                synchronized (activityLock) {
+                    closeRequested = true;
+                    if (!writing) return;
+                }
+                @Nullable Throwable failure = entryWriter.cancelOutput();
+                if (failure != null) preparationFailure = appendFailure(preparationFailure, failure);
+            }
         }
 
         /// Flushes this stream.
@@ -3332,8 +3399,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             if (closed) {
                 return;
             }
-            closeWritableEntry(path, false);
             closed = true;
+            try {
+                closeWritableEntry(path, false);
+            } catch (IOException | RuntimeException | Error exception) {
+                synchronized (preparationLock) {
+                    if (preparationFailure != null) appendFailure(exception, preparationFailure);
+                }
+                throw exception;
+            }
         }
 
         /// Ensures this stream is open.

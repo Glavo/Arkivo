@@ -58,6 +58,97 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies pending streaming-writer attributes across archive formats with different snapshot contracts.
 @NotNullByDefault
 final class StreamingWriterPendingAttributesContractTest {
+    /// Cached basic, POSIX, and format views stop accepting changes when metadata-only completion fails.
+    @ParameterizedTest
+    @ValueSource(strings = {"zip", "7z"})
+    void freezesCachedViewsAfterFailedEntryClose(String format) throws IOException {
+        ByteArrayOutputStream target = new ByteArrayOutputStream();
+        ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(format, target);
+        ArkivoStreamingWriter.Entry entry;
+        if (format.equals("zip")) {
+            entry = writer.beginFile("invalid");
+            ZipArkivoEntryAttributeView zip = Objects.requireNonNull(entry.attributeView(ZipArkivoEntryAttributeView.class));
+            zip.setMethod(ZipMethod.STORED);
+            zip.setUncompressedSizeAndCrc32(1, 0);
+        } else {
+            writer.beginDirectory("existing").close();
+            entry = writer.beginDirectory("existing");
+        }
+        BasicFileAttributeView basic = Objects.requireNonNull(entry.attributeView(BasicFileAttributeView.class));
+        PosixFileAttributeView posix = Objects.requireNonNull(entry.attributeView(PosixFileAttributeView.class));
+        FileTime before = basic.readAttributes().lastModifiedTime();
+        assertThrows(IOException.class, entry::close);
+        assertThrows(IOException.class, () -> entry.attributeView(BasicFileAttributeView.class));
+        assertThrows(IOException.class, entry::openChannel);
+        assertThrows(IllegalStateException.class, () -> basic.setTimes(FileTime.fromMillis(123456000), null, null));
+        assertThrows(IllegalStateException.class, () -> posix.setPermissions(Set.of(PosixFilePermission.OWNER_READ)));
+        if (basic instanceof ZipArkivoEntryAttributeView zip) {
+            assertThrows(IllegalStateException.class, () -> zip.setMethod(ZipMethod.DEFLATED));
+            assertThrows(IllegalStateException.class, () -> zip.setEncryption(ZipEncryption.NONE));
+            assertThrows(IllegalStateException.class, () -> zip.setUncompressedSizeAndCrc32(0, 0));
+            assertThrows(IllegalStateException.class, () -> zip.setInternalAttributes(1));
+            assertThrows(IllegalStateException.class, () -> zip.setExternalAttributes(1));
+            assertThrows(IllegalStateException.class, () -> zip.setLocalExtraData(new byte[0]));
+            assertThrows(IllegalStateException.class, () -> zip.setCentralDirectoryExtraData(new byte[0]));
+            assertThrows(IllegalStateException.class, () -> zip.setRawComment(new byte[]{1}));
+        } else if (basic instanceof SevenZipArkivoEntryAttributeView sevenZip) {
+            assertThrows(IllegalStateException.class, () -> sevenZip.setWindowsAttributes(0));
+            assertThrows(IllegalStateException.class, sevenZip::clearFilter);
+        } else {
+            throw new AssertionError("Unexpected pending metadata view: " + basic.getClass());
+        }
+        assertEquals(before, basic.readAttributes().lastModifiedTime());
+        assertThrows(IOException.class, entry::close);
+        assertThrows(IOException.class, writer::close);
+        writer.close();
+        assertThrows(IllegalStateException.class, () -> basic.setTimes(FileTime.fromMillis(123456000), null, null));
+    }
+
+    /// Malformed link targets are rejected before any pending entry is published.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z", "cpio"})
+    void rejectsMalformedLinkTargets(String format, @TempDir Path directory) throws IOException {
+        Path path = directory.resolve("link-targets." + format);
+        String target = "target\uD83D\uDE00";
+        try (var writer = ArkivoFormats.openStreamingWriter(format, Files.newOutputStream(path))) {
+            for (String invalid : List.of("x\uD800", "x\uDC00", "x\uD800y", "x\uDC00\uD800", "x\0y")) {
+                assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("link", invalid));
+                if (writer instanceof TarArkivoStreamingWriter tar) {
+                    assertThrows(IllegalArgumentException.class, () -> tar.beginHardLink("hard-link", invalid));
+                }
+            }
+            writer.beginFile(target).close();
+            writer.beginSymbolicLink("link", target).close();
+            if (writer instanceof TarArkivoStreamingWriter tar) {
+                tar.beginHardLink("hard-link", target).close();
+            }
+            writer.beginFile("following").close();
+        }
+        if (format.equals("cpio")) {
+            try (var reader = ArkivoFormats.openStreamingReader(format, Files.newInputStream(path))) {
+                assertTrue(reader.next());
+                assertEquals(target, reader.readAttributes().path());
+                assertTrue(reader.next());
+                assertEquals("link", reader.readAttributes().path());
+                try (var input = reader.openInputStream()) {
+                    assertEquals(target, new String(input.readAllBytes(), StandardCharsets.UTF_8));
+                }
+                assertTrue(reader.next());
+                assertEquals("following", reader.readAttributes().path());
+                assertFalse(reader.next());
+            }
+        } else {
+            try (var fs = ArkivoFormats.openFileSystem(format, path)) {
+                assertEquals(fs.getPath(target), Files.readSymbolicLink(fs.getPath("/link")));
+                assertEquals("", Files.readString(fs.getPath("/link")));
+                if (format.equals("tar")) {
+                    assertTrue(Files.isSameFile(fs.getPath("/hard-link"), fs.getPath("/" + target)));
+                }
+                assertEquals("", Files.readString(fs.getPath("/following")));
+            }
+        }
+    }
+
     /// Malformed UTF-16 names are rejected before entry initialization without rejecting valid surrogate pairs.
     @ParameterizedTest
     @ValueSource(strings = {"ar", "tar", "zip", "7z", "cpio"})

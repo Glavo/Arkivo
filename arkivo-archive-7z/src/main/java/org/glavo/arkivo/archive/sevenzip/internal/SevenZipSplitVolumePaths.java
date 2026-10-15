@@ -122,9 +122,7 @@ public final class SevenZipSplitVolumePaths {
         int suffixStart = fileName.lastIndexOf('.') + 1;
         int suffixWidth = fileName.length() - suffixStart;
         String volumeFileName = fileName.substring(0, suffixStart) + paddedVolumeNumber(volumeNumber, suffixWidth);
-        Path volumePath = Path.of(volumeFileName);
-        Path parent = firstVolumePath.getParent();
-        return parent != null ? parent.resolve(volumePath) : volumePath;
+        return firstVolumePath.resolveSibling(volumeFileName);
     }
 
     /// Returns the first-volume file name prefix before its numeric suffix.

@@ -571,7 +571,7 @@ final class CodecChannelInterruptibilityTest {
             assertEquals(1, operationFailure.getSuppressed().length);
             assertTrue(operationFailure.getSuppressed()[0] == closeFailure);
             assertEquals(1, encoderEngine.releaseCalls());
-            assertTrue(assertThrows(IllegalStateException.class, encoder::close) == closeFailure);
+            assertTrue(assertThrows(IOException.class, encoder::close).getCause() == closeFailure);
         } finally {
             stopOperation(operation, target);
         }

@@ -5,8 +5,13 @@ package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.archive.ArkivoPathVolumeTarget;
+import org.glavo.arkivo.archive.ArkivoVolumePathLayout;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -20,8 +25,10 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.FileSystemLoopException;
+import java.nio.file.FileSystems;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -41,6 +48,7 @@ import java.util.Iterator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.CountDownLatch;
@@ -48,6 +56,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -57,6 +66,241 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies component traversal and symbolic-link policies in read-only and update archive sessions.
 @NotNullByDefault
 final class ArchivePathResolutionTest {
+    /// Resolves publication and discovery paths through parent links before removing parent components.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void publishesVolumesThroughParentLinks(boolean repeatedDiscovery, @TempDir Path directory) throws IOException {
+        Path archive = volumePathArchive(directory);
+        try (var fs = ArkivoFormats.updateFileSystem("zip", archive)) {
+            Path selected = fs.getPath("/alias/../data.bin");
+            Path actual = fs.getPath("/real/data.bin");
+            var layout = new VolumeLayout(selected.getParent(), List.of(selected),
+                    repeatedDiscovery ? List.of(selected, actual) : List.of(selected));
+            try (var output = new ArkivoPathVolumeTarget(layout).openOutput()) {
+                try (var paths = Files.list(fs.getPath("/real"))) {
+                    assertTrue(paths.anyMatch(path -> path.getFileName().toString().startsWith(".arkivo-volumes-")));
+                }
+                try (var channel = output.openVolume(0)) {
+                    channel.write(ByteBuffer.wrap(new byte[]{'n', 'e', 'w'}));
+                }
+                output.commit(0);
+            }
+            assertEquals("new", Files.readString(selected));
+            assertEquals("root", Files.readString(fs.getPath("/data.bin")));
+            try (var paths = Files.list(fs.getPath("/real"))) {
+                assertFalse(paths.anyMatch(path -> path.getFileName().toString().startsWith(".arkivo-volumes-")));
+            }
+        }
+        try (var fs = ArkivoFormats.openFileSystem("zip", archive)) {
+            assertEquals("new", Files.readString(fs.getPath("/real/data.bin")));
+            assertEquals("root", Files.readString(fs.getPath("/data.bin")));
+        }
+    }
+
+    /// Rejects two spellings of one publication target before backing up either existing volume.
+    @Test
+    void rejectsAliasedVolumeDestinations(@TempDir Path directory) throws IOException {
+        Path archive = volumePathArchive(directory);
+        try (var fs = ArkivoFormats.updateFileSystem("zip", archive)) {
+            Path selected = fs.getPath("/alias/../data.bin");
+            Path actual = fs.getPath("/real/data.bin");
+            var layout = new VolumeLayout(fs.getPath("/real"), List.of(selected, actual), List.of(actual));
+            try (var output = new ArkivoPathVolumeTarget(layout).openOutput()) {
+                for (int index = 0; index < 2; index++) {
+                    try (var channel = output.openVolume(index)) {
+                        channel.write(ByteBuffer.wrap(new byte[]{42}));
+                    }
+                }
+                assertThrows(IllegalArgumentException.class, () -> output.commit(1));
+                assertEquals("real", Files.readString(actual));
+                assertEquals("root", Files.readString(fs.getPath("/data.bin")));
+            }
+        }
+    }
+
+    /// Keeps parent-link traversal intact through the built-in split ZIP and 7z creation entry points.
+    @ParameterizedTest
+    @ValueSource(strings = {"zip", "7z"})
+    void createsSplitArchiveThroughParentLinks(String format, @TempDir Path directory) throws IOException {
+        Path archive = volumePathArchive(directory);
+        String name = format.equals("zip") ? "data.zip" : "data.7z.001";
+        byte[] body = new byte[70000];
+        new Random(42).nextBytes(body);
+        try (var fs = ArkivoFormats.updateFileSystem("zip", archive)) {
+            Path selected = fs.getPath("/alias/../" + name);
+            try (var output = format.equals("zip")
+                    ? fs.provider().newFileSystem(selected, Map.of("arkivo.openOptions",
+                            Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING),
+                            "arkivo.zip.splitSize", 65536L))
+                    : SevenZipArkivoFileSystem.create(selected, 65536, SevenZipArchiveOptions.CREATE_DEFAULTS)) {
+                Files.writeString(output.getPath("/entry"), "payload");
+                Files.write(output.getPath("/body"), body);
+            }
+            assertTrue(Files.exists(selected));
+            assertFalse(Files.exists(fs.getPath("/" + name)));
+            try (var paths = Files.list(fs.getPath("/real"))) {
+                assertTrue(paths.filter(path -> path.getFileName().toString().startsWith("data.")).count() >= 3);
+            }
+            if (format.equals("7z")) {
+                try (var update = ArkivoFormats.updateFileSystem(format, selected)) {
+                    assertArrayEquals(body, Files.readAllBytes(update.getPath("/body")));
+                    Files.writeString(update.getPath("/entry"), "updated");
+                }
+            }
+        }
+        try (var fs = ArkivoFormats.openFileSystem("zip", archive);
+             var nested = ArkivoFormats.openFileSystem(format, fs.getPath("/alias/../" + name))) {
+            assertEquals(format.equals("7z") ? "updated" : "payload", Files.readString(nested.getPath("/entry")));
+            assertArrayEquals(body, Files.readAllBytes(nested.getPath("/body")));
+            assertFalse(Files.exists(fs.getPath("/" + name)));
+        }
+    }
+
+    /// Creates an editable outer archive with a parent link and distinct root and resolved target entries.
+    private static Path volumePathArchive(Path directory) throws IOException {
+        Path archive = directory.resolve("outer.zip");
+        try (var fs = ArkivoFormats.createFileSystem("zip", archive)) {
+            Files.createDirectories(fs.getPath("/real/sub"));
+            Files.createSymbolicLink(fs.getPath("/alias"), fs.getPath("real/sub"));
+            Files.writeString(fs.getPath("/data.bin"), "root");
+            Files.writeString(fs.getPath("/real/data.bin"), "real");
+        }
+        return archive;
+    }
+
+    /// Supplies explicit path spellings to the shared volume publisher.
+    ///
+    /// @param outputDirectory directory for staging
+    /// @param destinations final volume paths
+    /// @param existingVolumePaths paths currently owned by the layout
+    @NotNullByDefault
+    private record VolumeLayout(Path outputDirectory, @Unmodifiable List<Path> destinations,
+                                @Unmodifiable List<Path> existingVolumePaths) implements ArkivoVolumePathLayout {
+        /// Copies the lists without changing any path components.
+        private VolumeLayout {
+            destinations = List.copyOf(destinations);
+            existingVolumePaths = List.copyOf(existingVolumePaths);
+        }
+
+        /// Returns the explicitly configured final path.
+        @Override
+        public Path volumePath(long index, long finalVolumeIndex) {
+            return destinations.get(Math.toIntExact(index));
+        }
+    }
+
+    /// Uses one registry identity for legal Unicode and percent-escaped spellings of the same source URI.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void canonicalizesSourceUriSpelling(String format, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("archive-\u6d4b\u8bd5." + format);
+        try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+            Files.writeString(fs.getPath("/entry.txt"), "content");
+        }
+        String ascii = archive.toUri().toASCIIString();
+        List<String> spellings = List.of(archive.toUri().toString(), ascii,
+                ascii.replace("archive-", "%61rchive-"), ascii.replace("file:///", "file:/"));
+        for (String spelling : spellings) {
+            URI opening = URI.create("arkivo+" + format + ':' + spelling + "!/");
+            try (var fs = FileSystems.newFileSystem(opening, Map.of())) {
+                Path entry = fs.getPath("/./entry.txt");
+                assertEquals(entry, Path.of(entry.toUri()));
+                assertEquals("content", Files.readString(Path.of(entry.toUri())));
+                for (String alternate : spellings) {
+                    URI alias = URI.create("arkivo+" + format + ':' + alternate + "!/");
+                    assertEquals(fs, FileSystems.getFileSystem(alias));
+                    assertThrows(FileSystemAlreadyExistsException.class,
+                            () -> FileSystems.newFileSystem(alias, Map.of()));
+                }
+            }
+        }
+    }
+
+    /// Preserves source and entry URI escaping across one or two enclosing archive file systems.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void preservesNestedArchiveUris(String format, @TempDir Path directory) throws IOException {
+        Path sourceDirectory = Files.createDirectories(directory.resolve("source !/literal%21"));
+        Path inner = sourceDirectory.resolve("inner." + format);
+        String innerName = "/dir!/inner %21 \u6d4b\u8bd5." + format;
+        try (var fs = ArkivoFormats.createFileSystem(format, inner)) {
+            Files.createDirectory(fs.getPath("/dir!"));
+            Files.writeString(fs.getPath("/dir!/entry %21 \u6d4b\u8bd5.txt"), "nested content");
+        }
+        Path middle = sourceDirectory.resolve("middle.zip");
+        try (var fs = ArkivoFormats.createFileSystem("zip", middle)) {
+            Files.createDirectory(fs.getPath("/dir!"));
+            Files.copy(inner, fs.getPath(innerName));
+        }
+        Path outer = sourceDirectory.resolve("outer.zip");
+        String middleName = "/middle !%21.zip";
+        try (var fs = ArkivoFormats.createFileSystem("zip", outer)) {
+            Files.copy(middle, fs.getPath(middleName));
+            Files.createDirectory(fs.getPath("/dir!"));
+            Files.copy(inner, fs.getPath(innerName));
+        }
+        URI outerUri;
+        try (var fs = ArkivoFormats.openFileSystem("zip", outer)) {
+            outerUri = fs.getPath("/").toUri();
+        }
+        try (var outerFs = FileSystems.newFileSystem(outerUri, Map.of())) {
+            assertNestedArchiveUris(format, outerFs.getPath(innerName));
+            try (var directMiddle = ArkivoFormats.openFileSystem("zip", outerFs.getPath(middleName));
+                 var middleFs = FileSystems.newFileSystem(directMiddle.getPath("/").toUri(), Map.of())) {
+                assertNestedArchiveUris(format, middleFs.getPath(innerName));
+            }
+        }
+    }
+
+    /// Checks archive-only and entry URIs against the installed provider registry without normalizing entry names.
+    private static void assertNestedArchiveUris(String format, Path source) throws IOException {
+        try (var direct = ArkivoFormats.openFileSystem(format, source)) {
+            URI root = direct.getPath("/").toUri();
+            String rootText = root.toASCIIString();
+            URI archiveOnly = URI.create(rootText.substring(0, rootText.length() - 2));
+            for (URI openingUri : List.of(root, archiveOnly)) {
+                try (var registered = FileSystems.newFileSystem(openingUri, Map.of())) {
+                    for (String name : List.of("/dir!/entry %21 \u6d4b\u8bd5.txt",
+                            "/dir!/./entry %21 \u6d4b\u8bd5.txt")) {
+                        Path original = registered.getPath(name);
+                        Path restored = Path.of(original.toUri());
+                        assertEquals(original, restored);
+                        assertEquals("nested content", Files.readString(restored));
+                        assertEquals(registered, FileSystems.getFileSystem(original.toUri()));
+                    }
+                    assertEquals(registered, FileSystems.getFileSystem(archiveOnly));
+                    assertThrows(FileSystemAlreadyExistsException.class,
+                            () -> FileSystems.newFileSystem(root, Map.of()));
+                }
+            }
+        }
+    }
+
+    /// Read-only creation flags neither skip link resolution nor create a dangling link's target.
+    @ParameterizedTest
+    @MethodSource("configurations")
+    void readChannelCreationOptionsStillFollowLinks(String format, boolean update, @TempDir Path directory)
+            throws IOException {
+        try (var fs = open(format, update, directory)) {
+            byte[] expected = Files.readAllBytes(fs.getPath("/real/value.txt"));
+            for (StandardOpenOption option : new StandardOpenOption[]{StandardOpenOption.CREATE,
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.TRUNCATE_EXISTING}) {
+                for (String name : new String[]{"/alias/../value.txt", "/dirlink/filelink"}) {
+                    try (var channel = Files.newByteChannel(fs.getPath(name), Set.of(StandardOpenOption.READ, option))) {
+                        ByteBuffer result = ByteBuffer.allocate(expected.length);
+                        while (result.hasRemaining() && channel.read(result) >= 0) {
+                            // Read the complete entry through its resolved path.
+                        }
+                        assertArrayEquals(expected, result.array());
+                        assertEquals(expected.length, result.position());
+                    }
+                }
+                assertThrows(NoSuchFileException.class,
+                        () -> Files.newByteChannel(fs.getPath("/broken"), Set.of(StandardOpenOption.READ, option)));
+            }
+        }
+    }
+
     /// Removing the last child keeps implicit parents addressable, including after the archive is rewritten.
     @ParameterizedTest
     @ValueSource(strings = {"zip", "7z"})
@@ -138,6 +382,37 @@ final class ArchivePathResolutionTest {
             assertEquals(expected, Files.getFileStore(fs.getPath("/dirlink/filelink")));
             assertThrows(NoSuchFileException.class, () -> Files.getFileStore(fs.getPath("/broken")));
             assertThrows(FileSystemLoopException.class, () -> Files.getFileStore(fs.getPath("/cycle")));
+        }
+    }
+
+    /// Symbolic-link targets reject NUL and malformed UTF-16 without preventing later valid or dangling links.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void rejectsMalformedLinkTargets(String format, @TempDir Path directory) throws IOException {
+        for (boolean update : new boolean[]{false, true}) {
+            Path archive = directory.resolve("links-" + update + "." + format);
+            if (update) {
+                try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+                    Files.writeString(fs.getPath("/keep"), "original");
+                }
+            }
+            String target = "target\uD83D\uDE00";
+            try (var fs = update ? ArkivoFormats.updateFileSystem(format, archive)
+                    : ArkivoFormats.createFileSystem(format, archive)) {
+                for (String invalid : List.of("x\uD800", "x\uDC00", "x\uD800y", "x\uDC00\uD800", "x\0y")) {
+                    assertThrows(IllegalArgumentException.class,
+                            () -> Files.createSymbolicLink(fs.getPath("/link"), fs.getPath(invalid)));
+                }
+                Files.writeString(fs.getPath("/" + target), "content");
+                Files.createSymbolicLink(fs.getPath("/link"), fs.getPath(target));
+                Files.createSymbolicLink(fs.getPath("/dangling"), fs.getPath("../absent"));
+            }
+            try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+                assertEquals(fs.getPath(target), Files.readSymbolicLink(fs.getPath("/link")));
+                assertEquals("content", Files.readString(fs.getPath("/link")));
+                assertEquals(fs.getPath("../absent"), Files.readSymbolicLink(fs.getPath("/dangling")));
+                if (update) assertEquals("original", Files.readString(fs.getPath("/keep")));
+            }
         }
     }
 
@@ -299,6 +574,28 @@ final class ArchivePathResolutionTest {
         assertTrue(Files.isSameFile(missing, missing));
     }
 
+    /// Moving the root onto itself is a no-op, including paths that resolve to the root.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "zip", "7z"})
+    void movesRootOntoItself(String format, @TempDir Path directory) throws IOException {
+        try (var fs = open(format, true, directory)) {
+            Path root = fs.getPath("/");
+            Files.move(root, root);
+            Files.move(fs.getPath("/real/.."), root, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(root, fs.getPath("/real/.."), StandardCopyOption.ATOMIC_MOVE);
+            assertTrue(Files.isDirectory(root));
+            assertEquals("REAL", Files.readString(fs.getPath("/real/value.txt")));
+            assertThrows(FileSystemException.class, () -> Files.move(root, fs.getPath("/new-root")));
+            assertThrows(FileSystemException.class,
+                    () -> Files.move(fs.getPath("/real"), root, StandardCopyOption.REPLACE_EXISTING));
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, directory.resolve("paths." + format))) {
+            assertTrue(Files.isDirectory(fs.getPath("/")));
+            assertFalse(Files.exists(fs.getPath("/new-root")));
+            assertEquals("REAL", Files.readString(fs.getPath("/real/value.txt")));
+        }
+    }
+
     /// Moving a missing source fails even when source and target resolve to the same path.
     @ParameterizedTest
     @ValueSource(strings = {"ar", "tar", "zip", "7z"})
@@ -337,14 +634,23 @@ final class ArchivePathResolutionTest {
             Path name = fs.getPath("/report:2026.txt");
             Files.writeString(name, "report");
             Files.writeString(fs.getPath("/README.TXT"), "uppercase");
+            Path multiline = fs.getPath("/line\nbreak.txt");
+            Files.writeString(multiline, "multiline");
             assertTrue(fs.getPathMatcher("glob:*.txt").matches(name.getFileName()));
+            assertTrue(fs.getPathMatcher("glob:**.txt").matches(multiline));
             assertFalse(fs.getPathMatcher("glob:*.txt").matches(fs.getPath("README.TXT")));
             var entries = new HashSet<Path>();
             try (var stream = Files.newDirectoryStream(fs.getPath("/"), "*.txt")) {
                 stream.forEach(entries::add);
             }
             assertTrue(entries.contains(name));
+            assertTrue(entries.contains(multiline));
             assertFalse(entries.contains(fs.getPath("/README.TXT")));
+            var recursiveEntries = new HashSet<Path>();
+            try (var stream = Files.newDirectoryStream(fs.getPath("/"), "**.txt")) {
+                stream.forEach(recursiveEntries::add);
+            }
+            assertEquals(entries, recursiveEntries);
         }
     }
 
@@ -628,6 +934,25 @@ final class ArchivePathResolutionTest {
                     () -> fs.getPath("/missing/../value.txt").toRealPath(LinkOption.NOFOLLOW_LINKS));
             assertThrows(NotDirectoryException.class,
                     () -> fs.getPath("/value.txt/..").toRealPath(LinkOption.NOFOLLOW_LINKS));
+        }
+    }
+
+    /// Rejects an unmatched parent traversal rather than returning a path that reads the root entry.
+    @ParameterizedTest
+    @MethodSource("configurations")
+    void rejectsAmbiguousRelativeParentTraversal(String format, boolean update, @TempDir Path directory)
+            throws IOException {
+        try (var fs = open(format, update, directory)) {
+            for (String prefix : List.of("", "/")) {
+                Path base = fs.getPath(prefix + "real/sub/..");
+                Path target = fs.getPath(prefix + "real/value.txt");
+                assertEquals("REAL", Files.readString(target));
+                assertEquals("ROOT", Files.readString(base.resolve("../../value.txt")));
+                assertThrows(IllegalArgumentException.class, () -> base.relativize(target));
+                Path child = base.resolve("value.txt");
+                assertEquals(fs.getPath("value.txt"), base.relativize(child));
+                assertTrue(Files.isSameFile(child, target));
+            }
         }
     }
 

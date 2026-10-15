@@ -50,6 +50,51 @@ final class LZ4OfficialInteropTest {
     @TempDir
     private Path temporaryDirectory;
 
+    /// Checks every unused final-token nibble against the native decoder in standard and legacy frames.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
+    void acceptsUnusedFinalMatchNibble(int nibble) throws IOException {
+        String executable = officialExecutable();
+        for (int length : new int[]{0, 1, 5, 20}) {
+            byte[] content = new byte[length];
+            Arrays.fill(content, (byte) 'a');
+            ByteArrayOutputStream block = new ByteArrayOutputStream();
+            block.write(Math.min(length, 15) << 4 | nibble);
+            if (length >= 15) block.write(length - 15);
+            block.writeBytes(content);
+            byte[] payload = block.toByteArray();
+            for (boolean legacy : new boolean[]{false, true}) {
+                ByteArrayOutputStream frame = new ByteArrayOutputStream();
+                if (legacy) {
+                    appendInt(frame, 0x184c2102);
+                } else {
+                    byte[] descriptor = new byte[10];
+                    descriptor[0] = 0x7c;
+                    descriptor[1] = 0x40;
+                    ByteArrayAccess.writeLongLittleEndian(descriptor, 2, length);
+                    appendInt(frame, (int) LZ4Format.FRAME_MAGIC);
+                    frame.writeBytes(descriptor);
+                    frame.write(hash(descriptor) >>> 8);
+                }
+                appendInt(frame, payload.length);
+                frame.writeBytes(payload);
+                if (!legacy) {
+                    appendInt(frame, hash(payload));
+                    appendInt(frame, 0);
+                    appendInt(frame, hash(content));
+                }
+                byte[] encoded = frame.toByteArray();
+                Path input = temporaryDirectory.resolve("final-token.lz4");
+                Path output = temporaryDirectory.resolve("final-token.raw");
+                Files.write(input, encoded);
+                run(executable, List.of("-d", input.toString(), output.toString()));
+                assertArrayEquals(content, Files.readAllBytes(output));
+                assertArrayEquals(content, decodeChunks(new LZ4Codec(), encoded, 1, 1));
+                assertArrayEquals(content, decodeStream(new LZ4Codec(), encoded, content.length));
+            }
+        }
+    }
+
     /// Checks the official skippable sample without consuming the following frame's magic.
     @ParameterizedTest
     @ValueSource(ints = {1, 7, 38})
@@ -286,7 +331,7 @@ final class LZ4OfficialInteropTest {
         }
     }
 
-    /// Decodes one standard or skippable frame using fresh padded direct input and bounded direct output.
+    /// Decodes one LZ4 frame using padded direct input fragments and bounded direct output.
     private static byte[] decodeChunks(LZ4Codec codec, byte[] frame, int inputChunk, int outputChunk) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         @UnmodifiableView ByteBuffer source = ByteBuffer.allocate(0).asReadOnlyBuffer();
@@ -294,14 +339,18 @@ final class LZ4OfficialInteropTest {
         int supplied = 0;
         int consumed = 0;
         try (var decoder = codec.newDecoder()) {
+            boolean needsInput = true;
             while (true) {
-                if (!source.hasRemaining() && supplied < frame.length) {
+                if (needsInput && supplied < frame.length) {
                     int size = Math.min(inputChunk, frame.length - supplied);
-                    ByteBuffer storage = ByteBuffer.allocateDirect(size + 6).order(ByteOrder.LITTLE_ENDIAN);
-                    storage.position(2).put(frame, supplied, size);
+                    ByteBuffer storage = ByteBuffer.allocateDirect(source.remaining() + size + 6)
+                            .order(ByteOrder.LITTLE_ENDIAN);
+                    // Legacy boundary probing can leave an incomplete header unconsumed.
+                    storage.position(2).put(source).put(frame, supplied, size);
                     supplied += size;
                     if (supplied == frame.length) storage.putInt((int) LZ4Format.FRAME_MAGIC);
                     source = storage.flip().position(2).asReadOnlyBuffer().order(ByteOrder.LITTLE_ENDIAN);
+                    needsInput = false;
                 }
                 target.clear().put(0, (byte) 0x5a).put(outputChunk + 1, (byte) 0x5a);
                 target.position(1).limit(outputChunk + 1);
@@ -328,7 +377,7 @@ final class LZ4OfficialInteropTest {
                 }
                 if (outcome == CodecOutcome.NEEDS_INPUT) {
                     assertTrue(supplied < frame.length);
-                    assertEquals(source.limit(), source.position());
+                    needsInput = true;
                 } else {
                     assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome);
                     assertEquals(outputChunk, count);

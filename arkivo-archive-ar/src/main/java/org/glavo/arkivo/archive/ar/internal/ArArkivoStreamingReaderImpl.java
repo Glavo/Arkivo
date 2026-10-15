@@ -123,7 +123,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             }
             if ("/".equals(structuralIdentifier)
                     || "/SYM64/".equals(structuralIdentifier)
-                    || (structuralIdentifier != null && isBsdSymbolTable(structuralIdentifier))) {
+                    || (structuralIdentifier != null && ArMemberNames.isBsdSymbolTable(structuralIdentifier))) {
                 readLimits.acceptMetadata(fields.size(), null);
                 skipBytes(fields.size());
                 skipPadding(fields.size());
@@ -131,7 +131,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             }
 
             ResolvedName resolvedName = resolveName(identifierBytes, structuralIdentifier, fields.size());
-            if (isBsdSymbolTable(resolvedName.path())) {
+            if (ArMemberNames.isBsdSymbolTable(resolvedName.path())) {
                 readLimits.acceptMetadata(resolvedName.dataSize(), resolvedName.path());
                 skipBytes(resolvedName.dataSize());
                 skipPadding(fields.size());
@@ -153,17 +153,6 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             currentAttributes = attributes;
             return true;
         }
-    }
-
-    /// Returns whether an identifier names a BSD archive symbol table.
-    private static boolean isBsdSymbolTable(String identifier) {
-        String name = identifier.endsWith("/")
-                ? identifier.substring(0, identifier.length() - 1)
-                : identifier;
-        return "__.SYMDEF".equals(name)
-                || "__.SYMDEF SORTED".equals(name)
-                || "__.SYMDEF_64".equals(name)
-                || "__.SYMDEF_64 SORTED".equals(name);
     }
 
     /// Reads the current archive member attributes as the requested attribute type.
@@ -395,6 +384,9 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     private static String validatePath(String path) throws IOException {
         if (path.isEmpty()) {
             throw new IOException("AR member is missing a path");
+        }
+        if (path.indexOf('\0') >= 0) {
+            throw new IOException("AR member path must not contain NUL");
         }
         if (path.startsWith("/") || path.startsWith("\\") || path.length() >= 2 && path.charAt(1) == ':') {
             throw new IOException("AR member path must be relative");

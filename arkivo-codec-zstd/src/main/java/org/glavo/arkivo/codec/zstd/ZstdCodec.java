@@ -613,6 +613,10 @@ public final class ZstdCodec
     }
 
     /// Creates a framed encoder using operation-scoped options for its first frame.
+    ///
+    /// If frame initialization or encoding fails, subsequent encoding and boundary operations throw
+    /// [IllegalStateException] until [CompressionEncoder#reset()] is called. Reset discards pending output and restores
+    /// the first frame's source-size option; callers must also discard bytes emitted for the failed encoding.
     @Override
     public CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) throws IOException {
         Objects.requireNonNull(options, "options");

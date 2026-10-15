@@ -29,6 +29,9 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.tukaani.xz.ArrayCache;
 import org.tukaani.xz.ARMOptions;
 import org.tukaani.xz.ARMThumbOptions;
@@ -77,6 +80,7 @@ import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
@@ -92,12 +96,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -105,6 +113,109 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests end-to-end 7z reading, writing, updating, encryption, and volume handling.
 @NotNullByDefault
 public final class SevenZipArchiveIntegrationTest {
+    /// Rejects unrepresentable times before changing pending, created, or updated entry metadata.
+    @ParameterizedTest
+    @MethodSource("unrepresentableFileTimes")
+    void rejectsUnrepresentableFileTimes(FileTime invalid, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("archive.7z");
+        try (var fs = SevenZipArkivoFileSystem.create(archive)) {
+            FileAttribute<FileTime> attribute = new FileAttribute<>() {
+                /// Returns the creation attribute used for the modification time.
+                @Override
+                public String name() {
+                    return "basic:lastModifiedTime";
+                }
+
+                /// Returns the timestamp whose range must be rejected.
+                @Override
+                public FileTime value() {
+                    return invalid;
+                }
+            };
+            assertThrows(IllegalArgumentException.class,
+                    () -> Files.createDirectory(fs.getPath("invalid"), attribute));
+            assertFalse(Files.exists(fs.getPath("invalid")));
+            Files.writeString(fs.getPath("entry"), "body");
+        }
+        FileTime baseline = FileTime.from(Instant.parse("2026-01-02T03:04:05Z"));
+        try (var fs = SevenZipArkivoFileSystem.update(archive)) {
+            var view = Objects.requireNonNull(Files.getFileAttributeView(fs.getPath("entry"), BasicFileAttributeView.class));
+            assertRejectedTimesPreserveMetadata(view, baseline, invalid);
+        }
+        try (var fs = SevenZipArkivoFileSystem.open(archive)) {
+            assertEquals(baseline, Files.getLastModifiedTime(fs.getPath("entry")));
+            assertEquals("body", Files.readString(fs.getPath("entry")));
+        }
+        Path streamed = directory.resolve("streamed.7z");
+        try (var writer = SevenZipArkivoStreamingWriter.create(streamed);
+             var entry = writer.beginDirectory("entry")) {
+            assertRejectedTimesPreserveMetadata(
+                    Objects.requireNonNull(entry.attributeView(BasicFileAttributeView.class)), baseline, invalid);
+        }
+        try (var fs = SevenZipArkivoFileSystem.open(streamed)) {
+            assertEquals(baseline, Files.getLastModifiedTime(fs.getPath("entry")));
+        }
+    }
+
+    /// Supplies times below zero FILETIME and above its unsigned 64-bit range, including saturated Instant conversions.
+    private static Stream<FileTime> unrepresentableFileTimes() {
+        return Stream.of(
+                FileTime.from(Instant.parse("1600-01-01T00:00:00Z")),
+                FileTime.from(Instant.ofEpochSecond(-11_644_473_600L).minusNanos(1)),
+                FileTime.from(Instant.ofEpochSecond(1_833_029_933_770L, 955_161_600)),
+                FileTime.from(Instant.parse("+70000-01-01T00:00:00Z")),
+                FileTime.from(Long.MIN_VALUE, TimeUnit.DAYS),
+                FileTime.from(Long.MAX_VALUE, TimeUnit.DAYS));
+    }
+
+    /// Verifies all three arguments are checked before any timestamp is changed.
+    private static void assertRejectedTimesPreserveMetadata(
+            BasicFileAttributeView view, FileTime baseline, FileTime invalid) throws IOException {
+        view.setTimes(baseline, baseline, baseline);
+        FileTime replacement = FileTime.fromMillis(0);
+        assertThrows(IllegalArgumentException.class, () -> view.setTimes(invalid, replacement, replacement));
+        assertThrows(IllegalArgumentException.class, () -> view.setTimes(replacement, invalid, replacement));
+        assertThrows(IllegalArgumentException.class, () -> view.setTimes(replacement, replacement, invalid));
+        BasicFileAttributes attributes = view.readAttributes();
+        assertEquals(baseline, attributes.lastModifiedTime());
+        assertEquals(baseline, attributes.lastAccessTime());
+        assertEquals(baseline, attributes.creationTime());
+    }
+
+    /// Preserves zero and unsigned-high FILETIME values, truncating only sub-tick precision.
+    @Test
+    void writesUnsignedFileTimeBoundaries(@TempDir Path directory) throws IOException {
+        FileTime[] times = {
+                FileTime.from(Instant.ofEpochSecond(-11_644_473_600L)),
+                FileTime.from(Instant.ofEpochSecond(-11_644_473_600L, 99)),
+                FileTime.from(Instant.ofEpochSecond(910_692_730_085L, 477_580_800)),
+                FileTime.from(Instant.ofEpochSecond(1_833_029_933_770L, 955_161_599))
+        };
+        Path path = directory.resolve("times.7z");
+        try (var writer = SevenZipArkivoStreamingWriter.create(path)) {
+            for (int index = 0; index < times.length; index++) {
+                try (var entry = writer.beginDirectory("entry" + index)) {
+                    Objects.requireNonNull(entry.attributeView(BasicFileAttributeView.class))
+                            .setTimes(times[index], times[index], times[index]);
+                }
+            }
+        }
+        for (boolean update : new boolean[]{true, false}) {
+            try (var fs = update ? SevenZipArkivoFileSystem.update(path) : SevenZipArkivoFileSystem.open(path)) {
+                for (int index = 0; index < times.length; index++) {
+                    Instant instant = times[index].toInstant();
+                    FileTime expected = FileTime.from(Instant.ofEpochSecond(
+                            instant.getEpochSecond(), instant.getNano() / 100 * 100L));
+                    var attributes = Files.readAttributes(fs.getPath("entry" + index), BasicFileAttributes.class);
+                    assertEquals(expected, attributes.lastModifiedTime());
+                    assertEquals(expected, attributes.lastAccessTime());
+                    assertEquals(expected, attributes.creationTime());
+                    if (update) Files.setLastModifiedTime(fs.getPath("entry" + index), times[index]);
+                }
+            }
+        }
+    }
+
     /// Verifies that empty directory and file entries are indexed.
     @Test
     public void emptyEntries() throws IOException {
@@ -262,6 +373,37 @@ public final class SevenZipArchiveIntegrationTest {
         assertEquals(1, source.closeCount());
     }
 
+    /// Preserves explicitly empty permissions when an existing Unix mode omits its file type.
+    @Test
+    public void clearsPermissionsWithoutStoredFileType() throws IOException {
+        Path archivePath = createTemporaryArchivePath("zero-mode-7z-");
+        try {
+            try (var fileSystem = SevenZipArkivoFileSystem.create(archivePath)) {
+                Files.write(fileSystem.getPath("file"), new byte[]{1});
+                Files.createDirectory(fileSystem.getPath("dir"));
+            }
+            try (var fileSystem = SevenZipArkivoFileSystem.update(archivePath)) {
+                for (String name : new String[]{"file", "dir"}) {
+                    Path path = fileSystem.getPath(name);
+                    Files.setAttribute(path, "7z:unixMode", 0644);
+                    Files.setPosixFilePermissions(path, Set.of());
+                    assertEquals(Set.of(), Files.getPosixFilePermissions(path));
+                    assertEquals(name.equals("dir") ? 0040000 : 0100000,
+                            Files.readAttributes(path, SevenZipArkivoEntryAttributes.class).unixMode());
+                }
+            }
+            try (var fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(Set.of(), Files.getPosixFilePermissions(fileSystem.getPath("file")));
+                assertEquals(Set.of(), Files.getPosixFilePermissions(fileSystem.getPath("dir")));
+                assertTrue(Files.isDirectory(fileSystem.getPath("dir")));
+                assertTrue(Files.isRegularFile(fileSystem.getPath("file")));
+                assertArrayEquals(new byte[]{1}, Files.readAllBytes(fileSystem.getPath("file")));
+            }
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
     /// Verifies that 7z archives can be created through a forward-only writable file system.
     @Test
     public void createsEntriesAsWritableFileSystem() throws IOException {
@@ -282,6 +424,15 @@ public final class SevenZipArchiveIntegrationTest {
                 Path file = fileSystem.getPath("/dir/hello.txt");
                 Files.write(file, content);
                 assertThrows(FileAlreadyExistsException.class, () -> Files.write(file, content));
+                for (Path viewPath : List.of(fileSystem.getPath("/"), file, fileSystem.getPath("/missing"))) {
+                    @Nullable BasicFileAttributeView view = Files.getFileAttributeView(
+                            viewPath, BasicFileAttributeView.class);
+                    assertNotNull(view);
+                    assertEquals("basic", view.name());
+                    assertThrows(UnsupportedOperationException.class, view::readAttributes);
+                    assertThrows(UnsupportedOperationException.class,
+                            () -> view.setTimes(FileTime.fromMillis(1_000L), null, null));
+                }
                 fileSystem.provider().checkAccess(file);
                 fileSystem.provider().checkAccess(file, AccessMode.WRITE);
                 assertThrows(
@@ -549,7 +700,7 @@ public final class SevenZipArchiveIntegrationTest {
                         ))
                 );
                 assertThrows(
-                        IllegalArgumentException.class,
+                        NoSuchFileException.class,
                         () -> Files.newByteChannel(missing, Set.of(StandardOpenOption.CREATE))
                 );
                 assertThrows(

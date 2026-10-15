@@ -327,7 +327,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// Closes this ZIP file system and any owned volume source.
     @Override
     public void close() throws IOException {
-        try (CloseOperation ignored = beginCloseOperation()) {
+        CloseOperation operation = beginCloseOperation();
+        try {
             open = false;
             Throwable failure = null;
             try {
@@ -378,6 +379,10 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             if (failure instanceof Error exception) {
                 throw exception;
             }
+        } catch (IOException | RuntimeException | Error exception) {
+            operation.rethrowFailure(exception);
+        } finally {
+            operation.close();
         }
     }
 
@@ -697,22 +702,26 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         ZipArkivoEntryAttributes zipAttributes = readZipAttributes(path);
         PosixFileAttributes posixAttributes = zipAttributes;
         LinkedHashMap<String, Object> values = new LinkedHashMap<>();
-        if ("*".equals(names)) {
-            if ("owner".equals(view)) {
-                addOwnerAttributes(values, posixAttributes);
-            } else {
-                addBasicAttributes(values, zipAttributes);
-            }
-            if ("zip".equals(view)) {
-                addZipAttributes(values, zipAttributes);
-            } else if ("posix".equals(view)) {
-                addPosixAttributes(values, posixAttributes);
-            }
-            return Collections.unmodifiableMap(values);
+        String[] requestedNames = names.split(",");
+        if (requestedNames.length == 0) {
+            throw new IllegalArgumentException("No attributes specified");
         }
-
-        for (String name : names.split(",")) {
-            addNamedAttribute(values, zipAttributes, posixAttributes, name.trim(), view);
+        for (String requestedName : requestedNames) {
+            String name = requestedName.trim();
+            if ("*".equals(name)) {
+                if ("owner".equals(view)) {
+                    addOwnerAttributes(values, posixAttributes);
+                } else {
+                    addBasicAttributes(values, zipAttributes);
+                }
+                if ("zip".equals(view)) {
+                    addZipAttributes(values, zipAttributes);
+                } else if ("posix".equals(view)) {
+                    addPosixAttributes(values, posixAttributes);
+                }
+            } else {
+                addNamedAttribute(values, zipAttributes, posixAttributes, name, view);
+            }
         }
         return Collections.unmodifiableMap(values);
     }
@@ -3325,8 +3334,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// Returns whether this path is a symbolic link.
         @Override
         public boolean isSymbolicLink() {
-            ZipEntryRecord record = entry;
-            return record != null && ZipPosixSupport.isSymbolicLink(record.versionMadeBy, record.externalAttributes);
+            @Nullable ZipEntryRecord record = entry;
+            return record != null && !record.directory
+                    && ZipPosixSupport.isSymbolicLink(record.versionMadeBy, record.externalAttributes);
         }
 
         /// Returns whether this path is another file type.

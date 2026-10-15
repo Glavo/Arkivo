@@ -137,7 +137,7 @@ public final class ArkivoReadLimitTracker {
             throw new IllegalArgumentException("Archive metadata size must be non-negative");
         }
         long actual = saturatedAdd(metadataSize, size);
-        if (maximumMetadataSize != UNLIMITED && actual > maximumMetadataSize) {
+        if (maximumMetadataSize != UNLIMITED && size > maximumMetadataSize - metadataSize) {
             throw reject(
                     ArkivoReadLimitKind.METADATA_SIZE,
                     maximumMetadataSize,
@@ -165,7 +165,7 @@ public final class ArkivoReadLimitTracker {
         }
 
         long actualCount = saturatedIncrement(entryCount);
-        if (maximumEntryCount != UNLIMITED && actualCount > maximumEntryCount) {
+        if (maximumEntryCount != UNLIMITED && entryCount >= maximumEntryCount) {
             throw reject(
                     ArkivoReadLimitKind.ENTRY_COUNT,
                     maximumEntryCount,
@@ -205,7 +205,7 @@ public final class ArkivoReadLimitTracker {
             );
         }
         long actualTotal = saturatedAdd(totalEntrySize, size);
-        if (maximumTotalEntrySize != UNLIMITED && actualTotal > maximumTotalEntrySize) {
+        if (maximumTotalEntrySize != UNLIMITED && size > maximumTotalEntrySize - totalEntrySize) {
             throw reject(
                     ArkivoReadLimitKind.TOTAL_ENTRY_SIZE,
                     maximumTotalEntrySize,
@@ -340,7 +340,7 @@ public final class ArkivoReadLimitTracker {
         private void account(long count) throws ArkivoReadLimitException {
             requireWithinLimits();
             long nextSize = saturatedAdd(observedSize, count);
-            if (maximumEntrySize != UNLIMITED && nextSize > maximumEntrySize) {
+            if (maximumEntrySize != UNLIMITED && count > maximumEntrySize - observedSize) {
                 throw reject(
                         ArkivoReadLimitKind.ENTRY_SIZE,
                         maximumEntrySize,
@@ -349,7 +349,7 @@ public final class ArkivoReadLimitTracker {
                 );
             }
             long nextTotal = saturatedAdd(totalEntrySize, count);
-            if (maximumTotalEntrySize != UNLIMITED && nextTotal > maximumTotalEntrySize) {
+            if (maximumTotalEntrySize != UNLIMITED && count > maximumTotalEntrySize - totalEntrySize) {
                 throw reject(
                         ArkivoReadLimitKind.TOTAL_ENTRY_SIZE,
                         maximumTotalEntrySize,

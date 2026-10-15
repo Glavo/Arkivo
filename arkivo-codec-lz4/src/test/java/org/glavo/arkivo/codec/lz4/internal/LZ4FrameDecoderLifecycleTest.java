@@ -157,7 +157,8 @@ final class LZ4FrameDecoderLifecycleTest {
 
         assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.finish(source, target));
         assertEquals(requestPosition, source.position());
-        IOException mismatch = assertThrows(IOException.class, () -> decoder.provideDictionary(initial));
+        IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                () -> decoder.provideDictionary(initial));
         assertEquals("Configured LZ4 dictionary does not satisfy " + request, mismatch.getMessage());
         assertEquals(23L, decoder.dictionaryRequest().dictionaryId());
 

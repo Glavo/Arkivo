@@ -15,6 +15,7 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.util.Objects;
 
@@ -258,11 +259,17 @@ public final class CompressionDecoderSupport {
         @Override
         public int read(ByteBuffer target) throws IOException {
             Objects.requireNonNull(target, "target");
-            if (exceeded) {
-                throw limitException();
+            if (!decoder.isOpen()) {
+                throw new ClosedChannelException();
+            }
+            if (target.isReadOnly()) {
+                throw new IllegalArgumentException("Target buffer is read-only");
             }
             if (!target.hasRemaining()) {
                 return decoder.read(target);
+            }
+            if (exceeded) {
+                throw limitException();
             }
 
             long remaining = maximumOutputSize - outputBytes;
@@ -295,11 +302,17 @@ public final class CompressionDecoderSupport {
                 boolean stopAtFrame
         ) throws IOException {
             Objects.requireNonNull(target, "target");
-            if (exceeded) {
-                throw limitException();
+            if (!decoder.isOpen()) {
+                throw new ClosedChannelException();
+            }
+            if (target.isReadOnly()) {
+                throw new IllegalArgumentException("Target buffer is read-only");
             }
             if (!target.hasRemaining()) {
                 return decodeDelegate(target, stopAtFrame);
+            }
+            if (exceeded) {
+                throw limitException();
             }
 
             long remaining = maximumOutputSize - outputBytes;

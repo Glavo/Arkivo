@@ -16,7 +16,7 @@ import java.util.Objects;
 /// Defines immutable CPIO configuration for streaming archive operations.
 ///
 /// Read limits in the common options are enforced as headers and bodies advance. A metadata decoder may reject a name
-/// by throwing `IOException`; returning `null` selects the UTF-8 fallback. Creation stages regular-file bodies through
+/// by throwing `IOException`; a successful decode must return a non-null string. Creation stages regular-file bodies through
 /// the common edit storage, which becomes owned by the writer. Header numeric ranges and encoded metadata are validated
 /// when an entry is committed because their representability depends on the selected dialect.
 @NotNullByDefault
@@ -88,7 +88,7 @@ public final class CPIOArchiveOptions {
     /// @param dialect the header representation to write
     /// @param binaryByteOrder the 16-bit word byte order used by `OLD_BINARY`
     /// @param metadataCharset the charset used to encode entry names and symbolic-link targets; encoded values must
-    /// not contain a NUL byte
+    /// not contain a NUL byte and must decode to the original text with the same charset
     /// @param blockSize the positive archive block size used for final padding
     @NotNullByDefault
     public record Create(

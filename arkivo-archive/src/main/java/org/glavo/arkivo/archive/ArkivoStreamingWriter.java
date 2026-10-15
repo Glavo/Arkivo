@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive;
 
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -26,8 +27,8 @@ import java.util.Objects;
 /// must be configured before its body opens, and a body can be opened at most once. Closing the writer commits or closes
 /// any pending entry before finalizing the archive and its owned target.
 ///
-/// Entry names must not contain unpaired UTF-16 surrogates. Begin methods reject these with
-/// `IllegalArgumentException` before initializing an entry or writing output.
+/// Entry names and link targets must not contain unpaired UTF-16 surrogates. Link targets must not contain NUL.
+/// Begin methods reject these with `IllegalArgumentException` before initializing an entry or writing output.
 ///
 /// Entry operations throw `ClosedChannelException` after writer closing begins, including after a failed close attempt.
 /// Cleanup failures do not reopen the writer; repeated close calls exist only so format-specific cleanup can retry.
@@ -41,6 +42,9 @@ public abstract class ArkivoStreamingWriter implements Closeable {
 
     /// Whether this writer rejects all further entry operations.
     private boolean closed;
+
+    /// Whether an earlier close call reported a failure.
+    private boolean closeFailed;
 
     /// Creates a streaming archive writer with no pending entry.
     protected ArkivoStreamingWriter() {
@@ -78,11 +82,15 @@ public abstract class ArkivoStreamingWriter implements Closeable {
     /// @param path the normalized archive-local path for the symbolic link
     /// @param target the symbolic-link target text
     /// @return a handle for configuring and completing the pending entry
+    /// @throws IllegalArgumentException if the target contains NUL or an unpaired UTF-16 surrogate
     /// @throws IOException if the writer is closed or format-specific entry output cannot begin
     /// @throws IllegalStateException if another entry remains pending
     public final Entry beginSymbolicLink(String path, String target) throws IOException {
         String checkedTarget = Objects.requireNonNull(target, "target");
-        return beginEntry(path, checkedPath -> beginSymbolicLinkEntry(checkedPath, checkedTarget));
+        return beginEntry(path, checkedPath -> {
+            ArkivoFileSystemProviderSupport.validateLinkTarget(checkedTarget);
+            beginSymbolicLinkEntry(checkedPath, checkedTarget);
+        });
     }
 
     /// Begins one subclass-defined pending entry and returns its scoped handle.
@@ -170,7 +178,8 @@ public abstract class ArkivoStreamingWriter implements Closeable {
     ///
     /// Pending-entry failure remains primary and a writer-finalization failure is suppressed on it. Entry handles are
     /// invalidated after finalization is attempted. Repeated calls allow format-specific cleanup to finish after an
-    /// earlier failure but never permit additional entries.
+    /// earlier failure but never permit additional entries. Failures from a retried close are wrapped in a new
+    /// `IOException` whose cause preserves the cleanup failure, avoiding try-with-resources self-suppression.
     ///
     /// @throws IOException if the pending entry, archive trailer, or owned target cannot be completed or closed
     @Override
@@ -205,6 +214,10 @@ public abstract class ArkivoStreamingWriter implements Closeable {
         }
 
         if (failure != null) {
+            if (closeFailed) {
+                throw new IOException("Archive writer cleanup failed again", failure);
+            }
+            closeFailed = true;
             throwCloseFailure(failure);
         }
     }

@@ -25,6 +25,7 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.channels.spi.AbstractInterruptibleChannel;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -39,6 +40,131 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the blocking channel adapters independently from any concrete compression algorithm.
 @NotNullByDefault
 final class CodecChannelAdaptersTest {
+    /// Cleanup retries cannot rethrow a retained target failure already delivered by an earlier close.
+    @Test
+    void preservesTargetFailureAfterDistinctEncodingFailure() throws IOException {
+        for (Throwable cleanup : new Throwable[]{new IOException("cleanup"),
+                new IllegalStateException("cleanup"), new AssertionError("cleanup")}) {
+            var target = new CollectingWritableChannel();
+            var writeFailure = new IOException("write");
+            target.writeFailure = writeFailure;
+            target.closeFailures.add(cleanup);
+            target.closeFailures.add(cleanup);
+            target.closeFailures.add(new IOException("intervening cleanup"));
+            target.closeFailures.add(cleanup);
+            var encoder = new CopyEncoder();
+            var channel = CodecChannelAdapters.newWritableByteChannel(target, ResourceOwnership.OWNED, () -> encoder);
+            assertSame(writeFailure, assertThrows(IOException.class, () -> channel.write(ByteBuffer.wrap(new byte[]{1}))));
+            assertSame(cleanup, writeFailure.getSuppressed()[0]);
+            assertSame(cleanup, assertThrows(cleanup.getClass(), () -> {
+                try (channel) {
+                    try {
+                        channel.close();
+                    } catch (IOException | RuntimeException | Error first) {
+                        assertEquals("intervening cleanup", assertThrows(IOException.class, channel::close).getCause().getMessage());
+                        throw first;
+                    }
+                }
+            }));
+            assertSame(cleanup, cleanup.getSuppressed()[0].getCause());
+            channel.close();
+            channel.close();
+            assertEquals(5, target.closeCalls());
+            assertEquals(1, encoder.closeCalls());
+            assertEquals(1, target.writeCalls());
+        }
+    }
+
+    /// Automatic source cleanup cannot replace a reported read failure with self-suppression.
+    @Test
+    void preservesReadFailureWhenOwnedSourceCloseRepeatsIt() throws IOException {
+        for (Throwable failure : new Throwable[]{new IOException("read"),
+                new IllegalStateException("read"), new AssertionError("read")}) {
+            var source = new ChunkedReadableChannel(new byte[]{1});
+            source.readFailure = failure;
+            source.closeFailures.add(failure);
+            CopyDecoder decoder = new CopyDecoder();
+            var channel = CodecChannelAdapters.newReadableByteChannel(source, ResourceOwnership.OWNED, () -> decoder);
+            assertSame(failure, assertThrows(failure.getClass(), () -> {
+                try (channel) {
+                    channel.read(ByteBuffer.allocate(1));
+                }
+            }));
+            assertEquals(1, failure.getSuppressed().length);
+            assertSame(failure, failure.getSuppressed()[0].getCause());
+            assertFalse(channel.isOpen());
+            assertTrue(source.isOpen());
+            channel.close();
+            assertFalse(source.isOpen());
+            assertEquals(2, source.closeCalls());
+            assertEquals(1, decoder.closeCalls());
+        }
+    }
+
+    /// Source cleanup retries use distinct exceptions even when the delegate alternates old failures.
+    @Test
+    void preservesAlternatingSourceCloseFailures() throws IOException {
+        for (Throwable first : new Throwable[]{new IOException("first"),
+                new IllegalStateException("first"), new AssertionError("first")}) {
+            Throwable second = new IOException("second");
+            var source = new ChunkedReadableChannel(new byte[0]);
+            source.closeFailures.add(first);
+            source.closeFailures.add(second);
+            source.closeFailures.add(first);
+            CopyDecoder decoder = new CopyDecoder();
+            var channel = CodecChannelAdapters.newReadableByteChannel(source, ResourceOwnership.OWNED, () -> decoder);
+            assertSame(first, assertThrows(first.getClass(), channel::close));
+            assertSame(second, assertThrows(IOException.class, channel::close).getCause());
+            assertSame(first, assertThrows(IOException.class, channel::close).getCause());
+            channel.close();
+            channel.close();
+            assertEquals(4, source.closeCalls());
+            assertEquals(1, decoder.closeCalls());
+        }
+    }
+
+    /// Recording a delivered source failure does not make a recoverable read terminal.
+    @Test
+    void resumesReadsBeforeRetryingOwnedSourceCleanup() throws IOException {
+        IOException failure = new IOException("transient source failure");
+        var source = new ChunkedReadableChannel(new byte[]{1, 2});
+        source.readFailure = failure;
+        source.closeFailures.add(failure);
+        var channel = CodecChannelAdapters.newReadableByteChannel(source, ResourceOwnership.OWNED, CopyDecoder::new);
+        ByteBuffer target = ByteBuffer.allocate(2);
+        assertSame(failure, assertThrows(IOException.class, () -> channel.read(target)));
+        assertTrue(channel.isOpen());
+        assertEquals(2, channel.read(target));
+        assertArrayEquals(new byte[]{1, 2}, target.array());
+        assertEquals(2, channel.inputBytes());
+        assertEquals(2, channel.outputBytes());
+        assertEquals(2, channel.sourceBytes());
+        assertSame(failure, assertThrows(IOException.class, channel::close).getCause());
+        channel.close();
+    }
+
+    /// A later recoverable read failure cannot hide an earlier exception from cleanup protection.
+    @Test
+    void preservesEarlierReadFailureAfterAnotherReadFails() throws IOException {
+        IOException first = new IOException("first read");
+        IOException second = new IOException("second read");
+        var source = new ChunkedReadableChannel(new byte[0]);
+        source.closeFailures.add(first);
+        var channel = CodecChannelAdapters.newReadableByteChannel(source, ResourceOwnership.OWNED, CopyDecoder::new);
+        assertSame(first, assertThrows(IOException.class, () -> {
+            try (channel) {
+                source.readFailure = first;
+                assertSame(first, assertThrows(IOException.class, () -> channel.read(ByteBuffer.allocate(1))));
+                source.readFailure = second;
+                assertSame(second, assertThrows(IOException.class, () -> channel.read(ByteBuffer.allocate(1))));
+                throw first;
+            }
+        }));
+        assertEquals(1, first.getSuppressed().length);
+        assertSame(first, first.getSuppressed()[0].getCause());
+        channel.close();
+    }
+
     /// Incomplete fields survive compacting, small staging buffers, and a transient source failure.
     @Test
     void preservesLookaheadAcrossRefillsAndFailures() throws IOException {
@@ -664,6 +790,43 @@ final class CodecChannelAdaptersTest {
         assertTrue(source.isOpen());
     }
 
+    /// Rejects read-only targets without consuming input or preventing a subsequent writable read.
+    @Test
+    void rejectsReadOnlyDecodingTargetsWithoutProgress() throws IOException {
+        for (int size : new int[]{0, 8}) {
+            for (boolean direct : new boolean[]{false, true}) {
+                ChunkedReadableChannel source = new ChunkedReadableChannel(new byte[]{10, 20});
+                FrameByteDecoder engine = new FrameByteDecoder();
+                var channel = CodecChannelAdapters.newFramedReadableByteChannel(
+                        source, ResourceOwnership.BORROWED, () -> engine);
+                ByteBuffer target = (direct ? ByteBuffer.allocateDirect(size) : ByteBuffer.allocate(size))
+                        .asReadOnlyBuffer();
+                assertThrows(IllegalArgumentException.class, () -> channel.read(target));
+                assertThrows(IllegalArgumentException.class, () -> channel.decode(target));
+                assertThrows(IllegalArgumentException.class, () -> channel.decodeFrame(target));
+                assertEquals(0, target.position());
+                assertEquals(size, target.limit());
+                assertEquals(0, source.readCalls());
+                assertEquals(0, engine.decodeCalls());
+                assertEquals(0L, channel.inputBytes());
+                assertEquals(0L, channel.sourceBytes());
+                assertEquals(0L, channel.outputBytes());
+                ByteBuffer writable = ByteBuffer.allocate(8);
+                assertEquals(2, channel.read(writable));
+                writable.flip();
+                assertArrayEquals(new byte[]{10, 20}, remainingBytes(writable));
+                assertEquals(-1, channel.read(writable.clear()));
+                assertThrows(IllegalArgumentException.class, () -> channel.read(target));
+                assertThrows(IllegalArgumentException.class, () -> channel.decode(target));
+                assertThrows(IllegalArgumentException.class, () -> channel.decodeFrame(target));
+                channel.close();
+                assertThrows(ClosedChannelException.class, () -> channel.read(target));
+                assertThrows(ClosedChannelException.class, () -> channel.decode(target));
+                assertThrows(ClosedChannelException.class, () -> channel.decodeFrame(target));
+            }
+        }
+    }
+
     /// Verifies read-ahead, cumulative counters, empty targets, and stable single-frame completion.
     @Test
     void decodesWithReadAheadCountersAndStableCompletion() throws IOException {
@@ -746,6 +909,16 @@ final class CodecChannelAdaptersTest {
         assertEquals(1, first.inputBytes());
         assertEquals(1, first.outputBytes());
         assertArrayEquals(new byte[]{20}, remainingBytes(channel.unconsumedInput()));
+
+        ByteBuffer readOnly = ByteBuffer.allocate(1).asReadOnlyBuffer();
+        int readsAtBoundary = source.readCalls();
+        assertThrows(IllegalArgumentException.class, () -> channel.read(readOnly));
+        assertThrows(IllegalArgumentException.class, () -> channel.decode(readOnly));
+        assertThrows(IllegalArgumentException.class, () -> channel.decodeFrame(readOnly));
+        assertEquals(readsAtBoundary, source.readCalls());
+        assertEquals(0, decoder.resetCalls());
+        assertEquals(1, channel.inputBytes());
+        assertEquals(1, channel.outputBytes());
 
         CodecResult second = channel.decodeFrame(target);
         assertEquals(CodecResult.Status.FRAME_FINISHED, second.status());
@@ -1063,6 +1236,12 @@ final class CodecChannelAdaptersTest {
     /// Implements a collecting writable channel with bounded and failure-injectable progress.
     @NotNullByDefault
     private static final class CollectingWritableChannel implements WritableByteChannel {
+        /// Optional initial output failure.
+        private @Nullable Throwable writeFailure;
+
+        /// Explicit cleanup outcomes, including retained and alternating exception identities.
+        private final ArrayDeque<Throwable> closeFailures = new ArrayDeque<>();
+
         /// Collected bytes.
         private final ByteArrayOutputStream output = new ByteArrayOutputStream();
 
@@ -1123,6 +1302,7 @@ final class CodecChannelAdaptersTest {
                 throw new ClosedChannelException();
             }
             writeCalls++;
+            if (writeFailure != null) ChunkedReadableChannel.throwFailure(writeFailure);
             if (source.hasRemaining() && zeroWritesRemaining > 0) {
                 zeroWritesRemaining--;
                 return 0;
@@ -1147,6 +1327,7 @@ final class CodecChannelAdaptersTest {
                 return;
             }
             closeCalls++;
+            if (!closeFailures.isEmpty()) ChunkedReadableChannel.throwFailure(closeFailures.removeFirst());
             if (closeFailuresRemaining > 0) {
                 closeFailuresRemaining--;
                 if (closeFailure != null) {
@@ -1186,7 +1367,10 @@ final class CodecChannelAdaptersTest {
         private int zeroReadsRemaining;
 
         /// A transient failure consumed by the next read, or `null` when reads may proceed.
-        private @Nullable IOException readFailure;
+        private @Nullable Throwable readFailure;
+
+        /// Explicit close failures consumed before count-based close failures.
+        private final ArrayDeque<Throwable> closeFailures = new ArrayDeque<>();
 
         /// Source position at which one read fails, or `-1` when no position-triggered failure is pending.
         private int failurePosition = -1;
@@ -1229,9 +1413,9 @@ final class CodecChannelAdaptersTest {
                 throw new IOException("Source read failed at a pending prefix");
             }
             if (readFailure != null) {
-                IOException failure = readFailure;
+                Throwable failure = readFailure;
                 readFailure = null;
-                throw failure;
+                throwFailure(failure);
             }
             if (!target.hasRemaining()) {
                 return 0;
@@ -1264,11 +1448,22 @@ final class CodecChannelAdaptersTest {
                 return;
             }
             closeCalls++;
+            if (!closeFailures.isEmpty()) {
+                throwFailure(closeFailures.removeFirst());
+            }
             if (closeFailuresRemaining > 0) {
                 closeFailuresRemaining--;
                 throw new IOException("readable close failed");
             }
             open = false;
+        }
+
+        /// Reports an injected checked or unchecked failure without changing its identity.
+        private static void throwFailure(Throwable failure) throws IOException {
+            if (failure instanceof IOException exception) throw exception;
+            if (failure instanceof RuntimeException exception) throw exception;
+            if (failure instanceof Error error) throw error;
+            throw new AssertionError(failure);
         }
 
         /// Returns the number of read calls.

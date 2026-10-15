@@ -8,7 +8,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
@@ -119,7 +118,7 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
             try {
                 ensureOpen();
                 if (target.isReadOnly()) {
-                    throw new ReadOnlyBufferException();
+                    throw new IllegalArgumentException("Target buffer is read-only");
                 }
                 if (!target.hasRemaining()) {
                     return 0;

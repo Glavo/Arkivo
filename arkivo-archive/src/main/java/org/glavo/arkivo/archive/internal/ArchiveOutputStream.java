@@ -11,7 +11,10 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 
 /// Writes a forward-only archive and prevents further output after an incomplete write or body transfer.
 ///
@@ -35,6 +38,9 @@ public final class ArchiveOutputStream extends OutputStream {
 
     /// Whether target closure has succeeded.
     private boolean closed;
+
+    /// Previously reported close failures, allocated only after cleanup fails.
+    private @Nullable Set<Throwable> reportedCloseFailures;
 
     /// Takes ownership of the given archive target.
     ///
@@ -105,12 +111,14 @@ public final class ArchiveOutputStream extends OutputStream {
 
     /// Copies exactly the declared body size after the caller has emitted its entry header.
     ///
-    /// Source failures and premature end-of-input disable further output because the entry cannot be completed.
+    /// Source failures, zero-progress reads, and premature end-of-input disable further output because the entry cannot
+    /// be completed. A nonempty source read must return bytes or end-of-input; zero-progress reads are not retried.
     /// The source remains caller-owned and bytes beyond the declared size are not read.
     ///
     /// @param source the body channel positioned at its first byte
     /// @param size the non-negative number of body bytes to copy
-    /// @throws IOException if reading or writing fails, or the source ends before supplying `size` bytes
+    /// @throws IOException if reading or writing fails, a nonempty source read returns zero, or the source ends before
+    /// supplying `size` bytes
     /// @throws IllegalArgumentException if `size` is negative
     public void writeBody(ReadableByteChannel source, long size) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -128,10 +136,11 @@ public final class ArchiveOutputStream extends OutputStream {
                 if (count < 0) {
                     throw new EOFException("Archive body ended before its declared size");
                 }
-                if (count != 0) {
-                    write(buffer.array(), 0, count);
-                    remaining -= count;
+                if (count == 0) {
+                    throw new IOException("Archive body channel made no progress");
                 }
+                write(buffer.array(), 0, count);
+                remaining -= count;
             }
         } catch (IOException | RuntimeException | Error exception) {
             fail(exception);
@@ -163,6 +172,7 @@ public final class ArchiveOutputStream extends OutputStream {
     /// Failed target closure may be retried. Once closure succeeds, subsequent calls do nothing.
     /// If the target throws the same exception previously reported by a write or transfer, it is wrapped in an
     /// `IOException` so try-with-resources can retain both failures without self-suppression.
+    /// A close failure reported by an earlier close attempt is wrapped in the same way.
     @Override
     public void close() throws IOException {
         if (!closed) {
@@ -170,9 +180,16 @@ public final class ArchiveOutputStream extends OutputStream {
             try {
                 target.close();
                 closed = true;
+                reportedCloseFailures = null;
             } catch (IOException | RuntimeException | Error exception) {
-                if (exception == failure) {
-                    throw new IOException("Archive target close failed after output failure", exception);
+                if (reportedCloseFailures == null) {
+                    reportedCloseFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+                }
+                boolean repeated = !reportedCloseFailures.add(exception);
+                if (exception == failure || repeated) {
+                    IOException wrapped = new IOException("Archive target close repeated an earlier failure", exception);
+                    reportedCloseFailures.add(wrapped);
+                    throw wrapped;
                 }
                 throw exception;
             }

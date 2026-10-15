@@ -15,12 +15,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.InterruptibleChannel;
@@ -241,9 +241,10 @@ public final class ZstdSeekableCodecTest {
     }
 
     /// Verifies logical views implement the positioning, read-only, buffer-progress, and closure contracts of NIO.
-    @Test
-    public void implementsReadOnlySeekableChannelContract() throws IOException {
-        byte[] decoded = patternedBytes(2500);
+    @ParameterizedTest
+    @ValueSource(ints = {0, 2500})
+    public void implementsReadOnlySeekableChannelContract(int size) throws IOException {
+        byte[] decoded = patternedBytes(size);
         Path path = Files.createTempFile("arkivo-zstd-seekable-channel-contract-", ".zst");
         try {
             try (SeekableByteChannel target = Files.newByteChannel(
@@ -286,14 +287,33 @@ public final class ZstdSeekableCodecTest {
                 assertThrows(NonWritableChannelException.class, () -> logical.truncate(0L));
                 assertEquals(17L, logical.position());
 
-                assertSame(logical, logical.position(0L));
-                ByteBuffer readOnlyTarget = ByteBuffer.allocate(16).asReadOnlyBuffer();
-                assertThrows(ReadOnlyBufferException.class, () -> logical.read(readOnlyTarget));
-                assertEquals(0, readOnlyTarget.position());
-                assertEquals(0L, logical.position());
+                for (boolean cached : new boolean[]{false, true}) {
+                    if (cached && decoded.length > 0) {
+                        logical.position(0L);
+                        assertEquals(1, logical.read(ByteBuffer.allocate(1)));
+                    }
+                    for (long position : new long[]{0L, 17L, 512L, decoded.length, beyondEnd}) {
+                        logical.position(position);
+                        long physicalPosition = source.position();
+                        for (boolean direct : new boolean[]{false, true}) {
+                            for (int remaining : new int[]{0, 16}) {
+                                ByteBuffer storage = direct ? ByteBuffer.allocateDirect(20) : ByteBuffer.allocate(20);
+                                ByteBuffer readOnlyTarget = storage.asReadOnlyBuffer().position(2)
+                                        .limit(2 + remaining).mark();
+                                assertThrows(IllegalArgumentException.class, () -> logical.read(readOnlyTarget));
+                                assertEquals(2, readOnlyTarget.position());
+                                assertEquals(2 + remaining, readOnlyTarget.limit());
+                                assertEquals(2, readOnlyTarget.reset().position());
+                                assertEquals(position, logical.position());
+                                assertEquals(physicalPosition, source.position());
+                            }
+                        }
+                    }
+                }
 
+                logical.position(0L);
                 ByteBuffer target = ByteBuffer.allocate(16);
-                assertEquals(16, logical.read(target));
+                assertEquals(decoded.length == 0 ? -1 : 16, logical.read(target));
                 assertArrayEquals(java.util.Arrays.copyOf(decoded, 16), target.array());
 
                 logical.close();
@@ -304,6 +324,7 @@ public final class ZstdSeekableCodecTest {
                 assertThrows(ClosedChannelException.class, logical::size);
                 assertThrows(ClosedChannelException.class, () -> logical.position(0L));
                 assertThrows(ClosedChannelException.class, () -> logical.read(ByteBuffer.allocate(1)));
+                assertThrows(ClosedChannelException.class, () -> logical.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
                 assertThrows(ClosedChannelException.class, () -> logical.write(ByteBuffer.allocate(1)));
                 assertThrows(ClosedChannelException.class, () -> logical.truncate(0L));
             }
@@ -847,9 +868,232 @@ public final class ZstdSeekableCodecTest {
         return bytes;
     }
 
-    /// Wraps an encoded file with configurable read and position-restoration failures.
+    /// Preserves a read failure when automatic source closure reports the same exception object.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1})
+    public void preservesReadFailureDuringAutomaticClose(int failingFrame, @TempDir Path directory) throws IOException {
+        Path path = directory.resolve("read-close.zst");
+        try (SeekableByteChannel target = Files.newByteChannel(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+             var encoder = ZstdCodec.DEFAULT.newSeekableWritableByteChannel(target,
+                     SeekableEncodingOptions.ofMaximumFrameSize(64), ResourceOwnership.BORROWED)) {
+            encoder.encode(ByteBuffer.wrap(patternedBytes(128)));
+        }
+        CompressionCodec.Seekable.Index index;
+        try (SeekableByteChannel source = Files.newByteChannel(path)) {
+            index = ZstdCodec.DEFAULT.readIndex(source);
+            assertNotNull(index);
+        }
+        for (int type = 0; type < 3; type++) {
+            for (boolean shared : new boolean[]{false, true}) {
+                for (ResourceOwnership ownership : ResourceOwnership.values()) {
+                    Throwable failure = switch (type) {
+                        case 0 -> new IOException("frame read failed");
+                        case 1 -> new IllegalStateException("frame read failed");
+                        default -> new AssertionError("frame read failed");
+                    };
+                    Throwable cleanup = shared ? failure : new IOException("source close failed");
+                    FailingSeekableChannel source = new FailingSeekableChannel(
+                            Files.newByteChannel(path), index.frameCompressedOffset(failingFrame), 1, failure);
+                    source.closeFailure = cleanup;
+                    source.closeFailuresRemaining = 1;
+                    try {
+                        SeekableByteChannel logical = index.newReadableByteChannel(source, ownership);
+                        ByteBuffer output = ByteBuffer.allocate(128);
+                        Throwable caught = assertThrows(failure.getClass(), () -> {
+                            try (logical) {
+                                logical.read(output);
+                            }
+                        });
+                        assertSame(failure, caught);
+                        assertEquals(failingFrame * 64, output.position());
+                        assertFalse(logical.isOpen());
+                        assertTrue(source.isOpen());
+                        if (ownership == ResourceOwnership.OWNED) {
+                            assertEquals(1, caught.getSuppressed().length);
+                            if (shared) {
+                                assertInstanceOf(IOException.class, caught.getSuppressed()[0]);
+                                assertSame(failure, caught.getSuppressed()[0].getCause());
+                            } else {
+                                assertSame(cleanup, caught.getSuppressed()[0]);
+                            }
+                        } else {
+                            assertEquals(0, caught.getSuppressed().length);
+                        }
+                        logical.close();
+                        logical.close();
+                        assertEquals(ownership == ResourceOwnership.OWNED ? 2 : 0, source.closeCount);
+                        assertEquals(ownership == ResourceOwnership.BORROWED, source.isOpen());
+                    } finally {
+                        source.closeFailuresRemaining = 0;
+                        source.close();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Wraps repeated close failures while leaving an unsuccessful owned close retryable.
+    @Test
+    public void preservesCloseFailureDuringAutomaticClose(@TempDir Path directory) throws IOException {
+        Path path = directory.resolve("close-close.zst");
+        try (SeekableByteChannel target = Files.newByteChannel(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+             var encoder = ZstdCodec.DEFAULT.newSeekableWritableByteChannel(target,
+                     SeekableEncodingOptions.ofMaximumFrameSize(64), ResourceOwnership.BORROWED)) {
+            encoder.encode(ByteBuffer.wrap(patternedBytes(64)));
+        }
+        IOException failure = new IOException("source close failed twice");
+        FailingSeekableChannel source = new FailingSeekableChannel(Files.newByteChannel(path), -1, 0, null);
+        try {
+            var index = ZstdCodec.DEFAULT.readIndex(source);
+            assertNotNull(index);
+            source.closeFailure = failure;
+            source.closeFailuresRemaining = 2;
+            SeekableByteChannel logical = index.newReadableByteChannel(source, ResourceOwnership.OWNED);
+            IOException caught = assertThrows(IOException.class, () -> {
+                try (logical) {
+                    logical.close();
+                }
+            });
+            assertSame(failure, caught);
+            assertEquals(1, caught.getSuppressed().length);
+            assertSame(failure, caught.getSuppressed()[0].getCause());
+            assertFalse(logical.isOpen());
+            assertTrue(source.isOpen());
+            logical.close();
+            logical.close();
+            assertEquals(3, source.closeCount);
+            assertFalse(source.isOpen());
+        } finally {
+            source.closeFailuresRemaining = 0;
+            source.close();
+        }
+    }
+
+    /// Preserves finalization failures across automatic close and retries only endpoint cleanup.
+    @ParameterizedTest
+    @CsvSource({"0,false", "1,false", "2,false", "0,true", "1,true", "2,true"})
+    public void preservesWriterCloseFailureDuringAutomaticClose(
+            int type, boolean interruptible, @TempDir Path directory
+    ) throws IOException {
+        Path path = directory.resolve("writer-close-close.zst");
+        Throwable failure = switch (type) {
+            case 0 -> new IOException("target close failed twice");
+            case 1 -> new IllegalStateException("target close failed twice");
+            default -> new AssertionError("target close failed twice");
+        };
+        SeekableByteChannel file = Files.newByteChannel(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        FailingSeekableChannel target = interruptible
+                ? new InterruptibleFailingSeekableChannel(file)
+                : new FailingSeekableChannel(file, -1, 0, null);
+        try {
+            target.closeFailure = failure;
+            target.closeFailuresRemaining = 2;
+            var encoder = ZstdCodec.DEFAULT.newSeekableWritableByteChannel(target,
+                    SeekableEncodingOptions.ofMaximumFrameSize(64), ResourceOwnership.OWNED);
+            byte[] content = patternedBytes(128);
+            encoder.encode(ByteBuffer.wrap(content));
+            Throwable caught = assertThrows(failure.getClass(), () -> {
+                try (encoder) {
+                    encoder.finish();
+                }
+            });
+            assertSame(failure, caught);
+            assertEquals(1, caught.getSuppressed().length);
+            assertInstanceOf(IOException.class, caught.getSuppressed()[0]);
+            Throwable cleanup = caught.getSuppressed()[0];
+            assertSame(failure, interruptible ? cleanup.getCause().getCause() : cleanup.getCause());
+            assertFalse(encoder.isOpen());
+            assertTrue(target.isOpen());
+            long encodedSize = target.size();
+            encoder.close();
+            encoder.close();
+            assertEquals(3, target.closeCount);
+            assertFalse(target.isOpen());
+            assertEquals(encodedSize, Files.size(path));
+            assertEquals(encodedSize, encoder.outputBytes());
+            try (SeekableByteChannel source = Files.newByteChannel(path)) {
+                var index = ZstdCodec.DEFAULT.readIndex(source);
+                assertNotNull(index);
+                assertEquals(2, index.frameCount());
+                try (SeekableByteChannel decoded = index.newReadableByteChannel(source, ResourceOwnership.BORROWED)) {
+                    ByteBuffer output = ByteBuffer.allocate(content.length);
+                    while (output.hasRemaining()) {
+                        assertTrue(decoded.read(output) > 0);
+                    }
+                    assertArrayEquals(content, output.array());
+                }
+            }
+        } finally {
+            target.closeFailuresRemaining = 0;
+            target.close();
+        }
+    }
+
+    /// Retains partial seek-table progress and never retries serialization after a terminal write failure.
+    @ParameterizedTest
+    @CsvSource({"0,false", "1,false", "2,false", "0,true", "1,true", "2,true"})
+    public void preservesPartialSeekTableFailure(
+            int type, boolean interruptible, @TempDir Path directory
+    ) throws IOException {
+        Path path = directory.resolve("partial-table.zst");
+        Throwable failure = switch (type) {
+            case 0 -> new IOException("seek table write failed");
+            case 1 -> new IllegalStateException("seek table write failed");
+            default -> new AssertionError("seek table write failed");
+        };
+        SeekableByteChannel file = Files.newByteChannel(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        FailingSeekableChannel target = interruptible
+                ? new InterruptibleFailingSeekableChannel(file)
+                : new FailingSeekableChannel(file, -1, 0, null);
+        try {
+            var encoder = ZstdCodec.DEFAULT.newSeekableWritableByteChannel(target,
+                    SeekableEncodingOptions.ofMaximumFrameSize(64), ResourceOwnership.OWNED);
+            encoder.encode(ByteBuffer.wrap(patternedBytes(128)));
+            long framesSize = target.size();
+            target.writeFailure = failure;
+            target.partialWriteSize = 5;
+            target.closeFailure = failure;
+            target.closeFailuresRemaining = 2;
+            Throwable caught = assertThrows(failure.getClass(), () -> {
+                try (encoder) {
+                    encoder.finish();
+                }
+            });
+            assertSame(failure, caught);
+            assertEquals(1, caught.getSuppressed().length);
+            Throwable cleanup = caught.getSuppressed()[0];
+            assertInstanceOf(IOException.class, cleanup);
+            assertSame(failure, interruptible ? cleanup.getCause().getCause() : cleanup.getCause());
+            assertEquals(framesSize + 5, target.size());
+            assertEquals(framesSize + 5, encoder.outputBytes());
+            assertEquals(128, encoder.inputBytes());
+            assertFalse(encoder.isOpen());
+            assertTrue(target.isOpen());
+            encoder.close();
+            encoder.close();
+            assertEquals(3, target.closeCount);
+            assertFalse(target.isOpen());
+            assertEquals(framesSize + 5, Files.size(path));
+            assertEquals(framesSize + 5, encoder.outputBytes());
+        } finally {
+            target.closeFailuresRemaining = 0;
+            target.close();
+        }
+    }
+
+    /// Exposes interruptible capability for idle finalization and close-retry tests.
     @NotNullByDefault
-    private static final class FailingSeekableChannel implements SeekableByteChannel {
+    private static final class InterruptibleFailingSeekableChannel
+            extends FailingSeekableChannel implements InterruptibleChannel {
+        /// Wraps a file with configurable failures without injecting asynchronous cancellation.
+        private InterruptibleFailingSeekableChannel(SeekableByteChannel delegate) {
+            super(delegate, -1, 0, null);
+        }
+    }
+
+    /// Wraps an encoded file with configurable read, position-restoration, and close failures.
+    @NotNullByDefault
+    private static class FailingSeekableChannel implements SeekableByteChannel {
         /// The owned encoded file channel.
         private final SeekableByteChannel delegate;
 
@@ -862,6 +1106,12 @@ public final class ZstdSeekableCodecTest {
         /// The pending one-shot failure.
         private @Nullable Throwable failure;
 
+        /// The pending one-shot write failure.
+        private @Nullable Throwable writeFailure;
+
+        /// Bytes emitted by the failing write before it throws.
+        private int partialWriteSize;
+
         /// The position setter failure, or `null` for normal positioning.
         private @Nullable IOException positionFailure;
 
@@ -870,6 +1120,15 @@ public final class ZstdSeekableCodecTest {
 
         /// Number of physical read calls, including the failed call.
         private int readCount;
+
+        /// The exception to deliver while close failures remain armed.
+        private @Nullable Throwable closeFailure;
+
+        /// The number of close attempts that must fail without closing the delegate.
+        private int closeFailuresRemaining;
+
+        /// Number of physical close calls, including failed calls.
+        private int closeCount;
 
         /// Creates a failure-injecting view over the supplied encoded source.
         private FailingSeekableChannel(
@@ -909,9 +1168,27 @@ public final class ZstdSeekableCodecTest {
             return delegate.read(target);
         }
 
-        /// Delegates writes to the underlying channel.
+        /// Delegates writes except for an armed partial write failure.
         @Override
         public int write(ByteBuffer source) throws IOException {
+            if (writeFailure != null) {
+                Throwable pending = writeFailure;
+                writeFailure = null;
+                int limit = source.limit();
+                source.limit(source.position() + Math.min(partialWriteSize, source.remaining()));
+                try {
+                    delegate.write(source);
+                } finally {
+                    source.limit(limit);
+                }
+                if (pending instanceof IOException exception) {
+                    throw exception;
+                }
+                if (pending instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) pending;
+            }
             return delegate.write(source);
         }
 
@@ -950,9 +1227,20 @@ public final class ZstdSeekableCodecTest {
             return delegate.isOpen();
         }
 
-        /// Closes the encoded file.
+        /// Closes the encoded file after any configured close failures are exhausted.
         @Override
         public void close() throws IOException {
+            closeCount++;
+            if (closeFailuresRemaining > 0) {
+                closeFailuresRemaining--;
+                if (closeFailure instanceof IOException exception) {
+                    throw exception;
+                }
+                if (closeFailure instanceof RuntimeException exception) {
+                    throw exception;
+                }
+                throw (Error) closeFailure;
+            }
             delegate.close();
         }
     }

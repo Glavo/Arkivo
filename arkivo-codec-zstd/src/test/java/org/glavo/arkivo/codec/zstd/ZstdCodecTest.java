@@ -282,7 +282,7 @@ public final class ZstdCodecTest {
         assertArrayEquals(expected.toByteArray(), decoded.toByteArray());
     }
 
-    /// Recognizes the standard frame magic and all sixteen skippable frame identifiers without changing buffers.
+    /// Recognizes all frame identifiers, requiring a following Zstandard signature for unambiguous auto-detection.
     @Test
     public void recognizesEveryFrameMagic() {
         ZstdCodec codec = new ZstdCodec();
@@ -304,11 +304,12 @@ public final class ZstdCodecTest {
             assertEquals(1, prefix.position(), Integer.toString(id));
             assertEquals(5, prefix.limit(), Integer.toString(id));
             prefix.reset();
-            assertEquals(
-                    ZstdCodec.class,
-                    Objects.requireNonNull(CompressionFormats.detect(prefix)).defaultCodec().getClass(),
-                    Integer.toString(id)
-            );
+            assertNull(CompressionFormats.detect(prefix), Integer.toString(id));
+            ByteBuffer framed = ByteBuffer.allocate(12);
+            framed.put(prefix.duplicate()).putInt(0).put(standard.duplicate()).flip();
+            assertEquals(ZstdCodec.class,
+                    Objects.requireNonNull(CompressionFormats.detect(framed)).defaultCodec().getClass(),
+                    Integer.toString(id));
         }
 
         assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{0x50, 0x2a, 0x4d})));

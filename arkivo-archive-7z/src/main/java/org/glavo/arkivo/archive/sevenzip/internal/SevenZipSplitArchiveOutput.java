@@ -50,6 +50,9 @@ final class SevenZipSplitArchiveOutput {
     /// The volume output opened during publication, or `null` before publication or after successful cleanup.
     private @Nullable ArkivoVolumeOutput volumeOutput;
 
+    /// The caller-owned physical volume retained until its close operation completes successfully.
+    private @Nullable WritableByteChannel pendingVolume;
+
     /// Whether publication or rollback has started.
     private boolean finishStarted;
 
@@ -194,6 +197,7 @@ final class SevenZipSplitArchiveOutput {
                         output.openVolume(volumeIndex),
                         "volume channel"
                 );
+                pendingVolume = volume;
                 copyAndCloseVolume(source, volume, volumeSize);
                 remaining -= volumeSize;
                 if (remaining == 0L) {
@@ -210,7 +214,7 @@ final class SevenZipSplitArchiveOutput {
 
 
     /// Copies one physical volume and closes it while preserving an operation failure by identity.
-    private static void copyAndCloseVolume(
+    private void copyAndCloseVolume(
             SeekableByteChannel source,
             WritableByteChannel volume,
             long volumeSize
@@ -224,6 +228,7 @@ final class SevenZipSplitArchiveOutput {
         } finally {
             try {
                 volume.close();
+                pendingVolume = null;
             } catch (IOException | RuntimeException | Error closeException) {
                 if (failure != null) {
                     appendFailure(failure, closeException);
@@ -281,8 +286,25 @@ final class SevenZipSplitArchiveOutput {
     /// Cleans the opened volume output and temporary archive while preserving failure order.
     private @Nullable Throwable cleanupResources(@Nullable Throwable failure) {
         boolean cleanupFailed = false;
+        if (pendingVolume != null) {
+            try {
+                pendingVolume.close();
+                pendingVolume = null;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+                cleanupFailed = true;
+            }
+        }
         @Nullable ArkivoVolumeOutput output = volumeOutput;
-        if (output != null) {
+        if (output == null && target instanceof SevenZipSingleVolumeTarget singleVolumeTarget) {
+            try {
+                singleVolumeTarget.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+                cleanupFailed = true;
+            }
+        }
+        if (output != null && pendingVolume == null) {
             if (!committed) {
                 try {
                     output.rollback();

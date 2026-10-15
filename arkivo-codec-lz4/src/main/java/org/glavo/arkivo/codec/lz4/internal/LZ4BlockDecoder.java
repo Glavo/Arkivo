@@ -55,7 +55,9 @@ public final class LZ4BlockDecoder implements CompressionDecoder {
         this.maximumBlockSize = maximumBlockSize;
         this.maximumWindowSize = maximumWindowSize;
         this.maximumMemorySize = maximumMemorySize;
-        compressed = new OwnedByteAccumulator(maximumCompressedSize);
+        int compressedCapacityLimit = maximumMemorySize < 0
+                ? maximumCompressedSize : (int) Math.min(maximumCompressedSize, maximumMemorySize);
+        compressed = new OwnedByteAccumulator(compressedCapacityLimit);
     }
 
     /// Collects compressed bytes until physical end of input establishes the raw block boundary.

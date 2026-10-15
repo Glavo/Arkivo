@@ -271,7 +271,8 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// Closes this file system.
     @Override
     public void close() throws IOException {
-        try (CloseOperation ignored = beginCloseOperation()) {
+        CloseOperation operation = beginCloseOperation();
+        try {
             if (!open
                     && editStorage.isClosed()
                     && volumesClosed
@@ -297,6 +298,10 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                 }
             }
             throwFailure(failure);
+        } catch (IOException | RuntimeException | Error exception) {
+            operation.rethrowFailure(exception);
+        } finally {
+            operation.close();
         }
     }
 
@@ -587,6 +592,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         } else {
             putBasicAttributes(values, entryAttributes, requestedAttributes, all);
         }
+        ArkivoFileSystemProviderSupport.validateAttributeNames(requestedAttributes.names(), values);
         return Collections.unmodifiableMap(values);
     }
 
@@ -1154,7 +1160,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             if ("*".equals(names)) {
                 return new RequestedAttributes(view, Set.of("*"));
             }
-            return new RequestedAttributes(view, Set.of(names.split(",")));
+            return new RequestedAttributes(view, Set.copyOf(List.of(names.split(","))));
         }
 
         /// Returns whether this request targets the RAR attribute view.
@@ -1465,6 +1471,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         /// Returns whether this store supports an attribute view.
         @Override
         public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
+            Objects.requireNonNull(type, "type");
             return type == BasicFileAttributeView.class
                     || type == FileOwnerAttributeView.class
                     || type == PosixFileAttributeView.class
@@ -1480,6 +1487,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         /// Returns a file store attribute view.
         @Override
         public <V extends FileStoreAttributeView> @Nullable V getFileStoreAttributeView(Class<V> type) {
+            Objects.requireNonNull(type, "type");
             return null;
         }
 

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -14,6 +15,7 @@ import java.nio.channels.ReadableByteChannel;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -22,6 +24,62 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies prefix isolation and channel ownership in compression probe results.
 @NotNullByDefault
 final class CompressionProbeResultTest {
+    /// Preserves an explicit close failure when automatic result cleanup retries the same endpoint.
+    @Test
+    void publicProbePreservesRepeatedCloseFailure() throws IOException {
+        TrackingReadableByteChannel source = new TrackingReadableByteChannel(false);
+        IOException failure = new IOException("source failure");
+        source.closeFailure = failure;
+        CompressionProbeResult result = CompressionFormats.probe(source, ResourceOwnership.OWNED);
+        assertSame(failure, assertThrows(IOException.class, () -> {
+            try (result) {
+                result.close();
+            }
+        }));
+        assertEquals(1, failure.getSuppressed().length);
+        assertInstanceOf(IOException.class, failure.getSuppressed()[0]);
+        assertSame(failure, failure.getSuppressed()[0].getCause());
+        assertEquals(2, source.closeAttempts());
+        source.closeFailure = null;
+        result.close();
+        result.close();
+        assertEquals(3, source.closeAttempts());
+        assertFalse(source.isOpen());
+        assertThrows(IllegalStateException.class, result::takeChannel);
+    }
+
+    /// Retains failure protection and source ownership when the probe channel is transferred to its caller.
+    @Test
+    void transferredProbePreservesReadFailureDuringCleanup() throws IOException {
+        for (ResourceOwnership ownership : ResourceOwnership.values()) {
+            TrackingReadableByteChannel source = new TrackingReadableByteChannel(false);
+            IOException failure = new IOException("source failure");
+            try (CompressionProbeResult result = CompressionFormats.probe(source, ownership)) {
+                ReadableByteChannel channel = result.takeChannel();
+                source.readFailure = failure;
+                source.closeFailure = failure;
+                assertSame(failure, assertThrows(IOException.class, () -> {
+                    try (channel) {
+                        channel.read(ByteBuffer.allocate(1));
+                    }
+                }));
+                boolean owned = ownership == ResourceOwnership.OWNED;
+                assertEquals(owned ? 1 : 0, failure.getSuppressed().length);
+                if (owned) {
+                    assertInstanceOf(IOException.class, failure.getSuppressed()[0]);
+                    assertSame(failure, failure.getSuppressed()[0].getCause());
+                }
+                assertEquals(owned ? 1 : 0, source.closeAttempts());
+                source.closeFailure = null;
+                channel.close();
+                channel.close();
+                assertEquals(owned ? 2 : 0, source.closeAttempts());
+                assertEquals(!owned, source.isOpen());
+            }
+            source.close();
+        }
+    }
+
     /// Verifies construction copies only the remaining prefix and every accessor returns a fresh read-only view.
     @Test
     void copiesPrefixAndReturnsIndependentReadOnlyViews() throws IOException {
@@ -124,6 +182,12 @@ final class CompressionProbeResultTest {
         /// Number of close attempts.
         private int closeAttempts;
 
+        /// Failure reported by reads after the initial probe completes.
+        private @Nullable IOException readFailure;
+
+        /// Failure repeated by close until cleared.
+        private @Nullable IOException closeFailure;
+
         /// Creates a channel with the requested first-close behavior.
         private TrackingReadableByteChannel(boolean failFirstClose) {
             this.failFirstClose = failFirstClose;
@@ -134,6 +198,9 @@ final class CompressionProbeResultTest {
         public int read(ByteBuffer target) throws IOException {
             if (!open) {
                 throw new java.nio.channels.ClosedChannelException();
+            }
+            if (readFailure != null) {
+                throw readFailure;
             }
             return -1;
         }
@@ -148,6 +215,9 @@ final class CompressionProbeResultTest {
         @Override
         public void close() throws IOException {
             closeAttempts++;
+            if (closeFailure != null) {
+                throw closeFailure;
+            }
             if (failFirstClose && closeAttempts == 1) {
                 throw new IOException("close failed");
             }

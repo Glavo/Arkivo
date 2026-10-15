@@ -9,6 +9,7 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.internal.ArchiveOutputStream;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
+import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.cpio.CPIOArchiveOptions;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoEntryAttributes;
@@ -24,7 +25,6 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -205,9 +205,9 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
     /// Commits the pending entry with its fixed body or an empty regular-file body.
     @Override
     protected void finishCurrentEntry() throws IOException {
-        ensureOpen();
         PendingEntry entry = requirePendingEntry();
-        entry.ensurePending();
+        entry.metadataFrozen = true;
+        ensureOpen();
         byte @Unmodifiable [] body = entry.fixedBodyOrEmpty();
         ensureBodySize(entry, body.length);
         writeEntry(entry, body, checksum(body));
@@ -615,7 +615,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         return (int) ((alignment - size % alignment) % alignment);
     }
 
-    /// Encodes one CPIO metadata value strictly with the configured charset.
+    /// Encodes one CPIO metadata value without NUL bytes or lossy charset mappings.
     private byte[] encodeMetadata(String value, String description) throws IOException {
         if (value.indexOf('\0') >= 0) {
             throw new IOException("CPIO " + description + " contains NUL");
@@ -625,6 +625,13 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
                     .encode(java.nio.CharBuffer.wrap(value));
+            // Some encoders accept aliases, such as yen to backslash in Shift_JIS, even in REPORT mode.
+            if (!value.contentEquals(metadataCharset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(buffer.asReadOnlyBuffer()))) {
+                throw new IOException("CPIO " + description + " does not round-trip through " + metadataCharset.name());
+            }
             byte[] bytes = new byte[buffer.remaining()];
             buffer.get(bytes);
             for (byte encoded : bytes) {
@@ -703,6 +710,9 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
             throw new IllegalArgumentException("CPIO streaming entry path is empty");
         }
         String entryPath = result.toString();
+        if (entryPath.length() >= 2 && entryPath.charAt(1) == ':') {
+            throw new IllegalArgumentException("CPIO streaming entry paths must be relative");
+        }
         if (TRAILER_NAME.equals(entryPath)) {
             throw new IllegalArgumentException("CPIO streaming entry path is reserved: " + TRAILER_NAME);
         }
@@ -804,6 +814,9 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
         /// Whether this entry's header has been written.
         private boolean committed;
 
+        /// Whether entry completion has begun, including an unsuccessful attempt that can be retried.
+        private boolean metadataFrozen;
+
         /// Creates one pending entry.
         private PendingEntry(String path, EntryKind kind, int mode, long inode, byte @Nullable [] fixedBody) {
             this.path = Objects.requireNonNull(path, "path");
@@ -814,8 +827,8 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
 
         /// Requires this entry to remain pending and configurable.
         private void ensurePending() throws IOException {
-            if (committed || pendingEntry != this) {
-                throw new IOException("CPIO streaming entry is no longer pending");
+            if (metadataFrozen || committed || pendingEntry != this) {
+                throw new IOException("CPIO streaming entry is no longer configurable");
             }
         }
 
@@ -1080,7 +1093,7 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
                         StandardOpenOption.TRUNCATE_EXISTING,
                         StandardOpenOption.WRITE
                 )), false, true, false, true, (channel, commit) -> completeBody(commit));
-                this.storageOutput = Channels.newOutputStream(storageChannel);
+                this.storageOutput = storageChannel.newOutputStream();
             } catch (IOException | RuntimeException | Error exception) {
                 releaseBody(content);
                 throw exception;
@@ -1131,8 +1144,15 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
                 if (commit) {
                     long size = content.size();
                     ensureBodySize(entry, size);
-                    try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
+                    SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ));
+                    @Nullable Throwable failure = null;
+                    try {
                         writeStoredEntry(entry, input, size, checksum);
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                        throw exception;
+                    } finally {
+                        StoredContentSupport.closeAfterTransfer(input, failure);
                     }
                 }
             } finally {

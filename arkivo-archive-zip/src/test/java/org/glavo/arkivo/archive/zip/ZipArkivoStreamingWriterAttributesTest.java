@@ -8,14 +8,18 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NotLinkException;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributeView;
@@ -30,6 +34,7 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.Set;
 import java.util.zip.CRC32;
+import java.util.zip.ZipInputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -44,6 +49,169 @@ final class ZipArkivoStreamingWriterAttributesTest {
     /// Temporary directory used by the indexed metadata round-trip test.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Directory bodies must satisfy configured expectations before any local record is written.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void validatesDirectoryExpectations(boolean wrongSize) throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive);
+        try {
+            var entry = writer.beginDirectory("directory");
+            var view = Objects.requireNonNull(entry.attributeView(ZipArkivoEntryAttributeView.class));
+            view.setUncompressedSizeAndCrc32(wrongSize ? 1L : 0L, wrongSize ? 0L : 1L);
+            for (int attempt = 0; attempt < 2; attempt++) {
+                IOException failure = assertThrows(IOException.class, entry::close);
+                assertTrue(failure.getMessage().contains(wrongSize
+                        ? "size does not match" : "CRC-32 does not match"), failure::toString);
+                assertEquals(0, archive.size());
+            }
+            assertThrows(IOException.class, writer::close);
+            int completedSize = archive.size();
+            writer.close();
+            assertEquals(completedSize, archive.size());
+        } finally {
+            writer.close();
+        }
+        try (ZipInputStream input = new ZipInputStream(new ByteArrayInputStream(archive.toByteArray()))) {
+            assertNull(input.getNextEntry());
+        }
+    }
+
+    /// Empty entries must satisfy explicitly configured size and CRC expectations through every completion path.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void validatesEmptyEntryExpectations(boolean wrongSize) throws IOException {
+        for (ZipMethod method : new ZipMethod[]{ZipMethod.STORED, ZipMethod.DEFLATED}) {
+            for (int completion = 0; completion < 3; completion++) {
+                ByteArrayOutputStream archive = new ByteArrayOutputStream();
+                ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive);
+                try {
+                    var entry = writer.beginFile("entry");
+                    var view = Objects.requireNonNull(entry.attributeView(ZipArkivoEntryAttributeView.class));
+                    view.setMethod(method);
+                    view.setUncompressedSizeAndCrc32(wrongSize ? 1L : 0L, wrongSize ? 0L : 1L);
+                    IOException failure = switch (completion) {
+                        case 0 -> assertThrows(IOException.class, entry::close);
+                        case 1 -> assertThrows(IOException.class, entry.openOutputStream()::close);
+                        default -> assertThrows(IOException.class, writer::close);
+                    };
+                    assertTrue(failure.getMessage().contains(wrongSize
+                            ? "size does not match" : "CRC-32 does not match"), failure::toString);
+                    int failedSize = archive.size();
+                    if (completion != 2) {
+                        assertThrows(IOException.class, writer::close);
+                    }
+                    writer.close();
+                    assertEquals(failedSize, archive.size());
+                } finally {
+                    writer.close();
+                }
+            }
+        }
+    }
+
+    /// Missing expectations default to an empty stored body, while explicitly configured zeros remain valid.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void writesEmptyStoredEntries(boolean explicitExpectations) throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive)) {
+            var entry = writer.beginFile("empty");
+            var view = Objects.requireNonNull(entry.attributeView(ZipArkivoEntryAttributeView.class));
+            view.setMethod(ZipMethod.STORED);
+            if (explicitExpectations) {
+                view.setUncompressedSizeAndCrc32(0L, 0L);
+            }
+            entry.close();
+        }
+        try (ZipInputStream input = new ZipInputStream(new ByteArrayInputStream(archive.toByteArray()))) {
+            var entry = Objects.requireNonNull(input.getNextEntry());
+            assertEquals("empty", entry.getName());
+            assertEquals(0L, entry.getSize());
+            assertEquals(0L, entry.getCrc());
+            assertEquals(-1, input.read());
+            assertNull(input.getNextEntry());
+        }
+    }
+
+    /// Rejects conflicting physical parent records without resolving symbolic links in streaming entry names.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void rejectsNonDirectoryStreamingParents(int kind) throws IOException {
+        for (boolean linkParent : new boolean[]{false, true}) {
+            Path archive = temporaryDirectory.resolve("parent-" + kind + "-" + linkParent + ".zip");
+            var writer = ZipArkivoStreamingWriter.create(archive);
+            try {
+                writer.beginDirectory("real").close();
+                if (linkParent) {
+                    writer.beginSymbolicLink("parent", "real").close();
+                } else {
+                    writer.beginFile("parent").close();
+                }
+                var entry = switch (kind) {
+                    case 0, 1 -> writer.beginFile("parent/child");
+                    case 2 -> writer.beginDirectory("parent/child");
+                    case 3 -> writer.beginSymbolicLink("parent/child", "target");
+                    default -> throw new AssertionError(kind);
+                };
+                assertThrows(NotDirectoryException.class, () -> {
+                    if (kind == 0) {
+                        try (var ignored = entry.openOutputStream()) { }
+                    } else {
+                        entry.close();
+                    }
+                });
+                assertThrows(NotDirectoryException.class, writer::close);
+            } finally {
+                writer.close();
+            }
+            try (var fs = ZipArkivoFileSystem.open(archive)) {
+                assertEquals(linkParent, Files.isSymbolicLink(fs.getPath("parent")));
+                try (var entries = Files.list(fs.getPath("real"))) {
+                    assertEquals(0, entries.count());
+                }
+                assertFalse(Files.exists(fs.getPath("parent/child")));
+            }
+        }
+    }
+
+    /// Null timestamp arguments retain pending values and the modification time written to the DOS header.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7})
+    void preservesUnspecifiedTimestamps(int changed) throws IOException {
+        Path archive = temporaryDirectory.resolve("timestamps.zip");
+        FileTime original = FileTime.from(Instant.parse("2020-02-04T06:08:10Z"));
+        FileTime replacement = FileTime.from(Instant.parse("2021-03-05T07:09:12Z"));
+        FileTime modified = (changed & 1) != 0 ? replacement : original;
+        FileTime accessed = (changed & 2) != 0 ? replacement : original;
+        FileTime created = (changed & 4) != 0 ? replacement : original;
+        try (var writer = ZipArkivoStreamingWriter.create(archive)) {
+            try (var entry = writer.beginFile("entry")) {
+                BasicFileAttributeView view = requireView(entry, BasicFileAttributeView.class);
+                view.setTimes(original, original, original);
+                BasicFileAttributes snapshot = view.readAttributes();
+                view.setTimes((changed & 1) != 0 ? replacement : null,
+                        (changed & 2) != 0 ? replacement : null,
+                        (changed & 4) != 0 ? replacement : null);
+                BasicFileAttributes updated = view.readAttributes();
+                assertEquals(modified, updated.lastModifiedTime());
+                assertEquals(accessed, updated.lastAccessTime());
+                assertEquals(created, updated.creationTime());
+                assertEquals(original, snapshot.lastModifiedTime());
+                assertEquals(original, snapshot.lastAccessTime());
+                assertEquals(original, snapshot.creationTime());
+            }
+        }
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            BasicFileAttributes attributes = Files.readAttributes(fileSystem.getPath("/entry"),
+                    BasicFileAttributes.class);
+            assertEquals(modified, attributes.lastModifiedTime());
+            // No timestamp extra fields were supplied; these read attributes fall back to the modification time.
+            assertEquals(modified, attributes.lastAccessTime());
+            assertEquals(modified, attributes.creationTime());
+        }
+    }
 
     /// Verifies file defaults, configured metadata, defensive copies, method flags, and snapshot stability.
     @Test

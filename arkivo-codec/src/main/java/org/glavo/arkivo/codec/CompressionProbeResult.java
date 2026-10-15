@@ -20,7 +20,7 @@ import java.util.Objects;
 /// The replay channel implements [InterruptibleChannel] exactly when the original source does.
 @NotNullByDefault
 public final class CompressionProbeResult implements AutoCloseable {
-    /// The detected format, or `null` when no installed format matched.
+    /// The detected format, or `null` when no installed format could be identified.
     private final @Nullable CompressionFormat format;
 
     /// An immutable private copy of bytes consumed during detection.
@@ -43,9 +43,9 @@ public final class CompressionProbeResult implements AutoCloseable {
         this.channel = Objects.requireNonNull(channel, "channel");
     }
 
-    /// Returns the detected format, or `null` when no installed format matched.
+    /// Returns the detected format, or `null` when no installed format could be identified.
     ///
-    /// @return the detected format, or {@code null} when no format matched
+    /// @return the detected format, or `null` when the retained prefix is unrecognized or ambiguous
     public @Nullable CompressionFormat format() {
         return format;
     }

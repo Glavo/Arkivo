@@ -148,7 +148,7 @@ final class CPIOStorageLifecycleTest {
         assertEquals(0, storage.closeCount());
 
         IOException storageFailure = assertThrows(IOException.class, writer::close);
-        assertEquals("storage close failure", storageFailure.getMessage());
+        assertEquals("storage close failure", storageFailure.getCause().getMessage());
         assertDoesNotThrow(writer::close);
         assertFalse(target.isOpen());
         assertEquals(2, target.closeCount());

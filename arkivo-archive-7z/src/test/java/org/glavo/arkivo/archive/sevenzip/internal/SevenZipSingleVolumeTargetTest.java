@@ -67,8 +67,27 @@ final class SevenZipSingleVolumeTargetTest {
             output.rollback();
             assertArrayEquals(new byte[]{4, 5, 6}, channel.bytes.toByteArray());
             assertFalse(channel.isOpen());
+            assertEquals(1, channel.closeAttempts);
             assertThrows(IOException.class, () -> output.commit(0L));
         }
+    }
+
+    /// Requires the caller to close a returned volume rather than closing it during rollback.
+    @Test
+    void rollbackWaitsForCallerOwnedVolumeClosure() throws IOException {
+        TrackingWritableByteChannel channel = new TrackingWritableByteChannel();
+        ArkivoVolumeOutput output = new SevenZipSingleVolumeTarget(channel).openOutput();
+        WritableByteChannel volume = output.openVolume(0L);
+
+        assertThrows(IOException.class, output::rollback);
+        assertThrows(IOException.class, output::close);
+        assertEquals(0, channel.closeAttempts);
+        assertTrue(channel.isOpen());
+
+        volume.close();
+        output.rollback();
+        output.close();
+        assertEquals(1, channel.closeAttempts);
     }
 
     /// Verifies rollback before volume creation closes the target-owned destination exactly once.
@@ -105,9 +124,9 @@ final class SevenZipSingleVolumeTargetTest {
         assertEquals(2, channel.closeAttempts);
     }
 
-    /// Verifies a close failure reported after physical closure does not trigger redundant cleanup.
+    /// Retries failed cleanup even when the destination no longer accepts writes.
     @Test
-    void recognizesCleanupCompletedByFailingClose() throws IOException {
+    void retriesCleanupAfterLogicalClosure() throws IOException {
         TrackingWritableByteChannel channel = new TrackingWritableByteChannel();
         channel.closeFailures = 1;
         channel.closeBeforeFailure = true;
@@ -117,10 +136,12 @@ final class SevenZipSingleVolumeTargetTest {
         assertEquals("close failure", failure.getMessage());
         assertFalse(channel.isOpen());
         assertEquals(1, channel.closeAttempts);
+        assertFalse(channel.cleanupComplete);
 
         output.rollback();
         output.close();
-        assertEquals(1, channel.closeAttempts);
+        assertEquals(2, channel.closeAttempts);
+        assertTrue(channel.cleanupComplete);
     }
 
     /// Records written bytes and supports controlled close failures.
@@ -140,6 +161,9 @@ final class SevenZipSingleVolumeTargetTest {
 
         /// Whether the channel remains open.
         private boolean open = true;
+
+        /// Whether all cleanup has completed independently of the logical open state.
+        private boolean cleanupComplete;
 
         /// Writes all remaining source bytes.
         @Override
@@ -162,7 +186,7 @@ final class SevenZipSingleVolumeTargetTest {
         @Override
         public void close() throws IOException {
             closeAttempts++;
-            if (!open) {
+            if (cleanupComplete) {
                 return;
             }
             if (closeFailures > 0) {
@@ -173,6 +197,7 @@ final class SevenZipSingleVolumeTargetTest {
                 throw new IOException("close failure");
             }
             open = false;
+            cleanupComplete = true;
         }
 
         /// Requires this channel to remain open.

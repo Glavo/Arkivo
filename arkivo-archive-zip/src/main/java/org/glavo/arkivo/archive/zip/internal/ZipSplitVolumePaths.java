@@ -90,9 +90,7 @@ public final class ZipSplitVolumePaths {
                 && fileName.regionMatches(true, fileName.length() - 4, ".zip", 0, 4)
                 ? fileName.substring(0, fileName.length() - 4)
                 : fileName;
-        Path parent = archivePath.getParent();
-        Path volumeFileName = Path.of(baseName + ".z" + volumeNumber);
-        return parent != null ? parent.resolve(volumeFileName) : volumeFileName;
+        return archivePath.resolveSibling(baseName + ".z" + volumeNumber);
     }
 
     /// Returns the zero-based final disk number declared by ZIP end metadata, or `NOT_SPLIT`.

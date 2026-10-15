@@ -77,6 +77,10 @@ final class ArArkivoFileSystemContractTest {
 
             Iterator<FileStore> stores = fileSystem.getFileStores().iterator();
             FileStore store = stores.next();
+            assertThrows(NullPointerException.class,
+                    () -> store.supportsFileAttributeView((Class<BasicFileAttributeView>) null));
+            assertThrows(NullPointerException.class, () -> store.supportsFileAttributeView((String) null));
+            assertThrows(NullPointerException.class, () -> store.getFileStoreAttributeView(null));
             assertFalse(stores.hasNext());
             assertSame(store, Files.getFileStore(file));
             assertEquals(Files.size(archive), store.getTotalSpace());
@@ -369,10 +373,10 @@ final class ArArkivoFileSystemContractTest {
                             Set.of(StandardOpenOption.WRITE, StandardOpenOption.DELETE_ON_CLOSE)
                     )
             );
-            assertThrows(
-                    IllegalArgumentException.class,
-                    () -> Files.newByteChannel(file, Set.of(StandardOpenOption.CREATE))
-            );
+            try (SeekableByteChannel channel = Files.newByteChannel(file, Set.of(StandardOpenOption.CREATE))) {
+                assertEquals(6L, channel.size());
+                assertThrows(java.nio.channels.NonWritableChannelException.class, () -> channel.truncate(0));
+            }
             assertThrows(
                     java.nio.file.NoSuchFileException.class,
                     () -> Files.newByteChannel(missing, Set.of(StandardOpenOption.WRITE))

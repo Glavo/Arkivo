@@ -14,6 +14,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
@@ -29,7 +30,10 @@ import java.util.Set;
 ///
 /// Existing output is moved into temporary backup paths before new volumes are published. Successful commit removes
 /// stale previous volumes. Moves are performed one path at a time; publication is not atomic across volumes.
+/// Symbolic links are moved and replaced as links rather than followed to their targets.
 /// Existing directories are rejected as volume destinations and as stale volumes.
+/// Parent directories are resolved before publication paths are compared or moved; a symbolic parent followed by
+/// `..` is therefore traversed before that parent component is removed. Destination parent directories must exist.
 ///
 /// If publication fails, rollback attempts to remove new output and restore the backups. Cleanup failures are suppressed
 /// on the publication failure, and [ArkivoVolumeOutput#rollback()] or [ArkivoVolumeOutput#close()] retries unfinished
@@ -81,7 +85,7 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
     /// Opens one independently staged multi-volume output transaction.
     @Override
     public ArkivoVolumeOutput openOutput() throws IOException {
-        Path outputDirectory = normalizedOutputDirectory();
+        Path outputDirectory = resolvedOutputDirectory();
         validate();
         Path stagingDirectory = Files.createTempDirectory(outputDirectory, STAGING_DIRECTORY_PREFIX);
         return new PathVolumeOutput(layout, stagingDirectory, stagingOpenOptions(), replaceExistingOutput());
@@ -94,17 +98,16 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
     /// @throws IOException if the output directory or existing archive layout cannot be inspected,
     ///                     or a discovered volume path denotes a directory
     public void validate() throws IOException {
-        normalizedOutputDirectory();
+        resolvedOutputDirectory();
         @Unmodifiable List<Path> existingPaths = existingOutputPaths(List.of());
         validateInitialState(existingPaths);
         requireNonDirectoryPaths(existingPaths);
     }
 
-    /// Returns the normalized directory used for temporary publication state.
-    private Path normalizedOutputDirectory() {
+    /// Resolves the staging directory without removing components before following symbolic links.
+    private Path resolvedOutputDirectory() throws IOException {
         return Objects.requireNonNull(layout.outputDirectory(), "layout.outputDirectory()")
-                .toAbsolutePath()
-                .normalize();
+                .toRealPath();
     }
 
     /// Applies create and existence checks before allocating staging state.
@@ -115,7 +118,7 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
         if (!openOptions.contains(StandardOpenOption.CREATE)
                 && !openOptions.contains(StandardOpenOption.CREATE_NEW)
                 && existingPaths.isEmpty()) {
-            Path firstPath = normalizedVolumePath(0L, 0L);
+            Path firstPath = resolvedVolumePath(0L, 0L);
             throw new NoSuchFileException(firstPath.toString());
         }
     }
@@ -137,7 +140,7 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
         return Set.copyOf(options);
     }
 
-    /// Returns normalized, distinct existing output paths and known current destinations.
+    /// Returns distinct existing paths after resolving their parents but not their terminal links.
     private @Unmodifiable List<Path> existingOutputPaths(@Unmodifiable List<Path> destinations)
             throws IOException {
         LinkedHashSet<Path> paths = new LinkedHashSet<>();
@@ -146,27 +149,32 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
                 "layout.existingVolumePaths()"
         );
         for (Path path : reportedPaths) {
-            paths.add(normalizedPath(path, "existing volume path"));
+            Objects.requireNonNull(path, "existing volume path");
+            if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+                paths.add(resolveVolumePath(path, "existing volume path"));
+            }
         }
         for (Path destination : destinations) {
-            if (Files.exists(destination)) {
+            if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) {
                 paths.add(destination);
             }
         }
         return List.copyOf(paths);
     }
 
-    /// Returns one normalized output path from the layout.
-    private Path normalizedVolumePath(long index, long finalVolumeIndex) {
-        return normalizedPath(
+    /// Resolves the parent of one output path from the layout.
+    private Path resolvedVolumePath(long index, long finalVolumeIndex) throws IOException {
+        return resolveVolumePath(
                 layout.volumePath(index, finalVolumeIndex),
                 "layout.volumePath(" + index + ", " + finalVolumeIndex + ")"
         );
     }
 
-    /// Normalizes one required path.
-    private static Path normalizedPath(@Nullable Path path, String description) {
-        return Objects.requireNonNull(path, description).toAbsolutePath().normalize();
+    /// Resolves existing parent directories while preserving the terminal directory entry for replacement.
+    private static Path resolveVolumePath(@Nullable Path path, String description) throws IOException {
+        Path absolute = Objects.requireNonNull(path, description).toAbsolutePath();
+        @Nullable Path parent = absolute.getParent();
+        return parent == null ? absolute.toRealPath() : parent.toRealPath().resolve(absolute.getFileName()).normalize();
     }
 
     /// Rejects directories before any existing output is moved into staging.
@@ -297,11 +305,11 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
         }
 
         /// Resolves and validates every final output path before publication mutates existing files.
-        private @Unmodifiable List<Path> outputPaths(long finalVolumeIndex) {
+        private @Unmodifiable List<Path> outputPaths(long finalVolumeIndex) throws IOException {
             ArrayList<Path> paths = new ArrayList<>(openedVolumeCount);
             HashSet<Path> distinctPaths = new HashSet<>();
             for (int index = 0; index < openedVolumeCount; index++) {
-                Path path = normalizedPath(
+                Path path = resolveVolumePath(
                         layout.volumePath(index, finalVolumeIndex),
                         "layout.volumePath(" + index + ", " + finalVolumeIndex + ")"
                 );
@@ -333,7 +341,7 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
             }
         }
 
-        /// Returns normalized existing paths reported by the layout plus directly targeted paths.
+        /// Resolves existing reported paths and adds directly targeted paths without following terminal links.
         private @Unmodifiable List<Path> existingOutputPaths(@Unmodifiable List<Path> outputPaths)
                 throws IOException {
             LinkedHashSet<Path> paths = new LinkedHashSet<>();
@@ -342,13 +350,13 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
                     "layout.existingVolumePaths()"
             );
             for (Path path : reportedPaths) {
-                Path normalized = normalizedPath(path, "existing volume path");
-                if (Files.exists(normalized)) {
-                    paths.add(normalized);
+                Objects.requireNonNull(path, "existing volume path");
+                if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+                    paths.add(resolveVolumePath(path, "existing volume path"));
                 }
             }
             for (Path outputPath : outputPaths) {
-                if (Files.exists(outputPath)) {
+                if (Files.exists(outputPath, LinkOption.NOFOLLOW_LINKS)) {
                     paths.add(outputPath);
                 }
             }
@@ -369,10 +377,6 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
             }
             for (int index = backups.size() - 1; index >= 0; index--) {
                 OutputBackup backup = backups.get(index);
-                if (!Files.exists(backup.backupPath())) {
-                    backups.remove(index);
-                    continue;
-                }
                 try {
                     Files.move(backup.backupPath(), backup.outputPath());
                     backups.remove(index);

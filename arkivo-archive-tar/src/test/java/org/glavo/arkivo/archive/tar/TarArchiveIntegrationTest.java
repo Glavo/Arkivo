@@ -15,6 +15,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
@@ -23,6 +24,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
@@ -1097,6 +1099,82 @@ public final class TarArchiveIntegrationTest {
         }
     }
 
+    /// Counts every resolved hard-link path toward indexed logical-size limits, including chained aliases.
+    @ParameterizedTest
+    @CsvSource({"1, 0", "1, 4", "2, 4"})
+    void limitsResolvedHardLinkSizes(int linkCount, int contentSize) throws IOException {
+        byte[] content = new byte[contentSize];
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeEntry(output, "original", content);
+        String target = "original";
+        for (int index = 1; index <= linkCount; index++) {
+            String name = "alias" + index;
+            writeHeader(output, name, 0644, 1000, 1000, 0, '1', target, "user", "group");
+            target = name;
+        }
+        output.write(new byte[1024]);
+        byte[] archive = output.toByteArray();
+        long logicalTotal = (long) contentSize * (linkCount + 1);
+        ArchiveReadLimits exactLimits = ArchiveReadLimits.builder()
+                .maximumEntryCount(linkCount + 1L)
+                .maximumEntrySize(contentSize)
+                .maximumTotalEntrySize(logicalTotal)
+                .build();
+        Path archivePath = createTemporaryArchivePath("tar-hard-link-limits-");
+        try {
+            Files.write(archivePath, archive);
+            for (boolean update : new boolean[]{false, true}) {
+                if (logicalTotal > 0L) {
+                    ArchiveReadLimits limits = ArchiveReadLimits.builder()
+                            .maximumEntryCount(linkCount + 1L).maximumEntrySize(contentSize)
+                            .maximumTotalEntrySize(logicalTotal - 1L).build();
+                    ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> {
+                        try (var ignored = update
+                                ? TarArkivoFileSystem.update(archivePath, TarArchiveOptions.UPDATE_DEFAULTS
+                                        .withCommon(ArchiveUpdateOptions.DEFAULT.withLimits(limits)))
+                                : TarArkivoFileSystem.open(archivePath, TarArchiveOptions.READ_DEFAULTS
+                                        .withCommon(ArchiveReadOptions.DEFAULT.withLimits(limits)))) {
+                            // Opening the complete index must reject the last alias.
+                        }
+                    });
+                    assertEquals(ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, failure.kind());
+                    assertEquals(logicalTotal - 1L, failure.maximum());
+                    assertEquals(logicalTotal, failure.actual());
+                    assertEquals("alias" + linkCount, failure.entryPath());
+                }
+                try (var fileSystem = update
+                        ? TarArkivoFileSystem.update(archivePath, TarArchiveOptions.UPDATE_DEFAULTS
+                                .withCommon(ArchiveUpdateOptions.DEFAULT.withLimits(exactLimits)))
+                        : TarArkivoFileSystem.open(archivePath, TarArchiveOptions.READ_DEFAULTS
+                                .withCommon(ArchiveReadOptions.DEFAULT.withLimits(exactLimits)))) {
+                    assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/original")));
+                    for (int index = 1; index <= linkCount; index++) {
+                        Path alias = fileSystem.getPath("/alias" + index);
+                        assertEquals(contentSize, Files.size(alias));
+                        assertArrayEquals(content, Files.readAllBytes(alias));
+                    }
+                }
+                assertArrayEquals(archive, Files.readAllBytes(archivePath));
+            }
+            // Streaming exposes the hard-link records themselves, not the target's body a second time.
+            ArchiveReadLimits streamingLimits = ArchiveReadLimits.builder()
+                    .maximumEntryCount(linkCount + 1L).maximumEntrySize(contentSize)
+                    .maximumTotalEntrySize(contentSize).build();
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(archive),
+                    TarArchiveOptions.READ_DEFAULTS.withCommon(
+                            ArchiveReadOptions.DEFAULT.withLimits(streamingLimits)))) {
+                int entries = 0;
+                while (reader.next()) {
+                    assertEquals(entries++ == 0 ? contentSize : 0L,
+                            reader.readAttributes(TarArkivoEntryAttributes.class).size());
+                }
+                assertEquals(linkCount + 1, entries);
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that the streaming writer emits PAX metadata for long paths and link targets.
     @Test
     public void writesPaxMetadataForLongNames() throws IOException {
@@ -1147,12 +1225,57 @@ public final class TarArchiveIntegrationTest {
     /// Verifies that the streaming writer rejects unsafe archive paths before writing them.
     @Test
     public void writerRejectsUnsafeEntryPaths() throws IOException {
-        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(new ByteArrayOutputStream())) {
-            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("../evil.txt"));
-            assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory("/absolute"));
-            assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("C:/evil.txt", "target"));
-            assertThrows(IllegalArgumentException.class, () -> writer.beginHardLink("copy.txt", "../target.txt"));
-            assertThrows(IllegalArgumentException.class, () -> writer.beginHardLink("copy.txt", "/target.txt"));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
+            for (String path : new String[]{"../evil.txt", "/absolute", "C:/evil.txt",
+                    "./C:/escape", ".\\C:\\escape", "././C:escape", ".//c:/escape"}) {
+                assertThrows(IllegalArgumentException.class, () -> writer.beginFile(path), path);
+                assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory(path), path);
+                assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink(path, "target"), path);
+                assertThrows(IllegalArgumentException.class, () -> writer.beginHardLink(path, "target"), path);
+                assertThrows(IllegalArgumentException.class, () -> writer.beginHardLink("copy.txt", path), path);
+            }
+            writer.beginFile("./C/value").close();
+            writer.beginHardLink("copy", "./C/value").close();
+            writer.beginSymbolicLink("link", "C:/target").close();
+        }
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            assertEquals("C/value", reader.readAttributes().path());
+            assertTrue(reader.next());
+            assertEquals("C/value", reader.readAttributes(TarArkivoEntryAttributes.class).linkName());
+            assertTrue(reader.next());
+            assertEquals("C:/target", reader.readAttributes(TarArkivoEntryAttributes.class).linkName());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Rejects stored entry and hard-link paths whose normalization would expose a drive prefix.
+    @Test
+    public void rejectsDrivePrefixesExposedByFileSystemNormalization() throws IOException {
+        for (String path : new String[]{"./C:/escape", ".\\C:\\escape", "././C:escape", ".//c:/escape"}) {
+            for (boolean hardLink : new boolean[]{false, true}) {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                if (hardLink) {
+                    writeHeader(output, "alias", 0644, 0, 0, 0, '1', path, "", "");
+                } else {
+                    writeEntry(output, path, new byte[0]);
+                }
+                output.write(new byte[1024]);
+                byte[] bytes = output.toByteArray();
+                Path archive = createTemporaryArchivePath("tar-normalized-drive-");
+                try {
+                    Files.write(archive, bytes);
+                    String message = (hardLink ? "TAR hard link target" : "TAR entry path") + " must be relative";
+                    assertEquals(message,
+                            assertThrows(IOException.class, () -> TarArkivoFileSystem.open(archive).close()).getMessage());
+                    assertEquals(message,
+                            assertThrows(IOException.class, () -> TarArkivoFileSystem.update(archive).close()).getMessage());
+                    assertArrayEquals(bytes, Files.readAllBytes(archive));
+                } finally {
+                    deleteTemporaryArchive(archive);
+                }
+            }
         }
     }
 
@@ -1529,6 +1652,235 @@ public final class TarArchiveIntegrationTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
             assertEquals(0, paxDecoderCalls[0]);
+        }
+    }
+
+    /// Extended strings replace undecodable fixed fields in both streaming and indexed reads.
+    @ParameterizedTest
+    @CsvSource({"path,0,x,false", "uname,265,x,false", "gname,297,x,false", "linkpath,157,x,false",
+            "path,0,g,false", "uname,265,g,false", "gname,297,g,false", "linkpath,157,g,false",
+            "path,0,L,false", "linkpath,157,K,false", "GNU.sparse.name,0,x,false",
+            "linkpath,157,x,true", "GNU.sparse.name,0,x,true"})
+    public void extendedStringsBypassOverriddenHeaderDecoding(String key, int offset, char extension, boolean binary)
+            throws IOException {
+        String replacement = "unicode-\u00e9";
+        boolean link = key.equals("linkpath");
+        byte[] content = link ? new byte[0] : new byte[]{1, 2, 3};
+        ByteArrayOutputStream fixed = new ByteArrayOutputStream();
+        writeHeader(fixed, "entry", 0644, 0, 0, content.length, link ? '2' : '0',
+                link ? "target" : "", "user", "group");
+        byte[] header = fixed.toByteArray();
+        header[offset] = (byte) 0xe9;
+        java.util.Arrays.fill(header, 148, 156, (byte) ' ');
+        int checksum = 0;
+        for (byte value : header) checksum += Byte.toUnsignedInt(value);
+        writeChecksum(header, checksum);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] metadata = extension == 'L' || extension == 'K'
+                ? replacement.getBytes(StandardCharsets.UTF_8) : paxRecord(key, replacement);
+        if (key.equals("GNU.sparse.name")) {
+            ByteArrayOutputStream sparseMetadata = new ByteArrayOutputStream();
+            sparseMetadata.write(metadata);
+            sparseMetadata.write(paxRecord("GNU.sparse.size", "3"));
+            sparseMetadata.write(paxRecord("GNU.sparse.numblocks", "1"));
+            sparseMetadata.write(paxRecord("GNU.sparse.map", "0,3"));
+            metadata = sparseMetadata.toByteArray();
+        }
+        if (binary) {
+            ByteArrayOutputStream binaryMetadata = new ByteArrayOutputStream();
+            binaryMetadata.write(paxRecord("hdrcharset", "BINARY"));
+            binaryMetadata.write(metadata);
+            metadata = binaryMetadata.toByteArray();
+        }
+        writeMetadataEntry(output, "ExtendedHeaders/entry", extension, metadata);
+        output.write(header);
+        writeBody(output, content);
+        output.write(new byte[1024]);
+        byte[] archive = output.toByteArray();
+        String path = key.equals("path") || key.equals("GNU.sparse.name") ? replacement : "entry";
+        Path file = createTemporaryArchivePath("tar-overridden-strings-");
+        try {
+            Files.write(file, archive);
+            for (boolean custom : new boolean[]{false, true}) {
+                int[] paxCalls = new int[1];
+                TarMetadataDecoder decoder = context -> {
+                    if (key.equals(context.paxKey())) paxCalls[0]++;
+                    if (context.source() == TarMetadataDecoder.Source.HEADER
+                            && context.typeFlag() == (link ? '2' : '0')) {
+                        TarMetadataDecoder.MetadataKind overridden = switch (key) {
+                            case "path", "GNU.sparse.name" -> TarMetadataDecoder.MetadataKind.ENTRY_NAME;
+                            case "linkpath" -> TarMetadataDecoder.MetadataKind.LINK_NAME;
+                            case "uname" -> TarMetadataDecoder.MetadataKind.USER_NAME;
+                            default -> TarMetadataDecoder.MetadataKind.GROUP_NAME;
+                        };
+                        if (context.metadataKind() == overridden)
+                            throw new AssertionError("Overridden fixed field must not be decoded");
+                    }
+                    return TarArchiveOptions.DEFAULT_METADATA_DECODER.decode(context.bytes());
+                };
+                var options = custom ? TarArchiveOptions.READ_DEFAULTS.withMetadataDecoder(decoder)
+                        : TarArchiveOptions.READ_DEFAULTS;
+                try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(archive), options)) {
+                    assertTrue(reader.next());
+                    var attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+                    assertEquals(path, attributes.path());
+                    assertEquals(key.equals("uname") ? replacement : "user", attributes.userName());
+                    assertEquals(key.equals("gname") ? replacement : "group", attributes.groupName());
+                    assertEquals(link ? replacement : null, attributes.linkName());
+                    if (!link) {
+                        try (var input = reader.openInputStream()) {
+                            assertArrayEquals(content, input.readAllBytes());
+                        }
+                    }
+                    assertFalse(reader.next());
+                }
+                assertEquals(custom && binary ? 1 : 0, paxCalls[0]);
+                paxCalls[0] = 0;
+                try (var fs = TarArkivoFileSystem.open(file, options)) {
+                    var attributes = Files.readAttributes(fs.getPath(path), TarArkivoEntryAttributes.class,
+                            LinkOption.NOFOLLOW_LINKS);
+                    assertEquals(key.equals("uname") ? replacement : "user", attributes.userName());
+                    assertEquals(key.equals("gname") ? replacement : "group", attributes.groupName());
+                    if (link) assertEquals(replacement, Files.readSymbolicLink(fs.getPath(path)).toString());
+                    else assertArrayEquals(content, Files.readAllBytes(fs.getPath(path)));
+                }
+                assertEquals(custom && binary ? 1 : 0, paxCalls[0]);
+            }
+        } finally {
+            deleteTemporaryArchive(file);
+        }
+
+        // The same legacy bytes remain invalid when no extended value replaces them.
+        ByteArrayOutputStream withoutOverride = new ByteArrayOutputStream();
+        withoutOverride.write(header);
+        writeBody(withoutOverride, content);
+        withoutOverride.write(new byte[1024]);
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(withoutOverride.toByteArray()))) {
+            assertThrows(CharacterCodingException.class, reader::next);
+        }
+    }
+
+    /// Empty decoded BINARY optional strings retain the fixed-header fallback without a second decoder call.
+    @ParameterizedTest
+    @ValueSource(strings = {"linkpath", "GNU.sparse.name"})
+    public void emptyDecodedBinaryPaxStringRetainsFallback(String key) throws IOException {
+        boolean link = key.equals("linkpath");
+        ByteArrayOutputStream metadata = new ByteArrayOutputStream();
+        metadata.write(paxRecord("hdrcharset", "BINARY"));
+        metadata.write(paxRecord(key, "ignored"));
+        if (!link) {
+            metadata.write(paxRecord("GNU.sparse.size", "0"));
+            metadata.write(paxRecord("GNU.sparse.numblocks", "0"));
+            metadata.write(paxRecord("GNU.sparse.map", ""));
+        }
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeMetadataEntry(output, "PaxHeaders/entry", 'x', metadata.toByteArray());
+        writeHeader(output, "entry", 0644, 0, 0, 0, link ? '2' : '0',
+                link ? "target" : "", "user", "group");
+        output.write(new byte[1024]);
+        int[] calls = new int[1];
+        TarMetadataDecoder decoder = context -> {
+            if (key.equals(context.paxKey())) {
+                assertEquals(TarMetadataDecoder.Source.PAX_EXTENDED_HEADER, context.source());
+                calls[0]++;
+                return "";
+            }
+            return TarArchiveOptions.DEFAULT_METADATA_DECODER.decode(context.bytes());
+        };
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()),
+                TarArchiveOptions.READ_DEFAULTS.withMetadataDecoder(decoder))) {
+            assertTrue(reader.next());
+            var attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("entry", attributes.path());
+            assertEquals(link ? "target" : null, attributes.linkName());
+            assertEquals(1, calls[0]);
+            assertFalse(reader.next());
+            assertEquals(1, calls[0]);
+        }
+    }
+
+    /// A PAX path override does not remove the directory meaning of an old-style header's trailing slash.
+    @Test
+    public void overriddenOldStyleDirectoryRetainsType() throws IOException {
+        ByteArrayOutputStream fixed = new ByteArrayOutputStream();
+        writeHeader(fixed, "legacy/", 0755, 0, 0, 0, 0, "", "user", "group");
+        byte[] header = fixed.toByteArray();
+        header[0] = (byte) 0xe9;
+        java.util.Arrays.fill(header, 148, 156, (byte) ' ');
+        int checksum = 0;
+        for (byte value : header) checksum += Byte.toUnsignedInt(value);
+        writeChecksum(header, checksum);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writePaxHeader(output, Map.of("path", "directory"));
+        output.write(header);
+        output.write(new byte[1024]);
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            var attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("directory", attributes.path());
+            assertTrue(attributes.isDirectory());
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Removed global values and replaced local headers no longer suppress fixed-field decoding.
+    @ParameterizedTest
+    @ValueSource(strings = {"replaced-local", "deleted-global", "cleared-local"})
+    public void paxRemovalControlsFixedFieldDecoding(String scenario) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        boolean path = scenario.equals("replaced-local");
+        if (path) {
+            writePaxHeader(output, Map.of("path", "discarded"));
+            writePaxHeader(output, Map.of("gname", "group"));
+        } else {
+            writeGlobalPaxHeader(output, Map.of("uname", "global"));
+            if (scenario.equals("deleted-global")) writeGlobalPaxHeader(output, Map.of("uname", ""));
+            else writePaxHeader(output, Map.of("uname", ""));
+        }
+        ByteArrayOutputStream fixed = new ByteArrayOutputStream();
+        writeHeader(fixed, "entry", 0644, 0, 0, 0, '0', "", "user", "group");
+        byte[] header = fixed.toByteArray();
+        header[path ? 0 : 265] = (byte) 0xe9;
+        java.util.Arrays.fill(header, 148, 156, (byte) ' ');
+        int checksum = 0;
+        for (byte value : header) checksum += Byte.toUnsignedInt(value);
+        writeChecksum(header, checksum);
+        output.write(header);
+        output.write(new byte[1024]);
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            if (scenario.equals("cleared-local")) {
+                assertTrue(reader.next());
+                assertNull(reader.readAttributes(TarArkivoEntryAttributes.class).userName());
+                assertFalse(reader.next());
+            } else {
+                assertThrows(CharacterCodingException.class, reader::next);
+            }
+        }
+    }
+
+    /// Pending GNU values do not bypass strict decoding of intervening extension headers.
+    @ParameterizedTest
+    @CsvSource({"L,x,0", "L,g,0", "K,x,157", "K,g,157"})
+    public void pendingLongStringsDoNotOverrideExtensionHeaders(char pending, char extension, int offset)
+            throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeMetadataEntry(output, "LongName", pending, "replacement".getBytes(StandardCharsets.UTF_8));
+        byte[] metadata = paxRecord("uname", "user");
+        ByteArrayOutputStream fixed = new ByteArrayOutputStream();
+        writeHeader(fixed, "PaxHeaders/entry", 0644, 0, 0, metadata.length, extension, "target", "", "");
+        byte[] header = fixed.toByteArray();
+        header[offset] = (byte) 0xe9;
+        java.util.Arrays.fill(header, 148, 156, (byte) ' ');
+        int checksum = 0;
+        for (byte value : header) checksum += Byte.toUnsignedInt(value);
+        writeChecksum(header, checksum);
+        output.write(header);
+        writeBody(output, metadata);
+        writeEntry(output, "entry", new byte[0]);
+        output.write(new byte[1024]);
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertThrows(CharacterCodingException.class, reader::next);
         }
     }
 
@@ -2241,7 +2593,6 @@ public final class TarArchiveIntegrationTest {
         return output.toByteArray();
     }
 
-    /// Creates a temporary TAR archive path under the build directory.
     /// Writes one regular file through a TAR streaming writer.
     private static void writeStreamingFile(
             TarArkivoStreamingWriter writer,
@@ -2254,6 +2605,7 @@ public final class TarArchiveIntegrationTest {
         }
     }
 
+    /// Creates a temporary TAR archive path under the build directory.
     private static Path createTemporaryArchivePath(String prefix) throws IOException {
         Path temporaryRoot = Path.of("build", "tmp", "arkivo-tar-tests");
         Files.createDirectories(temporaryRoot);

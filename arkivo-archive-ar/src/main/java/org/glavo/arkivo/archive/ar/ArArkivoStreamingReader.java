@@ -18,6 +18,8 @@ import java.util.Objects;
 /// the reader at the next logical member. Attributes returned for that position are detached snapshots. The member body
 /// may be opened once; advancing closes it before consuming the next header. After `next()` returns `false`, no current
 /// member exists.
+/// BSD inline-name trailing NUL padding is removed; a remaining NUL in a decoded member name causes
+/// `next()` to throw `IOException`.
 ///
 /// A successfully returned reader owns the supplied stream or channel and closes it when the reader closes. Closing an
 /// entry body does not close the reader. The reader is a stateful cursor; callers must serialize cursor operations.

@@ -11,9 +11,11 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.ReadableByteChannel;
@@ -24,6 +26,7 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,6 +40,94 @@ final class CompressionDetectionChannelContractTest {
 
     /// Sentinel retained before a nonzero logical source origin.
     private static final byte SOURCE_GUARD = (byte) 0xd3;
+
+    /// Resolves shared skippable signatures without losing bytes or changing a seekable source's origin.
+    @Test
+    void distinguishesFormatsAfterSkippableFrames() throws IOException {
+        for (String name : new String[]{"lz4", "zstd"}) {
+            CompressionFormat format = CompressionFormats.require(name);
+            for (int payloadSize : new int[]{0, 1, 37, 8192}) {
+                byte[] encoded = encode(format);
+                ByteBuffer data = ByteBuffer.allocate(16 + payloadSize + encoded.length)
+                        .order(ByteOrder.LITTLE_ENDIAN);
+                data.putInt(0x184d2a50).putInt(payloadSize);
+                data.position(8 + payloadSize);
+                data.putInt(0x184d2a5f).putInt(0).put(encoded).flip();
+                assertSame(format, CompressionFormats.detect(data));
+                try (var input = CompressionFormats.newInputStream(new ByteArrayInputStream(data.array()))) {
+                    assertArrayEquals(CONTENT, input.readAllBytes());
+                }
+                for (int fragmentSize : new int[]{1, 19}) {
+                    try (FragmentingSeekableByteChannel source =
+                                 new FragmentingSeekableByteChannel(data.array(), fragmentSize)) {
+                        assertSame(format, CompressionFormats.detect(source));
+                        assertEquals(0, source.position());
+                        try (CompressionProbeResult probe = CompressionFormats.probe(source)) {
+                            assertSame(format, probe.format());
+                            try (ReadableByteChannel replay = probe.takeChannel()) {
+                                assertArrayEquals(data.array(), readAll(replay, name));
+                            }
+                        }
+                        assertTrue(source.isOpen());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bounds forward lookahead without guessing while permitting callers to request a larger replay prefix.
+    @Test
+    void boundsSkippableLookaheadAndReplaysUnresolvedPrefixes() throws IOException {
+        for (String name : new String[]{"lz4", "zstd", "gzip"}) {
+            CompressionFormat format = CompressionFormats.require(name);
+            for (int payloadSize : new int[]{65524, 65525, 70000}) {
+                byte[] encoded = encode(format);
+                ByteBuffer data = ByteBuffer.allocate(8 + payloadSize + encoded.length)
+                        .order(ByteOrder.LITTLE_ENDIAN);
+                data.putInt(0x184d2a50).putInt(payloadSize).position(8 + payloadSize);
+                data.put(encoded);
+                for (boolean extended : new boolean[]{false, true}) {
+                    try (FragmentingSeekableByteChannel source =
+                                 new FragmentingSeekableByteChannel(data.array(), 29);
+                         CompressionProbeResult probe = CompressionFormats.probe(source,
+                                 extended ? data.capacity() : 0, ResourceOwnership.BORROWED)) {
+                        if (!name.equals("gzip") && (extended || payloadSize == 65524)) {
+                            assertSame(format, probe.format());
+                        } else {
+                            assertNull(probe.format());
+                        }
+                        assertTrue(source.position() <= (extended ? data.capacity() : 65536));
+                        try (ReadableByteChannel replay = probe.takeChannel()) {
+                            assertArrayEquals(data.array(), readAll(replay, name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Does not guess a format from an incomplete or exclusively skippable prefix.
+    @Test
+    void leavesSharedSkippablePrefixesUnresolved() throws IOException {
+        for (long payloadSize : new long[]{0, 1, 0x8000_0000L, 0xffff_ffffL}) {
+            byte[] header = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(0x184d2a50).putInt((int) payloadSize).array();
+            for (int size = 0; size <= header.length; size++) {
+                byte[] bytes = Arrays.copyOf(header, size);
+                assertNull(CompressionFormats.detect(ByteBuffer.wrap(bytes)));
+                try (FragmentingSeekableByteChannel source = new FragmentingSeekableByteChannel(bytes, 1)) {
+                    assertNull(CompressionFormats.detect(source));
+                    assertEquals(0, source.position());
+                    try (CompressionProbeResult probe = CompressionFormats.probe(source)) {
+                        assertNull(probe.format());
+                        try (ReadableByteChannel replay = probe.takeChannel()) {
+                            assertArrayEquals(bytes, readAll(replay, "skippable"));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// Verifies fragmented seekable detection recognizes every signed format and restores the initial position.
     @Test

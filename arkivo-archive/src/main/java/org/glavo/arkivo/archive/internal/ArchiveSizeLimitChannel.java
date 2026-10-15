@@ -10,6 +10,8 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousCloseException;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
@@ -63,16 +65,25 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
     /// The delegate receives at most the remaining allowance plus one probe byte. If that probe exceeds the limit,
     /// the target position reflects every byte read before the exception and its original limit is restored. Bytes
     /// placed in the target before a delegate failure remain accounted. If those bytes exceed the limit after an I/O
-    /// failure, the limit failure is reported with the delegate failure suppressed. Runtime failures and errors remain
-    /// primary and carry the newly latched limit failure as suppressed context.
+    /// failure other than [AsynchronousCloseException], the limit failure is reported with the delegate failure
+    /// suppressed. Asynchronous closure (including interruption), runtime failures, and errors remain primary and
+    /// carry the newly latched limit failure as suppressed context.
+    /// After a limit failure, nonempty reads keep reporting that failure while the channel remains open. Empty reads
+    /// are delegated without probing; reads after delegate closure throw [ClosedChannelException].
     ///
     /// @param target the destination buffer
     /// @return the number of bytes read, possibly zero, or `-1` at end of input
-    /// @throws ArkivoReadLimitException if this read makes the decoded byte count exceed the configured maximum
+    /// @throws ArkivoReadLimitException if a nonempty read exceeds the configured maximum or a previous read exceeded it
     /// @throws IOException if the delegate read fails
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
+        if (!delegate.isOpen()) {
+            throw new ClosedChannelException();
+        }
+        if (!target.hasRemaining()) {
+            return delegate.read(target);
+        }
         @Nullable ArkivoReadLimitException previousFailure = failure;
         if (previousFailure != null) {
             throw previousFailure;
@@ -86,7 +97,7 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
             if (partialRead > 0) {
                 @Nullable ArkivoReadLimitException limitFailure = account(partialRead);
                 if (limitFailure != null) {
-                    if (exception instanceof IOException) {
+                    if (exception instanceof IOException && !(exception instanceof AsynchronousCloseException)) {
                         limitFailure.addSuppressed(exception);
                         throw limitFailure;
                     }
@@ -109,9 +120,10 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
     /// @param read the positive number of newly delivered bytes
     /// @return the newly latched failure, or `null` if the decoded byte count remains within the limit
     private @Nullable ArkivoReadLimitException account(int read) {
+        boolean exceeded = read > maximum - count;
         long actual = count > Long.MAX_VALUE - read ? Long.MAX_VALUE : count + read;
         count = actual;
-        if (actual <= maximum) {
+        if (!exceeded) {
             return null;
         }
         ArkivoReadLimitException exception = new ArkivoReadLimitException(
@@ -130,10 +142,6 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
     /// @return the delegate read result
     /// @throws IOException if the delegate read fails
     private int readWithinProbeBoundary(ByteBuffer target) throws IOException {
-        if (!target.hasRemaining()) {
-            return delegate.read(target);
-        }
-
         long remainingAllowance = maximum - count;
         long maximumRead = remainingAllowance == Long.MAX_VALUE
                 ? Long.MAX_VALUE

@@ -251,7 +251,7 @@ public final class ZstdDecoder
         requireOpen();
         ZstdDictionaryRequest request = dictionaryRequest();
         if (!request.matches(dictionary)) {
-            throw new IOException("Configured Zstandard dictionary does not satisfy " + request);
+            throw new IllegalArgumentException("Configured Zstandard dictionary does not satisfy " + request);
         }
         this.dictionary = ZstdDictionaryContext.parse(dictionary);
         beginStandardFrame(Objects.requireNonNull(frameInfo));

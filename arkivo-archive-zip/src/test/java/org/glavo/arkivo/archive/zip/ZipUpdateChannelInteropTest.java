@@ -4,11 +4,14 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
+import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -17,6 +20,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.OpenOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.List;
@@ -37,6 +41,174 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Compares bounded ZIP update sequences with a byte-array model and JDK ZIPFS file channels.
 @NotNullByDefault
 final class ZipUpdateChannelInteropTest {
+    /// Prevents publication when a staged replacement cannot be opened, fully read, or closed.
+    @ParameterizedTest
+    @ValueSource(strings = {"open", "read", "close", "stall"})
+    void failedReplacementDoesNotPublishPartialArchive(String failurePoint, @TempDir Path directory)
+            throws IOException {
+        Path archive = directory.resolve("archive.zip");
+        createArchive(archive, ZipEntry.DEFLATED, new byte[]{1, 2, 3});
+        byte[] original = Files.readAllBytes(archive);
+        ReplacementFaultStorage storage = new ReplacementFaultStorage(failurePoint);
+        var defaults = ZipArchiveOptions.UPDATE_DEFAULTS;
+        var options = defaults.withCommon(defaults.common().withEditStorageFactory(() -> storage));
+        var fileSystem = ZipArkivoFileSystem.update(archive, options);
+        try {
+            Path entry = fileSystem.getPath("/body.bin");
+            Files.write(entry, new byte[]{4, 5, 6});
+            SeekableByteChannel channel = Files.newByteChannel(entry,
+                    Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING));
+            channel.write(ByteBuffer.wrap(new byte[]{7, 8, 9}));
+            storage.armed = true;
+            assertThrows(IOException.class, channel::close);
+            channel.close();
+            assertThrows(IOException.class, fileSystem::close);
+        } finally {
+            storage.armed = false;
+            fileSystem.close();
+        }
+        assertArrayEquals(original, Files.readAllBytes(archive));
+    }
+
+    /// Injects failures only into pending random-access replacement bodies during serialization.
+    @NotNullByDefault
+    private static final class ReplacementFaultStorage implements ArkivoEditStorage {
+        /// The backing storage used for successful allocations and writes.
+        private final ArkivoEditStorage delegate = ArkivoEditStorage.memory();
+
+        /// The operation that fails once the test arms injection.
+        private final String failurePoint;
+
+        /// Whether replacement serialization should fail.
+        private boolean armed;
+
+        /// Selects the failing serialization operation.
+        private ReplacementFaultStorage(String failurePoint) {
+            this.failurePoint = failurePoint;
+        }
+
+        @Override
+        public ArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
+            ArkivoStoredContent content = delegate.createContent(path, expectedSize);
+            if (!path.startsWith("zip-update-random-entry-")) {
+                return content;
+            }
+            return new ArkivoStoredContent() {
+                @Override
+                public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
+                    if (!armed || !options.equals(Set.of(StandardOpenOption.READ))) {
+                        return content.openChannel(options);
+                    }
+                    if (failurePoint.equals("open")) {
+                        throw new IOException("Injected replacement read-open failure");
+                    }
+                    return new ReplacementFaultChannel(content.openChannel(options), failurePoint);
+                }
+
+                @Override
+                public long size() throws IOException {
+                    return content.size();
+                }
+
+                @Override
+                public void close() throws IOException {
+                    content.close();
+                }
+            };
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+    }
+
+    /// Fails a replacement read after partial progress, returns no progress, or fails its first close.
+    @NotNullByDefault
+    private static final class ReplacementFaultChannel implements SeekableByteChannel {
+        /// The independently owned source channel.
+        private final SeekableByteChannel delegate;
+
+        /// The selected failure operation.
+        private final String failurePoint;
+
+        /// Whether the injected read prefix was delivered.
+        private boolean read;
+
+        /// Whether closure has been attempted.
+        private boolean closed;
+
+        /// Wraps one replacement source channel.
+        private ReplacementFaultChannel(SeekableByteChannel delegate, String failurePoint) {
+            this.delegate = delegate;
+            this.failurePoint = failurePoint;
+        }
+
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            if (failurePoint.equals("stall")) {
+                return 0;
+            }
+            if (!failurePoint.equals("read")) {
+                return delegate.read(target);
+            }
+            if (read) {
+                throw new IOException("Injected replacement read failure");
+            }
+            read = true;
+            int limit = target.limit();
+            try {
+                target.limit(target.position() + Math.min(2, target.remaining()));
+                return delegate.read(target);
+            } finally {
+                target.limit(limit);
+            }
+        }
+
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            return delegate.write(source);
+        }
+
+        @Override
+        public long position() throws IOException {
+            return delegate.position();
+        }
+
+        @Override
+        public SeekableByteChannel position(long position) throws IOException {
+            delegate.position(position);
+            return this;
+        }
+
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            delegate.truncate(size);
+            return this;
+        }
+
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+            if (!closed) {
+                closed = true;
+                if (failurePoint.equals("close")) {
+                    throw new IOException("Injected replacement close failure");
+                }
+            }
+        }
+    }
+
     /// Combines original entry methods, staging backends, buffer kinds, and deterministic operation sequences.
     private static Stream<Arguments> configurations() {
         return Stream.of(ZipEntry.STORED, ZipEntry.DEFLATED).flatMap(method ->

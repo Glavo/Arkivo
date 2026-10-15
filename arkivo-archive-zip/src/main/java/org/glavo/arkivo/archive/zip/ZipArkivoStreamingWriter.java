@@ -23,6 +23,10 @@ import java.util.Objects;
 /// begin until that body closes successfully. Entry attribute views are configurable only before body opening or
 /// entry close.
 ///
+/// Timestamp setters update pending attribute snapshots and the modification time written to the DOS header.
+/// They do not generate or alter timestamp extra fields. Persisted access and creation times come from explicitly
+/// supplied extra data, not from the pending timestamp setters.
+///
 /// A successfully returned writer owns and closes a supplied stream or channel. A volume target remains caller-owned;
 /// the writer owns the transaction opened from it and commits or rolls it back during close. Closing the writer commits
 /// any pending entry and writes the central directory. Once close begins, entry operations stay closed after a failure;

@@ -114,7 +114,7 @@ final class ZipPosixSupport {
     ) {
         int hostSystem = (versionMadeBy >>> 8) & 0xff;
         int mode = (int) ((externalAttributes >>> 16) & 0xffff);
-        if (hostSystem != 3 || (mode & 0777) == 0) {
+        if (hostSystem != 3 || mode == 0) {
             return null;
         }
         return PosixModes.permissions(mode);

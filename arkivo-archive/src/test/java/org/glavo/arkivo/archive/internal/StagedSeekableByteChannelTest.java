@@ -12,6 +12,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
@@ -23,6 +24,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -36,6 +38,105 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies staged-body access, mutation failure isolation, and exactly-once completion.
 @NotNullByDefault
 final class StagedSeekableByteChannelTest {
+    /// Stream writes validate the full range once, preserve append mode, and tolerate rejected arguments.
+    @Test
+    void writesCompleteStreamRanges(@TempDir Path directory) throws IOException {
+        Path path = directory.resolve("body");
+        Files.write(path, new byte[]{1});
+        AtomicInteger validations = new AtomicInteger();
+        AtomicBoolean commit = new AtomicBoolean();
+        var storage = new PartialWriteChannel(Files.newByteChannel(path, StandardOpenOption.WRITE), 1, () -> {});
+        var channel = new StagedSeekableByteChannel(storage, false, true, true, false,
+                (position, count) -> {
+                    validations.incrementAndGet();
+                    if (count > 2) throw new IOException("Write too large");
+                }, (completed, publish) -> commit.set(publish));
+        try (OutputStream output = channel.newOutputStream()) {
+            channel.position(0);
+            output.write(new byte[]{9, 2, 3, 9}, 1, 2);
+            assertEquals(1, validations.get());
+            assertEquals(3, channel.position());
+            assertThrows(IOException.class, () -> output.write(new byte[3]));
+            assertThrows(IndexOutOfBoundsException.class, () -> output.write(new byte[1], 0, 2));
+            assertThrows(NullPointerException.class, () -> output.write(null, 0, 0));
+            output.write(new byte[0]);
+            output.flush();
+            channel.position(0);
+            output.write(4);
+            assertEquals(3, validations.get());
+        }
+        assertTrue(commit.get());
+        assertArrayEquals(new byte[]{1, 2, 3, 4}, Files.readAllBytes(path));
+    }
+
+    /// Closure after partial progress invalidates only a stream write that still has bytes to deliver.
+    @Test
+    void distinguishesPartialChannelWritesFromIncompleteStreamWrites(@TempDir Path directory) throws IOException {
+        for (boolean stream : new boolean[]{false, true}) {
+            for (int length : new int[]{1, 2}) {
+                AtomicReference<Runnable> afterWrite = new AtomicReference<>(() -> {});
+                AtomicBoolean commit = new AtomicBoolean();
+                Path path = directory.resolve(stream + "-" + length);
+                var storage = new PartialWriteChannel(Files.newByteChannel(path,
+                        StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE), 1, () -> afterWrite.get().run());
+                var channel = new StagedSeekableByteChannel(storage, false, true, false, false,
+                        (completed, publish) -> commit.set(publish));
+                afterWrite.set(channel::closeStorage);
+                OutputStream output = channel.newOutputStream();
+                if (stream && length == 2) {
+                    IOException failure = assertThrows(ClosedChannelException.class, () -> output.write(new byte[length]));
+                    assertSame(failure, assertThrows(IOException.class, output::close).getCause());
+                    assertFalse(commit.get());
+                } else {
+                    if (stream) output.write(new byte[length]);
+                    else assertEquals(1, channel.write(ByteBuffer.allocate(length)));
+                    assertThrows(ClosedChannelException.class, () -> channel.write(ByteBuffer.allocate(1)));
+                    assertThrows(ClosedChannelException.class, () -> output.write(1));
+                    output.close();
+                    assertTrue(commit.get());
+                }
+                output.write(new byte[0]);
+                output.close();
+                assertEquals(1, Files.size(path));
+            }
+        }
+    }
+
+    /// A stalled storage write fails without spinning and prevents publication of forced empty content.
+    @Test
+    void discardsStreamWriteWithoutProgress(@TempDir Path directory) throws IOException {
+        var storage = new PartialWriteChannel(Files.newByteChannel(directory.resolve("body"),
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE), 0, () -> {});
+        var channel = new StagedSeekableByteChannel(storage, false, true, false, true,
+                (completed, commit) -> assertFalse(commit));
+        OutputStream output = channel.newOutputStream();
+        IOException failure = assertThrows(IOException.class, () -> output.write(1));
+        assertEquals("Staged write made no progress", failure.getMessage());
+        assertSame(failure, assertThrows(IOException.class, () -> output.write(2)).getCause());
+        assertSame(failure, assertThrows(IOException.class, output::close).getCause());
+        output.close();
+        assertFalse(storage.isOpen());
+    }
+
+    /// A stream storage failure remains primary when automatic closure discards the body.
+    @ParameterizedTest
+    @MethodSource("failureKinds")
+    void preservesStreamMutationFailure(Throwable failure, @TempDir Path directory) throws IOException {
+        var storage = new MutationFailingChannel(Files.newByteChannel(directory.resolve("body"),
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE), failure, true, null);
+        var channel = new StagedSeekableByteChannel(storage, false, true, false, false,
+                (completed, commit) -> assertFalse(commit));
+        Throwable reported = assertThrows(failure.getClass(), () -> {
+            try (OutputStream output = channel.newOutputStream()) {
+                output.write(new byte[]{1, 2});
+            }
+        });
+        assertSame(failure, reported);
+        assertEquals(1, reported.getSuppressed().length);
+        assertSame(failure, reported.getSuppressed()[0].getCause());
+        assertFalse(storage.isOpen());
+    }
+
     /// Storage closure is independently idempotent and does not publish the body before completion.
     @Test
     void separatesStorageCloseFromCompletion() throws IOException {
@@ -395,6 +496,55 @@ final class StagedSeekableByteChannelTest {
         assertArrayEquals(new byte[]{1, 2}, Files.readAllBytes(path));
     }
 
+    /// Retains every validation failure's identity without discarding earlier successful writes.
+    @ParameterizedTest
+    @MethodSource("failureKinds")
+    void preservesValidationFailureDuringCleanup(Throwable failure, @TempDir Path directory) throws IOException {
+        for (boolean stream : new boolean[]{false, true}) {
+            for (boolean completion : new boolean[]{false, true}) {
+                Path path = directory.resolve(stream + "-" + completion);
+                var storage = Files.newByteChannel(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                AtomicReference<@Nullable Throwable> validation = new AtomicReference<>();
+                AtomicBoolean committed = new AtomicBoolean();
+                var channel = new StagedSeekableByteChannel(
+                        completion ? storage : new CloseFailingChannel(storage, failure),
+                        false, true, false, false,
+                        (position, count) -> {
+                            @Nullable Throwable rejected = validation.getAndSet(null);
+                            if (rejected != null) throwFailure(rejected);
+                        }, (completed, commit) -> {
+                            committed.set(commit);
+                            if (completion) throwFailure(failure);
+                        });
+                channel.write(ByteBuffer.wrap(new byte[]{1}));
+                validation.set(failure);
+                int previousSuppressed = failure.getSuppressed().length;
+                Throwable caught = assertThrows(failure.getClass(), () -> {
+                    try (channel) {
+                        assertSame(failure, assertThrows(failure.getClass(), () -> {
+                            if (stream) channel.newOutputStream().write(new byte[]{2});
+                            else channel.write(ByteBuffer.wrap(new byte[]{2}));
+                        }));
+                        IOException other = new IOException("later validation failure");
+                        validation.set(other);
+                        assertSame(other, assertThrows(IOException.class,
+                                () -> channel.write(ByteBuffer.wrap(new byte[]{3}))));
+                        throwFailure(failure);
+                    }
+                });
+                assertSame(failure, caught);
+                assertEquals(previousSuppressed + 1, failure.getSuppressed().length);
+                Throwable cleanup = failure.getSuppressed()[previousSuppressed];
+                assertInstanceOf(IOException.class, cleanup);
+                assertSame(failure, cleanup.getCause());
+                assertEquals(completion, committed.get());
+                assertArrayEquals(new byte[]{1}, Files.readAllBytes(path));
+                channel.close();
+                assertFalse(storage.isOpen());
+            }
+        }
+    }
+
     /// Supplies fresh failures for checked, unchecked, and error paths.
     private static Stream<Throwable> failureKinds() {
         return Stream.of(new IOException("mutation"), new IllegalStateException("mutation"), new AssertionError("mutation"));
@@ -496,11 +646,85 @@ final class StagedSeekableByteChannelTest {
         }
     }
 
+    /// Limits physical write progress and runs a callback before returning the successful count.
+    ///
+    /// @param delegate the owned storage channel
+    /// @param maximumWrite the maximum bytes accepted per call
+    /// @param afterWrite the callback run after a physical write
+    @NotNullByDefault
+    private record PartialWriteChannel(SeekableByteChannel delegate, int maximumWrite, Runnable afterWrite)
+            implements SeekableByteChannel {
+        /// Reads stored bytes.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            return delegate.read(destination);
+        }
+
+        /// Writes a bounded prefix while preserving the caller's limit.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            int limit = source.limit();
+            int count;
+            try {
+                source.limit(source.position() + Math.min(maximumWrite, source.remaining()));
+                count = delegate.write(source);
+            } finally {
+                source.limit(limit);
+            }
+            afterWrite.run();
+            return count;
+        }
+
+        /// Returns the storage position.
+        @Override
+        public long position() throws IOException {
+            return delegate.position();
+        }
+
+        /// Sets the storage position.
+        @Override
+        public SeekableByteChannel position(long position) throws IOException {
+            delegate.position(position);
+            return this;
+        }
+
+        /// Returns the stored length.
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        /// Truncates storage without injecting a fault.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            delegate.truncate(size);
+            return this;
+        }
+
+        /// Returns whether storage remains open.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Closes storage.
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+    }
+
     /// Delegates seekable operations and reports a deterministic failure after closing its storage.
     ///
     /// @param channel the wrapped storage channel
+    /// @param failure the failure reported after physical closure
     @NotNullByDefault
-    private record CloseFailingChannel(SeekableByteChannel channel) implements SeekableByteChannel {
+    private record CloseFailingChannel(SeekableByteChannel channel, Throwable failure) implements SeekableByteChannel {
+        /// Creates a wrapper reporting a fresh checked close failure.
+        private CloseFailingChannel(SeekableByteChannel channel) {
+            this(channel, new IOException("storage close failed"));
+        }
+
         /// Reads from wrapped storage.
         @Override
         public int read(ByteBuffer destination) throws IOException {
@@ -549,7 +773,7 @@ final class StagedSeekableByteChannelTest {
         @Override
         public void close() throws IOException {
             channel.close();
-            throw new IOException("storage close failed");
+            throwFailure(failure);
         }
     }
 

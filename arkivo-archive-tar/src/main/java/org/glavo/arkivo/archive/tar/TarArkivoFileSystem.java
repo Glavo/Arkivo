@@ -30,6 +30,7 @@ import java.util.Set;
 /// unchanged until the file system closes. External changes never update the indexed paths or attributes and can make a
 /// later body read fail. The thread-safety strategy in the common options governs concurrent operations and close
 /// coordination.
+/// Logical-size limits include the resolved size of each hard-link entry, even when several entries share content.
 ///
 /// `update` opens a complete-rewrite session and atomically replaces the source by default; its
 /// [org.glavo.arkivo.archive.ArchiveUpdateOptions#commitTarget()] can select another publication target.
@@ -38,6 +39,8 @@ import java.util.Set;
 /// storage and any caller-supplied repeatable source.
 /// An entry being replaced through an open writable channel is hidden from new reads until that channel closes;
 /// channels and attribute snapshots opened before the replacement retain the preceding entry state.
+/// For a new entry opened through a writable channel, its name and any missing parent directories enter the index
+/// only when the staged body is committed.
 /// Writing through a hard link stages replacement content for its regular-file target. A successful channel close
 /// updates the content visible through all hard links to that target while retaining their link records.
 /// If a storage write or truncation fails on an update channel, further mutations through that channel fail. Closing
@@ -53,6 +56,11 @@ import java.util.Set;
 /// [java.nio.file.attribute.FileTime] values and may include fractional seconds. Creation attributes do not change an
 /// existing file opened for writing. When an attribute is repeated, its last value is used; unsupported names and invalid
 /// values are rejected before an entry is created.
+///
+/// User and group name assignments through the TAR and POSIX attribute views reject NUL and unpaired UTF-16
+/// surrogates with `IllegalArgumentException`, retaining the preceding attribute values.
+/// Creating or renaming an entry to a name containing NUL throws [java.nio.file.FileSystemException] before changing
+/// the archive index or writing entry bytes.
 ///
 /// A channel or repeatable source remains caller-owned until factory arguments have been validated. Ownership then
 /// transfers to the open operation: initialization failure closes the source, and a returned file system closes it

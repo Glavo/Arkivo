@@ -14,7 +14,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.util.stream.Stream;
@@ -50,7 +49,8 @@ final class PrefixReplayReadableByteChannelTest {
             ByteBuffer target = direct ? ByteBuffer.allocateDirect(17) : ByteBuffer.allocate(17);
             ByteArrayOutputStream actual = new ByteArrayOutputStream();
             while (actual.size() < expected.length) {
-                assertEquals(0, replay.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
+                assertThrows(IllegalArgumentException.class,
+                        () -> replay.read(ByteBuffer.allocate(0).asReadOnlyBuffer()));
                 target.clear().put(0, (byte) 0x55).put(16, (byte) 0x66).position(2).limit(15).mark();
                 int read = replay.read(target);
                 assertEquals(Math.min(13, expected.length - actual.size()), read);
@@ -145,7 +145,7 @@ final class PrefixReplayReadableByteChannelTest {
                 ByteBuffer.wrap(new byte[]{1, 2}),
                 source
         )) {
-            assertThrows(ReadOnlyBufferException.class, () -> replay.read(
+            assertThrows(IllegalArgumentException.class, () -> replay.read(
                     ByteBuffer.allocate(2).asReadOnlyBuffer()
             ));
 

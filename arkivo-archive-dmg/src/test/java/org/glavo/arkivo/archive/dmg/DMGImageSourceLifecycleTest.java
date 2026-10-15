@@ -6,9 +6,13 @@ package org.glavo.arkivo.archive.dmg;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.codec.deflate.ZlibCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -36,6 +40,29 @@ final class DMGImageSourceLifecycleTest {
     /// Temporary directory used for generated flattened UDIF images.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Resolves independent fork, table, and run offsets for raw and compressed data through repeated opens.
+    @ParameterizedTest
+    @CsvSource({"0,0,0", "37,0,0", "512,512,0", "37,113,59", "0,0,59", "37,0,59", "0,113,0", "0,113,59"})
+    void resolvesDataForkRelativeOffsets(int forkOffset, int tableOffset, int runOffset) throws IOException {
+        byte[] expected = sector(71);
+        for (boolean compressed : new boolean[]{false, true}) {
+            byte[] encoded = compressed ? DMGTestFixtures.compress(ZlibCodec.DEFAULT, expected) : expected;
+            int type = compressed ? DMGTestFixtures.ZLIB_RUN : DMGTestFixtures.RAW_RUN;
+            Path path = DMGTestFixtures.writeImage(temporaryDirectory.resolve(compressed + ".dmg"),
+                    List.of(new DMGTestFixtures.Run(type, encoded)), forkOffset, tableOffset, runOffset);
+            try (DMGImage image = DMGImage.open(path)) {
+                assertEquals(expected.length, image.size());
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    try (SeekableByteChannel channel = image.openChannel()) {
+                        ByteBuffer output = ByteBuffer.allocate(expected.length);
+                        readFully(channel, output);
+                        assertArrayEquals(expected, output.array());
+                    }
+                }
+            }
+        }
+    }
 
     /// Verifies a single-channel image starts at the transferred channel position and closes the physical channel.
     @Test
@@ -109,6 +136,164 @@ final class DMGImageSourceLifecycleTest {
         assertEquals(0, actual.getSuppressed().length);
         assertEquals(1, source.openCount());
         assertEquals(1, source.closeCount());
+    }
+
+    /// Preserves parser and cleanup failures at both channel-opening stages without closing an owner twice.
+    @ParameterizedTest
+    @ValueSource(strings = {"size", "metadata", "partition", "close"})
+    void preservesPhysicalChannelFailures(String phase) throws IOException {
+        Path path = writeImage(temporaryDirectory.resolve("channel-failure.dmg"),
+                List.of(new DMGTestFixtures.Run(DMGTestFixtures.RAW_RUN, sector(73)),
+                        new DMGTestFixtures.Run(DMGTestFixtures.RAW_RUN, sector(74))));
+        for (int kind = 0; kind < 3; kind++) {
+            for (boolean shared : new boolean[]{false, true}) {
+                for (boolean fileSystem : new boolean[]{false, true}) {
+                    Throwable failure = switch (kind) {
+                        case 0 -> new IOException("Physical channel I/O failed");
+                        case 1 -> new IllegalStateException("Physical channel I/O failed");
+                        default -> new AssertionError("Physical channel I/O failed");
+                    };
+                    Throwable cleanup = shared ? failure : new IOException("Physical channel cleanup failed");
+                    ChannelFailureSource source = new ChannelFailureSource(path, phase, failure, cleanup);
+                    Throwable actual = assertThrows(Throwable.class, () -> {
+                        if (fileSystem) {
+                            DMGArkivoFileSystem.open(source).close();
+                        } else {
+                            DMGImage.open(source).close();
+                        }
+                    });
+                    assertSame(phase.equals("close") ? cleanup : failure, actual);
+                    boolean wrappedCleanup = shared && phase.equals("partition");
+                    assertEquals(phase.equals("close") || shared && !wrappedCleanup ? 0 : 1,
+                            actual.getSuppressed().length);
+                    if (wrappedCleanup) {
+                        assertSame(cleanup, actual.getSuppressed()[0].getCause());
+                    } else if (!shared && !phase.equals("close")) {
+                        assertSame(cleanup, actual.getSuppressed()[0]);
+                    }
+                    assertEquals(phase.equals("size") || phase.equals("metadata") ? 1 : 2, source.opens);
+                    assertEquals(source.opens, source.channelCloses);
+                    assertEquals(1, source.sourceCloses);
+                }
+            }
+        }
+    }
+
+    /// Injects failures into either layout parsing or decoded partition probing.
+    @NotNullByDefault
+    private static final class ChannelFailureSource implements ArkivoSeekableChannelSource {
+        /// The valid encoded image used before the injected failure.
+        private final Path path;
+        /// The operation that reports the primary failure.
+        private final String phase;
+        /// The primary failure instance.
+        private final Throwable failure;
+        /// The physical channel's cleanup failure instance.
+        private final Throwable cleanup;
+        /// Number of opened physical channels.
+        private int opens;
+        /// Number of physical channel close calls.
+        private int channelCloses;
+        /// Number of source close calls.
+        private int sourceCloses;
+
+        /// Selects the failing operation and exception identities.
+        private ChannelFailureSource(Path path, String phase, Throwable failure, Throwable cleanup) {
+            this.path = path;
+            this.phase = phase;
+            this.failure = failure;
+            this.cleanup = cleanup;
+        }
+
+        @Override
+        public SeekableByteChannel openChannel() throws IOException {
+            int number = ++opens;
+            boolean failing = number == (phase.equals("partition") || phase.equals("close") ? 2 : 1);
+            return new Channel(Files.newByteChannel(path), failing);
+        }
+
+        @Override
+        public void close() {
+            sourceCloses++;
+        }
+
+        /// Retains ordinary positioning while failing the selected read, size, or close operation.
+        @NotNullByDefault
+        private final class Channel implements SeekableByteChannel {
+            /// The independently positioned physical file.
+            private final SeekableByteChannel delegate;
+            /// Whether this is the channel selected for injected failures.
+            private final boolean failing;
+
+            /// Wraps one physical channel.
+            private Channel(SeekableByteChannel delegate, boolean failing) {
+                this.delegate = delegate;
+                this.failing = failing;
+            }
+
+            @Override
+            public int read(ByteBuffer target) throws IOException {
+                if (failing && (phase.equals("metadata") || phase.equals("partition"))) {
+                    throwFailure(failure);
+                }
+                return delegate.read(target);
+            }
+
+            @Override
+            public int write(ByteBuffer source) throws IOException {
+                return delegate.write(source);
+            }
+
+            @Override
+            public long position() throws IOException {
+                return delegate.position();
+            }
+
+            @Override
+            public SeekableByteChannel position(long position) throws IOException {
+                delegate.position(position);
+                return this;
+            }
+
+            @Override
+            public long size() throws IOException {
+                if (failing && phase.equals("size")) {
+                    throwFailure(failure);
+                }
+                return delegate.size();
+            }
+
+            @Override
+            public SeekableByteChannel truncate(long size) throws IOException {
+                delegate.truncate(size);
+                return this;
+            }
+
+            @Override
+            public boolean isOpen() {
+                return delegate.isOpen();
+            }
+
+            @Override
+            public void close() throws IOException {
+                channelCloses++;
+                delegate.close();
+                if (failing) {
+                    throwFailure(cleanup);
+                }
+            }
+        }
+
+        /// Throws an injected failure without changing its type or identity.
+        private static void throwFailure(Throwable failure) throws IOException {
+            if (failure instanceof IOException exception) {
+                throw exception;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            throw (Error) failure;
+        }
     }
 
     /// Verifies the default repeatable-source overload retains ownership until image closure.

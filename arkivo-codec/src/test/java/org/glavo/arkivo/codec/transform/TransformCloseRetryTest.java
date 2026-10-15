@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.transform;
 
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -28,6 +29,271 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 final class TransformCloseRetryTest {
     /// The transform that immediately accepts every byte without modification.
     private static final ByteTransform IDENTITY = (buffer, offset, length) -> length;
+
+    /// Flush failures remain primary when finishing and downstream cleanup report the same retained failure.
+    @Test
+    void preservesFlushFailureDuringAutomaticClose() throws IOException {
+        for (Throwable failure : new Throwable[]{new IOException("flush"),
+                new IllegalStateException("flush"), new AssertionError("flush")}) {
+            var target = new FlushFailingOutput(failure);
+            var output = new TransformingOutputStream(target, (bytes, offset, length) -> 0);
+            output.write(new byte[]{1, 2, 3});
+            assertSame(failure, assertThrows(failure.getClass(), () -> {
+                try (output) {
+                    output.flush();
+                }
+            }));
+            assertEquals(1, failure.getSuppressed().length);
+            assertSame(failure, failure.getSuppressed()[0].getCause());
+            assertArrayEquals(new byte[]{1, 2, 3}, target.bytes.toByteArray());
+            assertSame(failure, assertThrows(IOException.class, output::close).getCause());
+            output.close();
+            output.close();
+            assertEquals(3, target.closeCalls);
+        }
+    }
+
+    /// A failed flush does not disable writes, and recovery does not forget already delivered failures.
+    @Test
+    void retainsFlushFailureIdentityAfterRecovery() throws IOException {
+        var failure = new IOException("first flush");
+        var target = new FlushFailingOutput(failure);
+        var output = new TransformingOutputStream(target, IDENTITY);
+        assertSame(failure, assertThrows(IOException.class, () -> {
+            try (output) {
+                assertSame(failure, assertThrows(IOException.class, output::flush));
+                target.flushFailure = new IOException("second flush");
+                assertSame(target.flushFailure, assertThrows(IOException.class, output::flush));
+                target.flushFailure = null;
+                output.flush();
+                output.write(new byte[]{4, 5});
+                throw failure;
+            }
+        }));
+        assertSame(failure, failure.getSuppressed()[0].getCause());
+        assertArrayEquals(new byte[]{4, 5}, target.bytes.toByteArray());
+        assertThrows(IOException.class, output::close);
+        output.close();
+        assertEquals(3, target.closeCalls);
+    }
+
+    /// Accepts writes while flush and the first two closes can report a retained failure.
+    @NotNullByDefault
+    private static final class FlushFailingOutput extends OutputStream {
+        /// Collected committed bytes.
+        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        /// Original downstream cleanup failure.
+        private final Throwable closeFailure;
+        /// Flush failure, or null after recovery.
+        private @Nullable Throwable flushFailure;
+        /// Physical cleanup attempts.
+        private int closeCalls;
+
+        /// Shares one initial failure between flush and cleanup.
+        private FlushFailingOutput(Throwable failure) {
+            closeFailure = failure;
+            flushFailure = failure;
+        }
+
+        @Override
+        public void write(int value) { bytes.write(value); }
+
+        @Override
+        public void flush() throws IOException {
+            if (flushFailure != null) fail(flushFailure);
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (++closeCalls <= 2) fail(closeFailure);
+        }
+
+        /// Preserves the original checked or unchecked failure category.
+        private static void fail(Throwable failure) throws IOException {
+            if (failure instanceof IOException exception) throw exception;
+            if (failure instanceof RuntimeException exception) throw exception;
+            throw (Error) failure;
+        }
+    }
+
+    /// Preserves a read failure when owned-source closure reports that same exception instance.
+    @Test
+    void sharedReadAndCloseFailurePreservesTryWithResourcesException() throws IOException {
+        verifyReadableCloseFailures(true);
+    }
+
+    /// Preserves an explicit close failure when automatic cleanup repeats it.
+    @Test
+    void repeatedReadableCloseFailurePreservesTryWithResourcesException() throws IOException {
+        verifyReadableCloseFailures(false);
+    }
+
+    /// Retrying cleanup with an intervening different failure cannot make an older exception unsafe to suppress.
+    @Test
+    void alternatingCloseFailuresPreserveTryWithResourcesException() throws Exception {
+        for (boolean stream : new boolean[]{false, true}) {
+            IOException readFailure = new IOException("first source close failed");
+            SharedFailureInput source = new SharedFailureInput(readFailure);
+            source.failedCloseAttempts = 3;
+            source.alternateCloseFailure = new IOException("second source close failed");
+            verifyAlternatingCloseFailures(stream ? new TransformingInputStream(source, IDENTITY)
+                            : new TransformingReadableByteChannel(source, IDENTITY, ResourceOwnership.OWNED),
+                    readFailure, source.alternateCloseFailure);
+            assertEquals(4, source.closeCount);
+
+            FailingCloseWritableChannel target = new FailingCloseWritableChannel();
+            target.failedCloseAttempts = 3;
+            target.alternateCloseFailure = new IOException("second target close failed");
+            verifyAlternatingCloseFailures(stream
+                            ? new TransformingOutputStream(Channels.newOutputStream(target), IDENTITY)
+                            : new TransformingWritableByteChannel(target, IDENTITY, ResourceOwnership.OWNED),
+                    target.failure, target.alternateCloseFailure);
+            assertEquals(4, target.closeCount);
+        }
+    }
+
+    /// Retries once inside the scope and rethrows its first close failure before automatic cleanup.
+    private static void verifyAlternatingCloseFailures(
+            AutoCloseable wrapper, IOException firstFailure, IOException secondFailure
+    ) throws Exception {
+        assertSame(firstFailure, assertThrows(IOException.class, () -> {
+            try (wrapper) {
+                try {
+                    wrapper.close();
+                } catch (IOException first) {
+                    IOException retry = assertThrows(IOException.class, wrapper::close);
+                    assertSame(secondFailure, retry.getCause());
+                    throw first;
+                }
+            }
+        }));
+        assertEquals(1, firstFailure.getSuppressed().length);
+        assertSame(firstFailure, firstFailure.getSuppressed()[0].getCause());
+        wrapper.close();
+        wrapper.close();
+    }
+
+    /// Exercises checked and unchecked failures through both readable adapters, followed by successful cleanup.
+    private static void verifyReadableCloseFailures(boolean readFirst) throws IOException {
+        for (boolean channel : new boolean[]{false, true}) {
+            for (Throwable failure : new Throwable[]{
+                    new IOException("source failed"),
+                    new IllegalStateException("source failed"),
+                    new AssertionError("source failed")
+            }) {
+                SharedFailureInput source = new SharedFailureInput(failure);
+                if (channel) {
+                    var input = new TransformingReadableByteChannel(source, IDENTITY, ResourceOwnership.OWNED);
+                    assertSame(failure, assertThrows(failure.getClass(), () -> {
+                        try (input) {
+                            if (readFirst) {
+                                input.read(ByteBuffer.allocate(1));
+                            } else {
+                                input.close();
+                            }
+                        }
+                    }));
+                    assertFalse(input.isOpen());
+                    if (readFirst) {
+                        assertThrows(IOException.class, input::close);
+                    }
+                    input.close();
+                    input.close();
+                } else {
+                    var input = new TransformingInputStream(source, IDENTITY);
+                    assertSame(failure, assertThrows(failure.getClass(), () -> {
+                        try (input) {
+                            if (readFirst) {
+                                input.read();
+                            } else {
+                                input.close();
+                            }
+                        }
+                    }));
+                    assertThrows(IOException.class, input::read);
+                    if (readFirst) {
+                        assertThrows(IOException.class, input::close);
+                    }
+                    input.close();
+                    input.close();
+                }
+                assertEquals(1, failure.getSuppressed().length);
+                assertSame(failure, failure.getSuppressed()[0].getCause());
+                assertEquals(readFirst ? 1 : 0, source.readCount);
+                assertEquals(3, source.closeCount);
+                assertFalse(source.isOpen());
+            }
+        }
+    }
+
+    /// Reports one failure from reads and the first two close attempts, then allows cleanup to complete.
+    @NotNullByDefault
+    private static final class SharedFailureInput extends InputStream implements ReadableByteChannel {
+        /// The checked or unchecked failure shared by reads and unsuccessful closes.
+        private final Throwable failure;
+
+        /// A different failure optionally reported by the second close attempt.
+        private @Nullable IOException alternateCloseFailure;
+
+        /// Number of initial close attempts that must fail.
+        private int failedCloseAttempts = 2;
+
+        /// The number of source reads attempted.
+        private int readCount;
+
+        /// The number of source closes attempted.
+        private int closeCount;
+
+        /// Whether source cleanup remains incomplete.
+        private boolean open = true;
+
+        /// Creates a source that reports the supplied failure.
+        private SharedFailureInput(Throwable failure) {
+            this.failure = failure;
+        }
+
+        /// Reports the source failure without delivering a byte.
+        @Override
+        public int read() throws IOException {
+            readCount++;
+            throw sourceFailure();
+        }
+
+        /// Reports the source failure without advancing the destination.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            return read();
+        }
+
+        /// Returns whether cleanup remains incomplete.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Fails the configured initial attempts, then completes source cleanup.
+        @Override
+        public void close() throws IOException {
+            if (++closeCount <= failedCloseAttempts) {
+                if (closeCount == 2 && alternateCloseFailure != null) {
+                    throw alternateCloseFailure;
+                }
+                throw sourceFailure();
+            }
+            open = false;
+        }
+
+        /// Returns the checked failure or throws the original unchecked failure.
+        private IOException sourceFailure() {
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (failure instanceof Error error) {
+                throw error;
+            }
+            return (IOException) failure;
+        }
+    }
 
     /// An explicit close followed by automatic cleanup cannot suppress a repeated endpoint failure onto itself.
     @Test
@@ -186,6 +452,9 @@ final class TransformCloseRetryTest {
 
         /// The stable failure reported by each unsuccessful close.
         private final IOException failure = new IOException("close failed");
+
+        /// A different failure optionally reported by the second close attempt.
+        private @Nullable IOException alternateCloseFailure;
         /// Collected bytes.
         private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
@@ -212,6 +481,9 @@ final class TransformCloseRetryTest {
         public void close() throws IOException {
             closeCount++;
             if (closeCount <= failedCloseAttempts) {
+                if (closeCount == 2 && alternateCloseFailure != null) {
+                    throw alternateCloseFailure;
+                }
                 throw failure;
             }
             delegate.close();

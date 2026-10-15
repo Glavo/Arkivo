@@ -4,6 +4,7 @@
 package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
+import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -17,6 +18,7 @@ import org.glavo.arkivo.archive.tar.TarArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -25,6 +27,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -36,13 +40,22 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.Random;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -220,6 +233,129 @@ final class ArchiveVolumeTransactionFailureTest {
         }
     }
 
+    /// Failed destination closure must finish before any transaction cleanup can run.
+    @ParameterizedTest
+    @MethodSource("commitChannelFailures")
+    void retainsCommitChannelUntilCloseSucceeds(String formatName, Throwable closeFailure, boolean failAfterClose)
+            throws IOException {
+        boolean create = formatName.equals("zip-create");
+        String archiveFormat = create ? "zip" : formatName;
+        Path path = temporaryDirectory.resolve("source." + formatName);
+        try (ArkivoFileSystem archive = ArkivoFormats.createFileSystem(archiveFormat, path)) {
+            Files.writeString(archive.getPath("entry"), "original");
+        }
+        byte[] original = Files.readAllBytes(path);
+        RetryCommitOutput output = new RetryCommitOutput(temporaryDirectory.resolve("staged"));
+        output.blockChannelClose = true;
+        output.channelCloseFailure = closeFailure;
+        output.failAfterChannelClose = failAfterClose;
+        ArchiveUpdateOptions options = ArchiveUpdateOptions.DEFAULT.withCommitTarget(ignored -> output);
+        ArkivoFileSystem archive = create
+                ? ZipArkivoFileSystemProvider.instance().newFileSystem(path, Map.of(
+                        "arkivo.openOptions", Set.of(StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE),
+                        "arkivo.commitTarget", (ArkivoCommitTarget) ignored -> output))
+                : ArkivoFormats.updateFileSystem(formatName, path, options);
+        Files.writeString(archive.getPath("entry"), "replacement");
+        try {
+            assertSame(closeFailure, assertThrows(closeFailure.getClass(), () -> {
+                try (archive) {
+                    archive.close();
+                }
+            }));
+            assertEquals(1, closeFailure.getSuppressed().length);
+            assertTrue(closeFailure.getSuppressed()[0] instanceof IOException);
+            assertSame(closeFailure, closeFailure.getSuppressed()[0].getCause());
+            assertEquals(0, output.closeCalls, "Transaction cleanup requires closed channels");
+            assertEquals(0, output.commitCalls);
+            assertEquals(!failAfterClose, Objects.requireNonNull(output.channel).isOpen());
+            output.blockChannelClose = false;
+            // The transaction itself still rejects its first two cleanup attempts.
+            assertThrows(IOException.class, archive::close);
+            assertFalse(output.channel.isOpen());
+            assertThrows(IOException.class, archive::close);
+            archive.close();
+            archive.close();
+            assertEquals(3, output.closeCalls);
+            assertEquals(0, output.commitCalls);
+            assertFalse(Files.exists(output.path()));
+            assertArrayEquals(original, Files.readAllBytes(path));
+        } finally {
+            output.blockChannelClose = false;
+            if (output.channel != null) output.channel.close();
+            output.closeCalls = Math.max(output.closeCalls, 2);
+            output.close();
+            archive.close();
+        }
+    }
+
+    /// Strict ZIP close interrupts the commit channel before waiting, then retries transaction cleanup without commit.
+    @Test
+    void cancelsActiveZipCommitChannel() throws Exception {
+        RetryCommitOutput target = new RetryCommitOutput(temporaryDirectory.resolve("staged"));
+        var archive = ZipArkivoFileSystemProvider.instance().newFileSystem(
+                temporaryDirectory.resolve("source.zip"), Map.of(
+                        "arkivo.openOptions", Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                        "arkivo.threadSafety", ArkivoFileSystemThreadSafety.STRICT,
+                        "arkivo.commitTarget", (ArkivoCommitTarget) ignored -> target));
+        OutputStream body = Files.newOutputStream(archive.getPath("entry"));
+        CommitWriteGate gate = new CommitWriteGate();
+        target.writeGate = gate;
+        byte[] content = new byte[256 * 1024];
+        new Random(42).nextBytes(content);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var writing = executor.submit(() -> assertThrows(IOException.class, () -> body.write(content)));
+            assertTrue(gate.entered.await(5, TimeUnit.SECONDS));
+            var closing = executor.submit(() -> assertThrows(IOException.class, archive::close));
+            assertTrue(gate.closed.await(5, TimeUnit.SECONDS));
+            assertThrows(TimeoutException.class, () -> closing.get(100, TimeUnit.MILLISECONDS));
+            assertEquals(0, target.closeCalls);
+            assertEquals(0, target.commitCalls);
+            gate.release.countDown();
+            assertSame(gate.failure, writing.get(5, TimeUnit.SECONDS));
+            closing.get(5, TimeUnit.SECONDS);
+            body.close();
+            archive.close();
+            archive.close();
+            assertEquals(0, target.commitCalls);
+            assertEquals(3, target.closeCalls);
+            assertFalse(Files.exists(target.path()));
+        } finally {
+            gate.release.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            target.closeCalls = Math.max(target.closeCalls, 2);
+            try {
+                body.close();
+            } finally {
+                archive.close();
+            }
+        }
+    }
+
+    /// Holds an in-progress physical write while cleanup requests release its channel.
+    @NotNullByDefault
+    private static final class CommitWriteGate {
+        /// Signals the first partial physical write.
+        private final CountDownLatch entered = new CountDownLatch(1);
+        /// Signals physical channel closure.
+        private final CountDownLatch closed = new CountDownLatch(1);
+        /// Allows the write to deliver its original failure.
+        private final CountDownLatch release = new CountDownLatch(1);
+        /// The original write failure retained across coordinated cleanup.
+        private final IOException failure = new IOException("Cancelled commit channel write");
+    }
+
+    /// Exercises repeated checked, unchecked, and error failures with the same throwable instance.
+    private static Stream<Arguments> commitChannelFailures() {
+        return Stream.of("ar", "tar", "zip", "7z", "zip-create").flatMap(format ->
+                Stream.of(false, true).flatMap(afterClose -> Stream.of(
+                new IOException("Channel close blocked"),
+                new IllegalStateException("Channel close blocked"),
+                new AssertionError("Channel close blocked")
+        ).map(failure -> Arguments.of(format, failure, afterClose))));
+    }
+
     /// Split updates retain failed rollback state after the file system becomes closed.
     @ParameterizedTest
     @ValueSource(strings = {"zip", "7z"})
@@ -266,6 +402,21 @@ final class ArchiveVolumeTransactionFailureTest {
         /// Number of cleanup attempts.
         private int closeCalls;
 
+        /// Whether an opened channel must retain its resource when close is attempted.
+        private boolean blockChannelClose;
+
+        /// Whether a rejected close nevertheless releases the physical file handle.
+        private boolean failAfterChannelClose;
+
+        /// The shared failure delivered while channel closure is blocked.
+        private Throwable channelCloseFailure = new IOException("Channel close blocked");
+
+        /// The physical channel used by the update, when one has been opened.
+        private @Nullable SeekableByteChannel channel;
+
+        /// Optional gate installed after the entry header has been written.
+        private @Nullable CommitWriteGate writeGate;
+
         /// Creates a transaction with independent staged storage.
         private RetryCommitOutput(Path path) {
             this.path = path;
@@ -278,7 +429,8 @@ final class ArchiveVolumeTransactionFailureTest {
 
         @Override
         public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
-            return Files.newByteChannel(path, options);
+            channel = Files.newByteChannel(path, options);
+            return new RetryCommitChannel(channel, this);
         }
 
         @Override
@@ -298,6 +450,82 @@ final class ArchiveVolumeTransactionFailureTest {
                 throw new IOException("Cleanup failed");
             }
             Files.deleteIfExists(path);
+        }
+    }
+
+    /// Keeps the transaction channel open until its owner permits cleanup.
+    ///
+    /// @param delegate the physical channel
+    /// @param output the transaction controlling injected failures
+    @NotNullByDefault
+    private record RetryCommitChannel(SeekableByteChannel delegate, RetryCommitOutput output)
+            implements SeekableByteChannel {
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            return delegate.read(destination);
+        }
+
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            @Nullable CommitWriteGate gate = output.writeGate;
+            if (gate != null) {
+                int limit = source.limit();
+                source.limit(source.position() + 1);
+                try {
+                    delegate.write(source);
+                } finally {
+                    source.limit(limit);
+                }
+                gate.entered.countDown();
+                try {
+                    if (!gate.release.await(10, TimeUnit.SECONDS)) throw new IOException("Write release timed out");
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(exception);
+                }
+                throw gate.failure;
+            }
+            return delegate.write(source);
+        }
+
+        @Override
+        public long position() throws IOException {
+            return delegate.position();
+        }
+
+        @Override
+        public SeekableByteChannel position(long position) throws IOException {
+            delegate.position(position);
+            return this;
+        }
+
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            delegate.truncate(size);
+            return this;
+        }
+
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (output.blockChannelClose) {
+                if (output.failAfterChannelClose) delegate.close();
+                Throwable failure = output.channelCloseFailure;
+                if (failure instanceof IOException exception) throw exception;
+                if (failure instanceof RuntimeException exception) throw exception;
+                throw (Error) failure;
+            }
+            delegate.close();
+            if (output.writeGate != null) output.writeGate.closed.countDown();
         }
     }
     /// ZIP's minimum split size, which is also sufficient for a single-volume 7z transaction.

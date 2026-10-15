@@ -103,9 +103,10 @@ public final class SevenZipHeaderReader {
         Objects.requireNonNull(channel, "channel");
         Objects.requireNonNull(readLimits, "readLimits");
         Objects.requireNonNull(archiveLimits, "archiveLimits");
-        SevenZipSignatureHeader signatureHeader = readSignatureHeader(channel);
+        SevenZipSignatureHeader signatureHeader = readFixedSignatureHeader(channel);
         readLimits.acceptMetadata(SevenZipSignatureHeader.SIZE, null);
         readLimits.acceptMetadata(signatureHeader.nextHeaderSize(), null);
+        validateNextHeader(channel, signatureHeader);
         byte[] nextHeader = readNextHeader(channel, signatureHeader);
         return new SevenZipArchiveMetadata(
                 signatureHeader,

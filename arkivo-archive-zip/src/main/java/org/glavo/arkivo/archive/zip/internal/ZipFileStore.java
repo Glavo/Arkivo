@@ -12,7 +12,9 @@ import java.io.IOException;
 import java.nio.file.FileStore;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileAttributeView;
+import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileStoreAttributeView;
+import java.nio.file.attribute.PosixFileAttributeView;
 import java.util.Objects;
 
 /// Describes the synthetic file store exposed by ZIP file systems.
@@ -72,14 +74,17 @@ final class ZipFileStore extends FileStore {
     @Override
     public boolean supportsFileAttributeView(Class<? extends FileAttributeView> type) {
         Objects.requireNonNull(type, "type");
-        return type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class;
+        return type == BasicFileAttributeView.class
+                || type == FileOwnerAttributeView.class
+                || type == PosixFileAttributeView.class
+                || type == ZipArkivoEntryAttributeView.class;
     }
 
     /// Returns whether this file store supports the given attribute view.
     @Override
     public boolean supportsFileAttributeView(String name) {
         Objects.requireNonNull(name, "name");
-        return "basic".equals(name) || "zip".equals(name);
+        return "basic".equals(name) || "owner".equals(name) || "posix".equals(name) || "zip".equals(name);
     }
 
     /// Returns no file store attribute view.

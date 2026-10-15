@@ -18,25 +18,32 @@ import java.util.Objects;
 
 /// Writes AR members to a forward-only stream.
 ///
+/// The root-level names `__.SYMDEF`, `__.SYMDEF SORTED`, `__.SYMDEF_64`, and `__.SYMDEF_64 SORTED`
+/// are reserved for BSD symbol tables. Beginning an entry with one of these names after path normalization
+/// throws `IllegalArgumentException` without creating a pending entry.
+/// Names containing NUL characters are rejected in the same way.
+///
 /// Regular member bodies with no configured size are staged until their final size can be written into the AR header.
 /// Default factories use temporary-file storage under the system temporary directory; overloads accepting
 /// `ArkivoEditStorage` let callers select another policy. The writer owns and closes its body storage. A member with a
 /// size configured through `ArArkivoEntryAttributeView` is written directly without staging.
 ///
 /// A write failure in staged storage disables further body writes. Closing that body discards the member and reports
-/// an `IOException` with the write failure as its cause; subsequent body close calls do not emit the member. Argument
-/// and member-size validation failures leave the body usable. This discard behavior does not apply to directly written
-/// members, whose bytes may already have reached the archive output.
+/// an `IOException` whose cause chain retains the write failure; subsequent body close calls do not emit the member.
+/// Argument and member-size validation failures leave the body usable. This discard behavior does not apply to directly
+/// written members, whose bytes may already have reached the archive output.
 ///
 /// Member headers are fully encoded before any member bytes are written. If header encoding fails when a staged
 /// body or an entry is closed, the member is discarded without changing the archive output. Closing the same handle
 /// again completes its cleanup so another member can begin. A header encoding failure when opening a directly written
 /// body leaves the member pending; its metadata can be corrected before opening the body again.
+/// Closing an entry without opening its body also discards the member if its fixed or empty body does not match the
+/// configured size. Its metadata remains frozen, and a repeated close completes cleanup without emitting the member.
 ///
 /// A target write failure, or a body read failure after its header has been emitted, leaves the archive incomplete.
-/// No further members are accepted. Closing the writer reports the earlier failure as the cause of an `IOException`
-/// and releases owned resources without attempting more archive records. Closing an undersized directly written body
-/// has the same effect. Bytes already sent to the output are not rolled back.
+/// No further members are accepted. Closing the writer releases owned resources without attempting more archive records
+/// and reports an `IOException` whose cause chain retains the earlier failure. Closing an undersized directly written
+/// body has the same effect. Bytes already sent to the output are not rolled back.
 ///
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits its fixed or empty body; opening a
 /// caller-writable body transfers completion to that body, and another entry cannot begin until the body closes

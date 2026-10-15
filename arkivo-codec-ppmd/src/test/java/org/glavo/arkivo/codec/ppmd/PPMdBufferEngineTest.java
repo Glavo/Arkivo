@@ -114,6 +114,39 @@ public final class PPMdBufferEngineTest {
         }
     }
 
+    /// Validates the range prefix even without output space and permits reset after structural corruption.
+    @Test
+    public void rejectsMalformedPrefixBeforeEmptyOutputAndResets() throws IOException {
+        byte[][] invalidPrefixes = {{1, 0, 0, 0, 0}, {0, -1, -1, -1, -1}};
+        byte[] tail = {11, 22, 33};
+        for (int size : new int[]{0, 33}) {
+            byte[] content = patternedData(size);
+            ByteBuffer compressed = CODEC.compress(ByteBuffer.wrap(content));
+            byte[] encoded = new byte[compressed.remaining()];
+            compressed.get(encoded);
+            try (CompressionDecoder decoder = CODEC.withDecodedSize(size).newDecoder()) {
+                for (byte[] invalidPrefix : invalidPrefixes) {
+                    decoder.reset();
+                    ByteBuffer invalid = ByteBuffer.wrap(invalidPrefix).asReadOnlyBuffer();
+                    assertThrows(IOException.class, () -> decoder.finish(invalid, ByteBuffer.allocate(0)));
+
+                    decoder.reset();
+                    ByteBuffer source = ByteBuffer.wrap(concatenate(encoded, tail)).asReadOnlyBuffer();
+                    assertEquals(size == 0 ? CodecOutcome.FINISHED : CodecOutcome.NEEDS_OUTPUT,
+                            decoder.decode(source, ByteBuffer.allocate(0)));
+                    ByteBuffer target = ByteBuffer.allocate(size);
+                    assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
+                    assertArrayEquals(content, target.array());
+                    assertEquals(size, target.position());
+                    assertTrue(source.position() <= encoded.length);
+                    int consumed = source.position();
+                    assertEquals(CodecOutcome.FINISHED, decoder.finish(source, ByteBuffer.allocate(0)));
+                    assertEquals(consumed, source.position());
+                }
+            }
+        }
+    }
+
     /// Verifies the external decoded-size declaration is the raw stream's only logical boundary.
     @Test
     public void usesExternallyDeclaredDecodedSizeAsOnlyBoundary() throws IOException {

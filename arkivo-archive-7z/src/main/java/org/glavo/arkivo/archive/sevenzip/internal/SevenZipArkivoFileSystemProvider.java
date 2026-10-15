@@ -136,6 +136,7 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
+        options = ArkivoFileSystemProviderSupport.normalizeChannelOptions(options);
         return sevenZipFileSystem(path).newByteChannel(
                 ArkivoFileSystemProviderSupport.resolveReadChannelPath(path, options),
                 options,

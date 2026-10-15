@@ -4,6 +4,10 @@
 package org.glavo.arkivo.archive.sevenzip;
 
 import org.apache.commons.compress.utils.SeekableInMemoryByteChannel;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
+import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -11,6 +15,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
 
@@ -21,6 +26,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies fixed 7z archive-header parsing and next-header integrity checks.
 @NotNullByDefault
 final class SevenZipArchiveHeaderValidationTest {
+    /// Rejects an oversized declared header before reading its payload for CRC verification.
+    @Test
+    void checksMetadataBudgetBeforeReadingNextHeader() throws IOException {
+        byte[] archive = SevenZipTestArchiveFixtures.emptyFileArchive("entry-" + "x".repeat(4096));
+        for (long maximum : new long[]{0, 31, 32, archive.length - 1}) {
+            CountingChannel channel = new CountingChannel(archive);
+            SevenZipArchiveOptions.Read options = SevenZipArchiveOptions.READ_DEFAULTS.withCommon(
+                    ArchiveReadOptions.DEFAULT.withLimits(
+                            ArchiveReadLimits.builder().maximumMetadataSize(maximum).build()));
+            ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> {
+                try (SevenZipArkivoFileSystem ignored = SevenZipArkivoFileSystem.open(channel, options)) {
+                    // Opening must stop before the next header is read.
+                }
+            });
+            assertEquals(ArkivoReadLimitKind.METADATA_SIZE, failure.kind());
+            assertEquals(maximum, failure.maximum());
+            assertEquals(maximum < 32 ? 32 : archive.length, failure.actual());
+            assertEquals(32, channel.bytesRead);
+        }
+
+        SevenZipArchiveOptions.Read options = SevenZipArchiveOptions.READ_DEFAULTS.withCommon(
+                ArchiveReadOptions.DEFAULT.withLimits(
+                        ArchiveReadLimits.builder().maximumMetadataSize(archive.length).build()));
+        try (CountingChannel channel = new CountingChannel(archive);
+             SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(channel, options)) {
+            assertEquals(archive.length - 32, fileSystem.nextHeaderSize());
+            assertTrue(channel.bytesRead >= archive.length);
+        }
+    }
+
     /// Verifies valid non-empty next-header metadata is exposed unchanged.
     @Test
     void readsNonEmptyNextHeaderMetadata() throws IOException {
@@ -84,5 +119,27 @@ final class SevenZipArchiveHeaderValidationTest {
                 // Opening a 7z file system validates its fixed and next headers.
             }
         });
+    }
+
+    /// Counts bytes returned to the archive reader without changing channel behavior.
+    @NotNullByDefault
+    private static final class CountingChannel extends SeekableInMemoryByteChannel {
+        /// The cumulative number of returned bytes.
+        private long bytesRead;
+
+        /// Creates a channel containing one complete archive.
+        private CountingChannel(byte[] archive) {
+            super(archive);
+        }
+
+        /// Adds successful read progress to the counter.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            int count = super.read(destination);
+            if (count > 0) {
+                bytesRead += count;
+            }
+            return count;
+        }
     }
 }

@@ -9,6 +9,8 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -26,6 +28,100 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies compression flush propagation, close retries, and failure suppression.
 @NotNullByDefault
 final class CompressionOutputStreamTest {
+    /// Preserves earlier failures even when a different retry failure precedes automatic resource closure.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void alternatingFailuresDoNotSelfSuppress(boolean explicitClose) throws IOException {
+        for (Throwable primary : List.of(new IOException("first failure"),
+                new IllegalStateException("first failure"), new AssertionError("first failure"))) {
+            IOException secondary = new IOException("second failure");
+            var downstream = new ByteArrayOutputStream() {
+                /// The number of flush attempts, including the final successful retry.
+                private int flushCount;
+
+                /// Alternates two failure instances before allowing cleanup to complete.
+                @Override
+                public void flush() throws IOException {
+                    int attempt = ++flushCount;
+                    if (attempt == 2) throw secondary;
+                    if (attempt == 1 || attempt == 3) {
+                        if (primary instanceof IOException exception) throw exception;
+                        if (primary instanceof RuntimeException exception) throw exception;
+                        throw (Error) primary;
+                    }
+                }
+            };
+            OutputStream output = new CompressionOutputStream(
+                    new TrackingCompressingWritableByteChannel(), downstream, ResourceOwnership.BORROWED);
+            Throwable failure = assertThrows(primary.getClass(), () -> {
+                try (output) {
+                    try {
+                        if (explicitClose) output.close();
+                        else output.flush();
+                    } catch (Throwable original) {
+                        assertSame(primary, original);
+                        assertThrows(Throwable.class, () -> {
+                            if (explicitClose) output.close();
+                            else output.flush();
+                        });
+                        throw original;
+                    }
+                }
+            });
+            assertSame(primary, failure);
+            assertEquals(1, failure.getSuppressed().length);
+            assertSame(primary, failure.getSuppressed()[0].getCause());
+            assertEquals(3, downstream.flushCount);
+            output.close();
+            output.close();
+            assertEquals(4, downstream.flushCount);
+        }
+    }
+
+    /// Preserves a repeated downstream failure as the primary exception of try-with-resources.
+    @Test
+    void repeatedFlushFailureDoesNotSelfSuppress() throws IOException {
+        IOException expected = new IOException("Persistent flush failure");
+        OutputStream downstream = new ByteArrayOutputStream() {
+            @Override
+            public void flush() throws IOException {
+                throw expected;
+            }
+        };
+        OutputStream output = new CompressionOutputStream(
+                new TrackingCompressingWritableByteChannel(), downstream, ResourceOwnership.BORROWED);
+        IOException failure = assertThrows(IOException.class, () -> {
+            try (output) {
+                output.flush();
+            }
+        });
+        assertSame(expected, failure);
+        assertEquals(1, failure.getSuppressed().length);
+        assertSame(expected, failure.getSuppressed()[0].getCause());
+        assertSame(expected, assertThrows(IOException.class, output::close).getCause());
+    }
+
+    /// Preserves an explicitly failed close when automatic resource cleanup retries the same downstream failure.
+    @Test
+    void repeatedCloseFailureDoesNotSelfSuppress() {
+        IOException expected = new IOException("Persistent close failure");
+        OutputStream downstream = new ByteArrayOutputStream() {
+            @Override
+            public void flush() throws IOException {
+                throw expected;
+            }
+        };
+        IOException failure = assertThrows(IOException.class, () -> {
+            try (OutputStream output = new CompressionOutputStream(
+                    new TrackingCompressingWritableByteChannel(), downstream, ResourceOwnership.BORROWED)) {
+                output.close();
+            }
+        });
+        assertSame(expected, failure);
+        assertEquals(1, failure.getSuppressed().length);
+        assertSame(expected, failure.getSuppressed()[0].getCause());
+    }
+
     /// Verifies plain channel targets retain zero-progress rejection and closed-stream checks.
     @Test
     void rejectsZeroProgressAndClosedOperations() throws IOException {

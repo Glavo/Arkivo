@@ -14,9 +14,19 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 
 /// Creates progress-safe, close-retryable adapters between streams and channels.
+///
+/// Endpoint failures retain their original type and identity when first reported. If cleanup rethrows an exception
+/// already reported by this adapter, it is wrapped in a new `IOException` so automatic cleanup cannot suppress an
+/// exception on itself. Distinct cleanup failures retain their original type and identity. Successful cleanup remains
+/// idempotent and releases the recorded failure identities; failed cleanup may be retried.
+///
+/// @implNote Endpoint I/O and closure run outside the monitor protecting failure identities.
 @NotNullByDefault
 public final class StreamChannelAdapters {
     /// The largest temporary transfer used for a direct buffer.
@@ -66,6 +76,9 @@ public final class StreamChannelAdapters {
     /// Adapts one input stream to a readable channel.
     @NotNullByDefault
     private static final class InputStreamChannel implements ReadableByteChannel {
+        /// Previously reported endpoint failures, allocated only after an operation fails.
+        private @Nullable Set<Throwable> reportedFailures;
+
         /// The backing input stream.
         private final InputStream source;
 
@@ -93,7 +106,7 @@ public final class StreamChannelAdapters {
             }
             if (target.hasArray()) {
                 int position = target.position();
-                int read = source.read(
+                int read = readSource(
                         target.array(),
                         target.arrayOffset() + position,
                         target.remaining()
@@ -109,11 +122,21 @@ public final class StreamChannelAdapters {
                 buffer = new byte[TRANSFER_SIZE];
                 transferBuffer = buffer;
             }
-            int read = source.read(buffer, 0, Math.min(target.remaining(), buffer.length));
+            int read = readSource(buffer, 0, Math.min(target.remaining(), buffer.length));
             if (read > 0) {
                 target.put(buffer, 0, read);
             }
             return read;
+        }
+
+        /// Reads the source and records failures that must remain primary during automatic cleanup.
+        private int readSource(byte[] bytes, int offset, int length) throws IOException {
+            try {
+                return source.read(bytes, offset, length);
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
         }
 
         /// Returns whether this adapter remains open.
@@ -128,8 +151,31 @@ public final class StreamChannelAdapters {
             if (!open) {
                 return;
             }
-            source.close();
-            open = false;
+            try {
+                source.close();
+                synchronized (this) {
+                    open = false;
+                    reportedFailures = null;
+                }
+            } catch (IOException | RuntimeException | Error failure) {
+                if (!recordFailure(failure)) {
+                    IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                    recordFailure(cleanupFailure);
+                    throw cleanupFailure;
+                }
+                throw failure;
+            }
+        }
+
+        /// Records a failure while open and reports whether it needs no repeated-cleanup wrapper.
+        private synchronized boolean recordFailure(Throwable failure) {
+            if (!open) {
+                return true;
+            }
+            if (reportedFailures == null) {
+                reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+            }
+            return reportedFailures.add(failure);
         }
 
         /// Requires this adapter to remain open.
@@ -143,6 +189,9 @@ public final class StreamChannelAdapters {
     /// Adapts one output stream to a writable channel.
     @NotNullByDefault
     private static final class OutputStreamChannel implements WritableByteChannel {
+        /// Previously reported endpoint failures, allocated only after an operation fails.
+        private @Nullable Set<Throwable> reportedFailures;
+
         /// The backing output stream.
         private final OutputStream target;
 
@@ -168,7 +217,7 @@ public final class StreamChannelAdapters {
             int start = source.position();
             if (source.hasArray()) {
                 int count = source.remaining();
-                target.write(
+                writeTarget(
                         source.array(),
                         source.arrayOffset() + source.position(),
                         count
@@ -185,10 +234,20 @@ public final class StreamChannelAdapters {
             while (source.hasRemaining()) {
                 int count = Math.min(source.remaining(), buffer.length);
                 source.get(source.position(), buffer, 0, count);
-                target.write(buffer, 0, count);
+                writeTarget(buffer, 0, count);
                 source.position(source.position() + count);
             }
             return source.position() - start;
+        }
+
+        /// Writes the target and records failures that must remain primary during automatic cleanup.
+        private void writeTarget(byte[] bytes, int offset, int length) throws IOException {
+            try {
+                target.write(bytes, offset, length);
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
+            }
         }
 
         /// Returns whether this adapter remains open.
@@ -203,8 +262,31 @@ public final class StreamChannelAdapters {
             if (!open) {
                 return;
             }
-            target.close();
-            open = false;
+            try {
+                target.close();
+                synchronized (this) {
+                    open = false;
+                    reportedFailures = null;
+                }
+            } catch (IOException | RuntimeException | Error failure) {
+                if (!recordFailure(failure)) {
+                    IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                    recordFailure(cleanupFailure);
+                    throw cleanupFailure;
+                }
+                throw failure;
+            }
+        }
+
+        /// Records a failure while open and reports whether it needs no repeated-cleanup wrapper.
+        private synchronized boolean recordFailure(Throwable failure) {
+            if (!open) {
+                return true;
+            }
+            if (reportedFailures == null) {
+                reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+            }
+            return reportedFailures.add(failure);
         }
 
         /// Requires this adapter to remain open.
@@ -218,6 +300,9 @@ public final class StreamChannelAdapters {
     /// Adapts one readable channel to an input stream.
     @NotNullByDefault
     private static final class ChannelInputStream extends InputStream {
+        /// Previously reported endpoint failures, allocated only after an operation fails.
+        private @Nullable Set<Throwable> reportedFailures;
+
         /// The backing readable channel.
         private final ReadableByteChannel source;
 
@@ -250,11 +335,16 @@ public final class StreamChannelAdapters {
             if (length == 0) {
                 return 0;
             }
-            int read = source.read(ByteBuffer.wrap(bytes, offset, length));
-            if (read == 0) {
-                throw new IOException("Readable channel made no progress");
+            try {
+                int read = source.read(ByteBuffer.wrap(bytes, offset, length));
+                if (read == 0) {
+                    throw new IOException("Readable channel made no progress");
+                }
+                return read;
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
             }
-            return read;
         }
 
         /// Skips by repositioning a seekable source or by performing one bounded read.
@@ -266,11 +356,16 @@ public final class StreamChannelAdapters {
                 return 0L;
             }
             if (source instanceof SeekableByteChannel seekableSource) {
-                long position = seekableSource.position();
-                long available = Math.max(0L, seekableSource.size() - position);
-                long skipped = Math.min(count, available);
-                seekableSource.position(position + skipped);
-                return skipped;
+                try {
+                    long position = seekableSource.position();
+                    long available = Math.max(0L, seekableSource.size() - position);
+                    long skipped = Math.min(count, available);
+                    seekableSource.position(position + skipped);
+                    return skipped;
+                } catch (IOException | RuntimeException | Error failure) {
+                    recordFailure(failure);
+                    throw failure;
+                }
             }
             if (skipBuffer == null) {
                 skipBuffer = new byte[TRANSFER_SIZE];
@@ -285,8 +380,31 @@ public final class StreamChannelAdapters {
             if (!open) {
                 return;
             }
-            source.close();
-            open = false;
+            try {
+                source.close();
+                synchronized (this) {
+                    open = false;
+                    reportedFailures = null;
+                }
+            } catch (IOException | RuntimeException | Error failure) {
+                if (!recordFailure(failure)) {
+                    IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                    recordFailure(cleanupFailure);
+                    throw cleanupFailure;
+                }
+                throw failure;
+            }
+        }
+
+        /// Records a failure while open and reports whether it needs no repeated-cleanup wrapper.
+        private synchronized boolean recordFailure(Throwable failure) {
+            if (!open) {
+                return true;
+            }
+            if (reportedFailures == null) {
+                reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+            }
+            return reportedFailures.add(failure);
         }
 
         /// Requires this adapter to remain open.
@@ -300,6 +418,9 @@ public final class StreamChannelAdapters {
     /// Adapts one writable channel to an output stream.
     @NotNullByDefault
     private static final class ChannelOutputStream extends OutputStream {
+        /// Previously reported endpoint failures, allocated only after an operation fails.
+        private @Nullable Set<Throwable> reportedFailures;
+
         /// The backing writable channel.
         private final WritableByteChannel target;
 
@@ -334,10 +455,15 @@ public final class StreamChannelAdapters {
 
         /// Drains one call's source without retaining it and rejects a stalled channel.
         private void writeFully(ByteBuffer source) throws IOException {
-            while (source.hasRemaining()) {
-                if (target.write(source) == 0) {
-                    throw new IOException("Writable channel made no progress");
+            try {
+                while (source.hasRemaining()) {
+                    if (target.write(source) == 0) {
+                        throw new IOException("Writable channel made no progress");
+                    }
                 }
+            } catch (IOException | RuntimeException | Error failure) {
+                recordFailure(failure);
+                throw failure;
             }
         }
 
@@ -347,8 +473,31 @@ public final class StreamChannelAdapters {
             if (!open) {
                 return;
             }
-            target.close();
-            open = false;
+            try {
+                target.close();
+                synchronized (this) {
+                    open = false;
+                    reportedFailures = null;
+                }
+            } catch (IOException | RuntimeException | Error failure) {
+                if (!recordFailure(failure)) {
+                    IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                    recordFailure(cleanupFailure);
+                    throw cleanupFailure;
+                }
+                throw failure;
+            }
+        }
+
+        /// Records a failure while open and reports whether it needs no repeated-cleanup wrapper.
+        private synchronized boolean recordFailure(Throwable failure) {
+            if (!open) {
+                return true;
+            }
+            if (reportedFailures == null) {
+                reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+            }
+            return reportedFailures.add(failure);
         }
 
         /// Requires this adapter to remain open.

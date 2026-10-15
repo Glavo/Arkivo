@@ -135,6 +135,17 @@ final class ArchiveNioSupportTest {
         ReadOnlyByteArrayChannel channel = new ReadOnlyByteArrayChannel(source);
         source[0] = 9;
 
+        for (long position : new long[]{0L, 3L, 8L}) {
+            channel.position(position);
+            for (int size : new int[]{0, 1}) {
+                ByteBuffer target = ByteBuffer.allocate(size).asReadOnlyBuffer();
+                assertThrows(IllegalArgumentException.class, () -> channel.read(target));
+                assertEquals(position, channel.position());
+                assertEquals(0, target.position());
+            }
+        }
+        channel.position(0L);
+
         ByteBuffer first = ByteBuffer.allocate(2);
         assertEquals(2, channel.read(first));
         assertArrayEquals(new byte[]{1, 2}, first.array());

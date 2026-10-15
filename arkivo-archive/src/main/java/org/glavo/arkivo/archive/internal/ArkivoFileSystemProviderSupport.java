@@ -32,7 +32,9 @@ import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileTime;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -46,6 +48,46 @@ public final class ArkivoFileSystemProviderSupport {
 
     /// Prevents instantiation.
     private ArkivoFileSystemProviderSupport() {
+    }
+
+    /// Rejects an empty selection or names absent from a completed attribute selection, except for the wildcard.
+    ///
+    /// Callers must include recognized attributes in `values` even when their values are `null`.
+    ///
+    /// @param names the requested attribute names
+    /// @param values the selected attributes supported by the view
+    /// @throws IllegalArgumentException if no names are supplied or a name other than `*` has no corresponding attribute
+    public static void validateAttributeNames(Set<String> names, Map<String, ?> values) {
+        if (names.isEmpty()) {
+            throw new IllegalArgumentException("No attributes specified");
+        }
+        for (String name : names) {
+            if (!name.equals("*") && !values.containsKey(name)) {
+                throw new IllegalArgumentException("Unrecognized attribute: " + name);
+            }
+        }
+    }
+
+    /// Removes creation and truncation options ignored by read-only byte-channel opens.
+    ///
+    /// The input set is not modified. All options are preserved when `WRITE` or `APPEND` is present;
+    /// otherwise `CREATE`, `CREATE_NEW`, and `TRUNCATE_EXISTING` are removed. Other options remain
+    /// subject to validation by the concrete provider.
+    ///
+    /// @param options the requested byte-channel options
+    /// @return the original set if unchanged, or an immutable filtered set
+    public static Set<? extends OpenOption> normalizeChannelOptions(Set<? extends OpenOption> options) {
+        Objects.requireNonNull(options, "options");
+        if (options.contains(StandardOpenOption.WRITE) || options.contains(StandardOpenOption.APPEND)
+                || !(options.contains(StandardOpenOption.CREATE) || options.contains(StandardOpenOption.CREATE_NEW)
+                || options.contains(StandardOpenOption.TRUNCATE_EXISTING))) {
+            return options;
+        }
+        Set<OpenOption> filtered = new HashSet<>(options);
+        filtered.remove(StandardOpenOption.CREATE);
+        filtered.remove(StandardOpenOption.CREATE_NEW);
+        filtered.remove(StandardOpenOption.TRUNCATE_EXISTING);
+        return Set.copyOf(filtered);
     }
 
     /// Resolves a path for a read operation that follows symbolic links.
@@ -192,6 +234,28 @@ public final class ArkivoFileSystemProviderSupport {
             String first = normalized.getName(0).toString();
             if (first.length() >= 2 && first.charAt(1) == ':') {
                 throw new FileSystemException(path.toString(), null, "Archive entry names cannot begin with a drive prefix");
+            }
+        }
+    }
+
+    /// Rejects NUL and unpaired UTF-16 surrogates in link targets.
+    ///
+    /// This method does not normalize the target or require that it exists.
+    ///
+    /// @param target the symbolic-link or hard-link target text
+    /// @throws IllegalArgumentException if the target contains NUL or an unpaired UTF-16 surrogate
+    public static void validateLinkTarget(String target) {
+        Objects.requireNonNull(target, "target");
+        for (int index = 0; index < target.length(); index++) {
+            char value = target.charAt(index);
+            if (value == 0) {
+                throw new IllegalArgumentException("Archive link targets cannot contain NUL");
+            }
+            if (Character.isHighSurrogate(value) && index + 1 < target.length()
+                    && Character.isLowSurrogate(target.charAt(index + 1))) {
+                index++;
+            } else if (Character.isSurrogate(value)) {
+                throw new IllegalArgumentException("Archive link targets cannot contain unpaired surrogates");
             }
         }
     }
@@ -495,6 +559,11 @@ public final class ArkivoFileSystemProviderSupport {
 
     /// Parses an Arkivo provider URI containing a nested archive URI and an optional `!/entry` suffix.
     ///
+    /// Exclamation marks in the source URI are escaped to distinguish them from the outer entry delimiter.
+    /// An opaque source URI additionally escapes its existing percent signs; that quoting layer is removed before
+    /// the source URI is passed to its provider. The resolved source path's ASCII URI supplies the registry key,
+    /// so equivalent Unicode and percent-escaped spellings identify the same registered file system.
+    ///
     /// @param uri provider URI to parse
     /// @param scheme provider scheme
     /// @param formatName format name used in validation messages
@@ -539,12 +608,35 @@ public final class ArkivoFileSystemProviderSupport {
             );
         }
 
-        URI archiveUri = URI.create(archivePart.replace("!", "%21")).normalize();
+        URI archiveUri = URI.create(archivePart.replace("!", "%21"));
+        if (archiveUri.isOpaque()) {
+            archiveUri = decodeOpaqueArchiveUri(archiveUri.toString());
+        }
+        archiveUri = archiveUri.normalize();
         Path archivePath = Path.of(archiveUri);
+        archiveUri = URI.create(archivePath.toUri().toASCIIString());
         @Nullable String entryPath = separator >= 0
                 ? decodeEntryPath(schemeSpecificPart.substring(separator + 2))
                 : null;
         return new ParsedUri(archiveUri, archivePath, entryPath);
+    }
+
+    /// Removes one quoting layer from an opaque source URI without decoding its original URI escapes.
+    private static URI decodeOpaqueArchiveUri(String text) {
+        StringBuilder decoded = new StringBuilder(text.length());
+        for (int index = 0; index < text.length(); index++) {
+            char value = text.charAt(index);
+            if (value == '%' && index + 2 < text.length() && text.charAt(index + 1) == '2') {
+                char last = text.charAt(index + 2);
+                if (last == '1' || last == '5') {
+                    decoded.append(last == '1' ? '!' : '%');
+                    index += 2;
+                    continue;
+                }
+            }
+            decoded.append(value);
+        }
+        return URI.create(decoded.toString());
     }
 
     /// Decodes one raw provider-URI entry path.

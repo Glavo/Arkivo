@@ -37,6 +37,9 @@ public final class TransformingInputStream extends InputStream {
     /// A deferred source or filter failure.
     private @Nullable Throwable failure;
 
+    /// Whether an earlier source-close attempt failed.
+    private boolean closeFailed;
+
     /// Whether the upstream stream reached end-of-input.
     private boolean endReached;
 
@@ -127,14 +130,25 @@ public final class TransformingInputStream extends InputStream {
     /// Marks this stream closed and closes the upstream coder stream.
     ///
     /// Reads remain closed even if upstream close throws; calling this method again retries only upstream closure.
+    /// A close failure identical to the reported read failure, or any failure from a close retry, is wrapped in an
+    /// `IOException` so try-with-resources can preserve the original failure without self-suppression.
     @Override
     public void close() throws IOException {
         closed = true;
         if (inputClosed) {
             return;
         }
-        input.close();
-        inputClosed = true;
+        try {
+            input.close();
+            inputClosed = true;
+        } catch (IOException | RuntimeException | Error exception) {
+            boolean retry = closeFailed;
+            closeFailed = true;
+            if (exception == failure || retry) {
+                throw new IOException("Transform stream source close failed after an earlier failure", exception);
+            }
+            throw exception;
+        }
     }
 
     /// Rethrows a retained read failure without invoking the input or transform again.

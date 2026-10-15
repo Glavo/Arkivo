@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.internal.ArkivoCommitTargetSupport;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
@@ -21,6 +22,7 @@ import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
 import org.glavo.arkivo.archive.internal.PosixModes;
@@ -33,7 +35,6 @@ import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoFormat;
-import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.glavo.arkivo.archive.tar.TarCompression;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -88,6 +89,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 
@@ -144,7 +146,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private final @Nullable StoredContentPool editStorage;
 
     /// The streaming writer used by forward-only write mode, or `null` in read mode.
-    private final @Nullable TarArkivoStreamingWriter writer;
+    private final @Nullable TarArkivoStreamingWriterImpl writer;
 
     /// The target used to publish a rewritten update-mode archive, or `null` outside update mode.
     private final @Nullable ArkivoCommitTarget commitTarget;
@@ -201,7 +203,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             ArkivoFileSystemThreadSafety threadSafety,
             Map<String, Node> nodes,
             @Nullable StoredContentPool editStorage,
-            @Nullable TarArkivoStreamingWriter writer,
+            @Nullable TarArkivoStreamingWriterImpl writer,
             boolean readOnly,
             boolean updateMode,
             @Nullable ArkivoCommitTarget commitTarget,
@@ -324,26 +326,40 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if (options.get(ArchiveEnvironmentOptions.COMMIT_TARGET) != null) {
                 throw new UnsupportedOperationException("TAR archive writes do not support commit targets");
             }
-            OutputStream output = openArchiveOutput(
-                    Files.newOutputStream(archivePath, openOptions.toArray(OpenOption[]::new)),
-                    configuredCodec(compression)
-            );
-            return new TarArkivoFileSystemImpl(
-                    provider,
-                    archivePath,
-                    archiveUri,
-                    null,
-                    UNKNOWN_ARCHIVE_SIZE,
-                    threadSafety,
-                    rootNodes(),
-                    null,
-                    TarArkivoStreamingWriter.open(output),
-                    false,
-                    false,
-                    null,
-                    configuredCodec(compression),
-                    closeAction
-            );
+            ArkivoEditStorage bodyStorage = Objects.requireNonNull(StoredContentSupport.selectStorage(options));
+            @Nullable OutputStream output = null;
+            try {
+                output = openArchiveOutput(
+                        Files.newOutputStream(archivePath, openOptions.toArray(OpenOption[]::new)),
+                        configuredCodec(compression)
+                );
+                return new TarArkivoFileSystemImpl(
+                        provider,
+                        archivePath,
+                        archiveUri,
+                        null,
+                        UNKNOWN_ARCHIVE_SIZE,
+                        threadSafety,
+                        rootNodes(),
+                        null,
+                        new TarArkivoStreamingWriterImpl(output, bodyStorage),
+                        false,
+                        false,
+                        null,
+                        configuredCodec(compression),
+                        closeAction
+                );
+            } catch (IOException | RuntimeException | Error exception) {
+                if (output != null) {
+                    try {
+                        output.close();
+                    } catch (IOException | RuntimeException | Error cleanupFailure) {
+                        if (exception != cleanupFailure) exception.addSuppressed(cleanupFailure);
+                    }
+                }
+                StoredContentSupport.closeAfterOpenFailure(bodyStorage, exception);
+                throw exception;
+            }
         }
 
         validateArchiveReadOptions(openOptions);
@@ -555,7 +571,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Closes this file system.
     @Override
     public void close() throws IOException {
-        try (CloseOperation ignored = beginCloseOperation()) {
+        CloseOperation operation = beginCloseOperation();
+        try {
             if (open
                     || (writer != null && !writerClosed)
                     || pendingCommitOutput != null
@@ -612,6 +629,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 }
                 throwFailure(failure);
             }
+        } catch (IOException | RuntimeException | Error exception) {
+            operation.rethrowFailure(exception);
+        } finally {
+            operation.close();
         }
     }
 
@@ -753,6 +774,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         boolean writable = requestsWrite(options);
         try (Operation ignored = writable ? beginWriteOperation() : beginReadOperation()) {
             SeekableByteChannel channel = newByteChannelLocked(path, options, attributes);
+            if (writable && !updateMode) {
+                return manageWriteChannel(channel, requireWriter().currentBodyClosePreparation());
+            }
             return writable ? manageWriteChannel(channel) : manageReadChannel(channel);
         }
     }
@@ -784,6 +808,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     ///
     /// Closing the stream commits the entry body to the forward-only writer or pending update index. The complete TAR
     /// stream or replacement archive is not finalized or published until the file system closes.
+    /// With explicit options, creating a missing entry requires `CREATE` or `CREATE_NEW`.
     ///
     /// @param path    the regular-file entry to create or replace
     /// @param options creation, truncation, append, and write options; an empty array selects create, truncate, and write
@@ -793,7 +818,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             OutputStream output = newOutputStream(path, Set.of(options));
-            return updateMode ? output : manageOutputStream(output);
+            return updateMode ? output : manageOutputStream(output, requireWriter().currentBodyClosePreparation());
         }
     }
 
@@ -821,12 +846,17 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return manageOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
         }
         validateEntryWriteOptions(options);
+        if (!options.isEmpty() && !options.contains(StandardOpenOption.CREATE)
+                && !options.contains(StandardOpenOption.CREATE_NEW)) {
+            requireWritableKnownPath(path);
+        }
         InitialAttributes initial = initialAttributes(attributes);
         String entryPath = prepareWritableEntry(path, false);
-        TarArkivoStreamingWriter currentWriter = requireWriter();
+        TarArkivoStreamingWriterImpl currentWriter = requireWriter();
         ArkivoStreamingWriter.Entry entry = currentWriter.beginFile(entryPath);
         applyInitialAttributes(entry, initial);
-        return new WrittenEntryOutputStream(entry.openOutputStream(), entryPath);
+        OutputStream output = entry.openOutputStream();
+        return new WrittenEntryOutputStream(output, entryPath, currentWriter.currentBodyPublication());
     }
 
     /// Creates a directory entry.
@@ -862,7 +892,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return;
         }
         String entryPath = prepareWritableEntry(directory, true);
-        TarArkivoStreamingWriter currentWriter = requireWriter();
+        TarArkivoStreamingWriterImpl currentWriter = requireWriter();
         try (ArkivoStreamingWriter.Entry entry = currentWriter.beginDirectory(entryPath)) {
             applyInitialAttributes(entry, initial);
         }
@@ -892,13 +922,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
         InitialAttributes initial = initialAttributes(attributes);
+        String targetText = archivePathText(target);
         if (updateMode) {
             String entryPath = prepareUpdateEntry(link);
             TarEntryAttributes entryAttributes = defaultAttributes(
                     entryPath,
                     TarEntryAttributes.SYMBOLIC_LINK_TYPE,
                     initial.permissions() != null ? PosixModes.permissionBits(initial.permissions()) : 0777,
-                    archivePathText(target),
+                    targetText,
                     0L,
                     initial.lastModifiedTime()
             );
@@ -906,9 +937,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return;
         }
         String entryPath = prepareWritableEntry(link, false);
-        TarArkivoStreamingWriter currentWriter = requireWriter();
+        TarArkivoStreamingWriterImpl currentWriter = requireWriter();
         try (ArkivoStreamingWriter.Entry entry =
-                     currentWriter.beginSymbolicLink(entryPath, archivePathText(target))) {
+                     currentWriter.beginSymbolicLink(entryPath, targetText)) {
             applyInitialAttributes(entry, initial);
         }
         recordWrittenEntry(entryPath, false);
@@ -963,7 +994,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             throw new FileSystemException(existing.toString(), null, "TAR hard link target is not a regular file");
         }
         String entryPath = prepareWritableEntry(link, false);
-        TarArkivoStreamingWriter currentWriter = requireWriter();
+        TarArkivoStreamingWriterImpl currentWriter = requireWriter();
         currentWriter.beginHardLink(entryPath, targetPath).close();
         recordWrittenEntry(entryPath, false);
     }
@@ -1044,12 +1075,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         target = ArkivoFileSystemProviderSupport.resolveMutationPath(target, false);
         String sourcePath = normalizedNodePath(source);
         String targetPath = normalizedNodePath(target);
-        if (sourcePath.isEmpty() || targetPath.isEmpty()) {
-            throw new FileSystemException(source.toString(), target.toString(), "The TAR root cannot be moved");
-        }
+        requireWritableEntryName(targetPath);
         Node sourceNode = requireNode(source);
         if (sourcePath.equals(targetPath)) {
             return;
+        }
+        if (sourcePath.isEmpty() || targetPath.isEmpty()) {
+            throw new FileSystemException(source.toString(), target.toString(), "The TAR root cannot be moved");
         }
         if (sourceNode.directory() && targetPath.startsWith(sourcePath + "/")) {
             throw new FileSystemException(source.toString(), target.toString(), "A directory cannot be moved below itself");
@@ -1171,12 +1203,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Opens a directory stream for an entry.
     ///
-    /// The filter is invoked synchronously for every immediate child before this method returns. The resulting stream
-    /// is a fixed snapshot, supports one iterator, and is tracked until the caller or file system closes it.
+    /// The stream captures a snapshot of the immediate child paths and supports one iterator. The filter is invoked
+    /// during traversal, not when this method returns. An `IOException` thrown by the filter is reported by the iterator
+    /// as a [java.nio.file.DirectoryIteratorException] with the original exception as its cause.
     ///
     /// @param directory the existing directory whose immediate children are listed
     /// @param filter    the predicate applied as child paths are traversed
-    /// @return a managed directory stream containing the accepted child paths
+    /// @return a directory stream that filters the captured child paths during traversal
     /// @throws IOException                if `directory` is missing, is not a directory, or cannot be read
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
@@ -1400,6 +1433,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         } else {
             putBasicAttributes(values, entryAttributes, requestedAttributes, all);
         }
+        ArkivoFileSystemProviderSupport.validateAttributeNames(requestedAttributes.names(), values);
         return Collections.unmodifiableMap(values);
     }
 
@@ -1706,8 +1740,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     }
 
     /// Returns the writer for write mode.
-    private TarArkivoStreamingWriter requireWriter() {
-        @Nullable TarArkivoStreamingWriter currentWriter = writer;
+    private TarArkivoStreamingWriterImpl requireWriter() {
+        @Nullable TarArkivoStreamingWriterImpl currentWriter = writer;
         if (currentWriter == null) {
             throw new ReadOnlyFileSystemException();
         }
@@ -1743,6 +1777,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 options.contains(StandardOpenOption.CREATE) || options.contains(StandardOpenOption.CREATE_NEW)
         );
         String requestedPath = normalizedNodePath(path);
+        requireWritableEntryName(requestedPath);
         if (requestedPath.isEmpty()) {
             throw new FileSystemException(path.toString(), null, "The TAR root cannot be opened as a file");
         }
@@ -1766,9 +1801,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         boolean readable = options.contains(StandardOpenOption.READ);
         if (!readable && !writable) {
             throw new IllegalArgumentException("TAR entry update channel requires READ, WRITE, or APPEND");
-        }
-        if (existing == null) {
-            ensureParents(nodes, entryPath);
         }
         boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
         long expectedSize = existing != null && !truncate ? existing.contentSize() : 0L;
@@ -1861,21 +1893,22 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return node;
     }
 
-    /// Prepares a previously absent path for an update-mode entry.
+    /// Validates a previously absent update path without publishing implicit parent directories.
     private String prepareUpdateEntry(Path path) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
         path = ArkivoFileSystemProviderSupport.resolveMutationPath(path, false, true);
         String entryPath = normalizedNodePath(path);
+        requireWritableEntryName(entryPath);
         if (entryPath.isEmpty() || nodes.containsKey(entryPath)) {
             throw new FileAlreadyExistsException(path.toString());
         }
-        ensureParents(nodes, entryPath);
         return entryPath;
     }
 
     /// Adds a new update-mode node and marks the archive dirty.
     private void addUpdateNode(Node node) throws IOException {
+        ensureParents(nodes, node.path());
         putNode(nodes, node);
         dirty = true;
     }
@@ -1924,6 +1957,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         );
         Node replacement = new Node(path, attributes, false, content, false);
         if (existing == null) {
+            ensureParents(nodes, path);
             putNode(nodes, replacement);
         } else {
             nodes.put(path, replacement);
@@ -2363,6 +2397,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Sets the TAR user name in update mode.
     private void setUserName(Path path, @Nullable String userName) throws IOException {
+        TarPosixSupport.validateName(userName);
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), attributes.userId(), attributes.groupId(),
                 userName, attributes.groupName(), attributes.linkName(), attributes.size(),
@@ -2373,6 +2408,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Sets the TAR group name in update mode.
     private void setGroupName(Path path, @Nullable String groupName) throws IOException {
+        TarPosixSupport.validateName(groupName);
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), attributes.userId(), attributes.groupId(),
                 attributes.userName(), groupName, attributes.linkName(), attributes.size(),
@@ -2397,11 +2433,19 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         dirty = true;
     }
 
+    /// Rejects names that TAR's fixed-width and PAX fields cannot preserve.
+    private static void requireWritableEntryName(String path) throws FileSystemException {
+        if (path.indexOf('\0') >= 0) {
+            throw new FileSystemException(path, null, "TAR entry path must not contain NUL");
+        }
+    }
+
     /// Prepares a new archive entry path for forward-only writing.
     private String prepareWritableEntry(Path path, boolean directory) throws IOException {
         ensureOpen();
         ArkivoFileSystemProviderSupport.validateWritablePath(path);
         String entryPath = normalizedNodePath(path);
+        requireWritableEntryName(entryPath);
         if (entryPath.isEmpty()) {
             throw new FileAlreadyExistsException(path.toString());
         }
@@ -2456,6 +2500,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Returns archive-style path text for a link target.
     private static String archivePathText(Path path) {
+        ArkivoFileSystemProviderSupport.validateLinkTarget(path.toString());
         return path.toString().replace('\\', '/');
     }
 
@@ -2563,15 +2608,22 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                                  compressionCodec
                          ))) {
                 for (Node node : nodes.values()) {
-                    if (node.syntheticDirectory()) {
+                    // Children recreate nonempty implicit directories; an empty directory needs its own record.
+                    if (node.syntheticDirectory() && (node.path().isEmpty() || !node.children().isEmpty())) {
                         continue;
                     }
                     @Nullable ArkivoStoredContent content = node.content();
                     @Nullable SeekableByteChannel body = content != null
                             ? content.openChannel(Set.of(StandardOpenOption.READ))
                             : null;
-                    try (body) {
+                    @Nullable Throwable bodyFailure = null;
+                    try {
                         archiveWriter.writeSnapshot(node.attributes(), body, node.contentSize());
+                    } catch (IOException | RuntimeException | Error exception) {
+                        bodyFailure = exception;
+                        throw exception;
+                    } finally {
+                        if (body != null) StoredContentSupport.closeAfterTransfer(body, bodyFailure);
                     }
                 }
             }
@@ -2579,13 +2631,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 Objects.requireNonNull(channelSource, "channelSource").close();
                 channelSourceClosed = true;
             }
-            ArkivoCommitOutput output = target.openOutput(archivePath);
+            ArkivoCommitOutput output = ArkivoCommitTargetSupport.openManagedOutput(target, archivePath);
             pendingCommitOutput = output;
-            try (InputStream input = StoredContentSupport.openInputStream(assembled);
-                 SeekableByteChannel destination = output.openChannel(Set.of(
-                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE))) {
-                StoredContentSupport.copyInput(input, destination);
-            }
+            StoredContentSupport.copyToCommitOutput(assembled, output);
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
         }
@@ -2762,6 +2810,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         nodes.put("", new Node("", syntheticDirectoryAttributes("/"), true, null, true));
 
+        ArchiveReadLimits limits = options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
+        ArkivoReadLimitTracker resolvedSizes = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.UNLIMITED_SIZE, limits.maximumEntrySize(), limits.maximumTotalEntrySize());
         try (TarArkivoStreamingReaderImpl reader = new TarArkivoStreamingReaderImpl(input, options)) {
             while (reader.next()) {
                 TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
@@ -2777,7 +2828,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     }
                     content = target.content();
                     nodeAttributes = attributesWithSize(attributes, target.contentSize());
-                } else if (attributes instanceof TarEntryAttributes internalAttributes
+                }
+                // The stream accounts for declared sizes; the index also exposes each hard link's resolved content.
+                resolvedSizes.acceptEntry(path, nodeAttributes.size());
+                if (!attributes.isHardLink() && attributes instanceof TarEntryAttributes internalAttributes
                         && internalAttributes.bodySize() > 0L) {
                     if (seekableSource != null && reader.currentBodyIsContiguous()) {
                         content = seekableSource.newStoredContent(
@@ -2912,6 +2966,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 if ("..".equals(name)) {
                     throw new IOException(description + " must not contain ..");
                 }
+                // Leading dot components must not hide a drive-qualified first name.
+                if (!hasName && name.length() >= 2 && name.charAt(1) == ':') {
+                    throw new IOException(description + " must be relative");
+                }
                 hasName = true;
             }
             start = end + 1;
@@ -2987,7 +3045,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if ("*".equals(names)) {
                 return new RequestedAttributes(view, Set.of("*"));
             }
-            return new RequestedAttributes(view, Set.of(names.split(",")));
+            return new RequestedAttributes(view, Set.copyOf(List.of(names.split(","))));
         }
 
         /// Returns whether this request targets the TAR attribute view.
@@ -3355,6 +3413,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         /// Returns whether this store supports an attribute view.
         @Override
         public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
+            Objects.requireNonNull(type, "type");
             return type == BasicFileAttributeView.class
                     || type == FileOwnerAttributeView.class
                     || type == PosixFileAttributeView.class
@@ -3370,6 +3429,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         /// Returns a file store attribute view.
         @Override
         public <V extends FileStoreAttributeView> @Nullable V getFileStoreAttributeView(Class<V> type) {
+            Objects.requireNonNull(type, "type");
             return null;
         }
 
@@ -3392,10 +3452,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         /// Whether this stream has been closed.
         private boolean closed;
 
+        /// Reports whether the bound body was emitted rather than discarded before or during close.
+        private final BooleanSupplier published;
+
         /// Creates a recording output stream.
-        private WrittenEntryOutputStream(OutputStream output, String path) {
+        private WrittenEntryOutputStream(OutputStream output, String path, BooleanSupplier published) {
             this.output = Objects.requireNonNull(output, "output");
             this.path = Objects.requireNonNull(path, "path");
+            this.published = Objects.requireNonNull(published, "published");
         }
 
         /// Writes one byte to the entry body.
@@ -3424,7 +3488,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             }
             output.close();
             closed = true;
-            recordWrittenEntry(path, false);
+            if (published.getAsBoolean()) recordWrittenEntry(path, false);
         }
     }
 

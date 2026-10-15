@@ -4,6 +4,11 @@
 package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.tar.TarArchiveOptions;
+import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
@@ -44,6 +49,44 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies TAR compression wrapper limits, endpoint identity, and setup-failure ownership.
 @NotNullByDefault
 final class TarCompressionStreamsTest {
+    /// Codec setup failure releases create-session storage and suppresses only distinct cleanup failures.
+    @Test
+    void closesCreateStorageAfterEncoderSetupFailure() throws IOException {
+        for (Throwable setup : new Throwable[]{new IOException("setup"),
+                new IllegalStateException("setup"), new AssertionError("setup")}) {
+            for (boolean sameFailure : new boolean[]{false, true}) {
+                Throwable cleanup = sameFailure ? setup : new IOException("storage cleanup");
+                int[] closes = {0};
+                ArkivoEditStorage storage = new ArkivoEditStorage() {
+                    /// Rejects body allocation because encoder setup must fail before an entry is opened.
+                    @Override
+                    public ArkivoStoredContent createContent(String path, long expectedSize) {
+                        throw new AssertionError("Unexpected content allocation");
+                    }
+
+                    /// Records cleanup and reports the configured failure.
+                    @Override
+                    public void close() throws IOException {
+                        closes[0]++;
+                        if (cleanup instanceof IOException exception) throw exception;
+                        if (cleanup instanceof RuntimeException exception) throw exception;
+                        throw (Error) cleanup;
+                    }
+                };
+                Path archive = temporaryDirectory.resolve(setup.getClass().getSimpleName() + sameFailure + ".tar");
+                var options = TarArchiveOptions.CREATE_DEFAULTS
+                        .withCommon(ArchiveCreateOptions.DEFAULT.withEditStorageFactory(() -> storage))
+                        .withCompression(new FailingCodec(setup));
+                int previousSuppressed = setup.getSuppressed().length;
+                assertSame(setup, assertThrows(Throwable.class, () -> TarArkivoFileSystem.create(archive, options)));
+                assertEquals(1, closes[0]);
+                assertEquals(previousSuppressed + (sameFailure ? 0 : 1), setup.getSuppressed().length);
+                if (!sameFailure) assertSame(cleanup, setup.getSuppressed()[previousSuppressed]);
+                Files.delete(archive);
+            }
+        }
+    }
+
     /// Temporary directory used to inspect generated seekable Zstandard output.
     @TempDir
     private Path temporaryDirectory;

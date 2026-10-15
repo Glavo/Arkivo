@@ -7,7 +7,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
@@ -64,7 +63,7 @@ class HFSPlusForkChannel implements SeekableByteChannel {
         Objects.requireNonNull(target, "target");
         ensureOpen();
         if (target.isReadOnly()) {
-            throw new ReadOnlyBufferException();
+            throw new IllegalArgumentException("Target buffer is read-only");
         }
         if (!target.hasRemaining()) {
             return 0;

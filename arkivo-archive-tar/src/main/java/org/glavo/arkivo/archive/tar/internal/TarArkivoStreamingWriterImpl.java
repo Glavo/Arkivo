@@ -10,6 +10,7 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.internal.ArchiveOutputStream;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
+import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
@@ -21,7 +22,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.math.BigDecimal;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -40,6 +40,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.Set;
 
 /// Implements the public forward-only TAR streaming writer API.
@@ -236,6 +237,20 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     @Override
     protected WritableByteChannel openCurrentChannel() throws IOException {
         return StreamChannelAdapters.writableChannel(openBodyStream());
+    }
+
+    /// Captures storage-only closure for the staged body opened by the file system's current operation.
+    ///
+    /// The returned action remains bound to this body even after another entry becomes current. Its caller must
+    /// subsequently close the entry stream under exclusive coordination, after active writes have returned.
+    Runnable currentBodyClosePreparation() {
+        return Objects.requireNonNull(currentBody, "currentBody").storageChannel::closeStorage;
+    }
+
+    /// Captures whether the current staged body has been emitted, independently of later cleanup failures.
+    BooleanSupplier currentBodyPublication() {
+        EntryBodyOutputStream body = Objects.requireNonNull(currentBody, "currentBody");
+        return () -> body.emitted;
     }
 
     /// Opens an output stream for the current pending file entry and commits it when the stream is closed.
@@ -638,6 +653,9 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// Converts a logical entry path to normalized TAR path text.
     private static String entryPathText(String path, boolean directory) {
         Objects.requireNonNull(path, "path");
+        if (path.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException("TAR entry path must not contain NUL");
+        }
         String normalizedSeparators = path.replace('\\', '/');
         if (normalizedSeparators.startsWith("/") || normalizedSeparators.length() >= 2
                 && normalizedSeparators.charAt(1) == ':') {
@@ -668,6 +686,9 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 return "./";
             }
             throw new IllegalArgumentException("TAR streaming entry path is empty");
+        }
+        if (builder.length() >= 2 && builder.charAt(1) == ':') {
+            throw new IllegalArgumentException("TAR streaming entry paths must be relative");
         }
         if (directory) {
             builder.append('/');
@@ -865,6 +886,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         @Override
         public void setUserName(@Nullable String userName) {
             entry.ensurePending();
+            TarPosixSupport.validateName(userName);
             this.userName = userName;
         }
 
@@ -872,6 +894,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         @Override
         public void setGroupName(@Nullable String groupName) {
             entry.ensurePending();
+            TarPosixSupport.validateName(groupName);
             this.groupName = groupName;
         }
 
@@ -959,7 +982,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// Sets the pending owner principal.
         private void setOwner(UserPrincipal owner) {
             entry.ensurePending();
-            userName = Objects.requireNonNull(owner, "owner").getName();
+            setUserName(Objects.requireNonNull(owner, "owner").getName());
         }
 
         /// Returns the pending group principal.
@@ -970,7 +993,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// Sets the pending group principal.
         private void setGroup(GroupPrincipal group) {
             entry.ensurePending();
-            groupName = Objects.requireNonNull(group, "group").getName();
+            setGroupName(Objects.requireNonNull(group, "group").getName());
         }
     }
 
@@ -1201,6 +1224,9 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// Stages one file body before committing its TAR header and body.
     @NotNullByDefault
     private final class EntryBodyOutputStream extends OutputStream {
+        /// Whether all header and body bytes were written successfully, even if subsequent cleanup failed.
+        private boolean emitted;
+
         /// The entry metadata to commit.
         private final PendingEntry entry;
 
@@ -1222,7 +1248,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                         StandardOpenOption.TRUNCATE_EXISTING,
                         StandardOpenOption.WRITE
                 )), false, true, false, true, (channel, commit) -> completeBody(commit));
-                this.storageOutput = Channels.newOutputStream(storageChannel);
+                this.storageOutput = storageChannel.newOutputStream();
             } catch (IOException | RuntimeException | Error exception) {
                 releaseBody(content);
                 throw exception;
@@ -1262,8 +1288,16 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             try {
                 if (commit) {
                     long size = content.size();
-                    try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
+                    SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ));
+                    @Nullable Throwable failure = null;
+                    try {
                         writeEntry(entry, input, size);
+                        emitted = true;
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                        throw exception;
+                    } finally {
+                        StoredContentSupport.closeAfterTransfer(input, failure);
                     }
                 }
             } finally {

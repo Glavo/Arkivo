@@ -8,10 +8,11 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
-import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.codec.internal.InterruptibleChannelSupport;
 import org.glavo.arkivo.codec.internal.OwnedChannelCloser;
+import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -20,7 +21,10 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 
 /// Decodes indexed Zstandard frames on demand behind a logical seekable channel.
 @NotNullByDefault
@@ -48,6 +52,12 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
 
     /// Whether this logical channel remains open.
     private boolean open = true;
+
+    /// Whether source ownership has been discharged successfully.
+    private boolean closeComplete;
+
+    /// Exception identities already delivered to the caller before cleanup completed.
+    private @Nullable Set<Throwable> reportedFailures;
 
     /// Creates and validates a logical view, applying source ownership if setup fails.
     ///
@@ -104,6 +114,9 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
+        if (target.isReadOnly()) {
+            throw new IllegalArgumentException("Target buffer is read-only");
+        }
         if (!target.hasRemaining()) {
             return 0;
         }
@@ -112,16 +125,21 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
         }
 
         int initialPosition = target.position();
-        while (target.hasRemaining() && position < index.uncompressedSize()) {
-            int frameIndex = index.frameContaining(position);
-            if (cachedFrameIndex != frameIndex) {
-                loadFrame(frameIndex);
+        try {
+            while (target.hasRemaining() && position < index.uncompressedSize()) {
+                int frameIndex = index.frameContaining(position);
+                if (cachedFrameIndex != frameIndex) {
+                    loadFrame(frameIndex);
+                }
+                long frameOffset = index.frameUncompressedOffset(frameIndex);
+                int offset = Math.toIntExact(position - frameOffset);
+                int count = Math.min(target.remaining(), cachedFrame.length - offset);
+                target.put(cachedFrame, offset, count);
+                position += count;
             }
-            long frameOffset = index.frameUncompressedOffset(frameIndex);
-            int offset = Math.toIntExact(position - frameOffset);
-            int count = Math.min(target.remaining(), cachedFrame.length - offset);
-            target.put(cachedFrame, offset, count);
-            position += count;
+        } catch (IOException | RuntimeException | Error failure) {
+            recordFailure(failure);
+            throw failure;
         }
         return target.position() - initialPosition;
     }
@@ -178,6 +196,9 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
     }
 
     /// Releases cached data and applies ordinary source ownership.
+    ///
+    /// Failed source closure may be retried. An exception already delivered by this channel is wrapped in a new
+    /// `IOException` when it recurs during cleanup, preventing self-suppression by try-with-resources.
     @Override
     public void close() throws IOException {
         if (open) {
@@ -185,7 +206,31 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
             cachedFrame = new byte[0];
             cachedFrameIndex = -1;
         }
-        sourceCloser.close();
+        try {
+            sourceCloser.close();
+            synchronized (this) {
+                closeComplete = true;
+                reportedFailures = null;
+            }
+        } catch (IOException | RuntimeException | Error failure) {
+            if (!recordFailure(failure)) {
+                IOException cleanup = new IOException("Zstandard source cleanup repeated an earlier failure", failure);
+                recordFailure(cleanup);
+                throw cleanup;
+            }
+            throw failure;
+        }
+    }
+
+    /// Records a delivered exception without holding the monitor during source I/O or closure.
+    private synchronized boolean recordFailure(Throwable failure) {
+        if (closeComplete) {
+            return true;
+        }
+        if (reportedFailures == null) {
+            reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+        }
+        return reportedFailures.add(failure);
     }
 
     /// Applies terminal cancellation cleanup after the interruptible endpoint has been closed.

@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.sevenzip;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -13,9 +14,12 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -104,5 +108,30 @@ public final class SevenZipSplitStreamingWriterIntegrationTest {
         body.close();
         assertEquals(0, target.openOutputCount());
         assertEquals(0, target.committedVolumes().length);
+    }
+
+    /// Closes an owned destination when an unfinished entry prevents assembly from reaching publication.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void closesOwnedDestinationAfterUnfinishedEntryFailure(boolean encrypted, @TempDir Path directory)
+            throws IOException {
+        Path archive = directory.resolve("unpublished.7z");
+        SevenZipArchiveOptions.Create options = SevenZipArchiveOptions.CREATE_DEFAULTS;
+        if (encrypted) {
+            options = options.withPasswordProvider(ArkivoPasswordProvider.fixed(
+                    "rollback-password".getBytes(StandardCharsets.UTF_16LE))).withEncryptHeaders(true);
+        }
+        try (var target = Files.newByteChannel(archive, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+             var fileSystem = SevenZipArkivoFileSystem.create(target, options)) {
+            OutputStream body = Files.newOutputStream(fileSystem.getPath("/entry"));
+            body.write(new byte[]{1, 2, 3});
+            assertThrows(IOException.class, fileSystem::close);
+            assertFalse(target.isOpen());
+            fileSystem.close();
+            fileSystem.close();
+            assertThrows(IOException.class, body::close);
+            body.close();
+            assertEquals(0L, Files.size(archive));
+        }
     }
 }

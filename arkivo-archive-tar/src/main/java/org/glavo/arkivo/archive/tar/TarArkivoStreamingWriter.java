@@ -7,6 +7,7 @@ import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.archive.tar.internal.TarCompressionStreams;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoStreamingWriterImpl;
@@ -28,17 +29,20 @@ import java.util.Objects;
 /// select another policy. The writer owns and closes its output and body storage.
 ///
 /// A write failure in staged storage disables further body writes. Closing that body discards the entry and reports
-/// an `IOException` with the write failure as its cause; subsequent body close calls do not emit the entry. Invalid
-/// array ranges are rejected before staging and leave the body usable.
+/// an `IOException` whose cause chain retains the write failure; subsequent body close calls do not emit the entry.
+/// Invalid array ranges are rejected before staging and leave the body usable.
+///
+/// Entry names must not contain NUL. Begin methods reject such names with `IllegalArgumentException` before creating
+/// a pending entry or writing output.
 ///
 /// Entry headers, including PAX extended metadata, are fully encoded before any entry bytes are written. If header
 /// encoding fails when a body or an entry is closed, the entry is discarded without changing the archive output.
 /// Closing the same handle again completes its cleanup so another entry can begin.
 ///
 /// A target write failure, or a body read failure after its header has been emitted, leaves the archive incomplete.
-/// No further entries or TAR end markers are written. Closing the writer reports the earlier failure as the cause of
-/// an `IOException` and releases owned resources. The output or compression wrapper may flush buffered bytes when
-/// closed; bytes already sent to the output are not rolled back.
+/// No further entries or TAR end markers are written. Closing the writer releases owned resources and reports an
+/// `IOException` whose cause chain retains the earlier failure. The output or compression wrapper may flush buffered bytes
+/// when closed; bytes already sent to the output are not rolled back.
 ///
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits it without opening a caller-writable
 /// body; opening a regular-file body transfers completion to that body, and another entry cannot begin until it closes
@@ -50,6 +54,9 @@ import java.util.Objects;
 ///
 /// Output ownership transfers after argument and option validation; encoder setup failure then closes the output.
 /// Explicit or option-provided body storage transfers only when a writer is returned successfully.
+///
+/// User and group name assignments through the TAR and POSIX attribute views reject NUL and unpaired UTF-16
+/// surrogates with `IllegalArgumentException`, retaining the preceding attribute values.
 @NotNullByDefault
 public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWriter
         permits TarArkivoStreamingWriterImpl {
@@ -327,12 +334,16 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     /// @param path the relative archive-local path of the new hard-link entry
     /// @param target the relative archive-local path stored as the hard-link target
     /// @return a handle for configuring and committing the pending metadata-only entry
-    /// @throws IllegalArgumentException if either path is empty, absolute, or contains a parent traversal
+    /// @throws IllegalArgumentException if either path is empty, absolute, or contains a parent traversal,
+    ///                                  or the target contains NUL or an unpaired UTF-16 surrogate
     /// @throws IllegalStateException if another entry remains pending
     /// @throws IOException if the writer is closed or format-specific output cannot begin
     public final ArkivoStreamingWriter.Entry beginHardLink(String path, String target) throws IOException {
         String checkedTarget = Objects.requireNonNull(target, "target");
-        return beginCustomEntry(path, checkedPath -> beginHardLinkEntry(checkedPath, checkedTarget));
+        return beginCustomEntry(path, checkedPath -> {
+            ArkivoFileSystemProviderSupport.validateLinkTarget(checkedTarget);
+            beginHardLinkEntry(checkedPath, checkedTarget);
+        });
     }
 
     /// Begins a format-specific pending hard link entry.

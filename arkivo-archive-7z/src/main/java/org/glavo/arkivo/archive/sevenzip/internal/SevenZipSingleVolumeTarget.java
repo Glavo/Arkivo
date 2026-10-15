@@ -13,28 +13,39 @@ import java.util.Objects;
 
 /// Writes one archive directly to an owned channel through the volume-output interface.
 ///
-/// Bytes reach the channel before commit. Rollback closes the channel but cannot undo those writes.
+/// Bytes reach the channel before commit. Opening volume zero transfers channel cleanup to the caller;
+/// rollback closes the channel only if no volume was opened and cannot undo earlier writes.
 @NotNullByDefault
-final class SevenZipSingleVolumeTarget implements ArkivoVolumeTarget {
-    /// The channel that receives the completed archive.
-    private final WritableByteChannel channel;
+final class SevenZipSingleVolumeTarget implements ArkivoVolumeTarget, AutoCloseable {
+    /// Owns the destination even before archive assembly reaches publication.
+    private final SingleVolumeOutput output;
 
     /// Whether an output transaction has already been opened.
     private boolean opened;
 
+    /// Whether target cleanup has started, including an incomplete close attempt.
+    private boolean closing;
+
     /// Creates a single-volume target over the given channel.
     SevenZipSingleVolumeTarget(WritableByteChannel channel) {
-        this.channel = Objects.requireNonNull(channel, "channel");
+        this.output = new SingleVolumeOutput(Objects.requireNonNull(channel, "channel"));
     }
 
     /// Opens the only output transaction supported by this target.
     @Override
     public ArkivoVolumeOutput openOutput() throws IOException {
-        if (opened) {
-            throw new IOException("7z output channel transaction is already open");
+        if (opened || closing) {
+            throw new IOException("7z output channel transaction is no longer available");
         }
         opened = true;
-        return new SingleVolumeOutput(channel);
+        return output;
+    }
+
+    /// Releases an unpublished destination or retries unfinished transaction cleanup.
+    @Override
+    public void close() throws IOException {
+        closing = true;
+        output.close();
     }
 
     /// Publishes one archive to the supplied writable channel.
@@ -86,24 +97,21 @@ final class SevenZipSingleVolumeTarget implements ArkivoVolumeTarget {
             finished = true;
         }
 
-        /// Closes the destination channel and abandons uncommitted output.
+        /// Abandons uncommitted output, closing the destination only if no volume was opened.
         ///
-        /// If closing fails while leaving the channel open, a later call retries cleanup. A failure reported after the
-        /// channel has already closed is still propagated, but cleanup is considered complete.
+        /// The caller must finish closing an opened volume first. Before volume creation, a failed destination
+        /// close is retried even if the channel already reports itself closed.
         @Override
         public void rollback() throws IOException {
             if (finished) {
                 return;
             }
-            try {
+            if (!volumeOpened) {
                 channel.close();
-                finished = true;
-            } catch (IOException | RuntimeException | Error exception) {
-                if (!channel.isOpen()) {
-                    finished = true;
-                }
-                throw exception;
+            } else if (channel.isOpen()) {
+                throw new IOException("7z output channel volume is still open");
             }
+            finished = true;
         }
 
         /// Rolls back this output when it has not committed.
