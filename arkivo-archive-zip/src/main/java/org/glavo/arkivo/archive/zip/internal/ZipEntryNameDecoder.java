@@ -43,14 +43,6 @@ public final class ZipEntryNameDecoder {
     /// The configured treatment of invalid characters in built-in name decoding.
     private final ZipEntryNameErrorAction errorAction;
 
-    /// Creates an entry name decoder.
-    ///
-    /// @param legacyMetadataDecoder the decoder consulted when no authoritative Unicode metadata is available
-    /// @throws NullPointerException if `legacyMetadataDecoder` is `null`
-    public ZipEntryNameDecoder(ArchiveMetadataDecoder legacyMetadataDecoder) {
-        this(legacyMetadataDecoder, ZipEntryNameErrorAction.REPORT);
-    }
-
     /// Creates a name decoder with a read-only recovery policy; SKIP errors are handled by the reader.
     ///
     /// @param legacyMetadataDecoder the decoder consulted when no authoritative Unicode metadata is available
@@ -100,28 +92,6 @@ public final class ZipEntryNameDecoder {
         @Nullable String take(int offset) {
             return decodedFields.isEmpty() ? null : decodedFields.remove(offset);
         }
-    }
-
-    /// Decodes a raw ZIP entry path without additional header context.
-    ///
-    /// The input arrays are read without changing their contents.
-    ///
-    /// @param rawPath the encoded entry name bytes
-    /// @param generalPurposeFlags the unsigned 16-bit general purpose flags
-    /// @param extraData the encoded extra field records
-    /// @return the decoded entry path
-    /// @throws NullPointerException if `rawPath` or `extraData` is `null`
-    /// @throws IOException if Unicode metadata is structurally malformed or name decoding fails under the configured action
-    public String decodePath(byte[] rawPath, int generalPurposeFlags, byte[] extraData) throws IOException {
-        return decodePath(
-                rawPath,
-                generalPurposeFlags,
-                extraData,
-                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
-                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
-                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
-                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
-        );
     }
 
     /// Decodes a raw ZIP entry path with available header context.

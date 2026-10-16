@@ -116,7 +116,7 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
                                 options.common().limits()
                         )
                 ),
-                TarArkivoFileSystem.toInternalOptions(options)
+                options.common()
         );
     }
 }

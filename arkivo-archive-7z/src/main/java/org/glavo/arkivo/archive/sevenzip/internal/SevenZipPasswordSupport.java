@@ -26,8 +26,7 @@ final class SevenZipPasswordSupport {
                 SevenZipArkivoFormat.instance(),
                 purpose,
                 entryPath,
-                ENCRYPTION,
-                0
+                ENCRYPTION
         );
     }
 }

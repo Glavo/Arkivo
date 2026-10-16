@@ -3,11 +3,19 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOption;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
+import org.glavo.arkivo.archive.rar.RarArchiveOptions;
 import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
 import org.glavo.arkivo.archive.rar.RarArkivoFormat;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -26,6 +34,7 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
 import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
@@ -42,6 +51,14 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
 
     /// The shared provider instance used by Arkivo convenience factories.
     private static final RarArkivoFileSystemProvider INSTANCE = new RarArkivoFileSystemProvider();
+
+    /// The provider environment key for encrypted material.
+    private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
+            ArchiveOption.of("arkivo.rar.passwordProvider", ArkivoPasswordProvider.class);
+
+    /// The provider environment key for legacy name decoding.
+    private static final ArchiveOption<ArchiveMetadataDecoder> LEGACY_METADATA_DECODER =
+            ArchiveEnvironmentOptions.metadataDecoderOption("arkivo.rar.legacyMetadataDecoder");
 
     /// The file systems opened through URI entry points.
     private final ArkivoFileSystemProviderSupport.Registry<RarArkivoFileSystem> fileSystems =
@@ -73,7 +90,7 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
                 this,
                 parsedUri.archivePath(),
                 parsedUri.archiveUri(),
-                ArchiveOptions.fromEnvironment(environment),
+                readOptions(environment),
                 closeAction
         ));
     }
@@ -84,20 +101,35 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.requirePathFormat(path, RarArkivoFormat.instance());
-        return openPath(path, ArchiveOptions.fromEnvironment(environment));
+        return openPath(path, readOptions(environment));
     }
 
     /// Opens a RAR archive path whose format has already been selected explicitly.
     ///
     /// @param path the path of the first or only RAR volume
-    /// @param options the validated archive environment options
+    /// @param options the typed read configuration
     /// @return a read-only file system for the archive
     /// @throws IOException if the archive volumes cannot be opened or parsed
-    public RarArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
+    public RarArkivoFileSystem openPath(Path path, RarArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
         return RarArkivoFileSystemImpl.open(this, path, path.toUri(), options, () -> {
         });
+    }
+
+    /// Resolves and validates the NIO environment before opening any archive resources.
+    private static RarArchiveOptions readOptions(Map<String, ?> environment) {
+        var options = ArchiveOptions.fromEnvironment(environment);
+        for (OpenOption option : options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ))) {
+            if (option != StandardOpenOption.READ) {
+                throw new UnsupportedOperationException("RAR archive file systems are read-only");
+            }
+        }
+        return new RarArchiveOptions(new ArchiveReadOptions(
+                options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ),
+                options.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY),
+                options.get(PASSWORD_PROVIDER), options.get(LEGACY_METADATA_DECODER),
+                options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED)));
     }
 
     /// Returns an open RAR archive file system for a provider URI.

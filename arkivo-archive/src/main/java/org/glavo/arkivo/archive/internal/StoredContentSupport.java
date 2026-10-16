@@ -33,13 +33,10 @@ public final class StoredContentSupport {
 
     /// Returns configured edit storage or temporary-file storage in the default system temporary directory.
     ///
-    /// @param options the options containing an optional edit-storage factory
+    /// @param configured the storage factory, or `null` to use temporary files
     /// @return new operation-owned configured storage, or new default temporary-file storage
     /// @throws IOException if configured storage cannot be opened
-    public static ArkivoEditStorage selectStorage(ArchiveOptions options) throws IOException {
-        Objects.requireNonNull(options, "options");
-        @Nullable ArkivoEditStorageFactory configured =
-                options.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY);
+    public static ArkivoEditStorage selectStorage(@Nullable ArkivoEditStorageFactory configured) throws IOException {
         return configured != null
                 ? configured.open()
                 : ArkivoEditStorage.temporaryFiles(defaultStorageDirectory());

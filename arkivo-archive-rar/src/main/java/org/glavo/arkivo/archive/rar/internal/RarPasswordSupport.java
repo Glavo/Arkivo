@@ -53,8 +53,7 @@ final class RarPasswordSupport {
                 RarArkivoFormat.instance(),
                 purpose,
                 absoluteEntryPath,
-                encryption,
-                0
+                encryption
         );
     }
 }

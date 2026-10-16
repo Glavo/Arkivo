@@ -3,11 +3,10 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
-import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
-import org.glavo.arkivo.archive.tar.TarArkivoFormat;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
+import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
+import org.glavo.arkivo.archive.tar.TarArkivoFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -72,7 +71,7 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
                 this,
                 parsedUri.archivePath(),
                 parsedUri.archiveUri(),
-                ArchiveOptions.fromEnvironment(environment),
+                TarArkivoFileSystemConfig.fromEnvironment(environment),
                 closeAction
         ));
     }
@@ -83,7 +82,7 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.requirePathFormat(path, TarArkivoFormat.instance());
-        return openPath(path, ArchiveOptions.fromEnvironment(environment));
+        return openPath(path, TarArkivoFileSystemConfig.fromEnvironment(environment));
     }
 
     /// Opens a TAR archive path whose format has already been selected explicitly.
@@ -92,7 +91,7 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     /// @param options the generic access, compression, staging, publication, limits, and thread-safety configuration
     /// @return a new indexed TAR file system whose close operation releases resources and completes writable sessions
     /// @throws IOException if the source, output, codec, or staging resources cannot be initialized
-    public TarArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
+    public TarArkivoFileSystem openPath(Path path, TarArkivoFileSystemConfig options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
         return TarArkivoFileSystemImpl.open(this, path, path.toUri(), options, () -> {

@@ -3,10 +3,6 @@
 
 package org.glavo.arkivo.archive.internal;
 
-import org.glavo.arkivo.archive.ArchiveCreateOptions;
-import org.glavo.arkivo.archive.ArchiveReadOptions;
-import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -58,52 +54,6 @@ public final class ArchiveOptions {
         return values.isEmpty() ? EMPTY : new ArchiveOptions(values);
     }
 
-    /// Converts format-independent read options to the internal option map.
-    ///
-    /// @param options the public read options to convert
-    /// @return equivalent immutable internal options
-    public static ArchiveOptions fromReadOptions(ArchiveReadOptions options) {
-        Objects.requireNonNull(options, "options");
-        ArchiveOptions result = EMPTY
-                .with(ArchiveEnvironmentOptions.THREAD_SAFETY, options.threadSafety())
-                .with(ArchiveEnvironmentOptions.READ_LIMITS, options.limits());
-        if (options.editStorageFactory() != null) {
-            result = result.with(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY, options.editStorageFactory());
-        }
-        return result;
-    }
-
-    /// Converts format-independent creation options to the internal option map.
-    ///
-    /// @param options the public creation options to convert
-    /// @return equivalent immutable internal options
-    public static ArchiveOptions fromCreateOptions(ArchiveCreateOptions options) {
-        Objects.requireNonNull(options, "options");
-        ArchiveOptions result = EMPTY.with(ArchiveEnvironmentOptions.THREAD_SAFETY, options.threadSafety());
-        if (options.editStorageFactory() != null) {
-            result = result.with(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY, options.editStorageFactory());
-        }
-        return result;
-    }
-
-    /// Converts format-independent update options to the internal option map.
-    ///
-    /// @param options the public update options to convert
-    /// @return equivalent immutable internal options
-    public static ArchiveOptions fromUpdateOptions(ArchiveUpdateOptions options) {
-        Objects.requireNonNull(options, "options");
-        ArchiveOptions result = EMPTY
-                .with(ArchiveEnvironmentOptions.THREAD_SAFETY, options.threadSafety())
-                .with(ArchiveEnvironmentOptions.READ_LIMITS, options.limits());
-        if (options.editStorageFactory() != null) {
-            result = result.with(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY, options.editStorageFactory());
-        }
-        if (options.commitTarget() != null) {
-            result = result.with(ArchiveEnvironmentOptions.COMMIT_TARGET, options.commitTarget());
-        }
-        return result;
-    }
-
     /// Returns whether the requested option is present.
     ///
     /// @param option the option descriptor to query by stable key
@@ -134,24 +84,6 @@ public final class ArchiveOptions {
         Objects.requireNonNull(defaultValue, "defaultValue");
         @Nullable T value = get(option);
         return value != null ? value : defaultValue;
-    }
-
-    /// Returns a copy containing the requested typed option value.
-    ///
-    /// @param <T> the option value type
-    /// @param option the descriptor used to validate and key the value
-    /// @param value the non-null value to store
-    /// @return this instance when unchanged, otherwise an immutable updated copy
-    public <T> ArchiveOptions with(ArchiveOption<T> option, T value) {
-        Objects.requireNonNull(option, "option");
-        T checkedValue = option.convert(Objects.requireNonNull(value, "value"));
-        @Nullable Object previous = values.get(option.key());
-        if (checkedValue.equals(previous)) {
-            return this;
-        }
-        LinkedHashMap<String, Object> updated = new LinkedHashMap<>(values);
-        updated.put(option.key(), checkedValue);
-        return new ArchiveOptions(updated);
     }
 
     /// Returns whether this option set is empty.

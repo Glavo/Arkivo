@@ -23,10 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests common archive read-limit accounting independently of concrete formats.
 @NotNullByDefault
 public final class ArkivoReadLimitTrackerTest {
-    /// Verifies public limits and internal option maps create independent trackers with equivalent policies.
+    /// Verifies trackers created from the same limits retain independent counters.
     @Test
     @SuppressWarnings("DataFlowIssue")
-    public void createsTrackersFromOptionsAndLimits() throws IOException {
+    public void createsIndependentTrackersFromLimits() throws IOException {
         ArchiveReadLimits limits = ArchiveReadLimits.builder()
                 .maximumEntryCount(0L)
                 .maximumMetadataSize(1L)
@@ -41,8 +41,7 @@ public final class ArkivoReadLimitTrackerTest {
                 null
         );
 
-        ArchiveOptions options = ArchiveOptions.EMPTY.with(ArchiveEnvironmentOptions.READ_LIMITS, limits);
-        ArkivoReadLimitTracker configured = ArkivoReadLimitTracker.fromOptions(options);
+        ArkivoReadLimitTracker configured = ArkivoReadLimitTracker.fromLimits(limits);
         configured.acceptMetadata(1L, null);
         assertLimit(
                 assertThrows(
@@ -55,12 +54,11 @@ public final class ArkivoReadLimitTrackerTest {
                 "entry.bin"
         );
 
-        ArkivoReadLimitTracker unrestricted = ArkivoReadLimitTracker.fromOptions(ArchiveOptions.EMPTY);
+        ArkivoReadLimitTracker unrestricted = ArkivoReadLimitTracker.fromLimits(ArchiveReadLimits.UNLIMITED);
         unrestricted.acceptEntry("entry.bin", Long.MAX_VALUE);
         unrestricted.acceptMetadata(Long.MAX_VALUE, null);
         unrestricted.requireWithinLimits();
 
-        assertThrows(NullPointerException.class, () -> ArkivoReadLimitTracker.fromOptions(null));
         assertThrows(
                 NullPointerException.class,
                 () -> ArkivoReadLimitTracker.fromLimits((ArchiveReadLimits) null)

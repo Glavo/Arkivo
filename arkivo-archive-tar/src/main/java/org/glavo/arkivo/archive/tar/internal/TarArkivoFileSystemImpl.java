@@ -6,9 +6,6 @@ package org.glavo.arkivo.archive.tar.internal;
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.internal.ArkivoCommitTargetSupport;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
-import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArchiveSizeLimitChannel;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
@@ -99,13 +96,6 @@ import static org.glavo.arkivo.archive.tar.internal.TarCompressionStreams.openAr
 /// Implements a TAR archive file system backed by an in-memory index or a forward-only writer.
 @NotNullByDefault
 public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
-    /// The internal NIO environment key for outer compression.
-    private static final ArchiveOption<TarCompression> COMPRESSION =
-            compressionOption("compression");
-
-    /// The internal NIO environment key for update source decompression.
-    private static final ArchiveOption<TarCompression> SOURCE_COMPRESSION =
-            compressionOption("sourceCompression");
     /// The supported file attribute view names.
     private static final @Unmodifiable Set<String> SUPPORTED_ATTRIBUTE_VIEWS = Set.of("basic", "owner", "posix", "tar");
 
@@ -254,21 +244,19 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             TarArkivoFileSystemProvider provider,
             Path archivePath,
             URI archiveUri,
-            ArchiveOptions options,
+            TarArkivoFileSystemConfig options,
             Runnable closeAction
     ) throws IOException {
         Objects.requireNonNull(options, "options");
         ArchiveReadLimits readLimits =
-                options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
-        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
-        );
-        Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
-        );
+                options.readOptions().limits();
+        ArkivoFileSystemThreadSafety threadSafety = options.readOptions().threadSafety();
+        Set<OpenOption> openOptions = options.openOptions();
         if (isArchiveUpdateOpen(openOptions)) {
-            TarCompression.Read sourceCompression = readCompression(options.get(SOURCE_COMPRESSION));
-            TarCompression.Update targetCompression = updateCompression(options.get(COMPRESSION));
+            TarCompression.Read sourceCompression = readCompression(options.sourceCompression());
+            TarCompression.Update targetCompression = updateCompression(options.compression());
             validateArchiveUpdateOptions(openOptions);
-            StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+            StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options.readOptions().editStorageFactory()));
             try {
                 Map<String, Node> nodes;
                 boolean newArchive = !Files.exists(archivePath);
@@ -293,7 +281,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 @Nullable CompressionCodec<?> targetCodec = targetCompression == TarCompression.PRESERVE
                         ? sourceCodec
                         : configuredCodec(targetCompression);
-                @Nullable ArkivoCommitTarget commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
+                @Nullable ArkivoCommitTarget commitTarget = options.commitTarget();
                 if (commitTarget == null) {
                     commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
                 }
@@ -321,12 +309,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             }
         }
         if (isWriteArchiveOpen(openOptions)) {
-            TarCompression.Create compression = createCompression(options.get(COMPRESSION));
+            TarCompression.Create compression = createCompression(options.compression());
             validateArchiveWriteOptions(openOptions);
-            if (options.get(ArchiveEnvironmentOptions.COMMIT_TARGET) != null) {
+            if (options.commitTarget() != null) {
                 throw new UnsupportedOperationException("TAR archive writes do not support commit targets");
             }
-            ArkivoEditStorage bodyStorage = Objects.requireNonNull(StoredContentSupport.selectStorage(options));
+            ArkivoEditStorage bodyStorage = Objects.requireNonNull(StoredContentSupport.selectStorage(options.readOptions().editStorageFactory()));
             @Nullable OutputStream output = null;
             try {
                 output = openArchiveOutput(
@@ -363,8 +351,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
 
         validateArchiveReadOptions(openOptions);
-        TarCompression.Read compression = readCompression(options.get(COMPRESSION));
-        StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+        TarCompression.Read compression = readCompression(options.compression());
+        StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options.readOptions().editStorageFactory()));
         try {
             @Nullable CompressionCodec<?> compressionCodec = configuredCodec(compression);
             if (compression == TarCompression.DETECT) {
@@ -415,13 +403,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     public static TarArkivoFileSystemImpl open(
             TarArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
-            ArchiveOptions options
+            TarArkivoFileSystemConfig options
     ) throws IOException {
         Objects.requireNonNull(provider, "provider");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         ArchiveReadLimits readLimits =
-                options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
+                options.readOptions().limits();
 
         ArkivoFileSystemThreadSafety threadSafety;
         StoredContentPool editStorage;
@@ -430,28 +418,26 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         boolean updateMode;
         @Nullable ArkivoCommitTarget commitTarget;
         try {
-            threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
-            );
-            Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
-            );
+            threadSafety = options.readOptions().threadSafety();
+            Set<OpenOption> openOptions = options.openOptions();
             updateMode = isArchiveUpdateOpen(openOptions);
             if (updateMode) {
                 validateArchiveUpdateOptions(openOptions);
-                commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
+                commitTarget = options.commitTarget();
                 if (commitTarget == null) {
                     throw new IllegalArgumentException(
                             "TAR channel-source update mode requires an explicit commit target"
                     );
                 }
-                sourceCompression = readCompression(options.get(SOURCE_COMPRESSION));
-                targetCompression = updateCompression(options.get(COMPRESSION));
+                sourceCompression = readCompression(options.sourceCompression());
+                targetCompression = updateCompression(options.compression());
             } else {
                 validateArchiveReadOptions(openOptions);
                 commitTarget = null;
-                sourceCompression = readCompression(options.get(COMPRESSION));
+                sourceCompression = readCompression(options.compression());
                 targetCompression = null;
             }
-            editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+            editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options.readOptions().editStorageFactory()));
         } catch (IOException | RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
@@ -500,28 +486,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
         }
-    }
-
-    /// Returns the internal TAR compression-policy option.
-    private static ArchiveOption<TarCompression> compressionOption(String name) {
-        return ArchiveOption.of(
-                "arkivo.tar." + name,
-                TarCompression.class,
-                value -> {
-                    if (value instanceof TarCompression compression) {
-                        return compression;
-                    }
-                    if (value instanceof CompressionCodec<?> codec) {
-                        return TarCompression.using(codec);
-                    }
-                    if (value instanceof String formatName) {
-                        return TarCompression.using(CompressionFormats.require(formatName).defaultCodec());
-                    }
-                    throw new IllegalArgumentException(
-                            "Expected TarCompression, CompressionCodec, or String for key: arkivo.tar." + name
-                    );
-                }
-        );
     }
 
     /// Returns the read policy, applying automatic detection when the environment omits it.
@@ -2719,7 +2683,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             @Nullable CompressionCodec<?> compressionCodec,
             ArchiveReadLimits readLimits,
             StoredContentPool editStorage,
-            ArchiveOptions options
+            TarArkivoFileSystemConfig options
     ) throws IOException {
         ArkivoSeekableChannelSource source =
                 () -> Files.newByteChannel(archivePath, StandardOpenOption.READ);
@@ -2738,7 +2702,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             @Nullable CompressionCodec<?> compressionCodec,
             ArchiveReadLimits readLimits,
             StoredContentPool editStorage,
-            ArchiveOptions options
+            TarArkivoFileSystemConfig options
     ) throws IOException {
         try (SeekableByteChannel channel = source.openChannel()) {
             long archiveSize = channel.size();
@@ -2807,16 +2771,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private static Map<String, Node> readNodes(
             InputStream input,
             StoredContentPool editStorage,
-            ArchiveOptions options,
+            TarArkivoFileSystemConfig options,
             @Nullable SeekableCompressedTarSource seekableSource
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         nodes.put("", new Node("", syntheticDirectoryAttributes("/"), true, null, true));
 
-        ArchiveReadLimits limits = options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
+        ArchiveReadLimits limits = options.readOptions().limits();
         ArkivoReadLimitTracker resolvedSizes = ArkivoReadLimitTracker.fromLimits(
                 ArchiveReadLimits.UNLIMITED_SIZE, limits.maximumEntrySize(), limits.maximumTotalEntrySize());
-        try (TarArkivoStreamingReaderImpl reader = new TarArkivoStreamingReaderImpl(input, options)) {
+        try (TarArkivoStreamingReaderImpl reader = new TarArkivoStreamingReaderImpl(input, options.readOptions())) {
             while (reader.next()) {
                 TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path(), attributes.isDirectory());

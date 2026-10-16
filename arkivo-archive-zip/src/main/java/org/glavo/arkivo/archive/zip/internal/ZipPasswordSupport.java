@@ -33,8 +33,7 @@ final class ZipPasswordSupport {
                 ZipArkivoFormat.instance(),
                 PasswordPurpose.ENTRY_CONTENT,
                 entryPath,
-                PasswordEncryption.of(encryption.id(), keyLengthBits),
-                0
+                PasswordEncryption.of(encryption.id(), keyLengthBits)
         );
     }
 }

@@ -25,27 +25,24 @@ public final class PasswordContractsTest {
                 FORMAT,
                 PasswordPurpose.ENTRY_CONTENT,
                 "/directory/entry.bin",
-                encryption,
-                3
+                encryption
         );
 
         assertSame(FORMAT, entryRequest.format());
         assertSame(PasswordPurpose.ENTRY_CONTENT, entryRequest.purpose());
         assertEquals("/directory/entry.bin", entryRequest.entryPath());
         assertSame(encryption, entryRequest.encryption());
-        assertEquals(3, entryRequest.attempt());
 
         PasswordRequest archiveRequest = new PasswordRequest(
                 FORMAT,
                 PasswordPurpose.ARCHIVE,
                 null,
-                PasswordEncryption.of("archive"),
-                0
+                PasswordEncryption.of("archive")
         );
         assertNull(archiveRequest.entryPath());
     }
 
-    /// Verifies requests reject relative entry paths and negative attempt numbers.
+    /// Verifies requests reject relative entry paths.
     @Test
     public void requestRejectsInvalidContext() {
         PasswordEncryption encryption = PasswordEncryption.of("test");
@@ -56,17 +53,16 @@ public final class PasswordContractsTest {
                         null,
                         PasswordPurpose.ARCHIVE,
                         null,
-                        encryption,
-                        0
+                        encryption
                 )
         );
         assertThrows(
                 NullPointerException.class,
-                () -> new PasswordRequest(FORMAT, null, null, encryption, 0)
+                () -> new PasswordRequest(FORMAT, null, null, encryption)
         );
         assertThrows(
                 NullPointerException.class,
-                () -> new PasswordRequest(FORMAT, PasswordPurpose.ARCHIVE, null, null, 0)
+                () -> new PasswordRequest(FORMAT, PasswordPurpose.ARCHIVE, null, null)
         );
         assertThrows(
                 IllegalArgumentException.class,
@@ -74,18 +70,7 @@ public final class PasswordContractsTest {
                         FORMAT,
                         PasswordPurpose.ENTRY_CONTENT,
                         "relative/path",
-                        encryption,
-                        0
-                )
-        );
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> new PasswordRequest(
-                        FORMAT,
-                        PasswordPurpose.ARCHIVE,
-                        null,
-                        encryption,
-                        -1
+                        encryption
                 )
         );
     }

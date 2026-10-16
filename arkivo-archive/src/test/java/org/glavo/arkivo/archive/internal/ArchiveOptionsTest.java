@@ -4,12 +4,6 @@
 package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
-import org.glavo.arkivo.archive.ArchiveCreateOptions;
-import org.glavo.arkivo.archive.ArchiveReadLimits;
-import org.glavo.arkivo.archive.ArchiveReadOptions;
-import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -17,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.OpenOption;
-import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -34,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies typed archive option descriptors, raw environments, and public-option conversion.
+/// Verifies typed archive option descriptors and NIO environment conversion.
 @NotNullByDefault
 final class ArchiveOptionsTest {
     /// Verifies environment keys and runtime value validation.
@@ -45,7 +38,7 @@ final class ArchiveOptionsTest {
         assertEquals("format.zip.commentCharset", option.key());
         assertEquals(option.key(), option.toString());
         ArchiveOption<String> sameKey = ArchiveOption.of(option.key(), String.class);
-        assertEquals("UTF-8", ArchiveOptions.EMPTY.with(option, "UTF-8").get(sameKey));
+        assertEquals("UTF-8", ArchiveOptions.fromEnvironment(Map.of(option.key(), "UTF-8")).get(sameKey));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> ArchiveOptions.fromEnvironment(Map.of(option.key(), 1)).get(option)
@@ -69,17 +62,16 @@ final class ArchiveOptionsTest {
                 String.class,
                 value -> ((String) value).trim()
         );
-        ArchiveOptions options = ArchiveOptions.EMPTY.with(normalized, " value ");
+        ArchiveOptions options = ArchiveOptions.fromEnvironment(Map.of(normalized.key(), " value "));
 
         assertEquals("value", options.get(normalized));
-        assertSame(options, options.with(normalized, "value"));
 
         ArchiveOption<String> nullResult = ArchiveOption.of(
                 "test.nullResult",
                 String.class,
                 value -> null
         );
-        assertThrows(NullPointerException.class, () -> ArchiveOptions.EMPTY.with(nullResult, "value"));
+        assertThrows(NullPointerException.class, () -> ArchiveOptions.fromEnvironment(Map.of(nullResult.key(), "value")).get(nullResult));
 
         Function wrongConverter = (Function<Object, Integer>) value -> 1;
         ArchiveOption<String> wrongResult = ArchiveOption.of(
@@ -87,7 +79,7 @@ final class ArchiveOptionsTest {
                 String.class,
                 wrongConverter
         );
-        assertThrows(IllegalStateException.class, () -> ArchiveOptions.EMPTY.with(wrongResult, "value"));
+        assertThrows(IllegalStateException.class, () -> ArchiveOptions.fromEnvironment(Map.of(wrongResult.key(), "value")).get(wrongResult));
     }
 
     /// Verifies raw environments are copied, null values are absent, and value semantics use stored entries.
@@ -120,7 +112,7 @@ final class ArchiveOptionsTest {
         assertSame(ArchiveOptions.EMPTY, ArchiveOptions.fromEnvironment(onlyNull));
     }
 
-    /// Verifies invalid raw keys and null strongly typed values are rejected.
+    /// Verifies invalid raw keys and null default values are rejected.
     @Test
     @SuppressWarnings("DataFlowIssue")
     void rejectsInvalidEnvironmentEntries() {
@@ -133,7 +125,6 @@ final class ArchiveOptionsTest {
         assertThrows(NullPointerException.class, () -> ArchiveOptions.fromEnvironment(nullKey));
 
         ArchiveOption<String> option = ArchiveOption.of("test.value", String.class);
-        assertThrows(NullPointerException.class, () -> ArchiveOptions.EMPTY.with(option, null));
         assertThrows(NullPointerException.class, () -> ArchiveOptions.EMPTY.getOrDefault(option, null));
     }
 
@@ -208,9 +199,9 @@ final class ArchiveOptionsTest {
         );
     }
 
-    /// Verifies thread-safety strings and public operation options map to the internal descriptors.
+    /// Verifies thread-safety strings resolve to the configured policy.
     @Test
-    void convertsEnvironmentAndPublicOperationOptions() {
+    void convertsThreadSafetyEnvironmentValues() {
         String threadSafetyKey = ArchiveEnvironmentOptions.THREAD_SAFETY.key();
         assertEquals(
                 ArkivoFileSystemThreadSafety.STRICT,
@@ -227,34 +218,5 @@ final class ArchiveOptionsTest {
                 () -> ArchiveOptions.fromEnvironment(Map.of(threadSafetyKey, 1))
                         .get(ArchiveEnvironmentOptions.THREAD_SAFETY)
         );
-
-        ArkivoEditStorageFactory storageFactory = ArkivoEditStorageFactory.memory();
-        ArchiveReadLimits limits = ArchiveReadLimits.builder().maximumEntryCount(7L).build();
-        ArkivoCommitTarget commitTarget = ArkivoCommitTarget.writeTo(Path.of("target.arc"));
-
-        ArchiveOptions read = ArchiveOptions.fromReadOptions(ArchiveReadOptions.DEFAULT
-                .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT)
-                .withEditStorageFactory(storageFactory)
-                .withLimits(limits));
-        assertSame(ArkivoFileSystemThreadSafety.STRICT, read.get(ArchiveEnvironmentOptions.THREAD_SAFETY));
-        assertSame(storageFactory, read.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY));
-        assertSame(limits, read.get(ArchiveEnvironmentOptions.READ_LIMITS));
-
-        ArchiveOptions create = ArchiveOptions.fromCreateOptions(ArchiveCreateOptions.DEFAULT
-                .withThreadSafety(ArkivoFileSystemThreadSafety.NONE)
-                .withEditStorageFactory(storageFactory));
-        assertSame(ArkivoFileSystemThreadSafety.NONE, create.get(ArchiveEnvironmentOptions.THREAD_SAFETY));
-        assertSame(storageFactory, create.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY));
-        assertFalse(create.contains(ArchiveEnvironmentOptions.READ_LIMITS));
-
-        ArchiveOptions update = ArchiveOptions.fromUpdateOptions(ArchiveUpdateOptions.DEFAULT
-                .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT)
-                .withEditStorageFactory(storageFactory)
-                .withCommitTarget(commitTarget)
-                .withLimits(limits));
-        assertSame(ArkivoFileSystemThreadSafety.STRICT, update.get(ArchiveEnvironmentOptions.THREAD_SAFETY));
-        assertSame(storageFactory, update.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY));
-        assertSame(commitTarget, update.get(ArchiveEnvironmentOptions.COMMIT_TARGET));
-        assertSame(limits, update.get(ArchiveEnvironmentOptions.READ_LIMITS));
     }
 }

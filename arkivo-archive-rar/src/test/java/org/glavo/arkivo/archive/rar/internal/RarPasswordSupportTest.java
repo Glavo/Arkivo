@@ -48,7 +48,7 @@ final class RarPasswordSupportTest {
         assertRequest(request, PasswordPurpose.ARCHIVE_METADATA, null, "rar5-aes-256", 256);
     }
 
-    /// Verifies one password request's common format, purpose, path, encryption, and attempt fields.
+    /// Verifies one password request's common format, purpose, path, and encryption fields.
     private static void assertRequest(
             PasswordRequest request,
             PasswordPurpose purpose,
@@ -64,6 +64,5 @@ final class RarPasswordSupportTest {
             assertEquals(expectedPath, request.entryPath());
         }
         assertEquals(new PasswordEncryption(scheme, keyLengthBits), request.encryption());
-        assertEquals(0, request.attempt());
     }
 }

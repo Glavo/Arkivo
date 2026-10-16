@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.zip.internal;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
+import org.glavo.arkivo.archive.zip.ZipEntryNameErrorAction;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -28,7 +29,7 @@ public final class ZipEntryNameDecoderTest {
     @Test
     public void codePageCompatibilityDoesNotOverrideUnicode() throws IOException {
         var decoder = new ZipEntryNameDecoder(ZipLegacyMetadataDecoder.forCodePages(
-                StandardCharsets.US_ASCII, StandardCharsets.US_ASCII));
+                StandardCharsets.US_ASCII, StandardCharsets.US_ASCII), ZipEntryNameErrorAction.REPORT);
         byte[] utf8 = "\u00e9.txt".getBytes(StandardCharsets.UTF_8);
         assertEquals("\u00e9.txt", decoder.decodePath(utf8, ZipEntryNameDecoder.UTF_8_FLAG,
                 new byte[0], ZipLegacyMetadataDecoder.HeaderSource.CENTRAL_DIRECTORY, 20, 25, 0x81a4_0000L));
@@ -47,7 +48,10 @@ public final class ZipEntryNameDecoderTest {
         ZipEntryNameDecoder decoder = decoderWithUnusedDecoder();
         byte[] rawPath = "目录/文件.txt".getBytes(StandardCharsets.UTF_8);
 
-        String path = decoder.decodePath(rawPath, ZipEntryNameDecoder.UTF_8_FLAG, new byte[0]);
+        String path = decoder.decodePath(rawPath, ZipEntryNameDecoder.UTF_8_FLAG, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE);
 
         assertEquals("目录/文件.txt", path);
     }
@@ -63,7 +67,10 @@ public final class ZipEntryNameDecoderTest {
                 "目录/文件.txt"
         );
 
-        String path = decoder.decodePath(rawPath, 0, extraData);
+        String path = decoder.decodePath(rawPath, 0, extraData,
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE);
 
         assertEquals("目录/文件.txt", path);
     }
@@ -85,7 +92,10 @@ public final class ZipEntryNameDecoderTest {
         );
         byte[] extraData = concatenate(invalidExtraData, validExtraData);
 
-        String path = decoder.decodePath(rawPath, 0, extraData);
+        String path = decoder.decodePath(rawPath, 0, extraData,
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE);
 
         assertEquals("目录/文件.txt", path);
     }
@@ -98,7 +108,10 @@ public final class ZipEntryNameDecoderTest {
 
         IOException exception = assertThrows(
                 IOException.class,
-                () -> decoder.decodePath(rawPath, ZipEntryNameDecoder.UTF_8_FLAG, new byte[]{1, 0, 2, 0, 0})
+                () -> decoder.decodePath(rawPath, ZipEntryNameDecoder.UTF_8_FLAG, new byte[]{1, 0, 2, 0, 0},
+                        ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE)
         );
 
         assertEquals(true, exception.getMessage().contains("Invalid ZIP extra field length"));
@@ -111,10 +124,13 @@ public final class ZipEntryNameDecoderTest {
         ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(bytes -> {
             assertEquals(true, bytes.isReadOnly());
             return ArchiveMetadataDecoder.forCharset(gb18030).decode(bytes);
-        });
+        }, ZipEntryNameErrorAction.REPORT);
         byte[] rawPath = "目录/文件.txt".getBytes(gb18030);
 
-        String path = decoder.decodePath(rawPath, 0, new byte[0]);
+        String path = decoder.decodePath(rawPath, 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE);
 
         assertEquals("目录/文件.txt", path);
     }
@@ -136,7 +152,7 @@ public final class ZipEntryNameDecoderTest {
             assertEquals(0, context.extraData().remaining());
             return ArchiveMetadataDecoder.forCharset(gb18030).decode(context.bytes());
         };
-        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(metadataDecoder);
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(metadataDecoder, ZipEntryNameErrorAction.REPORT);
         byte[] rawPath = "目录/文件.txt".getBytes(gb18030);
 
         String path = decoder.decodePath(
@@ -157,9 +173,12 @@ public final class ZipEntryNameDecoderTest {
     public void defaultDecoderUsesCp437() throws Exception {
         Charset cp437 = Charset.forName("IBM437");
         byte[] rawPath = "München.txt".getBytes(cp437);
-        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER);
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER, ZipEntryNameErrorAction.REPORT);
 
-        assertEquals("München.txt", decoder.decodePath(rawPath, 0, new byte[0]));
+        assertEquals("München.txt", decoder.decodePath(rawPath, 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
     }
 
     /// ASCII metadata still consults the decoder and obeys non-ASCII-compatible charsets.
@@ -169,15 +188,21 @@ public final class ZipEntryNameDecoderTest {
         ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(bytes -> {
             calls.incrementAndGet();
             return ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_16BE).decode(bytes);
-        });
+        }, ZipEntryNameErrorAction.REPORT);
         byte[] raw = {0, 'A', 0, 'B'};
-        assertEquals("AB", decoder.decodePath(raw, 0, new byte[0]));
+        assertEquals("AB", decoder.decodePath(raw, 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         assertEquals(1, calls.get());
         decoder = new ZipEntryNameDecoder(bytes -> {
             calls.incrementAndGet();
             return ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(bytes);
-        });
-        assertEquals("entry.txt", decoder.decodePath("entry.txt".getBytes(StandardCharsets.US_ASCII), 0, new byte[0]));
+        }, ZipEntryNameErrorAction.REPORT);
+        assertEquals("entry.txt", decoder.decodePath("entry.txt".getBytes(StandardCharsets.US_ASCII), 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         assertEquals(2, calls.get());
     }
 
@@ -186,17 +211,23 @@ public final class ZipEntryNameDecoderTest {
     public void byteValuesMatchStrictDecoding() throws Exception {
         for (Charset charset : new Charset[]{StandardCharsets.UTF_8, StandardCharsets.US_ASCII,
                 StandardCharsets.ISO_8859_1, Charset.forName("IBM437")}) {
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(ArchiveMetadataDecoder.forCharset(charset));
+            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(ArchiveMetadataDecoder.forCharset(charset), ZipEntryNameErrorAction.REPORT);
             for (int value = 0; value < 256; value++) {
                 byte[] raw = {'a', (byte) value, 'z'};
                 String expected;
                 try {
                     expected = charset.newDecoder().decode(ByteBuffer.wrap(raw)).toString();
                 } catch (CharacterCodingException exception) {
-                    assertThrows(CharacterCodingException.class, () -> decoder.decodePath(raw, 0, new byte[0]));
+                    assertThrows(CharacterCodingException.class, () -> decoder.decodePath(raw, 0, new byte[0],
+                            ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                            ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                            ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
                     continue;
                 }
-                assertEquals(expected, decoder.decodePath(raw, 0, new byte[0]));
+                assertEquals(expected, decoder.decodePath(raw, 0, new byte[0],
+                        ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
             }
         }
     }
@@ -211,7 +242,10 @@ public final class ZipEntryNameDecoderTest {
                 {(byte) 0xf4, (byte) 0x90, (byte) 0x80, (byte) 0x80}, {(byte) 0xe2, (byte) 0x82}}) {
             byte[] raw = concatenate(prefix, suffix);
             assertThrows(CharacterCodingException.class,
-                    () -> decoder.decodePath(raw, ZipEntryNameDecoder.UTF_8_FLAG, new byte[0]));
+                    () -> decoder.decodePath(raw, ZipEntryNameDecoder.UTF_8_FLAG, new byte[0],
+                            ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                            ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                            ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         }
     }
 
@@ -222,7 +256,10 @@ public final class ZipEntryNameDecoderTest {
         byte[] extra = concatenate(
                 unicodeExtraField(ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID, raw, "ascii.txt"),
                 new byte[]{(byte) 0xff, (byte) 0xff, 1, 0, (byte) 0xff});
-        assertEquals("ascii.txt", decoderWithUnusedDecoder().decodePath(raw, ZipEntryNameDecoder.UTF_8_FLAG, extra));
+        assertEquals("ascii.txt", decoderWithUnusedDecoder().decodePath(raw, ZipEntryNameDecoder.UTF_8_FLAG, extra,
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
     }
 
     /// A matching Unicode field cannot be repaired by the legacy decoder when its UTF-8 payload is malformed.
@@ -232,14 +269,17 @@ public final class ZipEntryNameDecoderTest {
         byte[] extra = unicodeExtraField(ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID, raw, "x");
         extra[9] = (byte) 0xff;
         assertThrows(CharacterCodingException.class,
-                () -> decoderWithUnusedDecoder().decodePath(raw, 0, extra));
+                () -> decoderWithUnusedDecoder().decodePath(raw, 0, extra,
+                        ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
     }
 
     /// Returns a name decoder that rejects calls to its legacy metadata policy.
     private static ZipEntryNameDecoder decoderWithUnusedDecoder() {
         return new ZipEntryNameDecoder(bytes -> {
             throw new AssertionError("Legacy decoder must not be invoked");
-        });
+        }, ZipEntryNameErrorAction.REPORT);
     }
 
     /// Returns the concatenation of two byte arrays.

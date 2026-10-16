@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoStreamingReaderImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -48,7 +48,7 @@ final class TarStreamingReaderLifecycleTest {
         Files.write(path, Arrays.copyOf(archive(), length));
         for (boolean readPrefix : new boolean[]{false, true}) {
             try (var input = new FileInputStream(path.toFile());
-                 var reader = new TarArkivoStreamingReaderImpl(input, ArchiveOptions.EMPTY)) {
+                 var reader = new TarArkivoStreamingReaderImpl(input, ArchiveReadOptions.DEFAULT)) {
                 assertTrue(reader.next());
                 assertTrue(reader.next());
                 if (readPrefix && length > 1024) {

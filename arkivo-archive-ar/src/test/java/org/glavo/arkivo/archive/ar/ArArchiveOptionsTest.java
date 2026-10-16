@@ -5,13 +5,21 @@ package org.glavo.arkivo.archive.ar;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
+import org.glavo.arkivo.archive.ArkivoCommitTarget;
+import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemConfig;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -20,6 +28,38 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies immutable AR operation-option derivation and validation.
 @NotNullByDefault
 final class ArArchiveOptionsTest {
+    /// Verifies operation settings reach the file-system configuration without losing limits or resource policies.
+    @Test
+    void preservesTypedOperationSettings() {
+        var storage = ArkivoEditStorageFactory.memory();
+        var limits = ArchiveReadLimits.builder().maximumEntryCount(7).build();
+        var decoder = ArchiveMetadataDecoder.forCharset(StandardCharsets.ISO_8859_1);
+        var target = ArkivoCommitTarget.writeTo(Path.of("target.ar"));
+        var common = ArchiveUpdateOptions.DEFAULT.withThreadSafety(ArkivoFileSystemThreadSafety.STRICT)
+                .withEditStorageFactory(storage).withLimits(limits).withMetadataDecoder(decoder)
+                .withCommitTarget(target);
+        var update = ArArkivoFileSystemConfig.fromUpdateOptions(ArArchiveOptions.UPDATE_DEFAULTS.withCommon(common));
+        assertEquals(Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE), update.openOptions());
+        assertSame(storage, update.readOptions().editStorageFactory());
+        assertSame(limits, update.readOptions().limits());
+        assertSame(decoder, update.readOptions().metadataDecoder());
+        assertSame(target, update.commitTarget());
+        assertSame(ArkivoFileSystemThreadSafety.STRICT, update.readOptions().threadSafety());
+
+        var read = ArArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(limits));
+        assertSame(read.common(), ArArkivoFileSystemConfig.fromReadOptions(read).readOptions());
+        var create = ArArkivoFileSystemConfig.fromCreateOptions(ArArchiveOptions.CREATE_DEFAULTS
+                .withCommon(ArchiveCreateOptions.DEFAULT.withEditStorageFactory(storage)).withMetadataDecoder(decoder));
+        assertEquals(Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW), create.openOptions());
+        assertSame(storage, create.readOptions().editStorageFactory());
+        assertSame(decoder, create.readOptions().metadataDecoder());
+        assertSame(ArchiveReadLimits.UNLIMITED, create.readOptions().limits());
+
+        var environment = ArArkivoFileSystemConfig.fromEnvironment(Map.of("arkivo.ar.metadataDecoder", "ISO-8859-1"));
+        assertSame(ArchiveReadLimits.UNLIMITED, environment.readOptions().limits());
+        assertEquals(Set.of(StandardOpenOption.READ), environment.openOptions());
+    }
+
     /// Verifies every operation role preserves common options and exposes its effective metadata decoder.
     @Test
     void derivesCommonAndMetadataConfiguration() {

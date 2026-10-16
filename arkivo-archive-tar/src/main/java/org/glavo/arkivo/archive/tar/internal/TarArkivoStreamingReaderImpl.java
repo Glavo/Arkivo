@@ -4,9 +4,8 @@
 package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
-import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOption;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.tar.TarArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
@@ -40,11 +39,6 @@ import java.util.Objects;
 /// Implements the public forward-only TAR streaming reader API.
 @NotNullByDefault
 public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader {
-    /// The internal NIO environment key for metadata decoding.
-    private static final ArchiveOption<ArchiveMetadataDecoder> METADATA_DECODER =
-            ArchiveEnvironmentOptions.metadataDecoderOption(
-                    "arkivo.tar.metadataDecoder"
-            );
     /// The TAR record size.
     private static final int RECORD_SIZE = 512;
 
@@ -96,9 +90,6 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// The byte offset of the explicit xstar magic value.
     private static final int XSTAR_MAGIC_OFFSET = 508;
 
-    /// The UTF-8 decoder used for ambiguous TAR metadata when no decoder is configured.
-    private static final ArchiveMetadataDecoder DEFAULT_METADATA_DECODER =
-            ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
 
     /// The backing archive input stream.
     private final CountingInputStream source;
@@ -152,14 +143,12 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     ///
     /// @param source the owned decoded TAR stream positioned before the first header block
     /// @param options the metadata decoder and archive read-limit configuration
-    public TarArkivoStreamingReaderImpl(InputStream source, ArchiveOptions options) {
+    public TarArkivoStreamingReaderImpl(InputStream source, ArchiveReadOptions options) {
         this.source = new CountingInputStream(Objects.requireNonNull(source, "source"));
-        ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
-        this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
-        this.metadataDecoder = checkedOptions.getOrDefault(
-                METADATA_DECODER,
-                DEFAULT_METADATA_DECODER
-        );
+        ArchiveReadOptions checkedOptions = Objects.requireNonNull(options, "options");
+        this.readLimits = ArkivoReadLimitTracker.fromLimits(checkedOptions.limits());
+        this.metadataDecoder = checkedOptions.metadataDecoder() != null
+                ? checkedOptions.metadataDecoder() : TarArchiveOptions.DEFAULT_METADATA_DECODER;
     }
 
     /// Advances to the next TAR entry and returns whether an entry is available.

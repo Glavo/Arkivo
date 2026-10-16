@@ -41,7 +41,7 @@ final class StoredContentSupportTest {
     /// Verifies default storage can allocate empty content.
     @Test
     void selectsDefaultStorage() throws IOException {
-        try (ArkivoEditStorage selected = StoredContentSupport.selectStorage(ArchiveOptions.EMPTY);
+        try (ArkivoEditStorage selected = StoredContentSupport.selectStorage(null);
              ArkivoStoredContent content = selected.createContent("selected", 0L)) {
             assertEquals(0L, content.size());
         }
@@ -52,7 +52,7 @@ final class StoredContentSupportTest {
     void storesAndCopiesIndexedContent() throws IOException {
         ArkivoEditStorage storage = ArkivoEditStorage.memory();
         assertSame(storage, StoredContentSupport.selectStorage(
-                ArchiveOptions.EMPTY.with(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY, () -> storage)
+                () -> storage
         ));
 
         StoredContentPool pool = new StoredContentPool(storage);
@@ -324,7 +324,6 @@ final class StoredContentSupportTest {
         WritableByteChannel output = Channels.newChannel(new ByteArrayOutputStream());
 
         try (pool; input; output) {
-            assertThrows(NullPointerException.class, () -> StoredContentSupport.selectStorage(null));
             assertThrows(
                     NullPointerException.class,
                     () -> StoredContentSupport.closeAfterOpenFailure(null, failure)

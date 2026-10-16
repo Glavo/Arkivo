@@ -44,11 +44,7 @@ final class ZipNameEncodingInference {
     /// Only central-directory bytes are read. Successful legacy decodes are transferred by absolute field offset
     /// to the caller's temporary index-building map, which is cleared before selection and on candidate failure.
     /// The returned charset retains neither this map nor its strings. Explicit Unicode fields are handled by the reader.
-    static Charset select(ByteBuffer centralDirectory, Map<Integer, String> decodedFields) throws IOException {
-        return select(centralDirectory, decodedFields, false);
-    }
-
-    /// Selects an encoding, excluding malformed authoritative text when the reader has enabled recovery.
+    /// Malformed authoritative text is excluded from evidence when name recovery is enabled.
     static Charset select(ByteBuffer centralDirectory, Map<Integer, String> decodedFields,
                           boolean recoverNames) throws IOException {
         decodedFields.clear();

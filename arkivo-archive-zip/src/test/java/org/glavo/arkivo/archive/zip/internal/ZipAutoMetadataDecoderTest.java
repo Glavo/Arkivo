@@ -11,6 +11,7 @@ import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.glavo.arkivo.encoding.detector.internal.EncodingDetector;
 import org.glavo.arkivo.internal.ByteArrayAccess;
+import org.glavo.arkivo.archive.zip.ZipEntryNameErrorAction;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -193,16 +194,25 @@ public final class ZipAutoMetadataDecoderTest {
     public void asciiPreservesDeclarationPriority() throws IOException {
         byte[] raw = "??.txt".getBytes(StandardCharsets.US_ASCII);
         byte[] extra = unicodeExtra(0x7075, "中文.txt", StandardCharsets.US_ASCII);
-        var decoder = new ZipEntryNameDecoder(ZipAutoMetadataDecoder.DEFAULT);
-        assertEquals("中文.txt", decoder.decodePath(raw, 0, extra));
+        var decoder = new ZipEntryNameDecoder(ZipAutoMetadataDecoder.DEFAULT, ZipEntryNameErrorAction.REPORT);
+        assertEquals("中文.txt", decoder.decodePath(raw, 0, extra,
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         extra[extra.length - 1] = (byte) 0xFF;
-        assertThrows(IOException.class, () -> decoder.decodePath(raw, 0, extra));
+        assertThrows(IOException.class, () -> decoder.decodePath(raw, 0, extra,
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         AtomicInteger calls = new AtomicInteger();
         var custom = new ZipEntryNameDecoder(bytes -> {
             calls.incrementAndGet();
             return "custom.txt";
-        });
-        assertEquals("custom.txt", custom.decodePath(raw, 0, new byte[0]));
+        }, ZipEntryNameErrorAction.REPORT);
+        assertEquals("custom.txt", custom.decodePath(raw, 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         assertEquals(1, calls.get());
     }
 
@@ -360,7 +370,7 @@ public final class ZipAutoMetadataDecoderTest {
             var central = ByteBuffer.allocate(anchor.length + undecided.length);
             central.put(reversed ? undecided : anchor).put(reversed ? anchor : undecided).flip();
             var decoded = new HashMap<Integer, String>();
-            assertEquals(ZipAutoMetadataDecoder.CP437, ZipNameEncodingInference.select(central, decoded));
+            assertEquals(ZipAutoMetadataDecoder.CP437, ZipNameEncodingInference.select(central, decoded, false));
             assertTrue(decoded.isEmpty());
             assertEquals(0, central.position());
         }
@@ -440,7 +450,7 @@ public final class ZipAutoMetadataDecoderTest {
         byte[] bytes = archive(samples);
         int start = ByteArrayAccess.readIntLittleEndian(bytes, bytes.length - 6);
         Charset charset = ZipNameEncodingInference.select(
-                ByteBuffer.wrap(bytes).position(start).limit(bytes.length - 22), new HashMap<>());
+                ByteBuffer.wrap(bytes).position(start).limit(bytes.length - 22), new HashMap<>(), false);
         assertNotNull(charset);
         Files.write(file, bytes);
         try (var fs = ZipArkivoFileSystem.open(file)) {
@@ -563,7 +573,7 @@ public final class ZipAutoMetadataDecoderTest {
         }
         var fields = new HashMap<Integer, String>();
         assertEquals(StandardCharsets.UTF_8, ZipNameEncodingInference.select(
-                ByteBuffer.wrap(central.toByteArray()), fields));
+                ByteBuffer.wrap(central.toByteArray()), fields, false));
         assertEquals(ZipNameEncodingInference.MAX_SAMPLES, fields.size());
 
         // The additional field sorts after every retained sample, so it supplies no statistical evidence.
@@ -579,7 +589,7 @@ public final class ZipAutoMetadataDecoderTest {
         assertFalse(rejected.isEmpty(), "A deterministically excluded field is required");
         central.write(centralBytes(new Sample(rejected, charset.name(), null, false, 3)));
         assertEquals(ZipAutoMetadataDecoder.CP437, ZipNameEncodingInference.select(
-                ByteBuffer.wrap(central.toByteArray()), fields));
+                ByteBuffer.wrap(central.toByteArray()), fields, false));
         assertTrue(fields.isEmpty());
     }
 
@@ -601,7 +611,7 @@ public final class ZipAutoMetadataDecoderTest {
         var decodedFields = new HashMap<Integer, String>();
         decodedFields.put(-1, "stale");
         var prepared = ArchiveMetadataDecoder.forCharset(ZipNameEncodingInference.select(
-                ByteBuffer.wrap(central.toByteArray()), decodedFields));
+                ByteBuffer.wrap(central.toByteArray()), decodedFields, false));
         assertTrue(decodedFields.isEmpty());
         byte[] raw = longName.getBytes(Charset.forName("windows-1252"));
         assertEquals(new String(raw, Charset.forName("IBM437")), prepared.decode(raw));
@@ -639,7 +649,10 @@ public final class ZipAutoMetadataDecoderTest {
         assertNull(prepared.take(commentOffset));
         assertTrue(prepared.decodedFields().isEmpty());
         assertEquals("é.txt", prepared.decoder().decodePath("é.txt".getBytes(Charset.forName("windows-1252")),
-                0, new byte[0]));
+                0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
     }
 
     /// Frozen strategies cannot re-detect an inconsistent field supplied after preparation.
@@ -649,8 +662,14 @@ public final class ZipAutoMetadataDecoderTest {
         var decoder = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT,
                 ByteBuffer.wrap(central)).decoder();
         assertThrows(java.nio.charset.CharacterCodingException.class,
-                () -> decoder.decodePath(new byte[]{(byte) 0xFF}, 0, new byte[0]));
-        assertEquals("é.txt", decoder.decodePath("é.txt".getBytes(StandardCharsets.UTF_8), 0, new byte[0]));
+                () -> decoder.decodePath(new byte[]{(byte) 0xFF}, 0, new byte[0],
+                        ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
+        assertEquals("é.txt", decoder.decodePath("é.txt".getBytes(StandardCharsets.UTF_8), 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
     }
 
     /// Frozen Unicode and legacy choices preserve ASCII and do not bypass explicit Unicode declarations.
@@ -662,15 +681,30 @@ public final class ZipAutoMetadataDecoderTest {
                 ByteBuffer.wrap(central)).decoder();
         byte[] raw = new byte[128];
         for (int i = 0; i < raw.length; i++) raw[i] = (byte) i;
-        assertEquals(new String(raw, StandardCharsets.US_ASCII), decoder.decodePath(raw, 0, new byte[0]));
-        assertEquals("", decoder.decodePath(new byte[0], 0, new byte[0]));
+        assertEquals(new String(raw, StandardCharsets.US_ASCII), decoder.decodePath(raw, 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
+        assertEquals("", decoder.decodePath(new byte[0], 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         byte[] replacement = "??.txt".getBytes(StandardCharsets.US_ASCII);
         byte[] extra = unicodeExtra(0x7075, "中文.txt", StandardCharsets.US_ASCII);
-        assertEquals("中文.txt", decoder.decodePath(replacement, 0, extra));
+        assertEquals("中文.txt", decoder.decodePath(replacement, 0, extra,
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         extra[extra.length - 1] = (byte) 0xff;
-        assertThrows(IOException.class, () -> decoder.decodePath(replacement, 0, extra));
+        assertThrows(IOException.class, () -> decoder.decodePath(replacement, 0, extra,
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         assertThrows(IOException.class,
-                () -> decoder.decodePath(new byte[]{(byte) 0xff}, ZipEntryNameDecoder.UTF_8_FLAG, new byte[0]));
+                () -> decoder.decodePath(new byte[]{(byte) 0xff}, ZipEntryNameDecoder.UTF_8_FLAG, new byte[0],
+                        ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
     }
 
     /// Comments do not influence the shared name encoding.
@@ -680,7 +714,7 @@ public final class ZipAutoMetadataDecoderTest {
                 new Sample("é", "IBM437", "Comentario: Café ñoño ▓▒░", false, 0),
                 new Sample("é", "windows-1252", "Ceci est un résumé détaillé de l'installation du logiciel.", false, 0))) {
             var prepared = ArchiveMetadataDecoder.forCharset(ZipNameEncodingInference.select(
-                    ByteBuffer.wrap(centralBytes(sample)), new java.util.HashMap<>()));
+                    ByteBuffer.wrap(centralBytes(sample)), new java.util.HashMap<>(), false));
             byte[] rawName = sample.name().getBytes(Charset.forName(sample.encoding()));
             assertEquals(new String(rawName, Charset.forName("IBM437")), prepared.decode(rawName));
         }
@@ -736,7 +770,7 @@ public final class ZipAutoMetadataDecoderTest {
         central.write(centralBytes(new Sample("é\u0085.txt", "UTF-8", null, false, 3)));
         var fields = new HashMap<Integer, String>();
         var prepared = ArchiveMetadataDecoder.forCharset(ZipNameEncodingInference.select(
-                ByteBuffer.wrap(central.toByteArray()), fields));
+                ByteBuffer.wrap(central.toByteArray()), fields, false));
         assertEquals(List.of("é\u0085.txt"), List.copyOf(fields.values()));
         assertEquals("é\u0085.txt", prepared.decode("é\u0085.txt".getBytes(StandardCharsets.UTF_8)));
     }
@@ -799,7 +833,10 @@ public final class ZipAutoMetadataDecoderTest {
         var decoder = prepared.decoder();
         assertTrue(prepared.decodedFields().isEmpty());
         assertEquals(0, calls.get());
-        assertEquals("custom", decoder.decodePath(new byte[]{(byte) 0xff}, 0, new byte[0]));
+        assertEquals("custom", decoder.decodePath(new byte[]{(byte) 0xff}, 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         assertEquals(1, calls.get());
         assertEquals(0, malformed.position());
     }
@@ -817,7 +854,10 @@ public final class ZipAutoMetadataDecoderTest {
         assertTrue(prepared.decodedFields().isEmpty());
         assertEquals(0, calls.get());
         byte[] raw = "日本語😀.txt".getBytes(StandardCharsets.UTF_8);
-        assertEquals("日本語😀.txt", prepared.decoder().decodePath(raw, 0, new byte[0]));
+        assertEquals("日本語😀.txt", prepared.decoder().decodePath(raw, 0, new byte[0],
+                ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
         assertEquals(1, calls.get());
         assertEquals(0, malformed.position());
     }
@@ -837,9 +877,18 @@ public final class ZipAutoMetadataDecoderTest {
                 byte[] name = index % 2 == 0 ? utf8Name : windowsName;
                 var prepared = ZipEntryNameDecoder.forCentralDirectory(ZipAutoMetadataDecoder.DEFAULT,
                         ByteBuffer.wrap(central));
-                assertEquals("é.txt", prepared.decoder().decodePath(name, 0, new byte[0]));
-                assertEquals("é.txt", utf8.decoder().decodePath(utf8Name, 0, new byte[0]));
-                assertEquals("é.txt", windows.decoder().decodePath(windowsName, 0, new byte[0]));
+                assertEquals("é.txt", prepared.decoder().decodePath(name, 0, new byte[0],
+                        ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
+                assertEquals("é.txt", utf8.decoder().decodePath(utf8Name, 0, new byte[0],
+                        ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
+                assertEquals("é.txt", windows.decoder().decodePath(windowsName, 0, new byte[0],
+                        ZipLegacyMetadataDecoder.HeaderSource.UNKNOWN,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE, ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE));
             } catch (IOException exception) {
                 throw new AssertionError(exception);
             }

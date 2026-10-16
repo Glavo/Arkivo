@@ -4,13 +4,10 @@
 package org.glavo.arkivo.archive.ar.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
-import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOption;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ar.ArArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
-import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
-import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.ArMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -32,11 +29,6 @@ import java.util.Objects;
 /// Implements the public forward-only AR streaming reader API.
 @NotNullByDefault
 public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
-    /// The internal NIO environment key for name detection.
-    private static final ArchiveOption<ArchiveMetadataDecoder> METADATA_DECODER =
-            ArchiveEnvironmentOptions.metadataDecoderOption(
-                    "arkivo.ar.metadataDecoder"
-            );
     /// The global AR archive signature.
     private static final byte @Unmodifiable [] GLOBAL_HEADER = "!<arch>\n".getBytes(StandardCharsets.US_ASCII);
 
@@ -46,9 +38,6 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// The AR member header trailer.
     private static final byte @Unmodifiable [] MEMBER_TRAILER = new byte[]{'`', '\n'};
 
-    /// The UTF-8 decoder used when no AR metadata decoder is configured.
-    private static final ArchiveMetadataDecoder DEFAULT_METADATA_DECODER =
-            ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
 
     /// The backing archive input stream.
     private final InputStream source;
@@ -86,15 +75,13 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// Creates a streaming AR reader.
     ///
     /// @param source the owned stream supplying AR archive bytes
-    /// @param options the internal read options and limits
-    public ArArkivoStreamingReaderImpl(InputStream source, ArchiveOptions options) {
+    /// @param options the read options and limits
+    public ArArkivoStreamingReaderImpl(InputStream source, ArchiveReadOptions options) {
         this.source = Objects.requireNonNull(source, "source");
-        ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
-        this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
-        this.metadataDecoder = checkedOptions.getOrDefault(
-                METADATA_DECODER,
-                DEFAULT_METADATA_DECODER
-        );
+        ArchiveReadOptions checkedOptions = Objects.requireNonNull(options, "options");
+        this.readLimits = ArkivoReadLimitTracker.fromLimits(checkedOptions.limits());
+        this.metadataDecoder = checkedOptions.metadataDecoder() != null
+                ? checkedOptions.metadataDecoder() : ArArchiveOptions.DEFAULT_METADATA_DECODER;
     }
 
     /// Advances to the next real archive member.

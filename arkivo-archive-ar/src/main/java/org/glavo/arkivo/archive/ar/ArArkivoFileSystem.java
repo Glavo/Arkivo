@@ -3,10 +3,7 @@
 
 package org.glavo.arkivo.archive.ar;
 
-import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
-import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOption;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -18,8 +15,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.util.Set;
 import java.util.Objects;
 
 /// Opens AR archives as NIO file systems.
@@ -60,12 +55,6 @@ import java.util.Objects;
 /// selected thread-safety strategy.
 @NotNullByDefault
 public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits ArArkivoFileSystemImpl {
-    /// The option for the decoder used for AR member names.
-    private static final ArchiveOption<ArchiveMetadataDecoder> METADATA_DECODER =
-            ArchiveEnvironmentOptions.metadataDecoderOption(
-                    "arkivo.ar.metadataDecoder"
-            );
-
     /// Creates an AR archive file system base instance.
     ///
     /// @param threadSafety the operation-coordination strategy for this file system
@@ -91,7 +80,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     public static ArArkivoFileSystem open(Path path, ArArchiveOptions.Read options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return ArArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
+        return ArArkivoFileSystemProvider.instance().openPath(path, ArArkivoFileSystemConfig.fromReadOptions(options));
     }
 
     /// Creates a new path-backed AR archive file system.
@@ -112,7 +101,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     public static ArArkivoFileSystem create(Path path, ArArchiveOptions.Create options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return ArArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
+        return ArArkivoFileSystemProvider.instance().openPath(path, ArArkivoFileSystemConfig.fromCreateOptions(options));
     }
 
     /// Opens a complete-rewrite update of an existing path-backed AR archive.
@@ -133,7 +122,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     public static ArArkivoFileSystem update(Path path, ArArchiveOptions.Update options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return ArArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
+        return ArArkivoFileSystemProvider.instance().openPath(path, ArArkivoFileSystemConfig.fromUpdateOptions(options));
     }
 
     /// Opens a read-only AR archive file system directly from one owned seekable channel.
@@ -191,7 +180,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
         return ArArkivoFileSystemImpl.open(
                 ArArkivoFileSystemProvider.instance(),
                 source,
-                toInternalOptions(options)
+                ArArkivoFileSystemConfig.fromReadOptions(options)
         );
     }
 
@@ -226,34 +215,8 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
         return ArArkivoFileSystemImpl.open(
                 ArArkivoFileSystemProvider.instance(),
                 source,
-                toInternalOptions(options)
+                ArArkivoFileSystemConfig.fromUpdateOptions(options)
         );
-    }
-
-    /// Converts strongly typed AR read settings for the internal parser.
-    static ArchiveOptions toInternalOptions(ArArchiveOptions.Read options) {
-        return ArchiveOptions.fromReadOptions(options.common())
-                .with(METADATA_DECODER, options.metadataDecoder());
-    }
-
-    /// Converts strongly typed AR creation settings for the internal writer.
-    static ArchiveOptions toInternalOptions(ArArchiveOptions.Create options) {
-        return ArchiveOptions.fromCreateOptions(options.common())
-                .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
-                        StandardOpenOption.WRITE,
-                        StandardOpenOption.CREATE_NEW
-                ))
-                .with(METADATA_DECODER, options.metadataDecoder());
-    }
-
-    /// Converts strongly typed AR update settings for the internal complete-rewrite implementation.
-    static ArchiveOptions toInternalOptions(ArArchiveOptions.Update options) {
-        return ArchiveOptions.fromUpdateOptions(options.common())
-                .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
-                        StandardOpenOption.READ,
-                        StandardOpenOption.WRITE
-                ))
-                .with(METADATA_DECODER, options.metadataDecoder());
     }
 
 }

@@ -3,12 +3,9 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
-import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -18,9 +15,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.Objects;
-import java.util.Set;
 
 /// Opens TAR archives as NIO file systems.
 ///
@@ -69,22 +64,6 @@ import java.util.Set;
 /// channel-source update requires an explicit commit target.
 @NotNullByDefault
 public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permits TarArkivoFileSystemImpl {
-    /// The option for the explicit TAR outer-compression policy.
-    ///
-    /// Raw NIO environment values may be a policy, a `CompressionCodec`, or a stable compression format name. A codec or
-    /// format name selects [TarCompression.Codec].
-    private static final ArchiveOption<TarCompression> COMPRESSION =
-            ArchiveOption.of("arkivo.tar.compression", TarCompression.class);
-
-    /// The option for decoding compression of an existing archive during an update.
-    private static final ArchiveOption<TarCompression> SOURCE_COMPRESSION =
-            ArchiveOption.of("arkivo.tar.sourceCompression", TarCompression.class);
-
-    /// The option for the decoder used for TAR metadata without an authoritative encoding.
-    private static final ArchiveOption<ArchiveMetadataDecoder> METADATA_DECODER =
-            ArchiveEnvironmentOptions.metadataDecoderOption(
-                    "arkivo.tar.metadataDecoder"
-            );
 
     /// Creates a TAR archive file system base instance.
     ///
@@ -111,7 +90,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     public static TarArkivoFileSystem open(Path path, TarArchiveOptions.Read options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return TarArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
+        return TarArkivoFileSystemProvider.instance().openPath(path, TarArkivoFileSystemConfig.fromReadOptions(options));
     }
 
     /// Creates a new path-backed TAR archive file system.
@@ -132,7 +111,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     public static TarArkivoFileSystem create(Path path, TarArchiveOptions.Create options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return TarArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
+        return TarArkivoFileSystemProvider.instance().openPath(path, TarArkivoFileSystemConfig.fromCreateOptions(options));
     }
 
     /// Opens a complete-rewrite update of an existing path-backed TAR archive.
@@ -153,7 +132,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     public static TarArkivoFileSystem update(Path path, TarArchiveOptions.Update options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return TarArkivoFileSystemProvider.instance().openPath(path, toInternalOptions(options));
+        return TarArkivoFileSystemProvider.instance().openPath(path, TarArkivoFileSystemConfig.fromUpdateOptions(options));
     }
 
     /// Opens a read-only TAR archive file system directly from one owned seekable channel.
@@ -217,7 +196,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
         return TarArkivoFileSystemImpl.open(
                 TarArkivoFileSystemProvider.instance(),
                 source,
-                toInternalOptions(options)
+                TarArkivoFileSystemConfig.fromReadOptions(options)
         );
     }
 
@@ -260,37 +239,8 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
         return TarArkivoFileSystemImpl.open(
                 TarArkivoFileSystemProvider.instance(),
                 source,
-                toInternalOptions(options)
+                TarArkivoFileSystemConfig.fromUpdateOptions(options)
         );
-    }
-
-    /// Converts strongly typed TAR read settings for internal indexed readers.
-    static ArchiveOptions toInternalOptions(TarArchiveOptions.Read options) {
-        return ArchiveOptions.fromReadOptions(options.common())
-                .with(METADATA_DECODER, options.metadataDecoder())
-                .with(COMPRESSION, options.compression());
-    }
-
-    /// Converts strongly typed TAR creation settings for the internal writer.
-    static ArchiveOptions toInternalOptions(TarArchiveOptions.Create options) {
-        return ArchiveOptions.fromCreateOptions(options.common())
-                .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
-                        StandardOpenOption.WRITE,
-                        StandardOpenOption.CREATE_NEW
-                ))
-                .with(COMPRESSION, options.compression());
-    }
-
-    /// Converts strongly typed TAR update settings for the internal complete-rewrite implementation.
-    static ArchiveOptions toInternalOptions(TarArchiveOptions.Update options) {
-        return ArchiveOptions.fromUpdateOptions(options.common())
-                .with(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(
-                        StandardOpenOption.READ,
-                        StandardOpenOption.WRITE
-                ))
-                .with(METADATA_DECODER, options.metadataDecoder())
-                .with(SOURCE_COMPRESSION, options.sourceCompression())
-                .with(COMPRESSION, options.targetCompression());
     }
 
 }

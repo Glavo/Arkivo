@@ -67,7 +67,7 @@ public abstract sealed class ArArkivoStreamingReader extends ArkivoStreamingRead
         Objects.requireNonNull(options, "options");
         return new ArArkivoStreamingReaderImpl(
                 StreamChannelAdapters.inputStream(source),
-                ArArkivoFileSystem.toInternalOptions(options)
+                options.common()
         );
     }
 }

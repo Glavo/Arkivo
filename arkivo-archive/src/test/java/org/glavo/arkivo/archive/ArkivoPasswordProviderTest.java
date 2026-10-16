@@ -24,8 +24,7 @@ public final class ArkivoPasswordProviderTest {
             () -> "test",
             PasswordPurpose.ENTRY_CONTENT,
             "/entry.txt",
-            PasswordEncryption.of("test"),
-            0
+            PasswordEncryption.of("test")
     );
 
     /// Verifies that fixed byte passwords are defensively copied.
@@ -77,8 +76,7 @@ public final class ArkivoPasswordProviderTest {
                 TEST_REQUEST.format(),
                 PasswordPurpose.ARCHIVE_METADATA,
                 null,
-                PasswordEncryption.of("headers", 256),
-                2
+                PasswordEncryption.of("headers", 256)
         )));
     }
 

@@ -7,14 +7,11 @@ import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
-import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOption;
+import org.glavo.arkivo.archive.rar.RarArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.PasswordPurpose;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
-import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
 import org.glavo.arkivo.archive.rar.RarLegacyMetadataDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -33,7 +30,6 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
-import java.nio.file.attribute.PosixFileAttributes;
 import java.security.MessageDigest;
 import java.time.DateTimeException;
 import java.time.Instant;
@@ -46,11 +42,6 @@ import java.util.zip.CRC32;
 /// Implements the public forward-only RAR streaming reader API.
 @NotNullByDefault
 public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader {
-    /// The internal NIO environment key for legacy name detection.
-    private static final ArchiveOption<ArchiveMetadataDecoder> LEGACY_METADATA_DECODER =
-            ArchiveEnvironmentOptions.metadataDecoderOption(
-                    "arkivo.rar.legacyMetadataDecoder"
-            );
     /// The maximum self-extracting stub size searched before the RAR signature.
     private static final int MAX_SFX_SIZE = 1024 * 1024;
 
@@ -309,9 +300,6 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The fallback timestamp used when a RAR entry omits all time metadata.
     private static final FileTime MISSING_TIME = FileTime.fromMillis(0L);
 
-    /// The UTF-8 decoder used when no legacy RAR4 decoder is configured.
-    private static final ArchiveMetadataDecoder DEFAULT_LEGACY_METADATA_DECODER =
-            ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
 
     /// The backing archive input stream.
     private final InputStream source;
@@ -427,80 +415,29 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// Whether the backing archive input stream has been closed.
     private boolean sourceClosed;
 
-    /// Creates a streaming RAR reader.
+    /// Creates a configured reader owning a multi-volume source.
+    ///
+    /// @param source the owned, ordered archive volumes
+    /// @param options the password, metadata, and resource-limit settings
+    public RarArkivoStreamingReaderImpl(ArkivoVolumeSource source, RarArchiveOptions options) {
+        this(new RarVolumeInputStream(source, true), options);
+    }
+
+    /// Creates a configured reader owning an archive stream.
     ///
     /// @param source the owned archive stream positioned at its signature
-    public RarArkivoStreamingReaderImpl(InputStream source) {
-        this(source, null, ArchiveOptions.EMPTY);
+    /// @param options the password, metadata, and resource-limit settings
+    public RarArkivoStreamingReaderImpl(InputStream source, RarArchiveOptions options) {
+        this(source, options, true);
     }
 
-    /// Creates a streaming RAR reader that owns a multi-volume source.
-    ///
-    /// @param source the ordered, repeatable archive volume source owned by this reader
-    public RarArkivoStreamingReaderImpl(ArkivoVolumeSource source) {
-        this(source, null, ArchiveOptions.EMPTY);
-    }
-
-    /// Creates a streaming RAR reader that owns a multi-volume source with an optional password provider.
-    ///
-    /// @param source the ordered, repeatable archive volume source owned by this reader
-    /// @param passwordProvider the archive password provider, or `null` to disable password lookup
-    public RarArkivoStreamingReaderImpl(
-            ArkivoVolumeSource source,
-            @Nullable ArkivoPasswordProvider passwordProvider
-    ) {
-        this(source, passwordProvider, ArchiveOptions.EMPTY);
-    }
-
-    /// Creates a configured streaming RAR reader that owns a multi-volume source.
-    ///
-    /// @param source the ordered, repeatable archive volume source owned by this reader
-    /// @param passwordProvider the archive password provider, or `null` to disable password lookup
-    /// @param options the validated archive environment options
-    public RarArkivoStreamingReaderImpl(
-            ArkivoVolumeSource source,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            ArchiveOptions options
-    ) {
-        this(new RarVolumeInputStream(source, true), passwordProvider, options);
-    }
-
-    /// Creates a streaming RAR reader with an optional password provider.
-    ///
-    /// @param source the owned archive stream positioned at its signature
-    /// @param passwordProvider the archive password provider, or `null` to disable password lookup
-    public RarArkivoStreamingReaderImpl(InputStream source, @Nullable ArkivoPasswordProvider passwordProvider) {
-        this(source, passwordProvider, ArchiveOptions.EMPTY);
-    }
-
-    /// Creates a configured streaming RAR reader with an optional password provider.
-    ///
-    /// @param source the owned archive stream positioned at its signature
-    /// @param passwordProvider the archive password provider, or `null` to disable password lookup
-    /// @param options the validated archive environment options
-    public RarArkivoStreamingReaderImpl(
-            InputStream source,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            ArchiveOptions options
-    ) {
-        this(source, passwordProvider, options, true);
-    }
-
-    /// Creates a configured reader with explicit skipped-body validation behavior.
-    RarArkivoStreamingReaderImpl(
-            InputStream source,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            ArchiveOptions options,
-            boolean validateSkippedBodies
-    ) {
-        ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
+    /// Creates a reader with explicit skipped-body validation behavior.
+    RarArkivoStreamingReaderImpl(InputStream source, RarArchiveOptions options, boolean validateSkippedBodies) {
+        Objects.requireNonNull(options, "options");
         this.source = Objects.requireNonNull(source, "source");
-        this.passwordProvider = passwordProvider;
-        this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
-        this.legacyMetadataDecoder = checkedOptions.getOrDefault(
-                LEGACY_METADATA_DECODER,
-                DEFAULT_LEGACY_METADATA_DECODER
-        );
+        this.passwordProvider = options.passwordProvider();
+        this.readLimits = ArkivoReadLimitTracker.fromLimits(options.common().limits());
+        this.legacyMetadataDecoder = options.legacyMetadataDecoder();
         this.validateSkippedBodies = validateSkippedBodies;
     }
 

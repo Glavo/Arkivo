@@ -6,8 +6,6 @@ package org.glavo.arkivo.archive.ar.internal;
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.internal.ArkivoCommitTargetSupport;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
-import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -228,17 +226,15 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             ArArkivoFileSystemProvider provider,
             Path archivePath,
             URI archiveUri,
-            ArchiveOptions options,
+            ArArkivoFileSystemConfig options,
             Runnable closeAction
     ) throws IOException {
         Objects.requireNonNull(options, "options");
-        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
-        );
-        Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
-        );
+        ArkivoFileSystemThreadSafety threadSafety = options.readOptions().threadSafety();
+        Set<OpenOption> openOptions = options.openOptions();
         if (isArchiveUpdateOpen(openOptions)) {
             validateArchiveUpdateOptions(openOptions);
-            StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+            StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options.readOptions().editStorageFactory()));
             try {
                 boolean newArchive = !Files.exists(archivePath);
                 Map<String, Node> nodes;
@@ -251,7 +247,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 } else {
                     throw new NoSuchFileException(archivePath.toString());
                 }
-                @Nullable ArkivoCommitTarget commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
+                @Nullable ArkivoCommitTarget commitTarget = options.commitTarget();
                 if (commitTarget == null) {
                     commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
                 }
@@ -279,10 +275,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
         if (isWriteArchiveOpen(openOptions)) {
             validateArchiveWriteOptions(openOptions);
-            if (options.get(ArchiveEnvironmentOptions.COMMIT_TARGET) != null) {
+            if (options.commitTarget() != null) {
                 throw new UnsupportedOperationException("AR archive writes do not support commit targets");
             }
-            ArkivoEditStorage bodyStorage = Objects.requireNonNull(StoredContentSupport.selectStorage(options));
+            ArkivoEditStorage bodyStorage = Objects.requireNonNull(StoredContentSupport.selectStorage(options.readOptions().editStorageFactory()));
             @Nullable OutputStream output = null;
             try {
                 output = Files.newOutputStream(archivePath, openOptions.toArray(OpenOption[]::new));
@@ -315,7 +311,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
 
         validateArchiveReadOptions(openOptions);
-        StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+        StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options.readOptions().editStorageFactory()));
         try {
             Map<String, Node> nodes;
             try (InputStream input = Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
@@ -352,7 +348,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     public static ArArkivoFileSystemImpl open(
             ArArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
-            ArchiveOptions options
+            ArArkivoFileSystemConfig options
     ) throws IOException {
         Objects.requireNonNull(provider, "provider");
         Objects.requireNonNull(source, "source");
@@ -363,14 +359,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         boolean updateMode;
         @Nullable ArkivoCommitTarget commitTarget;
         try {
-            threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
-            );
-            Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
-            );
+            threadSafety = options.readOptions().threadSafety();
+            Set<OpenOption> openOptions = options.openOptions();
             updateMode = isArchiveUpdateOpen(openOptions);
             if (updateMode) {
                 validateArchiveUpdateOptions(openOptions);
-                commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
+                commitTarget = options.commitTarget();
                 if (commitTarget == null) {
                     throw new IllegalArgumentException(
                             "AR channel-source update mode requires an explicit commit target"
@@ -380,7 +374,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 validateArchiveReadOptions(openOptions);
                 commitTarget = null;
             }
-            editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+            editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options.readOptions().editStorageFactory()));
         } catch (IOException | RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
@@ -2305,13 +2299,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     private static Map<String, Node> readNodes(
             InputStream input,
             StoredContentPool editStorage,
-            ArchiveOptions options
+            ArArkivoFileSystemConfig options
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         Node root = new Node("", syntheticDirectoryAttributes("/"), true, null, true);
         nodes.put("", root);
 
-        try (ArArkivoStreamingReader reader = new ArArkivoStreamingReaderImpl(input, options)) {
+        try (ArArkivoStreamingReader reader = new ArArkivoStreamingReaderImpl(input, options.readOptions())) {
             while (reader.next()) {
                 ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());

@@ -5,15 +5,20 @@ package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArchiveCreateOptions;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemConfig;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.deflate.DeflateCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.StandardOpenOption;
+import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -23,6 +28,39 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies immutable TAR compression-policy and operation-option derivation.
 @NotNullByDefault
 final class TarArchiveOptionsTest {
+    /// Verifies typed settings and NIO compression values resolve to the same operation policies.
+    @Test
+    void preservesFileSystemConfiguration() {
+        var limits = ArchiveReadLimits.builder().maximumEntryCount(7).build();
+        var read = TarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(limits));
+        var readConfig = TarArkivoFileSystemConfig.fromReadOptions(read);
+        assertSame(read.common(), readConfig.readOptions());
+        assertSame(TarCompression.DETECT, readConfig.compression());
+        assertEquals(Set.of(StandardOpenOption.READ), readConfig.openOptions());
+
+        var update = TarArchiveOptions.UPDATE_DEFAULTS
+                .withCommon(ArchiveUpdateOptions.DEFAULT.withLimits(limits))
+                .withSourceCompression(DeflateCodec.DEFAULT).withUncompressedTarget();
+        var updateConfig = TarArkivoFileSystemConfig.fromUpdateOptions(update);
+        assertSame(limits, updateConfig.readOptions().limits());
+        assertSame(update.sourceCompression(), updateConfig.sourceCompression());
+        assertSame(update.targetCompression(), updateConfig.compression());
+        assertEquals(Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE), updateConfig.openOptions());
+
+        var create = TarArkivoFileSystemConfig.fromCreateOptions(TarArchiveOptions.CREATE_DEFAULTS);
+        assertSame(TarCompression.UNCOMPRESSED, create.compression());
+        assertSame(ArchiveReadLimits.UNLIMITED, create.readOptions().limits());
+        assertEquals(Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW), create.openOptions());
+
+        for (Object compression : new Object[]{DeflateCodec.DEFAULT, "deflate", TarCompression.using(DeflateCodec.DEFAULT)}) {
+            var environment = TarArkivoFileSystemConfig.fromEnvironment(Map.of(
+                    "arkivo.tar.compression", compression, "arkivo.tar.sourceCompression", compression));
+            assertEquals("deflate", assertInstanceOf(TarCompression.Codec.class, environment.compression()).codec().format().name());
+            assertEquals(environment.compression(), environment.sourceCompression());
+            assertSame(ArchiveReadLimits.UNLIMITED, environment.readOptions().limits());
+        }
+    }
+
     /// Verifies read and creation helpers select the requested outer-compression policies without losing common state.
     @Test
     void derivesReadAndCreationPolicies() {

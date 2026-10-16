@@ -3,10 +3,7 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
-import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
-import org.glavo.arkivo.archive.internal.ArchiveOption;
-import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.rar.RarArchiveOptions;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -73,9 +70,6 @@ import java.util.Set;
 /// Implements a read-only RAR archive file system backed by an in-memory entry index.
 @NotNullByDefault
 public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
-    /// The internal NIO environment key for a password provider.
-    private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
-            ArchiveOption.of("arkivo.rar.passwordProvider", ArkivoPasswordProvider.class);
     /// The supported file attribute view names.
     private static final @Unmodifiable Set<String> SUPPORTED_ATTRIBUTE_VIEWS =
             Set.of("basic", "owner", "posix", "rar");
@@ -93,7 +87,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     private final ArkivoVolumeSource volumes;
 
     /// The immutable options reused by lazy entry decoders.
-    private final ArchiveOptions options;
+    private final RarArchiveOptions options;
 
     /// The action invoked when this file system closes.
     private final Runnable closeAction;
@@ -131,7 +125,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             ArkivoFileSystemThreadSafety threadSafety,
             Map<String, Node> nodes,
             StoredContentPool editStorage,
-            ArchiveOptions options,
+            RarArchiveOptions options,
             Runnable closeAction
     ) {
         super(threadSafety);
@@ -154,7 +148,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// @param provider the NIO provider that exposes the returned file system
     /// @param archivePath the path of the first or only archive volume
     /// @param archiveUri the URI used as the file-system identity and as the base for entry URIs
-    /// @param options the validated archive environment options
+    /// @param options the typed read configuration
     /// @param closeAction the provider callback invoked when the file system closes
     /// @return an initialized read-only RAR file system
     /// @throws IOException if the archive volumes cannot be opened or parsed
@@ -162,25 +156,17 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             RarArkivoFileSystemProvider provider,
             Path archivePath,
             URI archiveUri,
-            ArchiveOptions options,
+            RarArchiveOptions options,
             Runnable closeAction
     ) throws IOException {
         Objects.requireNonNull(options, "options");
-        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
-        );
-        Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
-        );
-        for (OpenOption option : openOptions) {
-            if (option != StandardOpenOption.READ) {
-                throw new UnsupportedOperationException("RAR archive file systems are read-only");
-            }
-        }
+        ArkivoFileSystemThreadSafety threadSafety = options.common().threadSafety();
 
         List<Path> splitVolumePaths = RarSplitVolumePaths.discover(archivePath);
         ArkivoVolumeSource volumes = ArkivoVolumeSource.of(
                 splitVolumePaths != null ? splitVolumePaths : List.of(archivePath)
         );
-        StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+        StoredContentPool editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options.common().editStorageFactory()));
         try {
             Map<String, Node> nodes;
             try (InputStream input = new RarVolumeInputStream(volumes)) {
@@ -211,32 +197,21 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     ///
     /// @param provider the NIO provider that exposes the returned file system
     /// @param volumes the ordered, repeatable archive volume source
-    /// @param options the validated archive environment options
+    /// @param options the typed read configuration
     /// @return an initialized read-only RAR file system
     /// @throws IOException if a volume cannot be opened or the archive cannot be parsed
     public static RarArkivoFileSystemImpl open(
             RarArkivoFileSystemProvider provider,
             ArkivoVolumeSource volumes,
-            ArchiveOptions options
+            RarArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
         Objects.requireNonNull(options, "options");
-        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
-        );
-        Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
-        );
-        for (OpenOption option : openOptions) {
-            if (option != StandardOpenOption.READ) {
-                UnsupportedOperationException exception =
-                        new UnsupportedOperationException("RAR archive file systems are read-only");
-                closeSourceAfterOpenFailure(volumes, exception);
-                throw exception;
-            }
-        }
+        ArkivoFileSystemThreadSafety threadSafety = options.common().threadSafety();
 
         StoredContentPool editStorage;
         try {
-            editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options));
+            editStorage = new StoredContentPool(StoredContentSupport.selectStorage(options.common().editStorageFactory()));
         } catch (IOException | RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(volumes, exception);
             throw exception;
@@ -844,7 +819,6 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         try (InputStream input = new RarVolumeInputStream(volumes);
              RarArkivoStreamingReader reader = new RarArkivoStreamingReaderImpl(
                      input,
-                     options.get(PASSWORD_PROVIDER),
                      options,
                      false
             )) {
@@ -905,16 +879,15 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// Reads entry metadata without retaining decoded file bodies.
     private static Map<String, Node> readNodes(
             InputStream input,
-            ArchiveOptions options
+            RarArchiveOptions options
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         Node root = new Node("", rootAttributes(), true, false, null);
         nodes.put("", root);
-        boolean encryptedContentAvailable = options.get(PASSWORD_PROVIDER) != null;
+        boolean encryptedContentAvailable = options.passwordProvider() != null;
 
         try (RarArkivoStreamingReader reader = new RarArkivoStreamingReaderImpl(
                 input,
-                options.get(PASSWORD_PROVIDER),
                 options,
                 false
         )) {
@@ -951,7 +924,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             }
         }
         resolveRedirectionSizes(nodes);
-        ArchiveReadLimits limits = options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
+        ArchiveReadLimits limits = options.common().limits();
         ArkivoReadLimitTracker logicalLimits = ArkivoReadLimitTracker.fromLimits(
                 ArchiveReadLimits.UNLIMITED_SIZE, limits.maximumEntrySize(), limits.maximumTotalEntrySize());
         for (Node node : nodes.values()) {

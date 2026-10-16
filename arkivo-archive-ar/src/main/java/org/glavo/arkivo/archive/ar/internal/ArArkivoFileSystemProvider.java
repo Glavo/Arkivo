@@ -3,10 +3,9 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
+import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoFormat;
-import org.glavo.arkivo.archive.internal.ArchiveOptions;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -72,7 +71,7 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
                 this,
                 parsedUri.archivePath(),
                 parsedUri.archiveUri(),
-                ArchiveOptions.fromEnvironment(environment),
+                ArArkivoFileSystemConfig.fromEnvironment(environment),
                 closeAction
         ));
     }
@@ -83,16 +82,16 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.requirePathFormat(path, ArArkivoFormat.instance());
-        return openPath(path, ArchiveOptions.fromEnvironment(environment));
+        return openPath(path, ArArkivoFileSystemConfig.fromEnvironment(environment));
     }
 
     /// Opens an AR archive path whose format has already been selected explicitly.
     ///
     /// @param path the selected AR archive path
-    /// @param options the internal archive environment options
+    /// @param options the typed archive configuration
     /// @return the opened read-only, creation, or update file system
     /// @throws IOException if the archive or its configured storage cannot be initialized
-    public ArArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
+    public ArArkivoFileSystem openPath(Path path, ArArkivoFileSystemConfig options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
         return ArArkivoFileSystemImpl.open(this, path, path.toUri(), options, () -> {
