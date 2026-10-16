@@ -325,6 +325,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             compressedSize = zip64Sizes.compressedSize;
             uncompressedSize = zip64Sizes.uncompressedSize;
         }
+        ZipCompressionFormats.validateStoredSize(flags, method, extraData, compressedSize, uncompressedSize);
         boolean zip64DataDescriptor = headerCompressedSize == UINT32_MAX
                 || headerUncompressedSize == UINT32_MAX
                 || hasZip64ExtraField(extraData);

@@ -7,12 +7,14 @@ import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
@@ -27,6 +29,7 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.nio.channels.Channels;
 import java.nio.channels.SeekableByteChannel;
@@ -792,31 +795,48 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     private SeekableByteChannel openContentChannel(Node node) throws IOException {
         synchronized (contentLifecycleLock) {
             ensureOpen();
-            ArkivoStoredContent content = materializeContent(node, new LinkedHashSet<>());
+            ArkivoStoredContent content = materializeContent(node);
             return content.openChannel(Set.of(StandardOpenOption.READ));
         }
     }
 
     /// Resolves or decodes one entry body while holding the content lifecycle lock.
-    private ArkivoStoredContent materializeContent(Node node, Set<String> redirectionPath) throws IOException {
+    private ArkivoStoredContent materializeContent(Node node) throws IOException {
         @Nullable ArkivoStoredContent cached = node.content();
         if (cached != null) {
             return cached;
         }
 
-        @Nullable String targetPath = node.redirectionTarget();
-        if (targetPath != null) {
-            if (!redirectionPath.add(node.path())) {
+        Set<Node> redirections = new LinkedHashSet<>();
+        Node current = node;
+        while (current.content() == null) {
+            @Nullable String targetPath = current.redirectionTarget();
+            if (targetPath == null) {
+                break;
+            }
+            if (!redirections.add(current)) {
                 throw new IOException("Cyclic RAR content redirection: " + node.path());
             }
             Node target = nodes.get(targetPath);
             if (target == null || target.directory()) {
                 throw new IOException("RAR redirected entry target is unavailable: " + targetPath);
             }
-            ArkivoStoredContent content = materializeContent(target, redirectionPath);
-            node.setContent(content);
-            return content;
+            current = target;
         }
+
+        @Nullable ArkivoStoredContent content = current.content();
+        if (content == null) {
+            content = readContent(current);
+        }
+        // Publish aliases only after the terminal body has been decoded successfully.
+        for (Node redirection : redirections) {
+            redirection.setContent(content);
+        }
+        return content;
+    }
+
+    /// Materializes one physical entry body while holding the content lifecycle lock.
+    private ArkivoStoredContent readContent(Node node) throws IOException {
         if (!node.bodyReadable()) {
             throw new IOException("RAR entry content is not available: " + node.path());
         }
@@ -912,42 +932,55 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                         && readerImpl.isCurrentBodyReadable()
                         && (!attributes.isEncrypted() || encryptedContentAvailable)
                         && !attributes.continuesFromPreviousVolume();
-                putNode(nodes, new Node(
+                Node node = new Node(
                         path,
                         attributes,
                         attributes.isDirectory(),
                         bodyReadable,
                         redirectionTarget
-                ));
+                );
+                putNode(nodes, node);
+                if (bodyReadable && attributes.compressionMethod() == 0 && !attributes.isEncrypted()
+                        && attributes.unpackedSize() == RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
+                    // Advancing the reader would drain this body anyway. Retain its observed size for aliases,
+                    // without changing the original attributes used to validate later source scans.
+                    try (InputStream body = reader.openInputStream()) {
+                        node.logicalSize = body.transferTo(OutputStream.nullOutputStream());
+                    }
+                }
             }
         }
         resolveRedirectionSizes(nodes);
+        ArchiveReadLimits limits = options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
+        ArkivoReadLimitTracker logicalLimits = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.UNLIMITED_SIZE, limits.maximumEntrySize(), limits.maximumTotalEntrySize());
+        for (Node node : nodes.values()) {
+            logicalLimits.acceptEntry(node.path(), node.logicalSize);
+        }
         return nodes;
     }
 
     /// Resolves redirected entry sizes after every possible target has been indexed.
     private static void resolveRedirectionSizes(Map<String, Node> nodes) {
-        for (int pass = 0; pass < nodes.size(); pass++) {
-            boolean changed = false;
-            for (Node node : nodes.values()) {
-                @Nullable String targetPath = node.redirectionTarget();
-                if (targetPath == null) {
-                    continue;
-                }
-                Node target = nodes.get(targetPath);
-                if (target == null || target.directory()) {
-                    continue;
-                }
-                long targetSize = target.attributes().unpackedSize();
-                if (targetSize != RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE
-                        && node.attributes().unpackedSize() != targetSize) {
-                    node.setAttributes(attributesWithResolvedSize(node.attributes(), targetSize));
-                    changed = true;
+        Set<Node> resolved = new LinkedHashSet<>();
+        Set<Node> chain = new LinkedHashSet<>();
+        for (Node node : nodes.values()) {
+            chain.clear();
+            @Nullable Node current = node;
+            while (current != null && !current.directory() && !resolved.contains(current)
+                    && current.redirectionTarget() != null && chain.add(current)) {
+                current = nodes.get(current.redirectionTarget());
+            }
+            long size = current == null || current.directory() || chain.contains(current)
+                    ? RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE : current.logicalSize;
+            for (Node redirected : chain) {
+                redirected.logicalSize = size;
+                if (size != RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
+                    redirected.setAttributes(attributesWithResolvedSize(redirected.attributes(), size));
                 }
             }
-            if (!changed) {
-                return;
-            }
+            resolved.addAll(chain);
+            resolved.add(node);
         }
     }
     /// Returns whether an entry redirects content to another archive member.
@@ -1193,6 +1226,9 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         /// The node attributes, including any resolved redirection size.
         private RarEntryAttributes attributes;
 
+        /// The declared, observed, or resolved logical size used for archive-wide size limits.
+        private long logicalSize;
+
         /// Whether this node is a directory.
         private final boolean directory;
 
@@ -1218,6 +1254,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         ) {
             this.path = Objects.requireNonNull(path, "path");
             this.attributes = Objects.requireNonNull(attributes, "attributes");
+            this.logicalSize = attributes.unpackedSize();
             this.directory = directory;
             this.bodyReadable = bodyReadable;
             this.redirectionTarget = redirectionTarget;

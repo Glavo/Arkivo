@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.zip.internal;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.zip.ZipMethod;
+import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -31,6 +32,28 @@ final class ZipCompressionFormats {
 
     /// Creates no instances.
     private ZipCompressionFormats() {
+    }
+
+    /// Rejects known STORED sizes that disagree after removing supported encryption framing.
+    /// Unknown sizes and unsupported encryption schemes are left to their respective readers.
+    static void validateStoredSize(int flags, int method, byte[] extraData,
+                                   long compressedSize, long uncompressedSize) throws IOException {
+        if (compressedSize < 0 || uncompressedSize < 0
+                || ZipAesExtraField.compressionMethod(flags, method, extraData) != ZipConstants.STORED_METHOD) {
+            return;
+        }
+        @Nullable ZipEncryption encryption = ZipAesExtraField.encryption(flags, method, extraData);
+        if (encryption == null) {
+            return;
+        }
+        int overhead = switch (encryption) {
+            case NONE -> 0;
+            case ZIP_CRYPTO -> ZipTraditionalCrypto.HEADER_SIZE;
+            default -> Objects.requireNonNull(ZipAesExtraField.readValidated(extraData)).overheadSize();
+        };
+        if (compressedSize < overhead || compressedSize - overhead != uncompressedSize) {
+            throw new IOException("ZIP stored entry sizes do not match its payload length");
+        }
     }
 
     /// Requires the encoder implementation used by the given ZIP compression method to be installed.

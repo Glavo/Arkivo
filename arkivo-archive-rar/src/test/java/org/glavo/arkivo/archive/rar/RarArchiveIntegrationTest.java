@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.crypto.Cipher;
@@ -68,6 +69,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -179,6 +181,11 @@ public final class RarArchiveIntegrationTest {
 
     /// Creates plain stored RAR5 entries with unknown logical sizes and known physical bodies.
     private static byte[] unknownSizeStoredArchive(int count, int size) throws IOException {
+        return unknownSizeStoredArchive(count, size, new Member[0]);
+    }
+
+    /// Creates unknown-size stored bodies followed by additional metadata or redirection members.
+    private static byte[] unknownSizeStoredArchive(int count, int size, Member... following) throws IOException {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         archive.write(RAR5_SIGNATURE);
         writeBlock(archive, 1, 0, new byte[]{0}, new byte[0], new byte[0]);
@@ -194,6 +201,9 @@ public final class RarArchiveIntegrationTest {
                 writer.write(name);
             });
             writeBlock(archive, 2, 0, header, new byte[0], new byte[size]);
+        }
+        for (Member member : following) {
+            writeMember(archive, member);
         }
         writeBlock(archive, 5, 0, new byte[]{0}, new byte[0], new byte[0]);
         return archive.toByteArray();
@@ -532,6 +542,99 @@ public final class RarArchiveIntegrationTest {
             } finally {
                 Files.deleteIfExists(archivePath);
             }
+        }
+    }
+
+    /// Resolves long hard-link and file-copy chains without recursion or repeated body materialization.
+    @ParameterizedTest
+    @CsvSource({"64, false", "16384, false", "16384, true"})
+    public void fileSystemResolvesLongRedirectionChains(int depth, boolean reverse) throws IOException {
+        byte[] content = "shared-content".getBytes(StandardCharsets.UTF_8);
+        Member[] members = new Member[depth + 1];
+        members[0] = storedFile("value-0", 0, 0100644, content, null);
+        for (int index = 1; index <= depth; index++) {
+            members[index] = redirectedEntry("value-" + index, 0, 0100644,
+                    index % 2 == 0 ? RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK
+                            : RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY,
+                    0, "value-" + (index - 1));
+        }
+        if (reverse) {
+            Collections.reverse(Arrays.asList(members));
+        }
+        Path archivePath = createTemporaryArchivePath("rar-redirection-chain-");
+        Files.write(archivePath, archive(members));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        try (var fileSystem = RarArkivoFileSystem.open(archivePath, RarArchiveOptions.DEFAULT.withCommon(
+                ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)))) {
+            assertEquals(content.length, Files.size(fileSystem.getPath("value-" + depth)));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("value-" + depth)));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("value-" + (depth / 2))));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("value-0")));
+            assertEquals(1, storage.createdContentCount());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Counts each redirected logical body, including targets whose sizes are discovered during scanning.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void fileSystemLimitsIncludeRedirectedContent(boolean unknownSize) throws IOException {
+        byte[] content = new byte[4];
+        Member first = redirectedEntry("alias", 0, 0100644,
+                RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK, 0, "entry0");
+        Member second = redirectedEntry("second", 0, 0100644,
+                RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY, 0, "alias");
+        Path archivePath = createTemporaryArchivePath("rar-redirection-limits-");
+        Files.write(archivePath, unknownSize ? unknownSizeStoredArchive(1, content.length, first, second)
+                : archive(second, first, storedFile("entry0", 0, 0100644, content, null)));
+        try {
+            for (long maximum : new long[]{4, 11}) {
+                var limits = ArchiveReadLimits.builder().maximumEntrySize(4).maximumTotalEntrySize(maximum).build();
+                ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class,
+                        () -> RarArkivoFileSystem.open(archivePath, RarArchiveOptions.DEFAULT.withCommon(
+                                ArchiveReadOptions.DEFAULT.withLimits(limits))));
+                assertEquals(ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, failure.kind());
+            }
+            var limits = ArchiveReadLimits.builder().maximumEntryCount(3).maximumEntrySize(4)
+                    .maximumTotalEntrySize(12).build();
+            try (var fileSystem = RarArkivoFileSystem.open(archivePath, RarArchiveOptions.DEFAULT.withCommon(
+                    ArchiveReadOptions.DEFAULT.withLimits(limits)))) {
+                for (String name : List.of("second", "entry0", "alias", "second")) {
+                    assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath(name)));
+                }
+                assertEquals(4, Files.size(fileSystem.getPath("second")));
+            }
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Invalid redirection chains fail without poisoning other entries or caching incomplete content.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void fileSystemRejectsInvalidRedirectionChains(boolean cyclic) throws IOException {
+        byte[] content = "unrelated-content".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("rar-redirection-invalid-");
+        Files.write(archivePath, archive(
+                storedFile("source", 0, 0100644, content, null),
+                redirectedEntry("first", 0, 0100644, RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK,
+                        0, "second"),
+                redirectedEntry("second", 0, 0100644, RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY,
+                        0, cyclic ? "first" : "missing")));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        try (var fileSystem = RarArkivoFileSystem.open(archivePath, RarArchiveOptions.DEFAULT.withCommon(
+                ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)))) {
+            for (String name : List.of("first", "second", "first")) {
+                IOException failure = assertThrows(IOException.class,
+                        () -> Files.readAllBytes(fileSystem.getPath(name)));
+                assertTrue(failure.getMessage().contains(cyclic ? "Cyclic" : "unavailable"));
+                assertEquals(0, storage.createdContentCount());
+            }
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("source")));
+            assertEquals(1, storage.createdContentCount());
+        } finally {
+            Files.deleteIfExists(archivePath);
         }
     }
 

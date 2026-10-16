@@ -1287,6 +1287,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             long dataOffset,
             long centralDirectoryOffset
     ) throws IOException {
+        ZipCompressionFormats.validateStoredSize(entry.generalPurposeFlags, entry.method,
+                entry.centralDirectoryExtraData, entry.compressedSize, entry.uncompressedSize);
         long recordEnd = checkedZipOffsetAdd(dataOffset, entry.compressedSize, "local file data end");
         if (entry.localDataDescriptor) {
             recordEnd = checkedZipOffsetAdd(
