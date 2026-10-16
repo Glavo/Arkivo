@@ -23,6 +23,7 @@ import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
+import org.glavo.arkivo.archive.zip.ZipEntryNameErrorAction;
 import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
@@ -920,7 +921,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             readFully(channel, endRecord.actualCentralDirectoryOffset, centralDirectory);
             centralDirectory.flip();
 
-            var prepared = ZipEntryNameDecoder.forCentralDirectory(config.legacyMetadataDecoder(), centralDirectory);
+            var prepared = ZipEntryNameDecoder.forCentralDirectory(config.legacyMetadataDecoder(), centralDirectory,
+                    config.entryNameErrorAction());
             ZipEntryNameDecoder decoder = prepared.decoder();
             int previousDosTimestamp = 0;
             @Nullable FileTime previousDosTime = null;
@@ -971,6 +973,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 localHeaderDiskNumber = zip64.localHeaderDiskNumber();
 
                 @Nullable String decodedPath = prepared.take(variableOffset);
+                boolean skipName = false;
                 try {
                     if (decodedPath == null) decodedPath = decoder.decodePath(
                             rawPath,
@@ -982,7 +985,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                             externalAttributes
                     );
                 } catch (java.nio.charset.CharacterCodingException exception) {
-                    throw new IOException("Failed to decode ZIP entry name", exception);
+                    if (config.entryNameErrorAction() != ZipEntryNameErrorAction.SKIP) {
+                        throw new IOException("Failed to decode ZIP entry name", exception);
+                    }
+                    skipName = true;
+                    decodedPath = "Undecodable ZIP entry at central-directory offset " + offset;
                 }
                 readLimits.acceptEntry(decodedPath, uncompressedSize);
 
@@ -1029,11 +1036,12 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         (flags & DATA_DESCRIPTOR_FLAG) != 0,
                         dosFallback
                 );
-                if (entries.put(key, entry) != null) {
+                if (!skipName && entries.put(key, entry) != null) {
                     throw new IOException("Duplicate ZIP entry path: " + decodedPath);
                 }
+                // Hidden entries remain physical records for the end-record count and storage layout.
                 storageEntries.add(entry);
-                addTreePath(key, directory, directories, children);
+                if (!skipName) addTreePath(key, directory, directories, children);
 
                 centralDirectory.position(nextOffset);
             }

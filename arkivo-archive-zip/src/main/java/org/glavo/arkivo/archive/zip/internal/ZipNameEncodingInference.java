@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
+import java.nio.charset.CharacterCodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -44,12 +45,18 @@ final class ZipNameEncodingInference {
     /// to the caller's temporary index-building map, which is cleared before selection and on candidate failure.
     /// The returned charset retains neither this map nor its strings. Explicit Unicode fields are handled by the reader.
     static Charset select(ByteBuffer centralDirectory, Map<Integer, String> decodedFields) throws IOException {
+        return select(centralDirectory, decodedFields, false);
+    }
+
+    /// Selects an encoding, excluding malformed authoritative text when the reader has enabled recovery.
+    static Charset select(ByteBuffer centralDirectory, Map<Integer, String> decodedFields,
+                          boolean recoverNames) throws IOException {
         decodedFields.clear();
         var detector = new EncodingDetector();
         var names = new Samples();
         var legacyFields = new LegacyFields();
         var evidence = new Evidence();
-        scan(centralDirectory, field -> {
+        scan(centralDirectory, recoverNames, field -> {
             if (field.unicode != null) {
                 var matches = detector.matching(field.bytes, field.unicode);
                 if (!matches.isEmpty()) {
@@ -118,7 +125,7 @@ final class ZipNameEncodingInference {
     }
 
     /// Visits complete central fields once without changing the caller's buffer.
-    private static void scan(ByteBuffer central, FieldVisitor visitor) throws IOException {
+    private static void scan(ByteBuffer central, boolean recoverNames, FieldVisitor visitor) throws IOException {
         var buffer = central.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         while (buffer.hasRemaining()) {
             int offset = buffer.position();
@@ -143,8 +150,13 @@ final class ZipNameEncodingInference {
                 buffer.get(start + nameLength, extra);
                 byte[] raw = new byte[nameLength];
                 bytes.get(0, raw);
-                unicode = ZipEntryNameDecoder.decodeUnicodeExtraField(raw, extra,
-                        ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID);
+                try {
+                    unicode = ZipEntryNameDecoder.decodeUnicodeExtraField(raw, extra,
+                            ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID);
+                } catch (CharacterCodingException exception) {
+                    if (!recoverNames) throw exception;
+                    continue;
+                }
             }
             visitor.visit(new Field(start, bytes, preference, unicode));
         }

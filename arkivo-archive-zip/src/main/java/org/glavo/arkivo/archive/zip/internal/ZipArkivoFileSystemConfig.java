@@ -16,6 +16,7 @@ import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
+import org.glavo.arkivo.archive.zip.ZipEntryNameErrorAction;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -29,6 +30,10 @@ import java.util.Set;
 /// Stores parsed ZIP file system configuration.
 @NotNullByDefault
 public final class ZipArkivoFileSystemConfig {
+    /// The NIO environment key for read-only entry-name error handling.
+    private static final ArchiveOption<ZipEntryNameErrorAction> ENTRY_NAME_ERROR_ACTION =
+            ArchiveOption.of("arkivo.zip.entryNameErrorAction", ZipEntryNameErrorAction.class);
+
     /// The NIO environment key for a password provider.
     private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArchiveOption.of("arkivo.zip.passwordProvider", ArkivoPasswordProvider.class);
@@ -101,6 +106,9 @@ public final class ZipArkivoFileSystemConfig {
     /// The decoder used for legacy ZIP entry names.
     private final ArchiveMetadataDecoder legacyMetadataDecoder;
 
+    /// The action applied to entry-name decoding errors in read-only operations.
+    private final ZipEntryNameErrorAction entryNameErrorAction;
+
     /// The requested ZIP file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
 
@@ -161,6 +169,23 @@ public final class ZipArkivoFileSystemConfig {
             @Nullable ArkivoCommitTarget commitTarget,
             ArchiveReadLimits readLimits
     ) {
+        this(openOptions, passwordProvider, defaultEncryption, splitSize, legacyMetadataDecoder, threadSafety,
+                editStorageFactory, commitTarget, readLimits, ZipEntryNameErrorAction.REPORT);
+    }
+
+    /// Creates parsed configuration with a read-only entry-name recovery action.
+    private ZipArkivoFileSystemConfig(
+            Set<? extends OpenOption> openOptions,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            ZipEncryption defaultEncryption,
+            long splitSize,
+            ArchiveMetadataDecoder legacyMetadataDecoder,
+            ArkivoFileSystemThreadSafety threadSafety,
+            @Nullable ArkivoEditStorageFactory editStorageFactory,
+            @Nullable ArkivoCommitTarget commitTarget,
+            ArchiveReadLimits readLimits,
+            ZipEntryNameErrorAction entryNameErrorAction
+    ) {
         Set<OpenOption> normalizedOpenOptions = normalizeOpenOptions(
                 Objects.requireNonNull(openOptions, "openOptions")
         );
@@ -172,6 +197,11 @@ public final class ZipArkivoFileSystemConfig {
             );
         }
         this.openOptions = normalizedOpenOptions;
+        this.entryNameErrorAction = Objects.requireNonNull(entryNameErrorAction, "entryNameErrorAction");
+        if (entryNameErrorAction != ZipEntryNameErrorAction.REPORT
+                && normalizedOpenOptions.contains(StandardOpenOption.WRITE)) {
+            throw new IllegalArgumentException("Entry-name recovery is only supported for read-only ZIP operations");
+        }
         this.passwordProvider = passwordProvider;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
@@ -248,6 +278,10 @@ public final class ZipArkivoFileSystemConfig {
 
         ArchiveReadLimits readLimits =
                 options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
+        ZipEntryNameErrorAction errorAction = options.getOrDefault(ENTRY_NAME_ERROR_ACTION, ZipEntryNameErrorAction.REPORT);
+        if (errorAction != ZipEntryNameErrorAction.REPORT && defaultOpenOptions.contains(StandardOpenOption.WRITE)) {
+            throw new IllegalArgumentException("Entry-name recovery is only supported for read-only ZIP operations");
+        }
         return new ZipArkivoFileSystemConfig(
                 openOptions,
                 passwordProvider,
@@ -257,7 +291,8 @@ public final class ZipArkivoFileSystemConfig {
                 threadSafety,
                 editStorageFactory,
                 commitTarget,
-                readLimits
+                readLimits,
+                errorAction
         );
     }
 
@@ -277,7 +312,8 @@ public final class ZipArkivoFileSystemConfig {
                 options.common().threadSafety(),
                 options.common().editStorageFactory(),
                 null,
-                options.common().limits()
+                options.common().limits(),
+                options.entryNameErrorAction()
         );
     }
 
@@ -361,6 +397,13 @@ public final class ZipArkivoFileSystemConfig {
     /// @return the legacy metadata decoder
     public ArchiveMetadataDecoder legacyMetadataDecoder() {
         return legacyMetadataDecoder;
+    }
+
+    /// Returns the entry-name decoding error action.
+    ///
+    /// @return the action applied to character-decoding failures
+    public ZipEntryNameErrorAction entryNameErrorAction() {
+        return entryNameErrorAction;
     }
 
     /// Returns the requested ZIP file system thread-safety strategy.

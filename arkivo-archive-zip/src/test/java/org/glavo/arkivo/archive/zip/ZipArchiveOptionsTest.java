@@ -30,11 +30,15 @@ final class ZipArchiveOptionsTest {
         ArchiveReadOptions readCommon = ArchiveReadOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
         ZipArchiveOptions.Read read = ZipArchiveOptions.READ_DEFAULTS
+                .withEntryNameErrorAction(ZipEntryNameErrorAction.SKIP)
                 .withCommon(readCommon)
                 .withPasswordProvider(passwordProvider)
                 .withLegacyMetadataDecoder(metadataDecoder);
         assertSame(passwordProvider, read.passwordProvider());
         assertSame(metadataDecoder, read.legacyMetadataDecoder());
+        assertSame(ZipEntryNameErrorAction.SKIP, read.entryNameErrorAction());
+        assertSame(ZipEntryNameErrorAction.SKIP, read.withPasswordProvider(null).entryNameErrorAction());
+        assertSame(ZipEntryNameErrorAction.REPORT, ZipArchiveOptions.READ_DEFAULTS.entryNameErrorAction());
         assertNull(read.withPasswordProvider(null).passwordProvider());
 
         ArchiveCreateOptions createCommon = ArchiveCreateOptions.DEFAULT
@@ -65,6 +69,7 @@ final class ZipArchiveOptionsTest {
     @SuppressWarnings("DataFlowIssue")
     void rejectsNullConfigurationValues() {
         assertThrows(NullPointerException.class, () -> new ZipArchiveOptions.Read(null));
+        assertThrows(NullPointerException.class, () -> ZipArchiveOptions.READ_DEFAULTS.withEntryNameErrorAction(null));
         assertThrows(
                 NullPointerException.class,
                 () -> new ZipArchiveOptions.Create(ArchiveCreateOptions.DEFAULT, null)

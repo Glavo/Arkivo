@@ -14,6 +14,7 @@ import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
+import org.glavo.arkivo.archive.zip.ZipEntryNameErrorAction;
 import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -64,6 +65,9 @@ import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.readUnsigned
 public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader {
     /// The pushback buffer size used to return bytes read past the end of a deflated stream.
     private static final int PUSHBACK_BUFFER_SIZE = 8192;
+
+    /// Whether the current local record must be drained without being returned to the caller.
+    private boolean skipCurrentEntry;
 
     /// The fixed local file header size, including its signature.
     private static final int LOCAL_FILE_HEADER_SIZE = 30;
@@ -208,13 +212,14 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         lock();
         try {
             ensureOpen();
-            if (!nextStreamingEntry()) {
-                currentAttributes = null;
-                return false;
+            while (nextStreamingEntry()) {
+                if (skipCurrentEntry) continue;
+                LocalEntry entry = Objects.requireNonNull(currentEntry, "currentEntry");
+                currentAttributes = entry.attributes();
+                return true;
             }
-            LocalEntry entry = Objects.requireNonNull(currentEntry, "currentEntry");
-            currentAttributes = entry.attributes();
-            return true;
+            currentAttributes = null;
+            return false;
         } finally {
             unlock();
         }
@@ -335,7 +340,17 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 ZipExtraFieldMetadata.dosTime(lastModifiedDosDate, lastModifiedDosTime)
         );
 
-        String path = decodePath(rawName, flags, extraData, versionNeededToExtract);
+        String path;
+        skipCurrentEntry = false;
+        try {
+            path = decodePath(rawName, flags, extraData, versionNeededToExtract);
+        } catch (java.nio.charset.CharacterCodingException exception) {
+            if (config.entryNameErrorAction() != ZipEntryNameErrorAction.SKIP) {
+                throw new IOException("Failed to decode ZIP entry name", exception);
+            }
+            skipCurrentEntry = true;
+            path = "Undecodable ZIP entry";
+        }
         LocalEntry entry = new LocalEntry(
                 path,
                 rawName,
@@ -969,22 +984,18 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             byte[] extraData,
             int versionNeededToExtract
     ) throws IOException {
-        try {
-            String path = new ZipEntryNameDecoder(config.legacyMetadataDecoder())
-                    .decodePath(
-                            rawName,
-                            flags,
-                            extraData,
-                            ZipLegacyMetadataDecoder.HeaderSource.LOCAL_FILE_HEADER,
-                            versionNeededToExtract,
-                            ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
-                            ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
-                    );
-            requireValidEntryPath(path);
-            return path.replace('\\', '/');
-        } catch (java.nio.charset.CharacterCodingException exception) {
-            throw new IOException("Failed to decode ZIP entry name", exception);
-        }
+        String path = new ZipEntryNameDecoder(config.legacyMetadataDecoder(), config.entryNameErrorAction())
+                .decodePath(
+                        rawName,
+                        flags,
+                        extraData,
+                        ZipLegacyMetadataDecoder.HeaderSource.LOCAL_FILE_HEADER,
+                        versionNeededToExtract,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE,
+                        ZipLegacyMetadataDecoder.UNKNOWN_HEADER_VALUE
+                );
+        requireValidEntryPath(path);
+        return path.replace('\\', '/');
     }
 
     /// Requires a decoded entry path to contain a usable archive-local path.

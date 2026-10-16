@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
+import org.glavo.arkivo.archive.zip.ZipEntryNameErrorAction;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -39,32 +40,53 @@ public final class ZipEntryNameDecoder {
     /// The inferred archive charset, or null for UTF-8/CP437 decoding and custom callbacks.
     private final @Nullable Charset archiveCharset;
 
+    /// The configured treatment of invalid characters in built-in name decoding.
+    private final ZipEntryNameErrorAction errorAction;
+
     /// Creates an entry name decoder.
     ///
     /// @param legacyMetadataDecoder the decoder consulted when no authoritative Unicode metadata is available
     /// @throws NullPointerException if `legacyMetadataDecoder` is `null`
     public ZipEntryNameDecoder(ArchiveMetadataDecoder legacyMetadataDecoder) {
+        this(legacyMetadataDecoder, ZipEntryNameErrorAction.REPORT);
+    }
+
+    /// Creates a name decoder with a read-only recovery policy; SKIP errors are handled by the reader.
+    ///
+    /// @param legacyMetadataDecoder the decoder consulted when no authoritative Unicode metadata is available
+    /// @param errorAction the treatment of character-decoding failures
+    /// @throws NullPointerException if either argument is `null`
+    public ZipEntryNameDecoder(ArchiveMetadataDecoder legacyMetadataDecoder, ZipEntryNameErrorAction errorAction) {
         this.legacyMetadataDecoder = Objects.requireNonNull(
                 legacyMetadataDecoder,
                 "legacyMetadataDecoder"
         );
         this.archiveCharset = null;
+        this.errorAction = Objects.requireNonNull(errorAction, "errorAction");
     }
 
     /// Creates a frozen built-in strategy using an ASCII-compatible inference candidate.
-    private ZipEntryNameDecoder(Charset archiveCharset) {
+    private ZipEntryNameDecoder(Charset archiveCharset, ZipEntryNameErrorAction errorAction) {
         this.legacyMetadataDecoder = ZipAutoMetadataDecoder.DEFAULT;
         this.archiveCharset = archiveCharset;
+        this.errorAction = errorAction;
     }
 
     /// Prepares a frozen decoder and temporary legacy text for index construction.
     /// Custom decoders are neither sampled nor called during preparation. The buffer is not modified or retained.
     static Prepared forCentralDirectory(ArchiveMetadataDecoder configured, ByteBuffer centralDirectory)
             throws IOException {
+        return forCentralDirectory(configured, centralDirectory, ZipEntryNameErrorAction.REPORT);
+    }
+
+    /// Prepares inference without treating recoverable malformed Unicode names as encoding evidence.
+    static Prepared forCentralDirectory(ArchiveMetadataDecoder configured, ByteBuffer centralDirectory,
+                                        ZipEntryNameErrorAction errorAction) throws IOException {
         var decodedFields = new HashMap<Integer, String>();
         ZipEntryNameDecoder decoder = configured == ZipAutoMetadataDecoder.DEFAULT
-                ? new ZipEntryNameDecoder(ZipNameEncodingInference.select(centralDirectory, decodedFields))
-                : new ZipEntryNameDecoder(configured);
+                ? new ZipEntryNameDecoder(ZipNameEncodingInference.select(centralDirectory, decodedFields,
+                        errorAction != ZipEntryNameErrorAction.REPORT), errorAction)
+                : new ZipEntryNameDecoder(configured, errorAction);
         return new Prepared(decoder, decodedFields);
     }
 
@@ -89,7 +111,7 @@ public final class ZipEntryNameDecoder {
     /// @param extraData the encoded extra field records
     /// @return the decoded entry path
     /// @throws NullPointerException if `rawPath` or `extraData` is `null`
-    /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the path
+    /// @throws IOException if Unicode metadata is structurally malformed or name decoding fails under the configured action
     public String decodePath(byte[] rawPath, int generalPurposeFlags, byte[] extraData) throws IOException {
         return decodePath(
                 rawPath,
@@ -113,7 +135,7 @@ public final class ZipEntryNameDecoder {
     /// @param externalAttributes the unsigned 32-bit external attributes, or the decoder's unknown sentinel
     /// @return the decoded entry path
     /// @throws NullPointerException if an array or `headerSource` is `null`
-    /// @throws IOException if Unicode metadata is malformed or the legacy decoder cannot decode the path
+    /// @throws IOException if Unicode metadata is structurally malformed or name decoding fails under the configured action
     public String decodePath(
             byte[] rawPath,
             int generalPurposeFlags,
@@ -123,7 +145,7 @@ public final class ZipEntryNameDecoder {
             int versionMadeBy,
             long externalAttributes
     ) throws IOException {
-        String unicodePath = decodeUnicodeExtraField(rawPath, extraData, UNICODE_PATH_EXTRA_FIELD_ID);
+        String unicodePath = decodeUnicodeExtraField(rawPath, extraData, UNICODE_PATH_EXTRA_FIELD_ID, errorAction);
         if (unicodePath != null) {
             return unicodePath;
         }
@@ -153,6 +175,13 @@ public final class ZipEntryNameDecoder {
             byte[] extraData,
             int expectedFieldId
     ) throws IOException {
+        return decodeUnicodeExtraField(rawValue, extraData, expectedFieldId, ZipEntryNameErrorAction.REPORT);
+    }
+
+    /// Decodes matching Unicode data without relaxing extra-field structural checks.
+    private static @Nullable String decodeUnicodeExtraField(
+            byte[] rawValue, byte[] extraData, int expectedFieldId, ZipEntryNameErrorAction errorAction
+    ) throws IOException {
         int offset = 0;
         while (offset < extraData.length) {
             @Nullable ZipExtraFields.Field field = ZipExtraFields.readForReading(extraData, offset);
@@ -160,7 +189,8 @@ public final class ZipEntryNameDecoder {
                 return null;
             }
             if (field.id() == expectedFieldId) {
-                String value = decodeUnicodeExtraFieldData(rawValue, extraData, field.dataOffset(), field.dataSize());
+                String value = decodeUnicodeExtraFieldData(rawValue, extraData, field.dataOffset(), field.dataSize(),
+                        errorAction);
                 if (value != null) {
                     return value;
                 }
@@ -175,7 +205,8 @@ public final class ZipEntryNameDecoder {
             byte[] rawValue,
             byte[] extraData,
             int dataOffset,
-            int dataSize
+            int dataSize,
+            ZipEntryNameErrorAction errorAction
     ) throws CharacterCodingException {
         if (dataSize < 5 || extraData[dataOffset] != 1) {
             return null;
@@ -188,7 +219,7 @@ public final class ZipEntryNameDecoder {
             return null;
         }
 
-        return strictDecode(extraData, dataOffset + 5, dataSize - 5, StandardCharsets.UTF_8);
+        return decode(extraData, dataOffset + 5, dataSize - 5, StandardCharsets.UTF_8, errorAction);
     }
 
     /// Decodes raw bytes after authoritative Unicode metadata has been considered.
@@ -202,12 +233,12 @@ public final class ZipEntryNameDecoder {
             long externalAttributes
     ) throws IOException {
         if ((generalPurposeFlags & UTF_8_FLAG) != 0) {
-            return strictDecode(rawValue, StandardCharsets.UTF_8);
+            return decode(rawValue, 0, rawValue.length, StandardCharsets.UTF_8, errorAction);
         }
 
         if (archiveCharset != null) {
             @Nullable String ascii = ZipAutoMetadataDecoder.decodeAscii(rawValue);
-            return ascii != null ? ascii : strictDecode(rawValue, archiveCharset);
+            return ascii != null ? ascii : decode(rawValue, 0, rawValue.length, archiveCharset, errorAction);
         }
 
         String decoded;
@@ -227,17 +258,13 @@ public final class ZipEntryNameDecoder {
         return Objects.requireNonNull(decoded, "decoded ZIP metadata");
     }
 
-    /// Strictly decodes a complete byte array with the given charset.
-    private static String strictDecode(byte[] value, Charset charset) throws CharacterCodingException {
-        return strictDecode(value, 0, value.length, charset);
-    }
-
-    /// Strictly decodes a byte array range with the given charset.
-    private static String strictDecode(
+    /// Decodes a complete range, replacing invalid characters only when explicitly configured.
+    private static String decode(
             byte[] value,
             int offset,
             int length,
-            Charset charset
+            Charset charset,
+            ZipEntryNameErrorAction errorAction
     ) throws CharacterCodingException {
         if (charset == StandardCharsets.ISO_8859_1) {
             return new String(value, offset, length, StandardCharsets.ISO_8859_1);
@@ -251,9 +278,11 @@ public final class ZipEntryNameDecoder {
                 return new String(value, offset, length, StandardCharsets.ISO_8859_1);
             }
         }
+        CodingErrorAction action = errorAction == ZipEntryNameErrorAction.REPLACE
+                ? CodingErrorAction.REPLACE : CodingErrorAction.REPORT;
         return charset.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .onMalformedInput(action)
+                .onUnmappableCharacter(action)
                 .decode(ByteBuffer.wrap(value, offset, length))
                 .toString();
     }

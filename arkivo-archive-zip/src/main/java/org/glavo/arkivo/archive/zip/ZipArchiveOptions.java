@@ -25,7 +25,10 @@ import java.util.Objects;
 ///
 /// The legacy decoder is used only when neither a valid Info-ZIP Unicode extra field nor the UTF-8 flag supplies the
 /// text encoding. The default policy infers an encoding for indexed reading; streaming reading tries strict UTF-8
-/// and falls back to CP437 on malformed input. Custom decoders determine their own conversion and failure policy.
+/// and falls back to CP437 on malformed input. Custom decoders determine their own conversion policy.
+/// Read options can skip names that fail character decoding or enable replacement in built-in decoding.
+/// The NIO environment key `arkivo.zip.entryNameErrorAction` accepts a [ZipEntryNameErrorAction] value;
+/// recovery actions are rejected for creation and update operations.
 /// [ZipLegacyMetadataDecoder#forCodePages(Charset, Charset)] provides an opt-in creator-aware compatibility policy.
 @NotNullByDefault
 public final class ZipArchiveOptions {
@@ -47,7 +50,7 @@ public final class ZipArchiveOptions {
     /// from previous calls. Their results can differ from indexed reading. Indexed detection is heuristic and
     /// falls back to CP437 when no candidate can be selected. Neither policy consults the system locale.
     /// Use [ArchiveMetadataDecoder#forCharset(Charset)] to select a known encoding. Explicit Unicode
-    /// metadata remains authoritative and is decoded strictly by the reader.
+    /// metadata remains authoritative; read options separately control character-decoding error handling.
     /// This decoder supports concurrent calls and does not retain caller buffers.
     public static final ArchiveMetadataDecoder DEFAULT_LEGACY_METADATA_DECODER =
             ZipAutoMetadataDecoder.DEFAULT;
@@ -74,14 +77,31 @@ public final class ZipArchiveOptions {
     /// Configures reading ZIP archives.
     ///
     /// Password and metadata-decoding services are obtained from `common`. A missing decoder selects
-    /// [#DEFAULT_LEGACY_METADATA_DECODER].
+    /// [#DEFAULT_LEGACY_METADATA_DECODER]. The entry-name error action defaults to
+    /// [ZipEntryNameErrorAction#REPORT]. Recovery never bypasses structural or decoded-path validation.
     ///
     /// @param common the format-independent read configuration
+    /// @param entryNameErrorAction the policy for entry-name character-decoding failures
     @NotNullByDefault
-    public record Read(ArchiveReadOptions common) {
+    public record Read(ArchiveReadOptions common, ZipEntryNameErrorAction entryNameErrorAction) {
         /// Validates the read configuration.
         public Read {
             Objects.requireNonNull(common, "common");
+            Objects.requireNonNull(entryNameErrorAction, "entryNameErrorAction");
+        }
+
+        /// Creates read options that report entry-name decoding failures.
+        /// @param common the format-independent read configuration
+        public Read(ArchiveReadOptions common) {
+            this(common, ZipEntryNameErrorAction.REPORT);
+        }
+
+        /// Returns a copy with the entry-name decoding failure policy.
+        /// @param value the replacement action
+        /// @return the replacement configuration
+        /// @throws NullPointerException if `value` is `null`
+        public Read withEntryNameErrorAction(ZipEntryNameErrorAction value) {
+            return new Read(common, value);
         }
 
         /// Returns a copy with common read settings.
@@ -90,7 +110,7 @@ public final class ZipArchiveOptions {
         /// @return a new configuration with the replacement common settings and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Read withCommon(ArchiveReadOptions value) {
-            return new Read(value);
+            return new Read(value, entryNameErrorAction);
         }
 
         /// Returns the password provider inherited from the common options.
@@ -113,7 +133,7 @@ public final class ZipArchiveOptions {
         /// @param value the replacement password provider, or `null` to disable password lookup
         /// @return a new configuration with the replacement password provider and all other values unchanged
         public Read withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
-            return new Read(common.withPasswordProvider(value));
+            return new Read(common.withPasswordProvider(value), entryNameErrorAction);
         }
 
         /// Returns a copy with the legacy decoder.
@@ -122,7 +142,7 @@ public final class ZipArchiveOptions {
         /// @return a new configuration with the replacement decoder and all other values unchanged
         /// @throws NullPointerException if `value` is `null`
         public Read withLegacyMetadataDecoder(ArchiveMetadataDecoder value) {
-            return new Read(common.withMetadataDecoder(Objects.requireNonNull(value, "value")));
+            return new Read(common.withMetadataDecoder(Objects.requireNonNull(value, "value")), entryNameErrorAction);
         }
     }
 

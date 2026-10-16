@@ -28,8 +28,11 @@ import java.util.Objects;
 ///
 /// Names without valid Unicode metadata use the configured legacy decoder. By default, each name is decoded as
 /// strict UTF-8, with CP437 fallback only for malformed UTF-8 bytes; no statistical encoding inference is performed.
-/// An explicit UTF-8 flag requires strict UTF-8 decoding without fallback. Indexed readers may infer a different
-/// encoding from central-directory names. See [ZipArchiveOptions#DEFAULT_LEGACY_METADATA_DECODER].
+/// An explicit UTF-8 flag selects UTF-8 without charset fallback. Character errors are reported by default;
+/// [ZipArchiveOptions.Read#entryNameErrorAction()] can instead replace invalid characters or skip the entry.
+/// Skipping follows the same body-consumption and validation rules as advancing past an unopened entry.
+/// Indexed readers may infer a different encoding from central-directory names.
+/// See [ZipArchiveOptions#DEFAULT_LEGACY_METADATA_DECODER].
 ///
 /// Exceeding an entry-size or total-entry-size limit prevents further cursor advancement. Closing the entry or reader
 /// then releases resources without draining the rejected body or validating its remaining data descriptor.

@@ -32,6 +32,8 @@ import java.util.Objects;
 /// entry attributes or content validates that entry's local header and storage range; a malformed local record may
 /// therefore be reported only when the corresponding entry is accessed. Successfully loaded local metadata is cached.
 /// Path-backed sessions may retain file handles until close, including while no entry stream is open.
+/// Entry-name decoding errors fail index construction by default. [ZipArchiveOptions.Read#entryNameErrorAction()]
+/// can instead hide undecodable entries or replace invalid characters; duplicate decoded paths remain errors.
 ///
 /// Path and seekable-channel updates preserve surviving local-record bytes while publishing a complete replacement
 /// archive. Existing entries, including one with an active replacement channel, expose their preceding state until
