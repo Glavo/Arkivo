@@ -12,6 +12,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Random;
+import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -25,6 +28,35 @@ public final class ZipTraditionalCryptoTest {
 
     /// The traditional ZIP password verification byte used by test streams.
     private static final int VERIFICATION_BYTE = 0x42;
+
+    /// Matches JDK CRC values for empty and nonempty previews without changing subsequent plaintext.
+    @Test
+    void previewsCrcWithoutAdvancingKeys() throws IOException {
+        byte[] content = new byte[512];
+        new Random(83L).nextBytes(content);
+        byte[] encrypted = encrypt(content);
+        for (int prefix : new int[]{0, 1, 31, 255}) {
+            for (int length : new int[]{0, 1, 7, 33, content.length - prefix}) {
+                var source = new ByteArrayInputStream(encrypted);
+                var decryptor = ZipTraditionalCrypto.openDecryptor(source, PASSWORD, VERIFICATION_BYTE);
+                CRC32 checksum = new CRC32();
+                for (int index = 0; index < prefix; index++) {
+                    int plain = decryptor.decrypt(source.read());
+                    assertEquals(Byte.toUnsignedInt(content[index]), plain);
+                    checksum.update(plain);
+                }
+                long previous = checksum.getValue();
+                byte[] candidate = Arrays.copyOfRange(encrypted,
+                        ZipTraditionalCrypto.HEADER_SIZE + prefix, ZipTraditionalCrypto.HEADER_SIZE + prefix + length);
+                checksum.update(content, prefix, length);
+                assertEquals(checksum.getValue(), decryptor.crc32After(previous, candidate));
+                assertEquals(checksum.getValue(), decryptor.crc32After(previous, candidate));
+                for (int index = prefix; index < content.length; index++) {
+                    assertEquals(Byte.toUnsignedInt(content[index]), decryptor.decrypt(source.read()));
+                }
+            }
+        }
+    }
 
     /// Verifies that a closed traditional ZIP decrypting stream rejects further reads.
     @Test

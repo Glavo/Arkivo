@@ -16,10 +16,12 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Random;
 import java.util.stream.Stream;
 
@@ -42,6 +44,78 @@ public final class ZipStreamingCompressedDescriptorTest {
     /// The password shared by encrypted descriptor cases.
     private static final byte @Unmodifiable [] PASSWORD =
             "descriptor secret".getBytes(StandardCharsets.UTF_8);
+
+    /// Combines stored-entry encryption, descriptor widths, optional signatures, and boundary-sized payloads.
+    private static Stream<Arguments> storedBoundaries() {
+        return Arrays.stream(ZipEncryption.values()).flatMap(encryption -> Stream.of(0, 1, 2).flatMap(layout ->
+                Stream.of(false, true).flatMap(signature -> Stream.of(0, 1, 4, 64)
+                        .map(size -> Arguments.of(encryption, layout, signature, size)))));
+    }
+
+    /// Reads short stored entries without treating authentication, descriptor, or subsequent header bytes as content.
+    @ParameterizedTest(name = "{0}, layout={1}, signature={2}, size={3}")
+    @MethodSource("storedBoundaries")
+    void readsStoredDescriptorBoundaries(ZipEncryption encryption, int layout, boolean signature, int size) throws IOException {
+        byte[] content = size == 4 ? new byte[]{(byte) 0xac, 0x0a, 0x7a, (byte) 0xd5} : new byte[size];
+        if (size != 4) new Random(47L).nextBytes(content);
+        Path path = createTemporaryArchivePath("stored-boundary-");
+        var options = ZipArchiveOptions.READ_DEFAULTS.withPasswordProvider(ArkivoPasswordProvider.fixed(PASSWORD));
+        try {
+            writeDescriptorArchive(path, ZipMethod.STORED, encryption, content, new byte[]{42});
+            byte[] archive = withFirstDescriptorLayout(Files.readAllBytes(path), layout != 0, layout == 1, signature);
+            Files.write(path, archive);
+            try (var fs = ZipArkivoFileSystem.open(path, options)) {
+                assertArrayEquals(content, Files.readAllBytes(fs.getPath("/compressed.bin")));
+                assertArrayEquals(new byte[]{42}, Files.readAllBytes(fs.getPath("/following.txt")));
+            }
+            int central = ByteArrayAccess.readIntLittleEndian(archive, archive.length - 6);
+            int followingCentral = nextCentralRecord(archive, central);
+            int followingOffset = ByteArrayAccess.readIntLittleEndian(archive, followingCentral + 42);
+            for (boolean eof : new boolean[]{false, true}) {
+                for (int consumption = 0; consumption < 3; consumption++) {
+                    byte[] bytes = eof ? Arrays.copyOf(archive, followingOffset) : archive;
+                    int chunk = consumption == 0 ? 1 : consumption == 1 ? 7 : 8192;
+                    try (var reader = ZipArkivoStreamingReader.open(new FragmentedInput(bytes, chunk), options)) {
+                        assertTrue(reader.next());
+                        if (consumption != 2) {
+                            try (var input = reader.openInputStream()) {
+                                assertArrayEquals(consumption == 0 ? content : Arrays.copyOf(content, Math.min(1, size)),
+                                        consumption == 0 ? input.readAllBytes() : input.readNBytes(Math.min(1, size)));
+                            }
+                        }
+                        assertEquals(!eof, reader.next());
+                        if (!eof) {
+                            assertEquals("following.txt", reader.readAttributes(ZipArkivoEntryAttributes.class).path());
+                            try (var input = reader.openInputStream()) {
+                                assertArrayEquals(new byte[]{42}, input.readAllBytes());
+                            }
+                            assertFalse(reader.next());
+                        }
+                    }
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(path);
+        }
+    }
+
+    /// Limits each bulk source read without changing its byte order or end-of-input behavior.
+    @NotNullByDefault
+    private static final class FragmentedInput extends ByteArrayInputStream {
+        /// Maximum bytes returned by one bulk read.
+        private final int chunk;
+
+        /// Creates a source with the given positive bulk-read bound.
+        private FragmentedInput(byte[] bytes, int chunk) {
+            super(bytes);
+            this.chunk = chunk;
+        }
+
+        @Override
+        public synchronized int read(byte[] target, int offset, int length) {
+            return super.read(target, offset, Math.min(length, chunk));
+        }
+    }
 
     /// Releases every descriptor decoder without consuming more input after its entry-size limit fails.
     @ParameterizedTest(name = "{0} with {1}, AE-2={2}")
@@ -77,9 +151,9 @@ public final class ZipStreamingCompressedDescriptorTest {
     }
 
     /// Reads a compressed data-descriptor entry and the stored entry immediately following it.
-    @ParameterizedTest(name = "{0} with {1}, AE-2={2}")
-    @MethodSource("descriptorConfigurations")
-    public void readsWriterProducedDescriptor(ZipMethod method, ZipEncryption encryption, boolean ae2) throws IOException {
+    @ParameterizedTest(name = "{0} with {1}, AE-2={2}, signature={3}")
+    @MethodSource("descriptorLayouts")
+    public void readsWriterProducedDescriptor(ZipMethod method, ZipEncryption encryption, boolean ae2, boolean signature) throws IOException {
         Path archivePath = createTemporaryArchivePath("compressed-descriptor-");
         byte @Unmodifiable [] content = ("descriptor content for " + method + " and " + encryption + "\n")
                 .repeat(128)
@@ -90,6 +164,9 @@ public final class ZipStreamingCompressedDescriptorTest {
             writeDescriptorArchive(archivePath, method, encryption, content, followingContent);
             if (ae2) {
                 Files.write(archivePath, withAe2FirstEntry(Files.readAllBytes(archivePath)));
+            }
+            if (!signature) {
+                Files.write(archivePath, withoutFirstDescriptorSignature(Files.readAllBytes(archivePath)));
             }
 
             ZipArchiveOptions.Read readOptions = ZipArchiveOptions.READ_DEFAULTS
@@ -130,12 +207,13 @@ public final class ZipStreamingCompressedDescriptorTest {
     }
 
     /// Rejects a corrupt descriptor without consuming the following local file record.
-    @ParameterizedTest(name = "{0} with {1}, AE-2={2}")
-    @MethodSource("descriptorConfigurations")
+    @ParameterizedTest(name = "{0} with {1}, AE-2={2}, signature={3}")
+    @MethodSource("descriptorLayouts")
     public void rejectsDescriptorCrcMismatchWithoutLosingFollowingEntry(
             ZipMethod method,
             ZipEncryption encryption,
-            boolean ae2
+            boolean ae2,
+            boolean signature
     ) throws IOException {
         Path archivePath = createTemporaryArchivePath("corrupt-compressed-descriptor-");
         byte @Unmodifiable [] content = ("corrupt descriptor content for " + method + " and " + encryption + "\n")
@@ -146,7 +224,8 @@ public final class ZipStreamingCompressedDescriptorTest {
         try {
             writeDescriptorArchive(archivePath, method, encryption, content, followingContent);
             byte[] original = Files.readAllBytes(archivePath);
-            byte @Unmodifiable [] archive = tamperFirstDataDescriptorCrc(ae2 ? withAe2FirstEntry(original) : original);
+            byte[] corrupt = tamperFirstDataDescriptorCrc(ae2 ? withAe2FirstEntry(original) : original);
+            byte @Unmodifiable [] archive = signature ? corrupt : withoutFirstDescriptorSignature(corrupt);
             ZipArchiveOptions.Read readOptions = ZipArchiveOptions.READ_DEFAULTS
                     .withPasswordProvider(ArkivoPasswordProvider.fixed(PASSWORD));
 
@@ -226,6 +305,71 @@ public final class ZipStreamingCompressedDescriptorTest {
         } finally {
             deleteTemporaryArchive(archivePath);
         }
+    }
+
+    /// Exercises optional signatures with the same methods and encryption variants as signed descriptors.
+    private static Stream<Arguments> descriptorLayouts() {
+        return descriptorConfigurations().flatMap(configuration -> Stream.of(false, true).map(signature -> {
+            Object[] arguments = Arrays.copyOf(configuration.get(), 4);
+            arguments[3] = signature;
+            return Arguments.of(arguments);
+        }));
+    }
+
+    /// Removes the first optional descriptor signature and adjusts the following entry and directory offsets.
+    private static byte[] withoutFirstDescriptorSignature(byte[] original) {
+        return withFirstDescriptorLayout(original, false, false, false);
+    }
+
+    /// Changes only the first local ZIP64 declaration and descriptor representation, then adjusts directory offsets.
+    private static byte[] withFirstDescriptorLayout(byte[] original, boolean declared64, boolean actual64, boolean signature) {
+        byte[] archive = original.clone();
+        int central = ByteArrayAccess.readIntLittleEndian(archive, archive.length - 6);
+        int extraSize = Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(archive, 28));
+        int data = 30 + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(archive, 26)) + extraSize;
+        int compressedSize = ByteArrayAccess.readIntLittleEndian(archive, central + 20);
+        int uncompressedSize = ByteArrayAccess.readIntLittleEndian(archive, central + 24);
+        int descriptor = data + compressedSize;
+        assertEquals(0x08074b50, ByteArrayAccess.readIntLittleEndian(archive, descriptor));
+        byte[] extra = new byte[declared64 ? 20 : 0];
+        if (declared64) {
+            ByteArrayAccess.writeShortLittleEndian(extra, 0, (short) 1);
+            ByteArrayAccess.writeShortLittleEndian(extra, 2, (short) 16);
+            ByteArrayAccess.writeShortLittleEndian(archive, 4, (short) 45);
+            ByteArrayAccess.writeIntLittleEndian(archive, 18, -1);
+            ByteArrayAccess.writeIntLittleEndian(archive, 22, -1);
+            ByteArrayAccess.writeShortLittleEndian(archive, 28, (short) (extraSize + extra.length));
+        }
+        byte[] fields = new byte[(actual64 ? 20 : 12) + (signature ? 4 : 0)];
+        int offset = signature ? 4 : 0;
+        if (signature) ByteArrayAccess.writeIntLittleEndian(fields, 0, 0x08074b50);
+        ByteArrayAccess.writeIntLittleEndian(fields, offset, ByteArrayAccess.readIntLittleEndian(archive, descriptor + 4));
+        if (actual64) {
+            ByteArrayAccess.writeLongLittleEndian(fields, offset + 4, compressedSize);
+            ByteArrayAccess.writeLongLittleEndian(fields, offset + 12, uncompressedSize);
+        } else {
+            ByteArrayAccess.writeIntLittleEndian(fields, offset + 4, compressedSize);
+            ByteArrayAccess.writeIntLittleEndian(fields, offset + 8, uncompressedSize);
+        }
+        int delta = extra.length + fields.length - 16;
+        int following = nextCentralRecord(archive, central);
+        ByteArrayAccess.writeIntLittleEndian(archive, following + 42,
+                ByteArrayAccess.readIntLittleEndian(archive, following + 42) + delta);
+        ByteArrayAccess.writeIntLittleEndian(archive, archive.length - 6, central + delta);
+        var output = new ByteArrayOutputStream(archive.length + delta);
+        output.write(archive, 0, data);
+        output.writeBytes(extra);
+        output.write(archive, data, compressedSize);
+        output.writeBytes(fields);
+        output.write(archive, descriptor + 16, archive.length - descriptor - 16);
+        return output.toByteArray();
+    }
+
+    /// Returns the central directory record following a complete record in these two-entry fixtures.
+    private static int nextCentralRecord(byte[] archive, int central) {
+        return central + 46 + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(archive, central + 28))
+                + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(archive, central + 30))
+                + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(archive, central + 32));
     }
 
     /// Returns the complete compressed-method and encryption cross-product supported by streaming descriptors.

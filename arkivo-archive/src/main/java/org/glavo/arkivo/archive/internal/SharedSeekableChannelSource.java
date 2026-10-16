@@ -5,13 +5,17 @@ package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 
 /// Exposes independent logical read views over one owned seekable channel.
@@ -31,6 +35,9 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
 
     /// Whether source closure has completed successfully.
     private boolean closed;
+
+    /// Previously delivered physical-channel failures, guarded by the source lock and allocated only on failure.
+    private @Nullable Set<Throwable> reportedFailures;
 
     /// Creates an owning shared source and closes the channel if initial metadata access fails.
     ///
@@ -84,11 +91,29 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
             if (closed) {
                 return;
             }
-            channel.close();
+            try {
+                channel.close();
+            } catch (IOException | RuntimeException | Error failure) {
+                if (!recordFailure(failure)) {
+                    IOException repeated = new IOException("Shared archive source cleanup failed again", failure);
+                    recordFailure(repeated);
+                    throw repeated;
+                }
+                throw failure;
+            }
             closed = true;
+            reportedFailures = null;
         } finally {
             lock.unlock();
         }
+    }
+
+    /// Records a physical failure under the source lock and reports whether it has not been delivered before.
+    private boolean recordFailure(Throwable failure) {
+        if (reportedFailures == null) {
+            reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+        }
+        return reportedFailures.add(failure);
     }
 
     /// Requires the source and physical channel to remain open.
@@ -131,15 +156,20 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
                 int targetPosition = target.position();
                 ByteBuffer bounded = target.duplicate();
                 bounded.limit(bounded.position() + count);
-                channel.position(origin + position);
                 try {
-                    return channel.read(bounded);
-                } finally {
-                    int transferred = bounded.position() - targetPosition;
-                    if (transferred > 0) {
-                        target.position(targetPosition + transferred);
-                        position += transferred;
+                    channel.position(origin + position);
+                    try {
+                        return channel.read(bounded);
+                    } finally {
+                        int transferred = bounded.position() - targetPosition;
+                        if (transferred > 0) {
+                            target.position(targetPosition + transferred);
+                            position += transferred;
+                        }
                     }
+                } catch (IOException | RuntimeException | Error failure) {
+                    recordFailure(failure);
+                    throw failure;
                 }
             } finally {
                 lock.unlock();

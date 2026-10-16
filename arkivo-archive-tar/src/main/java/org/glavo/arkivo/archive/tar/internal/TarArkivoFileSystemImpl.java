@@ -242,7 +242,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     ///
     /// @param provider    the provider exposed by the returned file system and its paths
     /// @param archivePath the archive path to read, create, or update according to `options`
-    /// @param archiveUri  the corresponding normalized archive URI used to construct entry URIs
+    /// @param archiveUri  the corresponding archive URI used to construct entry URIs
     /// @param options     the access, compression, metadata decoding, staging, publication, limits, and thread-safety policy
     /// @param closeAction the provider-registry action invoked during file-system close
     /// @return a read-only snapshot, forward-only writer, or complete-rewrite update file system selected by the open
@@ -1042,8 +1042,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     ///
     /// Directory moves remap every descendant and any archive-local hard-link target that refers into the moved tree.
     /// Moving between two names of the same hard-linked file has no effect.
-    /// `StandardCopyOption.REPLACE_EXISTING` permits a compatible target replacement; `ATOMIC_MOVE` is accepted because
-    /// publication is already deferred to the archive transaction.
+    /// `StandardCopyOption.REPLACE_EXISTING` replaces the target entry unless it is a nonempty directory.
+    /// `ATOMIC_MOVE` is accepted because publication is already deferred to the archive transaction.
     ///
     /// @param source  the existing entry or directory subtree to move
     /// @param target  the destination archive path
@@ -1095,9 +1095,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             }
             if (!replaceExisting) {
                 throw new FileAlreadyExistsException(target.toString());
-            }
-            if (sourceNode.directory() != targetNode.directory()) {
-                throw new FileSystemException(source.toString(), target.toString(), "Source and target entry types differ");
             }
             if (targetNode.directory() && !targetNode.children().isEmpty()) {
                 throw new DirectoryNotEmptyException(target.toString());
@@ -1240,14 +1237,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Checks access to an entry.
     ///
     /// An empty mode array performs an existence check. Read-only sessions accept only read access; forward-only
-    /// writers accept only write access to already known paths. Update sessions validate existence and permit every
-    /// requested mode because their indexed entries are both readable and mutable.
+    /// writers accept only write access to already known paths. Update sessions accept read and write access.
+    /// Execute access is denied in every session mode.
     ///
     /// @param path  the path whose existence and accessibility are checked
     /// @param modes the requested access modes, or an empty array to check only existence
     /// @throws IOException                   if the path does not exist or is currently hidden by an open update channel
-    /// @throws AccessDeniedException         if a non-read mode is requested from a read-only session
-    /// @throws UnsupportedOperationException if read or execute access is requested from a forward-only writer
+    /// @throws AccessDeniedException         if a requested mode is unavailable in this session
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             checkAccessLocked(path, modes);
@@ -1261,6 +1257,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
         if (updateMode) {
             requireNode(path);
+            for (AccessMode mode : modes) {
+                Objects.requireNonNull(mode, "mode");
+                if (mode == AccessMode.EXECUTE) {
+                    throw new AccessDeniedException(path.toString());
+                }
+            }
             return;
         }
         if (!readOnly) {
@@ -2483,8 +2485,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private void checkWritableAccess(Path path, AccessMode... modes) throws IOException {
         requireWritableKnownPath(path);
         for (AccessMode mode : modes) {
+            Objects.requireNonNull(mode, "mode");
             if (mode == AccessMode.EXECUTE || mode == AccessMode.READ) {
-                throw new UnsupportedOperationException("Forward-only TAR write file systems do not expose reads");
+                throw new AccessDeniedException(path.toString());
             }
         }
     }

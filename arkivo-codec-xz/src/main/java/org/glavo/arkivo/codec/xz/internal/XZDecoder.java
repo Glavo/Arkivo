@@ -48,8 +48,8 @@ public final class XZDecoder implements CompressionDecoder.Framed {
     /// Whether supported Block integrity checks are calculated and compared.
     private final boolean verifyChecksums;
 
-    /// Completed Block records awaiting validation against the Index.
-    private final List<BlockRecord> records = new ArrayList<>();
+    /// Completed Block records awaiting Index validation, replaced with an empty list after closure.
+    private List<BlockRecord> records = new ArrayList<>();
 
     /// Reusable storage for Stream headers, Block headers, checks, CRCs, and footers.
     private final byte[] metadata = new byte[MAXIMUM_METADATA_SIZE];
@@ -319,7 +319,7 @@ public final class XZDecoder implements CompressionDecoder.Framed {
             current.close();
         }
         block = null;
-        records.clear();
+        records = List.of();
         phase = Phase.CLOSED;
     }
 

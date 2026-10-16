@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -17,8 +18,11 @@ import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -136,6 +140,79 @@ public final class ArkivoEditStorageContractTest {
     /// Creates one backend for common stored-content channel assertions.
     private ArkivoEditStorage openStorage(boolean temporaryFiles) {
         return temporaryFiles ? ArkivoEditStorage.temporaryFiles(temporaryDirectory) : ArkivoEditStorage.memory();
+    }
+
+    /// Deletes the content handle without invalidating readers opened before the deleting channel closes.
+    @ParameterizedTest
+    @ValueSource(strings = {"memory", "file", "hybrid-memory", "hybrid-file"})
+    public void deleteOnClosePreservesExistingReaders(String backend) throws IOException {
+        try (ArkivoEditStorage storage = switch (backend) {
+            case "memory" -> ArkivoEditStorage.memory();
+            case "file" -> ArkivoEditStorage.temporaryFiles(temporaryDirectory);
+            case "hybrid-memory" -> ArkivoEditStorage.hybrid(3, temporaryDirectory);
+            case "hybrid-file" -> ArkivoEditStorage.hybrid(0, temporaryDirectory);
+            default -> throw new AssertionError(backend);
+        }; ArkivoStoredContent stored = storage.createContent("entry.bin", 3)) {
+            byte[] expected = {1, 2, 3};
+            try (SeekableByteChannel writer = stored.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                writer.write(ByteBuffer.wrap(expected));
+            }
+            try (SeekableByteChannel reader = stored.openChannel(Set.of(StandardOpenOption.READ))) {
+                try (SeekableByteChannel deleting = stored.openChannel(Set.of(
+                        StandardOpenOption.READ, StandardOpenOption.DELETE_ON_CLOSE))) {
+                    assertArrayEquals(expected, readRemaining(deleting));
+                    deleting.close();
+                    deleting.close();
+                }
+                assertArrayEquals(expected, readRemaining(reader));
+                assertThrows(IOException.class, () -> {
+                    try (SeekableByteChannel ignored = stored.openChannel(Set.of(StandardOpenOption.READ))) {
+                    }
+                });
+            }
+            assertThrows(IOException.class, stored::size);
+            stored.close();
+            stored.close();
+        }
+    }
+
+    /// Rejects unknown and null options before applying truncation to retained content.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    @SuppressWarnings("DataFlowIssue")
+    public void invalidOpenOptionsPreserveContent(boolean temporaryFiles) throws IOException {
+        try (ArkivoEditStorage storage = openStorage(temporaryFiles);
+             ArkivoStoredContent stored = storage.createContent("entry.bin", 3)) {
+            byte[] expected = {1, 2, 3};
+            try (SeekableByteChannel writer = stored.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                writer.write(ByteBuffer.wrap(expected));
+            }
+            Set<@Nullable OpenOption> options = new HashSet<>(Set.of(
+                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING));
+            options.add(UnknownOpenOption.INSTANCE);
+            assertThrows(UnsupportedOperationException.class, () -> {
+                try (SeekableByteChannel ignored = stored.openChannel(options)) {
+                    // Closing an unexpectedly accepted channel keeps the test resource-safe.
+                }
+            });
+            options.remove(UnknownOpenOption.INSTANCE);
+            options.add(null);
+            assertThrows(NullPointerException.class, () -> {
+                try (SeekableByteChannel ignored = stored.openChannel(options)) {
+                    // Closing an unexpectedly accepted channel keeps the test resource-safe.
+                }
+            });
+            try (SeekableByteChannel reader = stored.openChannel(Set.of(LinkOption.NOFOLLOW_LINKS))) {
+                assertArrayEquals(expected, readRemaining(reader));
+            }
+        }
+    }
+
+    /// An option unsupported by both built-in storage backends.
+    @NotNullByDefault
+    private enum UnknownOpenOption implements OpenOption {
+        /// The unsupported option used to exercise validation before mutation.
+        INSTANCE
     }
 
     /// Verifies memory channels enforce access modes and maintain independent positions over shared content.

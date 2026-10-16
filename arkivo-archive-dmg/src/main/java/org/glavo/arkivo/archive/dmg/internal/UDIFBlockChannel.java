@@ -13,6 +13,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
@@ -26,7 +27,8 @@ import java.util.Set;
 /// Exposes a UDIF block layout as a read-only decoded seekable channel.
 ///
 /// The channel owns its encoded source channel. At most one decoded compressed run is cached, and the cache is discarded
-/// when another compressed run is accessed. Instances are not safe for concurrent use.
+/// when another compressed run is accessed. Closing may overlap a read; other operations require external
+/// synchronization when used by multiple threads.
 @NotNullByDefault
 class UDIFBlockChannel implements SeekableByteChannel {
     /// The encoded source owned by this channel.
@@ -42,7 +44,10 @@ class UDIFBlockChannel implements SeekableByteChannel {
     private long position;
 
     /// Whether this channel remains open.
-    private boolean open = true;
+    private volatile boolean open = true;
+
+    /// Serializes source cleanup without preventing an in-progress read from reporting failure.
+    private final Object closeLock = new Object();
 
     /// Whether closing the encoded source has returned normally.
     private boolean sourceClosed;
@@ -50,10 +55,10 @@ class UDIFBlockChannel implements SeekableByteChannel {
     /// Previously delivered failures whose identities must not be repeated by automatic cleanup.
     private @Nullable Set<Throwable> reportedFailures;
 
-    /// The run whose decoded bytes are cached, or `null`.
+    /// The run whose decoded bytes are cached, guarded by this channel's monitor, or `null`.
     private @Nullable UDIFRun cachedRun;
 
-    /// The decoded bytes for [#cachedRun], or `null`.
+    /// The decoded bytes for [#cachedRun], guarded by this channel's monitor, or `null`.
     private byte @Nullable [] cachedBytes;
 
     /// Creates a decoded channel over one independently opened encoded source while preserving interruptibility.
@@ -90,6 +95,7 @@ class UDIFBlockChannel implements SeekableByteChannel {
         if (target.isReadOnly()) {
             throw new IllegalArgumentException("Target buffer is read-only");
         }
+        checkReadInterruption();
         if (!target.hasRemaining()) {
             return 0;
         }
@@ -97,11 +103,35 @@ class UDIFBlockChannel implements SeekableByteChannel {
             return -1;
         }
 
+        int count;
         try {
-            return readDecoded(target);
+            count = readDecoded(target);
         } catch (IOException | RuntimeException | Error failure) {
+            if (failure instanceof ClosedByInterruptException interrupted) {
+                closeAfterInterruption(interrupted);
+            }
             recordFailure(failure);
             throw failure;
+        }
+        checkReadInterruption();
+        return count;
+    }
+
+    /// Applies interruption even when decoded bytes can be returned without accessing the encoded source.
+    private void checkReadInterruption() throws ClosedByInterruptException {
+        if (this instanceof InterruptibleChannel && Thread.currentThread().isInterrupted()) {
+            ClosedByInterruptException failure = new ClosedByInterruptException();
+            closeAfterInterruption(failure);
+            throw failure;
+        }
+    }
+
+    /// Releases cached data and the encoded source while retaining interruption as the primary failure.
+    private void closeAfterInterruption(ClosedByInterruptException failure) {
+        try {
+            close();
+        } catch (IOException | RuntimeException | Error cleanup) {
+            if (cleanup != failure && cleanup.getCause() != failure) failure.addSuppressed(cleanup);
         }
     }
 
@@ -205,25 +235,30 @@ class UDIFBlockChannel implements SeekableByteChannel {
     /// channel is wrapped in a new `IOException` to prevent self-suppression during automatic cleanup.
     @Override
     public void close() throws IOException {
-        if (sourceClosed) {
-            return;
-        }
-        open = false;
-        cachedRun = null;
-        cachedBytes = null;
-        try {
-            source.close();
+        synchronized (closeLock) {
             synchronized (this) {
-                sourceClosed = true;
-                reportedFailures = null;
+                if (sourceClosed) {
+                    return;
+                }
+                open = false;
+                cachedRun = null;
+                cachedBytes = null;
             }
-        } catch (IOException | RuntimeException | Error failure) {
-            if (!recordFailure(failure)) {
-                IOException cleanup = new IOException("UDIF source cleanup repeated an earlier failure", failure);
-                recordFailure(cleanup);
-                throw cleanup;
+            try {
+                // Source closure must not hold the monitor used by the interrupted reader.
+                source.close();
+                synchronized (this) {
+                    sourceClosed = true;
+                    reportedFailures = null;
+                }
+            } catch (IOException | RuntimeException | Error failure) {
+                if (!recordFailure(failure)) {
+                    IOException cleanup = new IOException("UDIF source cleanup repeated an earlier failure", failure);
+                    recordFailure(cleanup);
+                    throw cleanup;
+                }
+                throw failure;
             }
-            throw failure;
         }
     }
 
@@ -282,8 +317,11 @@ class UDIFBlockChannel implements SeekableByteChannel {
 
     /// Returns a decoded compressed run, populating the single-run cache when needed.
     private byte[] decodedRun(UDIFRun run) throws IOException {
-        if (run.equals(cachedRun)) {
-            return Objects.requireNonNull(cachedBytes, "cachedBytes");
+        synchronized (this) {
+            ensureOpen();
+            if (run.equals(cachedRun)) {
+                return Objects.requireNonNull(cachedBytes, "cachedBytes");
+            }
         }
         if (run.type() == UDIFConstants.BLOCK_LZFSE) {
             throw new IOException("LZFSE-compressed UDIF runs are not supported");
@@ -309,8 +347,12 @@ class UDIFBlockChannel implements SeekableByteChannel {
                 throw new IOException("UDIF compressed run did not decode to its declared size");
             }
         }
-        cachedRun = run;
-        cachedBytes = decodedBytes;
+        synchronized (this) {
+            if (open) {
+                cachedRun = run;
+                cachedBytes = decodedBytes;
+            }
+        }
         return decodedBytes;
     }
 

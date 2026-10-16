@@ -51,6 +51,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.CopyOption;
 import java.nio.file.DirectoryNotEmptyException;
@@ -867,7 +868,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         if (path == null) {
             throw new UnsupportedOperationException("Non-path ZIP output cannot be converted to an archive URI");
         }
-        return path.toUri().normalize();
+        return path.toUri();
     }
 
     /// Returns the provider that created this ZIP file system.
@@ -1483,12 +1484,10 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             for (AccessMode mode : modes) {
                 Objects.requireNonNull(mode, "mode");
                 if (mode == AccessMode.READ && rewriteSnapshot == null) {
-                    throw new UnsupportedOperationException(
-                            "Direct streaming ZIP creation does not expose readable entry bodies"
-                    );
+                    throw new AccessDeniedException(path.toString());
                 }
                 if (mode == AccessMode.EXECUTE) {
-                    throw new UnsupportedOperationException("ZIP entries do not support execute access checks");
+                    throw new AccessDeniedException(path.toString());
                 }
             }
         } finally {
@@ -2774,13 +2773,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             if (targetAttributes != null) {
                 if (!replaceExisting) {
                     throw new FileAlreadyExistsException(target.toString());
-                }
-                if (sourceDirectory != targetAttributes.isDirectory()) {
-                    throw new FileSystemException(
-                            source.toString(),
-                            target.toString(),
-                            "Source and target entry types differ"
-                    );
                 }
                 if (targetAttributes.isDirectory() && directoryHasVisibleChildren(targetName)) {
                     throw new DirectoryNotEmptyException(target.toString());

@@ -8,6 +8,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -27,6 +29,7 @@ import java.util.concurrent.TimeoutException;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,6 +39,84 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class SharedSeekableChannelSourceTest {
     /// Maximum time allowed for one concurrent logical-channel read to complete.
     private static final long CONCURRENT_READ_TIMEOUT_SECONDS = 10L;
+
+    /// Preserves physical read and positioning failures when automatic cleanup repeats the same exception instance.
+    @ParameterizedTest
+    @ValueSource(strings = {"io", "runtime", "error"})
+    void preservesFailuresDuringAutomaticCleanup(String kind) throws IOException {
+        for (boolean positioning : new boolean[]{false, true}) {
+            for (boolean shared : new boolean[]{false, true}) {
+                Throwable primary = failure(kind);
+                Throwable cleanup = shared ? primary : failure(kind);
+                TrackingSeekableByteChannel backing = new TrackingSeekableByteChannel(new byte[]{1, 2, 3});
+                ArkivoSeekableChannelSource source = ArkivoSeekableChannelSource.of(backing);
+                if (positioning) backing.positionFailure = primary;
+                else backing.readFailure = primary;
+                backing.partialReadSize = 1;
+                backing.closeFailure = cleanup;
+                backing.remainingCloseFailures = 1;
+                ByteBuffer target = ByteBuffer.allocate(4);
+                target.position(1);
+                target.limit(3);
+
+                Throwable observed = assertThrows(primary.getClass(), () -> {
+                    try (source; SeekableByteChannel view = source.openChannel()) {
+                        view.read(target);
+                    }
+                });
+                assertSame(primary, observed);
+                assertEquals(1, observed.getSuppressed().length);
+                Throwable suppressed = observed.getSuppressed()[0];
+                if (shared) {
+                    assertNotSame(primary, suppressed);
+                    assertTrue(suppressed instanceof IOException);
+                    assertSame(primary, suppressed.getCause());
+                } else {
+                    assertSame(cleanup, suppressed);
+                }
+                assertEquals(positioning ? 1 : 2, target.position());
+                assertEquals(3, target.limit());
+                assertTrue(backing.isOpen());
+                source.close();
+                source.close();
+                assertEquals(2, backing.closeCount());
+                assertFalse(backing.isOpen());
+            }
+        }
+    }
+
+    /// Allows an explicit failed close followed by automatic cleanup without replacing the primary exception.
+    @ParameterizedTest
+    @ValueSource(strings = {"io", "runtime", "error"})
+    void preservesRepeatedCloseFailure(String kind) throws IOException {
+        Throwable failure = failure(kind);
+        TrackingSeekableByteChannel backing = new TrackingSeekableByteChannel(new byte[]{1});
+        ArkivoSeekableChannelSource source = ArkivoSeekableChannelSource.of(backing);
+        backing.closeFailure = failure;
+        backing.remainingCloseFailures = 2;
+        Throwable observed = assertThrows(failure.getClass(), () -> {
+            try (source) {
+                source.close();
+            }
+        });
+        assertSame(failure, observed);
+        assertEquals(1, observed.getSuppressed().length);
+        assertSame(failure, observed.getSuppressed()[0].getCause());
+        source.close();
+        source.close();
+        assertEquals(3, backing.closeCount());
+        assertFalse(backing.isOpen());
+    }
+
+    /// Creates distinct checked, unchecked, and error failures for cleanup identity checks.
+    private static Throwable failure(String kind) {
+        return switch (kind) {
+            case "io" -> new IOException("physical channel failure");
+            case "runtime" -> new IllegalStateException("physical channel failure");
+            case "error" -> new AssertionError("physical channel failure");
+            default -> throw new AssertionError(kind);
+        };
+    }
 
     /// Verifies logical origin, size, position isolation, and view-only closure.
     @Test
@@ -342,7 +423,16 @@ final class SharedSeekableChannelSourceTest {
         private int partialReadSize;
 
         /// Pending read failure reported after partial progress, or `null` when reads succeed.
-        private @Nullable IOException readFailure;
+        private @Nullable Throwable readFailure;
+
+        /// Failure emitted when setting the physical position, or `null` for normal positioning.
+        private @Nullable Throwable positionFailure;
+
+        /// Failure repeated by the configured number of close attempts.
+        private @Nullable Throwable closeFailure;
+
+        /// Number of close attempts that must fail before cleanup succeeds.
+        private int remainingCloseFailures;
 
         /// One exception optionally repeated by position lookup and the first close attempt.
         private @Nullable IOException repeatedFailure;
@@ -374,7 +464,7 @@ final class SharedSeekableChannelSourceTest {
                     return -1;
                 }
                 int count = (int) Math.min((long) target.remaining(), content.length - position);
-                @Nullable IOException readFailure = this.readFailure;
+                @Nullable Throwable readFailure = this.readFailure;
                 if (readFailure != null) {
                     count = Math.min(count, partialReadSize);
                 }
@@ -382,7 +472,7 @@ final class SharedSeekableChannelSourceTest {
                 position += count;
                 if (readFailure != null) {
                     this.readFailure = null;
-                    throw readFailure;
+                    throwConfiguredFailure(readFailure);
                 }
                 return count;
             } finally {
@@ -420,6 +510,7 @@ final class SharedSeekableChannelSourceTest {
             beginAccess();
             try {
                 ensureOpen();
+                if (positionFailure != null) throwConfiguredFailure(positionFailure);
                 if (newPosition < 0L) {
                     throw new IllegalArgumentException("newPosition must not be negative");
                 }
@@ -458,6 +549,10 @@ final class SharedSeekableChannelSourceTest {
         @Override
         public void close() throws IOException {
             closeCount++;
+            if (remainingCloseFailures > 0) {
+                remainingCloseFailures--;
+                if (closeFailure != null) throwConfiguredFailure(closeFailure);
+            }
             if (repeatedFailure != null && closeCount == 1) {
                 throw repeatedFailure;
             }
@@ -465,6 +560,14 @@ final class SharedSeekableChannelSourceTest {
                 throw new IOException("close failed");
             }
             open = false;
+        }
+
+        /// Rethrows a configured failure with its original identity and category.
+        private static void throwConfiguredFailure(Throwable failure) throws IOException {
+            if (failure instanceof IOException exception) throw exception;
+            if (failure instanceof RuntimeException exception) throw exception;
+            if (failure instanceof Error error) throw error;
+            throw new AssertionError(failure);
         }
 
         /// Returns the number of close attempts.

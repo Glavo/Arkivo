@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.lzma.LZMA2Codec;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -17,6 +18,9 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -25,6 +29,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class LZMA2DecoderLifecycleTest {
     /// Dictionary size shared by direct decoder instances and generated compressed streams.
     private static final int DICTIONARY_SIZE = 1 << 20;
+
+    /// Reuses the dictionary engine on reset and releases it when the decoder is closed.
+    @Test
+    void releasesDictionaryOnClose() throws Exception {
+        try (var decoder = new LZMA2Decoder(DICTIONARY_SIZE)) {
+            var field = LZMA2Decoder.class.getDeclaredField("decoder");
+            field.setAccessible(true);
+            @Nullable Object engine = field.get(decoder);
+            assertNotNull(engine);
+            decoder.reset();
+            assertSame(engine, field.get(decoder));
+            decoder.close();
+            assertNull(field.get(decoder));
+            decoder.close();
+            assertNull(field.get(decoder));
+        }
+    }
 
     /// Verifies stored chunks respect target backpressure and preserve trailing compressed input.
     @Test

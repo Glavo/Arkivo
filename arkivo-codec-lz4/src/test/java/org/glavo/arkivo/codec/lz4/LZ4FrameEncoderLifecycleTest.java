@@ -8,6 +8,8 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -16,11 +18,38 @@ import java.nio.ByteBuffer;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies LZ4 frame encoder size pledges, frame boundaries, and mutually exclusive lifecycle operations.
 @NotNullByDefault
 final class LZ4FrameEncoderLifecycleTest {
+    /// Keeps the block allocation across reset but releases owned block and dictionary storage on close.
+    @ParameterizedTest
+    @EnumSource(LZ4BlockSize.class)
+    void releasesBuffersOnClose(LZ4BlockSize blockSize) throws Exception {
+        try (var encoder = LZ4Codec.DEFAULT.withBlockSize(blockSize)
+                .withDictionary(LZ4Dictionary.rawContent(new byte[128])).newEncoder()) {
+            var blockField = encoder.getClass().getDeclaredField("block");
+            var dictionaryField = encoder.getClass().getDeclaredField("dictionaryHistory");
+            blockField.setAccessible(true);
+            dictionaryField.setAccessible(true);
+            byte[] block = (byte[]) blockField.get(encoder);
+            byte[] dictionary = (byte[]) dictionaryField.get(encoder);
+            assertEquals(blockSize.byteSize(), block.length);
+            assertEquals(128, dictionary.length);
+            encoder.reset();
+            assertSame(block, blockField.get(encoder));
+            assertSame(dictionary, dictionaryField.get(encoder));
+            encoder.close();
+            assertEquals(0, ((byte[]) blockField.get(encoder)).length);
+            assertEquals(0, ((byte[]) dictionaryField.get(encoder)).length);
+            encoder.close();
+            assertEquals(0, ((byte[]) blockField.get(encoder)).length);
+            assertThrows(IllegalStateException.class, encoder::reset);
+        }
+    }
+
     /// Verifies declared source sizes reject excess and incomplete input without consuming the failing buffer.
     @Test
     void enforcesDeclaredSourceSize() throws IOException {

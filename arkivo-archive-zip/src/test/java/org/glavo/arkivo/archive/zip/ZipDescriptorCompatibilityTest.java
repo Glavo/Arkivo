@@ -44,11 +44,15 @@ final class ZipDescriptorCompatibilityTest {
     /// The next entry's data, used to detect descriptor over-read.
     private static final byte @Unmodifiable [] FOLLOWING = {7, 0, 3, 1, 9};
 
+    /// Four bytes whose CRC-32 equals the optional data-descriptor signature.
+    private static final byte @Unmodifiable [] SIGNATURE_CRC_CONTENT = {(byte) 0xac, 0x0a, 0x7a, (byte) 0xd5};
+
     /// Combines descriptor widths, signatures, stale header values, short reads, and entry consumption modes.
     private static Stream<Arguments> configurations() {
         return layouts().flatMap(layout -> Stream.of(0, 42, 0x7ffffffe).flatMap(placeholder ->
-                Stream.of(1, 7, 8192).flatMap(chunk -> Stream.of(0, 1, 2).map(consumption ->
-                        Arguments.of(layout[0], layout[1], placeholder, chunk, consumption)))));
+                Stream.of(1, 7, 8192).flatMap(chunk -> Stream.of(0, 1, 2).flatMap(consumption ->
+                        Stream.of(false, true).map(collision ->
+                                Arguments.of(layout[0], layout[1], placeholder, chunk, consumption, collision))))));
     }
 
     /// Supplies each descriptor width with and without the optional signature.
@@ -58,11 +62,12 @@ final class ZipDescriptorCompatibilityTest {
     }
 
     /// Reads complete entries, partially closed entries, and entries skipped without opening a stream.
-    @ParameterizedTest(name = "zip64={0}, signature={1}, placeholder={2}, chunk={3}, consumption={4}")
+    @ParameterizedTest(name = "zip64={0}, signature={1}, placeholder={2}, chunk={3}, consumption={4}, CRC collision={5}")
     @MethodSource("configurations")
-    void readsDescriptors(boolean zip64, boolean signature, int placeholder, int chunk, int consumption)
+    void readsDescriptors(boolean zip64, boolean signature, int placeholder, int chunk, int consumption, boolean collision)
             throws IOException {
-        Fixture fixture = fixture(zip64, signature, placeholder);
+        byte[] content = collision ? SIGNATURE_CRC_CONTENT : CONTENT;
+        Fixture fixture = fixture(zip64, signature, placeholder, content);
         try (var reader = ZipArkivoStreamingReader.open(new FragmentedInput(fixture.archive(), chunk))) {
             assertTrue(reader.next());
             var snapshot = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -73,10 +78,10 @@ final class ZipDescriptorCompatibilityTest {
             if (consumption != 2) {
                 try (var input = reader.openInputStream()) {
                     if (consumption == 0) {
-                        assertArrayEquals(CONTENT, input.readAllBytes());
+                        assertArrayEquals(content, input.readAllBytes());
                         assertEquals(-1, input.read());
                     } else {
-                        assertArrayEquals(Arrays.copyOf(CONTENT, 3), input.readNBytes(3));
+                        assertArrayEquals(Arrays.copyOf(content, 3), input.readNBytes(3));
                     }
                 }
             }
@@ -92,17 +97,33 @@ final class ZipDescriptorCompatibilityTest {
         }
         try (var fileSystem = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(fixture.archive()))) {
             assertArrayEquals(FOLLOWING, Files.readAllBytes(fileSystem.getPath("/following")));
-            assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("/payload")));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/payload")));
         }
         // JDK streaming ZIP64 selection depends on actual sizes, so use it as the ZIP32 reference only.
-        if (!zip64) {
+        // Its reader also treats a signature-valued CRC as a marker in unsigned descriptors.
+        if (!zip64 && (!collision || signature)) {
             try (var input = new ZipInputStream(new FragmentedInput(fixture.archive(), chunk))) {
                 assertEquals("payload", input.getNextEntry().getName());
-                assertArrayEquals(CONTENT, input.readAllBytes());
+                assertArrayEquals(content, input.readAllBytes());
                 assertEquals("following", input.getNextEntry().getName());
                 assertArrayEquals(FOLLOWING, input.readAllBytes());
                 assertNull(input.getNextEntry());
             }
+        }
+    }
+
+    /// Accepts a complete collision descriptor at EOF without requiring lookahead bytes from another ZIP record.
+    @ParameterizedTest
+    @MethodSource("layouts")
+    void readsSignatureCrcAtDescriptorEof(boolean[] layout) throws IOException {
+        Fixture fixture = fixture(layout[0], layout[1], 0, SIGNATURE_CRC_CONTENT);
+        int end = fixture.descriptorOffset() + (layout[0] ? 20 : 12) + (layout[1] ? 4 : 0);
+        try (var reader = ZipArkivoStreamingReader.open(new FragmentedInput(Arrays.copyOf(fixture.archive(), end), 1))) {
+            assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(SIGNATURE_CRC_CONTENT, input.readAllBytes());
+            }
+            assertFalse(reader.next());
         }
     }
 
@@ -170,12 +191,17 @@ final class ZipDescriptorCompatibilityTest {
 
     /// Builds two JDK-produced entries and replaces only the first local header and descriptor layout.
     private static Fixture fixture(boolean zip64, boolean signature, int placeholder) throws IOException {
+        return fixture(zip64, signature, placeholder, CONTENT);
+    }
+
+    /// Builds independently compressed entries with selectable content and descriptor representation.
+    private static Fixture fixture(boolean zip64, boolean signature, int placeholder, byte[] content) throws IOException {
         var output = new ByteArrayOutputStream();
         try (var zip = new ZipOutputStream(output)) {
             ZipEntry payload = new ZipEntry("payload");
             payload.setTimeLocal(LocalDateTime.of(2000, 1, 1, 0, 0));
             zip.putNextEntry(payload);
-            zip.write(CONTENT);
+            zip.write(content);
             zip.closeEntry();
             ZipEntry following = new ZipEntry("following");
             following.setTimeLocal(LocalDateTime.of(2000, 1, 1, 0, 0));
@@ -217,10 +243,10 @@ final class ZipDescriptorCompatibilityTest {
                 ByteArrayAccess.readIntLittleEndian(original, descriptor + 4));
         if (zip64) {
             ByteArrayAccess.writeLongLittleEndian(fields, fieldOffset + 4, compressedSize);
-            ByteArrayAccess.writeLongLittleEndian(fields, fieldOffset + 12, CONTENT.length);
+            ByteArrayAccess.writeLongLittleEndian(fields, fieldOffset + 12, content.length);
         } else {
             ByteArrayAccess.writeIntLittleEndian(fields, fieldOffset + 4, compressedSize);
-            ByteArrayAccess.writeIntLittleEndian(fields, fieldOffset + 8, CONTENT.length);
+            ByteArrayAccess.writeIntLittleEndian(fields, fieldOffset + 8, content.length);
         }
         rebuilt.writeBytes(fields);
         rebuilt.write(original, descriptor + 16, original.length - descriptor - 16);

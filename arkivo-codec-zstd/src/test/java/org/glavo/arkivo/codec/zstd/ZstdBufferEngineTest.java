@@ -27,6 +27,9 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,6 +38,59 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public final class ZstdBufferEngineTest {
     /// Shared Zstandard codec under test.
     private static final ZstdCodec CODEC = new ZstdCodec();
+
+    /// Releases the frame engine and its parsed dictionary configuration when the buffer encoder closes.
+    @Test
+    void releasesEncoderWorkspaceOnClose() throws Exception {
+        ZstdDictionary dictionary = ZstdDictionary.rawContent(new byte[1024]);
+        ZstdCodec codec = ZstdCodec.builder().dictionary(dictionary)
+                .longDistanceMatching(true).longDistanceHashLog(20).build();
+        try (var encoder = codec.newEncoder()) {
+            for (String name : new String[]{"encoder", "initialParameters", "defaultFrameParameters", "parameters"}) {
+                var field = encoder.getClass().getDeclaredField(name);
+                field.setAccessible(true);
+                assertNotNull(field.get(encoder));
+            }
+            encoder.close();
+            encoder.close();
+            for (String name : new String[]{"encoder", "initialParameters", "defaultFrameParameters", "parameters"}) {
+                var field = encoder.getClass().getDeclaredField(name);
+                field.setAccessible(true);
+                assertNull(field.get(encoder), name);
+            }
+            assertThrows(IllegalStateException.class, encoder::reset);
+        }
+        assertArrayEquals(new byte[1024], dictionary.bytes());
+        try (var encoder = codec.newEncoder()) {
+            assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(128)));
+        }
+    }
+
+    /// Drops the decoder's parsed dictionary copy without changing the reusable dictionary configuration.
+    @Test
+    void releasesDecoderDictionaryOnClose() throws Exception {
+        ZstdDictionary dictionary = ZstdDictionary.rawContent(new byte[1024]);
+        ZstdCodec codec = CODEC.withDictionary(dictionary);
+        try (var decoder = codec.newDecoder()) {
+            var field = decoder.getClass().getDeclaredField("dictionary");
+            field.setAccessible(true);
+            Object context = java.util.Objects.requireNonNull(field.get(decoder));
+            var content = context.getClass().getDeclaredField("content");
+            content.setAccessible(true);
+            assertEquals(1024, ((byte[]) content.get(context)).length);
+            decoder.close();
+            decoder.close();
+            Object released = java.util.Objects.requireNonNull(field.get(decoder));
+            assertNotSame(context, released);
+            assertEquals(0, ((byte[]) content.get(released)).length);
+            assertThrows(IllegalStateException.class, decoder::reset);
+        }
+        assertArrayEquals(new byte[1024], dictionary.bytes());
+        ByteBuffer encoded = codec.compress(ByteBuffer.wrap(new byte[]{42}));
+        ByteBuffer decoded = ByteBuffer.allocate(1);
+        codec.decompress(encoded, decoded);
+        assertEquals((byte) 42, decoded.get(0));
+    }
 
     /// Checks decoded compressed-block sizes against the frame window, including the exact boundary.
     @ParameterizedTest

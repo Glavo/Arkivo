@@ -160,10 +160,45 @@ final class ZipStreamingEntryLifecycleTest {
                      new PushbackInputStream(source, 32), decryptor, false)) {
             byte[] actual = new byte[expected.length];
             int count = body.read(actual);
-            assertEquals(32, count);
+            assertTrue(count > 0 && count <= 32, "Descriptor lookahead may withhold uncommitted ciphertext");
             assertThrows(IllegalStateException.class, body::read);
             assertEquals(actual.length - count, body.readNBytes(actual, count, actual.length - count));
             assertArrayEquals(expected, actual);
+            assertEquals(-1, body.read());
+        }
+    }
+
+    /// Rejects a size-matching marker inside ciphertext without committing its tentative plaintext to the live keys.
+    @Test
+    void ignoresEncryptedDescriptorSizeCandidate() throws IOException {
+        byte[] password = {'p'};
+        var header = new ByteArrayOutputStream();
+        try (var ignored = ZipTraditionalCrypto.openEncryptingStream(header, password, 0)) {
+            // Establish identical initial key state for the reference and tested decryptors.
+        }
+        byte[] encrypted = new byte[100];
+        ByteBuffer.wrap(encrypted).order(ByteOrder.LITTLE_ENDIAN).position(32)
+                .putInt(0x08074b50).putInt(0).putInt(ZipTraditionalCrypto.HEADER_SIZE + 32).putInt(32);
+        var reference = ZipTraditionalCrypto.openDecryptor(new ByteArrayInputStream(header.toByteArray()), password, 0);
+        byte[] expected = new byte[encrypted.length];
+        for (int index = 0; index < encrypted.length; index++) {
+            expected[index] = (byte) reference.decrypt(Byte.toUnsignedInt(encrypted[index]));
+        }
+        CRC32 prefix = new CRC32();
+        prefix.update(expected, 0, 32);
+        ByteBuffer.wrap(encrypted).order(ByteOrder.LITTLE_ENDIAN).putInt(36, (int) prefix.getValue() ^ 1);
+        reference = ZipTraditionalCrypto.openDecryptor(new ByteArrayInputStream(header.toByteArray()), password, 0);
+        for (int index = 0; index < encrypted.length; index++) {
+            expected[index] = (byte) reference.decrypt(Byte.toUnsignedInt(encrypted[index]));
+        }
+        byte[] input = ByteBuffer.allocate(encrypted.length + 16).order(ByteOrder.LITTLE_ENDIAN)
+                .put(encrypted).putInt(0x08074b50).putInt((int) crc32(expected))
+                .putInt(ZipTraditionalCrypto.HEADER_SIZE + encrypted.length).putInt(expected.length).array();
+        var decryptor = ZipTraditionalCrypto.openDecryptor(new ByteArrayInputStream(header.toByteArray()), password, 0);
+        try (var reader = newReader();
+             var body = reader.new EncryptedStoredDataDescriptorInputStream(
+                     new PushbackInputStream(new ByteArrayInputStream(input), 32), decryptor, false)) {
+            assertArrayEquals(expected, body.readAllBytes());
             assertEquals(-1, body.read());
         }
     }

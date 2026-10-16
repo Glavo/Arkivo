@@ -95,7 +95,7 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     public TarArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return TarArkivoFileSystemImpl.open(this, path, path.toUri().normalize(), options, () -> {
+        return TarArkivoFileSystemImpl.open(this, path, path.toUri(), options, () -> {
         });
     }
 

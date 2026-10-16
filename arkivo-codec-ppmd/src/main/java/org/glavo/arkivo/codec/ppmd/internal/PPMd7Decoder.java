@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.ppmd.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -30,8 +31,8 @@ public final class PPMd7Decoder implements CompressionDecoder {
     /// Incremental arithmetic range decoder.
     private final PPMd7BufferRangeDecoder rangeDecoder = new PPMd7BufferRangeDecoder();
 
-    /// Variant H context model with resumable symbol decoding.
-    private final PPMd7Model model = new PPMd7Model(rangeDecoder);
+    /// Variant H context model with resumable symbol decoding, or null after closure.
+    private @Nullable PPMd7Model model;
 
     /// Number of decoded bytes still required by the externally declared size.
     private long remainingOutput;
@@ -49,7 +50,9 @@ public final class PPMd7Decoder implements CompressionDecoder {
         this.maximumOrder = maximumOrder;
         this.memorySize = memorySize;
         this.decodedSize = decodedSize;
-        model.initialize(true, maximumOrder, memorySize);
+        PPMd7Model createdModel = new PPMd7Model(rangeDecoder);
+        createdModel.initialize(true, maximumOrder, memorySize);
+        model = createdModel;
         remainingOutput = decodedSize;
     }
 
@@ -69,7 +72,7 @@ public final class PPMd7Decoder implements CompressionDecoder {
     private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        requireOpen();
+        PPMd7Model currentModel = requireModel();
         if (state == State.FINISHED) {
             return CodecOutcome.FINISHED;
         }
@@ -89,7 +92,7 @@ public final class PPMd7Decoder implements CompressionDecoder {
             while (target.hasRemaining()) {
                 int symbol;
                 try {
-                    symbol = model.readByte();
+                    symbol = currentModel.readByte();
                 } catch (PPMdInputUnavailableException exception) {
                     return CodecOutcome.NEEDS_INPUT;
                 }
@@ -109,11 +112,11 @@ public final class PPMd7Decoder implements CompressionDecoder {
     /// Abandons the current stream and restores its configured model and exact-size boundary.
     @Override
     public void reset() {
-        requireOpen();
+        PPMd7Model currentModel = requireModel();
         rangeDecoder.reset();
-        model.reset();
+        currentModel.reset();
         try {
-            model.initialize(true, maximumOrder, memorySize);
+            currentModel.initialize(true, maximumOrder, memorySize);
         } catch (IOException exception) {
             throw new IllegalStateException("Unable to restore the validated PPMd model configuration", exception);
         }
@@ -125,16 +128,18 @@ public final class PPMd7Decoder implements CompressionDecoder {
     @Override
     public void close() {
         rangeDecoder.reset();
-        model.reset();
+        model = null;
         remainingOutput = 0L;
         state = State.CLOSED;
     }
 
-    /// Requires this decoder to remain open.
-    private void requireOpen() {
-        if (state == State.CLOSED) {
+    /// Returns the active model, rejecting operations after closure.
+    private PPMd7Model requireModel() {
+        @Nullable PPMd7Model current = model;
+        if (current == null) {
             throw new IllegalStateException("PPMd decoder is closed");
         }
+        return current;
     }
 
     /// Enumerates the exactly sized PPMd decoder lifecycle states.

@@ -5,7 +5,10 @@ package org.glavo.arkivo.codec.ppmd.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -15,6 +18,9 @@ import java.util.Arrays;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -26,6 +32,26 @@ final class PPMd7EngineLifecycleTest {
 
     /// Model arena size used by direct engine instances.
     private static final long MEMORY_SIZE = 1L << 20;
+
+    /// Reuses the model on reset but drops its arena on close, independently of garbage-collection scheduling.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void releasesModelOnClose(boolean encoding) throws Exception {
+        try (AutoCloseable engine = encoding ? new PPMd7Encoder(MAXIMUM_ORDER, MEMORY_SIZE)
+                : new PPMd7Decoder(MAXIMUM_ORDER, MEMORY_SIZE, 0)) {
+            var field = engine.getClass().getDeclaredField("model");
+            field.setAccessible(true);
+            @Nullable Object model = field.get(engine);
+            assertNotNull(model);
+            if (engine instanceof PPMd7Encoder encoder) encoder.reset();
+            else ((PPMd7Decoder) engine).reset();
+            assertSame(model, field.get(engine));
+            engine.close();
+            assertNull(field.get(engine));
+            engine.close();
+            assertNull(field.get(engine));
+        }
+    }
 
     /// Verifies flush and finish remain mutually exclusive while their pending bytes are drained.
     @Test

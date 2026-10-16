@@ -14,6 +14,7 @@ import org.glavo.arkivo.codec.lz4.LZ4Dictionary;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -32,8 +33,8 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     /// Maximum match distance retained between linked blocks.
     private static final int MAXIMUM_HISTORY_SIZE = 65_535;
 
-    /// Empty prefix history.
-    private static final byte[] EMPTY_HISTORY = new byte[0];
+    /// Empty storage used before history is available and after owned buffers are released.
+    private static final byte @Unmodifiable [] EMPTY_BYTES = new byte[0];
 
     /// Configured standard maximum decoded block size.
     private final LZ4BlockSize blockSize;
@@ -47,14 +48,14 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     /// Whether every frame carries a decoded-content xxHash-32 checksum.
     private final boolean contentChecksum;
 
-    /// Owned effective external dictionary history.
-    private final byte[] dictionaryHistory;
+    /// Owned effective external dictionary history, or empty after closure.
+    private byte @Unmodifiable [] dictionaryHistory;
 
     /// Unsigned dictionary identifier, or the no-identifier sentinel.
     private final long dictionaryId;
 
-    /// Owned decoded bytes collected for the current block.
-    private final byte[] block;
+    /// Owned decoded bytes collected for the current block, or empty after closure.
+    private byte[] block;
 
     /// Exact source size restored for the initial frame by reset, or the unknown-size sentinel.
     private final long initialSourceSize;
@@ -106,7 +107,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         this.independentBlocks = independentBlocks;
         this.blockChecksum = blockChecksum;
         this.contentChecksum = contentChecksum;
-        dictionaryHistory = dictionary == null ? EMPTY_HISTORY : dictionary.bytes();
+        dictionaryHistory = dictionary == null ? EMPTY_BYTES : dictionary.bytes();
         dictionaryId = dictionary == null ? LZ4Dictionary.NO_DICTIONARY_ID : dictionary.dictionaryId();
         block = new byte[blockSize.byteSize()];
         if (sourceSize < CompressionCodec.UNKNOWN_SIZE) {
@@ -262,6 +263,8 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     public void close() {
         output = EMPTY_OUTPUT;
         clearFrameState();
+        block = EMPTY_BYTES;
+        dictionaryHistory = EMPTY_BYTES;
         state = State.CLOSED;
     }
 
@@ -423,7 +426,7 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         blockLength = 0;
         frameStarted = false;
         trailerQueued = false;
-        history = EMPTY_HISTORY;
+        history = EMPTY_BYTES;
         contentHash.reset();
         frameSourceSize = CompressionCodec.UNKNOWN_SIZE;
         frameInputSize = 0L;

@@ -275,6 +275,7 @@ public final class ZstdDecoder
     public void close() {
         if (state != State.CLOSED) {
             clearFrameState();
+            dictionary = ZstdDictionaryContext.NONE;
             state = State.CLOSED;
         }
     }

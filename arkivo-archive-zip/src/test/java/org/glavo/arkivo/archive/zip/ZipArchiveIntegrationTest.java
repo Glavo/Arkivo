@@ -799,11 +799,17 @@ public final class ZipArchiveIntegrationTest {
     }
 
     /// Verifies that raw encrypted WinZip AES stored data cannot end an entry by matching descriptor sizes alone.
-    @Test
-    public void streamingReaderStoredWinZipAesDescriptorChecksCiphertextAuthenticationCandidate() throws IOException {
+    @ParameterizedTest
+    @CsvSource({"true,true", "true,false", "false,true", "false,false"})
+    public void streamingReaderStoredWinZipAesDescriptorChecksCiphertextAuthenticationCandidate(
+            boolean candidateSignature, boolean descriptorSignature) throws IOException {
         byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
-        byte[] content = contentWithAesCiphertextDescriptorSizeCandidate(password);
+        byte[] content = contentWithAesCiphertextDescriptorSizeCandidate(password, candidateSignature);
         byte[] archive = winZipAesStoredDataDescriptorArchive(password, content);
+        if (!descriptorSignature) {
+            System.arraycopy(archive, archive.length - 12, archive, archive.length - 16, 12);
+            archive = Arrays.copyOf(archive, archive.length - 4);
+        }
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
@@ -5268,13 +5274,14 @@ public final class ZipArchiveIntegrationTest {
     }
 
     /// Returns content whose deterministic test AES ciphertext contains a size-matching descriptor candidate.
-    private static byte[] contentWithAesCiphertextDescriptorSizeCandidate(byte[] password) throws IOException {
+    private static byte[] contentWithAesCiphertextDescriptorSizeCandidate(byte[] password, boolean signature) throws IOException {
         byte[] content = "AES stored raw descriptor size candidate payload".getBytes(StandardCharsets.UTF_8);
         ByteBuffer desiredCiphertext = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
-        desiredCiphertext.putInt(0x08074b50);
+        if (signature) desiredCiphertext.putInt(0x08074b50);
         desiredCiphertext.putInt(0);
         desiredCiphertext.putInt(28);
         desiredCiphertext.putInt(0);
+        if (!signature) desiredCiphertext.putInt(0x04034b50);
         return contentWithAesCiphertext(password, content, 10, desiredCiphertext.array());
     }
 

@@ -24,8 +24,8 @@ public final class LZMA2Decoder implements CompressionDecoder {
     /// The maximum number of bytes following a chunk control byte before its body.
     private static final int MAXIMUM_HEADER_SIZE = 5;
 
-    /// The shared LZMA dictionary and probability state.
-    private final LZMADecoderEngine decoder;
+    /// The shared LZMA dictionary and probability state, or null after closure.
+    private @Nullable LZMADecoderEngine decoder;
 
     /// Incrementally collected bytes following the active control byte.
     private final byte[] header = new byte[MAXIMUM_HEADER_SIZE];
@@ -83,7 +83,7 @@ public final class LZMA2Decoder implements CompressionDecoder {
     private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        requireOpen();
+        LZMADecoderEngine decoder = requireDecoder();
         if (phase == Phase.FINISHED) {
             return CodecOutcome.FINISHED;
         }
@@ -152,8 +152,7 @@ public final class LZMA2Decoder implements CompressionDecoder {
     /// Abandons the current stream and restores its initial empty state.
     @Override
     public void reset() {
-        requireOpen();
-        decoder.resetDictionary();
+        requireDecoder().resetDictionary();
         phase = Phase.CONTROL;
         control = 0;
         headerSize = 0;
@@ -170,6 +169,7 @@ public final class LZMA2Decoder implements CompressionDecoder {
     @Override
     public void close() {
         phase = Phase.CLOSED;
+        decoder = null;
         compressedData = null;
         compressedChunk = null;
         chunkRemaining = 0;
@@ -211,6 +211,7 @@ public final class LZMA2Decoder implements CompressionDecoder {
 
     /// Applies the completed header and starts body collection or direct stored-byte decoding.
     private void beginChunk() throws IOException {
+        LZMADecoderEngine decoder = requireDecoder();
         if (control >= 0xe0 || control == 0x01) {
             decoder.resetDictionary();
             propertiesRequired = true;
@@ -260,12 +261,13 @@ public final class LZMA2Decoder implements CompressionDecoder {
         compressedChunk = input;
         compressedData = null;
         compressedOffset = 0;
-        decoder.startChunk(input, chunkRemaining, false);
+        requireDecoder().startChunk(input, chunkRemaining, false);
         phase = Phase.COMPRESSED_OUTPUT;
     }
 
     /// Verifies the canonical range-coder termination of a completed compressed chunk.
     private void finishCompressedChunk() throws IOException {
+        LZMADecoderEngine decoder = requireDecoder();
         ChunkInput input = Objects.requireNonNull(compressedChunk, "compressedChunk");
         if (decoder.readByte() >= 0 || !decoder.chunkEnded()) {
             throw new IOException("LZMA2 chunk exceeds its declared output size");
@@ -290,11 +292,13 @@ public final class LZMA2Decoder implements CompressionDecoder {
         return CodecOutcome.NEEDS_INPUT;
     }
 
-    /// Requires this decoder to remain open.
-    private void requireOpen() {
-        if (phase == Phase.CLOSED) {
+    /// Returns the dictionary engine, rejecting operations after closure.
+    private LZMADecoderEngine requireDecoder() {
+        @Nullable LZMADecoderEngine current = decoder;
+        if (current == null) {
             throw new IllegalStateException("LZMA2 decoder is closed");
         }
+        return current;
     }
 
     /// Supplies one completely staged compressed chunk to the range decoder.

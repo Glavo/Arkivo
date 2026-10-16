@@ -572,9 +572,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Returns the archive URI, or `null` when backed by an explicit volume source or output target.
     ///
-    /// @return the normalized URI of the absolute archive path, or `null` when no path backs this file system
+    /// @return the URI of the absolute archive path, or `null` when no path backs this file system
     public @Nullable URI archiveUri() {
-        return archivePath != null ? archivePath.toUri().normalize() : null;
+        return archivePath != null ? archivePath.toUri() : null;
     }
 
     /// Returns the file store exposed by this file system.
@@ -1154,8 +1154,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Moves one entry and any descendants inside an update-mode archive.
     ///
     /// Moving a directory remaps every descendant in the pending archive index. `StandardCopyOption.REPLACE_EXISTING`
-    /// permits replacement of a compatible target; `StandardCopyOption.ATOMIC_MOVE` is accepted because publication is
-    /// already deferred to the archive transaction.
+    /// replaces the target entry unless it is a nonempty directory. `StandardCopyOption.ATOMIC_MOVE` is accepted
+    /// because publication is already deferred to the archive transaction.
     ///
     /// @param source the existing entry or directory subtree to move
     /// @param target the destination archive path
@@ -1214,13 +1214,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (targetExists) {
             if (!replaceExisting) {
                 throw new FileAlreadyExistsException(target.toString());
-            }
-            if (sourceDirectory != targetDirectory) {
-                throw new java.nio.file.FileSystemException(
-                        source.toString(),
-                        target.toString(),
-                        "Source and target entry types differ"
-                );
             }
             if (targetDirectory && !children.getOrDefault(targetPath, List.of()).isEmpty()) {
                 throw new DirectoryNotEmptyException(target.toString());
@@ -3035,7 +3028,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         for (AccessMode mode : modes) {
             Objects.requireNonNull(mode, "mode");
             if (mode == AccessMode.READ || mode == AccessMode.EXECUTE) {
-                throw new UnsupportedOperationException("Forward-only 7z write file systems do not expose reads");
+                throw new AccessDeniedException(path.toString());
             }
         }
     }

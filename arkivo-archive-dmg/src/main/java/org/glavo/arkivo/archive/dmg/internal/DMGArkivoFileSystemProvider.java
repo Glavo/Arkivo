@@ -55,7 +55,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     /// The shared provider used by public convenience factories.
     private static final DMGArkivoFileSystemProvider INSTANCE = new DMGArkivoFileSystemProvider();
 
-    /// URI-opened file systems registered by normalized backing URI.
+    /// URI-opened file systems registered by the source provider's backing URI spelling.
     private final ArkivoFileSystemProviderSupport.Registry<DMGArkivoFileSystem> fileSystems =
             new ArkivoFileSystemProviderSupport.Registry<>();
 
@@ -104,7 +104,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     /// @return a new unregistered read-only file system
     /// @throws IOException if the image or selected HFS Plus volume cannot be opened or parsed
     public DMGArkivoFileSystem openPath(Path path, DMGArchiveOptions options) throws IOException {
-        return openPath(path, path.toUri().normalize(), options, () -> {
+        return openPath(path, path.toUri(), options, () -> {
         });
     }
 

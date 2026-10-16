@@ -436,11 +436,11 @@ public final class SevenZipArchiveIntegrationTest {
                 fileSystem.provider().checkAccess(file);
                 fileSystem.provider().checkAccess(file, AccessMode.WRITE);
                 assertThrows(
-                        UnsupportedOperationException.class,
+                        AccessDeniedException.class,
                         () -> fileSystem.provider().checkAccess(file, AccessMode.READ)
                 );
                 assertThrows(
-                        UnsupportedOperationException.class,
+                        AccessDeniedException.class,
                         () -> fileSystem.provider().checkAccess(file, AccessMode.EXECUTE)
                 );
                 assertThrows(
@@ -612,11 +612,10 @@ public final class SevenZipArchiveIntegrationTest {
                         () -> Files.move(file, fileSystem.getPath("/missing-parent/file.txt"))
                 );
                 assertThrows(FileAlreadyExistsException.class, () -> Files.move(file, target));
-                assertThrows(
-                        FileSystemException.class,
-                        () -> Files.move(file, emptyDirectory, StandardCopyOption.REPLACE_EXISTING)
-                );
-                Files.delete(emptyDirectory);
+                Files.move(file, emptyDirectory, StandardCopyOption.REPLACE_EXISTING);
+                assertFalse(Files.exists(file));
+                assertEquals("file", Files.readString(emptyDirectory));
+                Files.move(emptyDirectory, file);
                 assertThrows(
                         DirectoryNotEmptyException.class,
                         () -> Files.move(sourceDirectory, occupiedDirectory, StandardCopyOption.REPLACE_EXISTING)

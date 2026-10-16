@@ -868,9 +868,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             if (!replaceExisting) {
                 throw new FileAlreadyExistsException(target.toString());
             }
-            if (sourceNode.directory() != targetNode.directory()) {
-                throw new FileSystemException(source.toString(), target.toString(), "Source and target member types differ");
-            }
             if (targetNode.directory() && !targetNode.children().isEmpty()) {
                 throw new DirectoryNotEmptyException(target.toString());
             }
@@ -1005,6 +1002,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
         if (updateMode) {
             requireNode(path);
+            for (AccessMode mode : modes) {
+                Objects.requireNonNull(mode, "mode");
+                if (mode == AccessMode.EXECUTE) {
+                    throw new AccessDeniedException(path.toString());
+                }
+            }
             return;
         }
         if (!readOnly) {
@@ -2082,8 +2085,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     private void checkWritableAccess(Path path, AccessMode... modes) throws IOException {
         requireWritableKnownPath(path);
         for (AccessMode mode : modes) {
+            Objects.requireNonNull(mode, "mode");
             if (mode == AccessMode.EXECUTE || mode == AccessMode.READ) {
-                throw new UnsupportedOperationException("Forward-only AR write file systems do not expose reads");
+                throw new AccessDeniedException(path.toString());
             }
         }
     }

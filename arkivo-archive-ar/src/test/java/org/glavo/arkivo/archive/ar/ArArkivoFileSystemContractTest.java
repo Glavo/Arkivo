@@ -518,10 +518,9 @@ final class ArArkivoFileSystemContractTest {
                     java.nio.file.DirectoryNotEmptyException.class,
                     () -> Files.move(sourceDirectory2, nonemptyTarget, StandardCopyOption.REPLACE_EXISTING)
             );
-            assertThrows(
-                    FileSystemException.class,
-                    () -> Files.move(sourceDirectory2, regularParent, StandardCopyOption.REPLACE_EXISTING)
-            );
+            Files.move(sourceDirectory2, regularParent, StandardCopyOption.REPLACE_EXISTING);
+            assertFalse(Files.exists(sourceDirectory2));
+            assertTrue(Files.isDirectory(regularParent));
             assertThrows(FileSystemException.class, () -> Files.move(root, fileSystem.getPath("/moved-root")));
             assertThrows(FileSystemException.class, () -> Files.move(movedFile, root));
         }
@@ -531,7 +530,8 @@ final class ArArkivoFileSystemContractTest {
                     "replacement",
                     Files.readString(fileSystem.getPath("/target/value.txt"), StandardCharsets.UTF_8)
             );
-            assertTrue(Files.isDirectory(fileSystem.getPath("/source-directory")));
+            assertFalse(Files.exists(fileSystem.getPath("/source-directory")));
+            assertTrue(Files.isDirectory(fileSystem.getPath("/regular-parent")));
             assertTrue(Files.isDirectory(fileSystem.getPath("/nonempty-target")));
         }
     }
@@ -798,7 +798,7 @@ final class ArArkivoFileSystemContractTest {
 
             fileSystem.provider().checkAccess(root, java.nio.file.AccessMode.WRITE);
             assertThrows(
-                    UnsupportedOperationException.class,
+                    java.nio.file.AccessDeniedException.class,
                     () -> fileSystem.provider().checkAccess(root, java.nio.file.AccessMode.READ)
             );
             assertThrows(

@@ -29,6 +29,27 @@ public final class RarArkivoFileSystemProviderTest {
     @TempDir
     private Path temporaryDirectory;
 
+    /// Preserves source dot components and registers equivalent percent-escaped spellings under one key.
+    @Test
+    public void preservesSourceUriComponents() throws IOException {
+        Files.createDirectory(temporaryDirectory.resolve("sub"));
+        Path source = temporaryDirectory.resolve("sub/../source.rar");
+        Files.write(source, RarTestArchiveFixtures.storedArchive("entry", new byte[]{1, 2, 3}));
+        RarArkivoFileSystemProvider provider = new RarArkivoFileSystemProvider();
+        URI literal = URI.create(provider.getScheme() + ':' + source.toUri().toASCIIString() + "!/entry");
+        URI encoded = URI.create(literal.toASCIIString().replace("/../", "/%2e%2E/"));
+        try (var direct = provider.newFileSystem(source, Map.of())) {
+            assertEquals(literal, direct.getPath("/entry").toUri());
+        }
+        try (var registered = provider.newFileSystem(encoded, Map.of())) {
+            Path entry = registered.getPath("/entry");
+            assertEquals(entry, provider.getPath(entry.toUri()));
+            assertEquals(registered, provider.getFileSystem(literal));
+            assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(provider.getPath(entry.toUri())));
+            assertThrows(FileSystemAlreadyExistsException.class, () -> provider.newFileSystem(literal, Map.of()));
+        }
+    }
+
     /// Verifies URI registration, entry resolution, duplicate detection, and deregistration.
     @Test
     public void managesUriBackedFileSystemLifecycle() throws IOException {

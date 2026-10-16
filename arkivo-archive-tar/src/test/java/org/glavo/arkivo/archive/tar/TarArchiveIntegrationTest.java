@@ -628,11 +628,11 @@ public final class TarArchiveIntegrationTest {
                 fileSystem.provider().checkAccess(file);
                 fileSystem.provider().checkAccess(file, AccessMode.WRITE);
                 assertThrows(
-                        UnsupportedOperationException.class,
+                        java.nio.file.AccessDeniedException.class,
                         () -> fileSystem.provider().checkAccess(file, AccessMode.READ)
                 );
                 assertThrows(
-                        UnsupportedOperationException.class,
+                        java.nio.file.AccessDeniedException.class,
                         () -> fileSystem.provider().checkAccess(file, AccessMode.EXECUTE)
                 );
                 assertThrows(

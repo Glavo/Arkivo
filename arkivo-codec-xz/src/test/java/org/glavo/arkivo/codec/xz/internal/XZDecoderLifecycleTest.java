@@ -17,10 +17,14 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,6 +39,29 @@ final class XZDecoderLifecycleTest {
 
     /// LZMA2 dictionary property used by synthetic Block Headers.
     private static final int DICTIONARY_PROPERTY = XZSupport.lzma2DictionaryProperty(1 << 20);
+
+    /// Retains the Index record workspace across reset but drops its capacity after closure.
+    @Test
+    void releasesIndexRecordsOnClose() throws Exception {
+        byte[] expected = patternedBytes(128);
+        byte[] encoded = encode(XZCodec.DEFAULT, expected);
+        try (XZDecoder decoder = newDecoder()) {
+            assertArrayEquals(expected, decode(decoder, encoded));
+            var field = XZDecoder.class.getDeclaredField("records");
+            field.setAccessible(true);
+            List<?> records = (List<?>) field.get(decoder);
+            assertFalse(records.isEmpty());
+            decoder.reset();
+            assertSame(records, field.get(decoder));
+            assertArrayEquals(expected, decode(decoder, encoded));
+            decoder.close();
+            assertNotSame(records, field.get(decoder));
+            assertTrue(((List<?>) field.get(decoder)).isEmpty());
+            decoder.close();
+            assertTrue(((List<?>) field.get(decoder)).isEmpty());
+            assertThrows(IllegalStateException.class, decoder::reset);
+        }
+    }
 
     /// Verifies output backpressure, terminal idempotence, Stream Padding, reset, and closed-state behavior.
     @Test

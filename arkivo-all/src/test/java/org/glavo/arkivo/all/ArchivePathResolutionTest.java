@@ -24,6 +24,8 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemException;
@@ -66,6 +68,154 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies component traversal and symbolic-link policies in read-only and update archive sessions.
 @NotNullByDefault
 final class ArchivePathResolutionTest {
+    /// Checks NIO access predicates in forward-only, read-only, and update sessions.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "7z", "zip"})
+    void checksAccessAcrossSessionModes(String format, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("access." + format);
+        try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+            Files.createDirectory(fs.getPath("/directory"));
+            Files.writeString(fs.getPath("/file"), "content");
+            assertAccessModes(fs, false, true);
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+            assertAccessModes(fs, true, false);
+        }
+        try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+            assertAccessModes(fs, true, true);
+        }
+    }
+
+    /// Distinguishes missing paths from denied modes and tests combined requests as well as the Files predicates.
+    private static void assertAccessModes(ArkivoFileSystem fs, boolean readable, boolean writable) throws IOException {
+        for (String name : new String[]{"/", "/file", "/directory", "/missing"}) {
+            Path path = fs.getPath(name);
+            boolean exists = !name.equals("/missing");
+            assertEquals(exists && readable, Files.isReadable(path), name);
+            assertEquals(exists && writable, Files.isWritable(path), name);
+            assertFalse(Files.isExecutable(path), name);
+            for (int mask = 0; mask < 8; mask++) {
+                var modes = new java.util.ArrayList<AccessMode>();
+                if ((mask & 1) != 0) modes.add(AccessMode.READ);
+                if ((mask & 2) != 0) modes.add(AccessMode.WRITE);
+                if ((mask & 4) != 0) modes.add(AccessMode.EXECUTE);
+                AccessMode[] request = modes.toArray(AccessMode[]::new);
+                if (!exists) {
+                    assertThrows(NoSuchFileException.class, () -> fs.provider().checkAccess(path, request));
+                } else if (((mask & 1) != 0 && !readable) || ((mask & 2) != 0 && !writable) || (mask & 4) != 0) {
+                    assertThrows(AccessDeniedException.class, () -> fs.provider().checkAccess(path, request));
+                } else {
+                    fs.provider().checkAccess(path, request);
+                }
+            }
+        }
+    }
+
+    /// Supplies cross-type replacements with independently stored or newly staged sources and targets.
+    private static Stream<Arguments> moveReplacementCases() {
+        return Stream.of("ar", "tar", "7z", "zip").flatMap(format ->
+                Stream.of("file", "directory", "empty-directory", "implicit-directory", "link")
+                        .flatMap(source -> Stream.of("file", "empty-directory", "link", "directory-link", "broken-link", "nonempty-directory")
+                                .filter(target -> target.equals("nonempty-directory")
+                                        || source.endsWith("directory") != target.endsWith("directory"))
+                                .flatMap(target -> Stream.of(false, true)
+                                        // ZIP and 7z update writes require existing parents.
+                                        .filter(stagedSource -> !stagedSource || !source.equals("implicit-directory"))
+                                        .flatMap(stagedSource -> Stream.of(false, true)
+                                        .map(stagedTarget -> Arguments.of(format, source, target, stagedSource, stagedTarget))))));
+    }
+
+    /// Replaces the target entry itself regardless of type, but never replaces a nonempty directory.
+    @ParameterizedTest
+    @MethodSource("moveReplacementCases")
+    void replacesMoveTargets(String format, String sourceKind, String targetKind, boolean stagedSource, boolean stagedTarget,
+                            @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("replacement." + format);
+        try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+            Files.writeString(fs.getPath("/referent"), "referent");
+            Files.createDirectory(fs.getPath("/referent-directory"));
+            Files.writeString(fs.getPath("/referent-directory/child"), "referent child");
+            if (!stagedSource) {
+                createMoveEntry(fs.getPath("/source"), sourceKind, "source");
+            }
+            if (!stagedTarget) {
+                createMoveEntry(fs.getPath("/target"), targetKind, "target");
+            }
+        }
+        boolean rejected = targetKind.equals("nonempty-directory");
+        try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+            Path source = fs.getPath("/source");
+            Path target = fs.getPath("/target");
+            if (stagedSource) {
+                createMoveEntry(source, sourceKind, "source");
+            }
+            if (stagedTarget) {
+                createMoveEntry(target, targetKind, "target");
+            }
+            assertThrows(FileAlreadyExistsException.class, () -> Files.move(source, target));
+            if (rejected) {
+                assertThrows(DirectoryNotEmptyException.class,
+                        () -> Files.move(source, target, StandardCopyOption.REPLACE_EXISTING));
+            } else {
+                assertEquals(target, Files.move(source, target, StandardCopyOption.REPLACE_EXISTING));
+            }
+            assertMoveResult(fs, sourceKind, rejected);
+        }
+        try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+            assertMoveResult(fs, sourceKind, rejected);
+            Files.writeString(fs.getPath("/unrelated"), "update");
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+            assertMoveResult(fs, sourceKind, rejected);
+        }
+    }
+
+    /// Creates one entry shape without depending on another entry's presence.
+    private static void createMoveEntry(Path path, String kind, String content) throws IOException {
+        switch (kind) {
+            case "file" -> Files.writeString(path, content);
+            case "implicit-directory" -> Files.writeString(path.resolve("child"), content);
+            case "directory", "empty-directory", "nonempty-directory" -> {
+                Files.createDirectory(path);
+                if (!kind.equals("empty-directory")) {
+                    Files.writeString(path.resolve("child"), content);
+                }
+            }
+            case "link", "directory-link", "broken-link" -> Files.createSymbolicLink(path,
+                    path.getFileSystem().getPath(switch (kind) {
+                        case "link" -> "referent";
+                        case "directory-link" -> "referent-directory";
+                        default -> "missing";
+                    }));
+            default -> throw new AssertionError(kind);
+        }
+    }
+
+    /// Checks the moved source shape, untouched link referent, and rejected target subtree.
+    private static void assertMoveResult(ArkivoFileSystem fs, String sourceKind, boolean rejected) throws IOException {
+        assertEquals("referent", Files.readString(fs.getPath("/referent")));
+        assertEquals("referent child", Files.readString(fs.getPath("/referent-directory/child")));
+        Path selected = fs.getPath(rejected ? "/source" : "/target");
+        BasicFileAttributes attributes = Files.readAttributes(selected, BasicFileAttributes.class,
+                LinkOption.NOFOLLOW_LINKS);
+        assertEquals(sourceKind.endsWith("directory"), attributes.isDirectory());
+        assertEquals(sourceKind.equals("link"), attributes.isSymbolicLink());
+        if (sourceKind.equals("link")) {
+            assertEquals(fs.getPath("referent"), Files.readSymbolicLink(selected));
+        } else if (sourceKind.equals("empty-directory")) {
+            try (var children = Files.list(selected)) {
+                assertEquals(0L, children.count());
+            }
+        } else {
+            assertEquals("source", Files.readString(sourceKind.endsWith("directory") ? selected.resolve("child") : selected));
+        }
+        if (rejected) {
+            assertEquals("target", Files.readString(fs.getPath("/target/child")));
+        } else {
+            assertFalse(Files.exists(fs.getPath("/source"), LinkOption.NOFOLLOW_LINKS));
+        }
+    }
+
     /// Resolves publication and discovery paths through parent links before removing parent components.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
@@ -213,6 +363,49 @@ final class ArchivePathResolutionTest {
                             () -> FileSystems.newFileSystem(alias, Map.of()));
                 }
             }
+        }
+    }
+
+    /// Keeps encoded and literal dot components consistent across registration and entry URI round trips.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "7z", "zip"})
+    void preservesSourceUriComponents(String format, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("archive." + format);
+        Files.createDirectory(directory.resolve("sub"));
+        try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+            Files.writeString(fs.getPath("/entry"), "content");
+        }
+        for (String components : List.of("sub/../", "sub/./../")) {
+            Path source = directory.resolve(components + "archive." + format);
+            String literal = source.toUri().toASCIIString();
+            String encoded = literal.replace("/../", "/%2e%2E/").replace("/./", "/%2e/");
+            for (String spelling : List.of(literal, encoded)) {
+                URI opening = URI.create("arkivo+" + format + ':' + spelling + "!/");
+                try (var fs = FileSystems.newFileSystem(opening, Map.of())) {
+                    Path entry = fs.getPath("/entry");
+                    assertEquals("content", Files.readString(Path.of(entry.toUri())));
+                    assertEquals(entry, Path.of(entry.toUri()));
+                    for (String alternate : List.of(literal, encoded)) {
+                        URI alias = URI.create("arkivo+" + format + ':' + alternate + "!/entry");
+                        assertEquals(fs, FileSystems.getFileSystem(alias));
+                        assertThrows(FileSystemAlreadyExistsException.class,
+                                () -> FileSystems.newFileSystem(alias, Map.of()));
+                    }
+                }
+            }
+            for (boolean update : new boolean[]{false, true}) {
+                try (var direct = update ? ArkivoFormats.updateFileSystem(format, source)
+                        : ArkivoFormats.openFileSystem(format, source)) {
+                    assertEquals("arkivo+" + format + ':' + literal + "!/entry",
+                            direct.getPath("/entry").toUri().toASCIIString());
+                }
+            }
+        }
+        Path createdSource = directory.resolve("sub/../created." + format);
+        try (var created = ArkivoFormats.createFileSystem(format, createdSource)) {
+            Files.writeString(created.getPath("/entry"), "created");
+            assertEquals("arkivo+" + format + ':' + createdSource.toUri().toASCIIString() + "!/entry",
+                    created.getPath("/entry").toUri().toASCIIString());
         }
     }
 

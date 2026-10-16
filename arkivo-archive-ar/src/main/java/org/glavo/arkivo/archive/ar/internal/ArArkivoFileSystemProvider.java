@@ -95,7 +95,7 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     public ArArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return ArArkivoFileSystemImpl.open(this, path, path.toUri().normalize(), options, () -> {
+        return ArArkivoFileSystemImpl.open(this, path, path.toUri(), options, () -> {
         });
     }
 

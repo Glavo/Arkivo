@@ -16,6 +16,7 @@ import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -165,11 +166,17 @@ public final class ArkivoEditStorageSupport {
             this.data = new MemoryData(initialCapacity);
         }
 
-        /// Opens a memory-backed channel.
+        /// Opens a memory-backed channel, validating options before changing the retained content.
         @Override
         public synchronized SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
             Objects.requireNonNull(options, "options");
             MemoryData data = requireData();
+            for (OpenOption option : options) {
+                Objects.requireNonNull(option, "option");
+                if (!(option instanceof StandardOpenOption) && option != LinkOption.NOFOLLOW_LINKS) {
+                    throw new UnsupportedOperationException("Unsupported stored-content open option: " + option);
+                }
+            }
             boolean writable = writable(options);
             boolean append = options.contains(StandardOpenOption.APPEND);
             if (append && (options.contains(StandardOpenOption.READ)
@@ -184,7 +191,8 @@ public final class ArkivoEditStorageSupport {
                     data.size = 0;
                 }
             }
-            return new MemoryChannel(data, readable(options), writable, append);
+            return new MemoryChannel(data, readable(options), writable, append,
+                    options.contains(StandardOpenOption.DELETE_ON_CLOSE) ? this : null);
         }
 
         /// Returns the staged content size.
@@ -241,6 +249,9 @@ public final class ArkivoEditStorageSupport {
         /// The shared staged state retained by this channel, or `null` after closure.
         private @Nullable MemoryData content;
 
+        /// The content handle released on closure, or null when deletion was not requested or has completed.
+        private @Nullable MemoryStoredContent deleteOnClose;
+
         /// Whether reads are allowed.
         private final boolean readable;
 
@@ -254,8 +265,10 @@ public final class ArkivoEditStorageSupport {
         private long position;
 
         /// Creates a memory channel.
-        private MemoryChannel(MemoryData content, boolean readable, boolean writable, boolean append) {
+        private MemoryChannel(MemoryData content, boolean readable, boolean writable, boolean append,
+                              @Nullable MemoryStoredContent deleteOnClose) {
             this.content = Objects.requireNonNull(content, "content");
+            this.deleteOnClose = deleteOnClose;
             this.readable = readable;
             this.writable = writable;
             this.append = append;
@@ -372,10 +385,15 @@ public final class ArkivoEditStorageSupport {
             return content != null;
         }
 
-        /// Releases this channel's reference to the shared staged state.
+        /// Releases this channel and any deletion-requested content handle without invalidating other channels.
         @Override
         public void close() {
             content = null;
+            @Nullable MemoryStoredContent owner = deleteOnClose;
+            deleteOnClose = null;
+            if (owner != null) {
+                owner.close();
+            }
         }
 
         /// Returns the shared staged state while this channel remains open.

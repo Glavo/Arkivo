@@ -563,12 +563,13 @@ public final class ArkivoFileSystemProviderSupport {
     /// An opaque source URI additionally escapes its existing percent signs; that quoting layer is removed before
     /// the source URI is passed to its provider. The resolved source path's ASCII URI supplies the registry key,
     /// so equivalent Unicode and percent-escaped spellings identify the same registered file system.
+    /// Source path components are retained without lexical normalization or symbolic-link resolution.
     ///
     /// @param uri provider URI to parse
     /// @param scheme provider scheme
     /// @param formatName format name used in validation messages
     /// @param requireEntryPath whether the URI must identify an entry
-    /// @return the normalized nested archive URI, archive path, and optional decoded entry path
+    /// @return the nested archive URI in the source provider's spelling, archive path, and optional decoded entry path
     /// @throws IllegalArgumentException if the provider URI is malformed or violates the requested shape
     public static ParsedUri parseUri(
             URI uri,
@@ -612,7 +613,6 @@ public final class ArkivoFileSystemProviderSupport {
         if (archiveUri.isOpaque()) {
             archiveUri = decodeOpaqueArchiveUri(archiveUri.toString());
         }
-        archiveUri = archiveUri.normalize();
         Path archivePath = Path.of(archiveUri);
         archiveUri = URI.create(archivePath.toUri().toASCIIString());
         @Nullable String entryPath = separator >= 0
@@ -648,9 +648,9 @@ public final class ArkivoFileSystemProviderSupport {
         return decodedPath != null ? decodedPath : "/";
     }
 
-    /// Stores the normalized nested archive URI, its resolved path, and an optional decoded entry path.
+    /// Stores the source provider's nested archive URI, its path, and an optional decoded entry path.
     ///
-    /// @param archiveUri normalized nested archive URI
+    /// @param archiveUri nested archive URI in the source provider's ASCII spelling
     /// @param archivePath archive path resolved from the nested URI
     /// @param entryPath decoded entry path, or `null` when the URI identifies only the file system
     @NotNullByDefault
@@ -681,7 +681,7 @@ public final class ArkivoFileSystemProviderSupport {
     /// @param <F> concrete file system type
     @NotNullByDefault
     public static final class Registry<F extends FileSystem> {
-        /// File systems indexed by normalized nested archive URI.
+        /// File systems indexed by the source provider's nested archive URI spelling.
         private final ConcurrentHashMap<URI, F> fileSystems = new ConcurrentHashMap<>();
 
         /// Creates an empty registry.
@@ -693,7 +693,7 @@ public final class ArkivoFileSystemProviderSupport {
         /// The factory may be called only after stale registrations have been removed. A candidate that loses a
         /// concurrent publication race is closed before this method retries or reports the winning open instance.
         ///
-        /// @param archiveUri the normalized nested archive URI used as the registry key
+        /// @param archiveUri the nested archive URI used as the registry key
         /// @param factory the callback that opens a candidate honoring the supplied unregister action
         /// @return the newly opened and registered file system
         /// @throws IOException if a candidate cannot be opened or a losing candidate cannot be closed
@@ -736,7 +736,7 @@ public final class ArkivoFileSystemProviderSupport {
 
         /// Returns the open file system registered for an archive URI.
         ///
-        /// @param archiveUri the normalized nested archive URI used as the registry key
+        /// @param archiveUri the nested archive URI used as the registry key
         /// @return the registered open file system
         /// @throws FileSystemNotFoundException if no open file system is registered
         public F require(URI archiveUri) {

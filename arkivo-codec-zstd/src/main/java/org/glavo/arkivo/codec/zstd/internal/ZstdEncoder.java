@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -21,14 +22,14 @@ import java.util.Objects;
 /// Subsequent encoding and boundary operations throw [IllegalStateException] without consuming input or emitting output.
 @NotNullByDefault
 public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
-    /// Validated parameters restored by reset for the initial frame.
-    private final ZstdEncoderParameters initialParameters;
+    /// Validated parameters restored by reset for the initial frame, or null after closure.
+    private @Nullable ZstdEncoderParameters initialParameters;
 
-    /// Parameters used by implicitly started frames after the initial frame.
-    private final ZstdEncoderParameters defaultFrameParameters;
+    /// Parameters used by implicitly started frames after the initial frame, or null after closure.
+    private @Nullable ZstdEncoderParameters defaultFrameParameters;
 
-    /// Parameters used by the active or lazily initialized frame.
-    private ZstdEncoderParameters parameters;
+    /// Parameters used by the active or lazily initialized frame, or null after closure.
+    private @Nullable ZstdEncoderParameters parameters;
 
     /// Whether standard frame magic is omitted.
     private final boolean magicless;
@@ -36,8 +37,8 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     /// Internal encoded-output queue used by the pure Java frame implementation.
     private final QueueingChannel output = new QueueingChannel();
 
-    /// Pure Java frame encoder targeting only the internal output queue.
-    private ZstdStreamEncoder encoder;
+    /// Pure Java frame encoder targeting only the internal output queue, or null after closure.
+    private @Nullable ZstdStreamEncoder encoder;
 
     /// Current encoder lifecycle state.
     private State state = State.ACTIVE;
@@ -62,9 +63,9 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
         if (state != State.BETWEEN_FRAMES) {
             throw new IllegalStateException("Cannot start a Zstandard frame while encoder state is " + state);
         }
-        parameters = defaultFrameParameters.withPledgedSourceSize(options.sourceSize());
+        parameters = Objects.requireNonNull(defaultFrameParameters).withPledgedSourceSize(options.sourceSize());
         try {
-            encoder.startFrame(options);
+            requireEncoder().startFrame(options);
         } catch (RuntimeException | Error failure) {
             state = State.FAILED;
             throw failure;
@@ -85,6 +86,8 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
             state = State.ACTIVE;
         }
         requireState(State.ACTIVE, "encode");
+        ZstdStreamEncoder encoder = requireEncoder();
+        int blockSize = Objects.requireNonNull(parameters).blockSize();
         drainOutput(target);
         if (output.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
@@ -92,7 +95,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
 
         while (source.hasRemaining()) {
             int originalLimit = source.limit();
-            source.limit(source.position() + Math.min(source.remaining(), parameters.blockSize()));
+            source.limit(source.position() + Math.min(source.remaining(), blockSize));
             try {
                 encoder.write(source);
             } catch (IOException | RuntimeException | Error failure) {
@@ -122,7 +125,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
         }
         if (state == State.ACTIVE) {
             try {
-                encoder.flush();
+                requireEncoder().flush();
             } catch (IOException | RuntimeException | Error failure) {
                 state = State.FAILED;
                 throw failure;
@@ -153,7 +156,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
         }
         if (state == State.ACTIVE || state == State.BETWEEN_FRAMES) {
             try {
-                encoder.finish();
+                requireEncoder().finish();
             } catch (IOException | RuntimeException | Error failure) {
                 state = State.FAILED;
                 throw failure;
@@ -184,7 +187,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
         }
         if (state == State.ACTIVE) {
             try {
-                encoder.finishFrame();
+                requireEncoder().finishFrame();
             } catch (IOException | RuntimeException | Error failure) {
                 state = State.FAILED;
                 throw failure;
@@ -204,7 +207,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     @Override
     public void reset() {
         requireOpen();
-        encoder.abort();
+        requireEncoder().abort();
         output.clearPending();
         parameters = initialParameters;
         encoder = createEncoder();
@@ -215,15 +218,28 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     @Override
     public void close() {
         if (state != State.CLOSED) {
-            encoder.abort();
+            requireEncoder().abort();
             output.clearPending();
+            encoder = null;
+            parameters = null;
+            initialParameters = null;
+            defaultFrameParameters = null;
             state = State.CLOSED;
         }
     }
 
     /// Creates a fresh frame encoder targeting the internal queue.
     private ZstdStreamEncoder createEncoder() {
-        return new ZstdStreamEncoder(output, parameters, magicless);
+        return new ZstdStreamEncoder(output, Objects.requireNonNull(parameters), magicless);
+    }
+
+    /// Returns the active frame engine, rejecting operations after closure.
+    private ZstdStreamEncoder requireEncoder() {
+        @Nullable ZstdStreamEncoder current = encoder;
+        if (current == null) {
+            throw new IllegalStateException("Zstandard encoder is closed");
+        }
+        return current;
     }
 
     /// Copies queued encoded bytes into the caller's target buffer.

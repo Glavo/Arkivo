@@ -188,6 +188,21 @@ final class ZipTraditionalCrypto {
             state.update(plain);
             return plain;
         }
+
+        /// Computes the plaintext CRC after additional ciphertext without advancing the live key state.
+        long crc32After(long crc32, byte[] encrypted) {
+            State preview = new State();
+            preview.key0 = state.key0;
+            preview.key1 = state.key1;
+            preview.key2 = state.key2;
+            int checksum = ~(int) crc32;
+            for (byte value : encrypted) {
+                int plain = Byte.toUnsignedInt(value) ^ preview.decryptByte();
+                preview.update(plain);
+                checksum = updateCrc32(checksum, plain);
+            }
+            return Integer.toUnsignedLong(~checksum);
+        }
     }
 
     /// Decrypts traditional ZIP entry data.

@@ -17,6 +17,9 @@ public interface ArkivoEditStorage extends AutoCloseable {
 
     /// Returns an edit storage that keeps staged content in memory.
     ///
+    /// Closing a channel opened with [java.nio.file.StandardOpenOption#DELETE_ON_CLOSE] releases its content
+    /// handle. Channels already opened over that content remain usable; new channel opens and size queries fail.
+    ///
     /// @return a new memory-backed storage
     static ArkivoEditStorage memory() {
         return ArkivoEditStorageSupport.memory();

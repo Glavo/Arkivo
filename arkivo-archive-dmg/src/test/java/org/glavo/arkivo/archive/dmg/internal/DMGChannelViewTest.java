@@ -10,18 +10,33 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousCloseException;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.FileChannel;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Phaser;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -35,6 +50,187 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the bounded-read, extent-mapping, capability, and cleanup contracts of DMG channel views.
 @NotNullByDefault
 final class DMGChannelViewTest {
+    /// Preserves interruption, delivered bytes, and a retryable cleanup failure at each read interruption boundary.
+    @ParameterizedTest
+    @ValueSource(strings = {"before", "source", "after"})
+    void udifInterruptionPreservesProgressAndCleanup(String boundary) throws IOException {
+        TestSeekableByteChannel source = new InterruptibleTestChannel(new byte[]{42}, 1);
+        IOException cleanup = new IOException("interruption cleanup failed");
+        source.closeFailures = 1;
+        source.closeFailure = cleanup;
+        source.closeBeforeFailure = true;
+        source.interruptAfterRead = !boundary.equals("before");
+        if (boundary.equals("source")) {
+            source.failedRead = 1;
+            source.bytesBeforeFailure = 1;
+            source.readFailure = new ClosedByInterruptException();
+        }
+        SeekableByteChannel channel = UDIFBlockChannel.open(source, rawLayout(1), ArchiveReadLimits.UNLIMITED);
+        ByteBuffer target = ByteBuffer.allocate(1);
+        try {
+            if (boundary.equals("before")) Thread.currentThread().interrupt();
+            try {
+                ClosedByInterruptException failure = assertThrows(ClosedByInterruptException.class,
+                        () -> channel.read(target));
+                if (boundary.equals("source")) assertSame(source.readFailure, failure);
+                assertTrue(Thread.currentThread().isInterrupted());
+                assertArrayEquals(new Throwable[]{cleanup}, failure.getSuppressed());
+            } finally {
+                Thread.interrupted();
+            }
+            assertEquals(boundary.equals("before") ? 0 : 1, target.position());
+            assertEquals(1, source.closeAttempts);
+            assertFalse(channel.isOpen());
+            channel.close();
+            assertEquals(2, source.closeAttempts);
+        } finally {
+            source.closeFailures = 0;
+            channel.close();
+        }
+    }
+
+    /// Preserves pre-interruption when a file-backed read is served from raw, cached, sparse, or unmapped data.
+    @ParameterizedTest
+    @ValueSource(strings = {"raw", "cached", "sparse", "gap"})
+    void udifPreservesFileChannelPreInterruption(String kind, @TempDir Path directory) throws IOException {
+        Path path = directory.resolve("encoded.bin");
+        Files.write(path, new byte[]{(byte) 0x80, 42});
+        int type = switch (kind) {
+            case "raw" -> UDIFConstants.BLOCK_RAW;
+            case "cached" -> UDIFConstants.BLOCK_ADC;
+            default -> UDIFConstants.BLOCK_ZEROES;
+        };
+        var layout = new UDIFLayout(1, kind.equals("gap") ? List.of()
+                : List.of(new UDIFRun(type, 0, 1, 0, kind.equals("cached") ? 2 : kind.equals("raw") ? 1 : 0)));
+        try (FileChannel source = FileChannel.open(path, StandardOpenOption.READ);
+             SeekableByteChannel channel = UDIFBlockChannel.open(source, layout, ArchiveReadLimits.UNLIMITED)) {
+            assertInstanceOf(InterruptibleChannel.class, channel);
+            ByteBuffer target = ByteBuffer.allocate(1);
+            if (kind.equals("cached")) {
+                assertEquals(1, channel.read(target));
+                channel.position(0);
+                target.clear();
+            }
+            Thread.currentThread().interrupt();
+            try {
+                assertThrows(ClosedByInterruptException.class, () -> channel.read(target));
+                assertTrue(Thread.currentThread().isInterrupted());
+            } finally {
+                Thread.interrupted();
+            }
+            assertEquals(0, target.position());
+            assertFalse(source.isOpen());
+            assertFalse(channel.isOpen());
+        }
+    }
+
+    /// Lets physical closure cancel a blocked read, including failure bookkeeping before the close returns.
+    @Test
+    @Timeout(30)
+    void udifCloseReleasesBlockedRead() throws Exception {
+        TestSeekableByteChannel source = new InterruptibleTestChannel(new byte[]{(byte) 0x80, 42}, 2);
+        var readStarted = new CountDownLatch(1);
+        var closeStarted = new CountDownLatch(1);
+        var readFinished = new CountDownLatch(1);
+        source.readStarted = readStarted;
+        source.closeStarted = closeStarted;
+        source.releaseClose = readFinished;
+        var layout = new UDIFLayout(1, List.of(new UDIFRun(UDIFConstants.BLOCK_ADC, 0, 1, 0, 2)));
+        SeekableByteChannel channel = UDIFBlockChannel.open(source, layout, ArchiveReadLimits.UNLIMITED);
+        var executor = Executors.newFixedThreadPool(2, task -> {
+            Thread thread = new Thread(task, "udif-cancellation-test");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
+            assertInstanceOf(InterruptibleChannel.class, channel);
+            var reader = executor.submit(() -> {
+                try {
+                    assertThrows(AsynchronousCloseException.class, () -> channel.read(ByteBuffer.allocate(1)));
+                } finally {
+                    readFinished.countDown();
+                }
+            });
+            assertTrue(readStarted.await(10, TimeUnit.SECONDS));
+            var closer = executor.submit(() -> {
+                channel.close();
+                return null;
+            });
+            closer.get(10, TimeUnit.SECONDS);
+            reader.get(10, TimeUnit.SECONDS);
+            assertFalse(channel.isOpen());
+            channel.close();
+            assertEquals(1, source.closeAttempts);
+        } finally {
+            closeStarted.countDown();
+            readFinished.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+            channel.close();
+        }
+    }
+
+    /// Races closure with cached and uncached decoded reads without permitting torn cache state or duplicate cleanup.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    @Timeout(30)
+    void udifReadMayOverlapClose(boolean cached) throws Exception {
+        var phase = new Phaser(2);
+        var current = new AtomicReference<@Nullable SeekableByteChannel>();
+        var executor = Executors.newSingleThreadExecutor(task -> {
+            Thread thread = new Thread(task, "udif-close-test");
+            thread.setDaemon(true);
+            return thread;
+        });
+        int rounds = 20_000;
+        var closer = executor.submit(() -> {
+            try {
+                for (int index = 0; index < rounds; index++) {
+                    if (phase.arriveAndAwaitAdvance() < 0) return null;
+                    for (int spin = 0; spin < (index & 15); spin++) Thread.onSpinWait();
+                    Objects.requireNonNull(current.get()).close();
+                    if (phase.arriveAndAwaitAdvance() < 0) return null;
+                }
+                return null;
+            } finally {
+                phase.forceTermination();
+            }
+        });
+        var layout = new UDIFLayout(1, List.of(new UDIFRun(UDIFConstants.BLOCK_ADC, 0, 1, 0, 2)));
+        ByteBuffer target = ByteBuffer.allocate(1);
+        try {
+            for (int index = 0; index < rounds; index++) {
+                TestSeekableByteChannel source = new InterruptibleTestChannel(new byte[]{(byte) 0x80, 42}, 2);
+                try (SeekableByteChannel channel = UDIFBlockChannel.open(source, layout, ArchiveReadLimits.UNLIMITED)) {
+                    if (cached) {
+                        target.clear();
+                        assertEquals(1, channel.read(target));
+                        channel.position(0);
+                    }
+                    current.set(channel);
+                    if (phase.arriveAndAwaitAdvance() < 0) break;
+                    target.clear();
+                    try {
+                        assertEquals(1, channel.read(target));
+                        assertEquals((byte) 42, target.get(0));
+                    } catch (ClosedChannelException expected) {
+                        // Closing may win before a cached read or during an encoded-source read.
+                    }
+                    channel.close();
+                    phase.arriveAndAwaitAdvance();
+                    assertFalse(channel.isOpen());
+                    channel.close();
+                    assertEquals(1, source.closeAttempts);
+                }
+            }
+            closer.get(10, TimeUnit.SECONDS);
+        } finally {
+            phase.forceTermination();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
     /// Combines compressed and raw reads with shared or distinct cleanup failures.
     private static Stream<Arguments> cleanupFailures() {
         return Stream.of(false, true).flatMap(compressed -> Stream.of(0, 1, 2).flatMap(kind ->
@@ -438,6 +634,9 @@ final class DMGChannelViewTest {
         /// Maximum bytes transferred by the selected failing read.
         private int bytesBeforeFailure;
 
+        /// Sets the reader's interrupt flag after physical progress, before any configured read failure.
+        private boolean interruptAfterRead;
+
         /// Number of close failures still scheduled.
         private int closeFailures;
 
@@ -447,6 +646,15 @@ final class DMGChannelViewTest {
         /// Whether a scheduled close failure also closes the channel.
         private boolean closeBeforeFailure;
 
+        /// Signals entry into a read that must wait for asynchronous closure, or disables that wait when absent.
+        private @Nullable CountDownLatch readStarted;
+
+        /// Signals entry into physical cleanup when a concurrent-read test requests it.
+        private @Nullable CountDownLatch closeStarted;
+
+        /// Keeps physical cleanup active until the corresponding reader has reported its failure.
+        private @Nullable CountDownLatch releaseClose;
+
         /// Number of close calls received.
         private int closeAttempts;
 
@@ -454,7 +662,7 @@ final class DMGChannelViewTest {
         private long position;
 
         /// Whether the channel remains open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// Creates a channel over a private copy of the supplied bytes.
         private TestSeekableByteChannel(byte @Unmodifiable [] bytes, int maximumReadSize) {
@@ -466,6 +674,11 @@ final class DMGChannelViewTest {
         @Override
         public int read(ByteBuffer target) throws IOException {
             ensureOpen();
+            if (readStarted != null) {
+                readStarted.countDown();
+                awaitLatch(Objects.requireNonNull(closeStarted));
+                throw new AsynchronousCloseException();
+            }
             if (!target.hasRemaining()) {
                 return 0;
             }
@@ -487,6 +700,7 @@ final class DMGChannelViewTest {
             }
             target.put(bytes, arrayPosition, length);
             position += length;
+            if (interruptAfterRead) Thread.currentThread().interrupt();
             if (failure instanceof IOException exception) {
                 throw exception;
             }
@@ -548,6 +762,8 @@ final class DMGChannelViewTest {
         @Override
         public void close() throws IOException {
             closeAttempts++;
+            if (closeStarted != null) closeStarted.countDown();
+            if (releaseClose != null) awaitLatch(releaseClose);
             if (closeFailures > 0) {
                 closeFailures--;
                 if (closeBeforeFailure) {
@@ -565,6 +781,16 @@ final class DMGChannelViewTest {
                 throw new IOException("close failure");
             }
             open = false;
+        }
+
+        /// Waits for a bounded test handshake while preserving interruption.
+        private static void awaitLatch(CountDownLatch latch) throws IOException {
+            try {
+                if (!latch.await(10, TimeUnit.SECONDS)) throw new IOException("Channel handshake timed out");
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Channel handshake interrupted", exception);
+            }
         }
 
         /// Requires this channel to remain open.

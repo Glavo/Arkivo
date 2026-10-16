@@ -40,6 +40,28 @@ public final class DMGArkivoFileSystemProviderTest {
     @TempDir
     private Path temporaryDirectory;
 
+    /// Preserves source dot components and registers equivalent percent-escaped spellings under one key.
+    @Test
+    public void preservesSourceUriComponents() throws IOException {
+        Files.createDirectory(temporaryDirectory.resolve("sub"));
+        Path source = temporaryDirectory.resolve("sub/../source.dmg");
+        writeRawImage(source, createHFSPlusDisk());
+        DMGArkivoFileSystemProvider provider = new DMGArkivoFileSystemProvider();
+        URI literal = URI.create(provider.getScheme() + ':' + source.toUri().toASCIIString() + "!/hello.txt");
+        URI encoded = URI.create(literal.toASCIIString().replace("/../", "/%2e%2E/"));
+        Map<String, Object> options = Map.of("arkivo.dmg.partitionIndex", 0);
+        try (var direct = provider.newFileSystem(source, options)) {
+            assertEquals(literal, direct.getPath("/hello.txt").toUri());
+        }
+        try (var registered = provider.newFileSystem(encoded, options)) {
+            Path entry = registered.getPath("/hello.txt");
+            assertEquals(entry, provider.getPath(entry.toUri()));
+            assertEquals(registered, provider.getFileSystem(literal));
+            assertEquals("hello", Files.readString(provider.getPath(entry.toUri())));
+            assertThrows(FileSystemAlreadyExistsException.class, () -> provider.newFileSystem(literal, options));
+        }
+    }
+
     /// Verifies URI registration, entry resolution, duplicate detection, deregistration, and reopening.
     @Test
     public void managesUriBackedFileSystemLifecycle() throws IOException {

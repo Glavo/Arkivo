@@ -63,6 +63,28 @@ final class TarArkivoFileSystemContractTest {
     @TempDir
     private Path temporaryDirectory;
 
+    /// Replacing a file with a directory retains the replaced file's content through its other hard-link name.
+    @Test
+    void preservesHardLinkWhenMoveReplacesFileWithDirectory() throws IOException {
+        Path archive = temporaryDirectory.resolve("replace-linked-file.tar");
+        try (var fs = TarArkivoFileSystem.create(archive)) {
+            Files.writeString(fs.getPath("/target"), "old content");
+            Files.createLink(fs.getPath("/alias"), fs.getPath("/target"));
+            Files.createDirectory(fs.getPath("/source"));
+            Files.writeString(fs.getPath("/source/child"), "new content");
+        }
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            Files.move(fs.getPath("/source"), fs.getPath("/target"), StandardCopyOption.REPLACE_EXISTING);
+            assertEquals("old content", Files.readString(fs.getPath("/alias")));
+            assertEquals("new content", Files.readString(fs.getPath("/target/child")));
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            assertFalse(Files.exists(fs.getPath("/source")));
+            assertEquals("old content", Files.readString(fs.getPath("/alias")));
+            assertEquals("new content", Files.readString(fs.getPath("/target/child")));
+        }
+    }
+
     /// Rejected hard-link targets do not create implicit directories in the update index.
     @Test
     void rejectsHardLinksWithoutCreatingParents() throws IOException {
@@ -539,10 +561,11 @@ final class TarArkivoFileSystemContractTest {
             Files.move(file, hardLink);
             assertTrue(Files.exists(file));
             assertTrue(Files.exists(hardLink));
-            assertThrows(
-                    FileSystemException.class,
-                    () -> Files.move(file, emptyDirectory, StandardCopyOption.REPLACE_EXISTING)
-            );
+            Files.move(file, emptyDirectory, StandardCopyOption.REPLACE_EXISTING);
+            assertFalse(Files.exists(file));
+            assertEquals("value", Files.readString(emptyDirectory));
+            assertTrue(Files.isSameFile(emptyDirectory, hardLink));
+            Files.move(emptyDirectory, file);
 
             Path occupiedDirectory = fileSystem.getPath("/occupied");
             Files.createDirectory(occupiedDirectory);
@@ -552,7 +575,6 @@ final class TarArkivoFileSystemContractTest {
                     () -> Files.move(directory, occupiedDirectory, StandardCopyOption.REPLACE_EXISTING)
             );
 
-            Files.delete(emptyDirectory);
             Files.move(directory, fileSystem.getPath("/moved"), StandardCopyOption.ATOMIC_MOVE);
         }
 

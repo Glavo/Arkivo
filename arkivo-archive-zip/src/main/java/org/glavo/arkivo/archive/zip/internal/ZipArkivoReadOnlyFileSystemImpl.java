@@ -315,7 +315,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// Returns the archive URI used by ZIP path URI conversion, or `null` for volume-backed file systems.
     @Override
     public @Nullable URI archiveUri() {
-        return archivePath != null ? archivePath.toUri().normalize() : null;
+        return archivePath != null ? archivePath.toUri() : null;
     }
 
     /// Returns the provider that created this ZIP file system.
