@@ -29,9 +29,9 @@ public class ZipComparisonBenchmark {
     /// Opens and closes the index or reads one entry from an existing index.
     @Param({"open", "read"}) public String operation = "read";
     /// The number of flat archive entries.
-    private static final int COUNT = 2048;
+    @Param({"2048"}) public int entryCount = 2048;
     /// The uncompressed bytes in one entry.
-    private static final int SIZE = 4096;
+    @Param({"4096"}) public int entrySize = 4096;
     /// The generated archive.
     private @Nullable Path archive;
     /// An optional pre-opened NIO view.
@@ -45,28 +45,37 @@ public class ZipComparisonBenchmark {
     /// Reusable read storage shared by all implementations.
     private final byte[] buffer = new byte[8192];
     /// Cached entry names, excluding name formatting from entry-read timing.
-    private final @Nullable String[] names = new String[COUNT];
+    private @Nullable String[] names = new String[0];
     /// Cached NIO paths, excluding path parsing from entry-read timing.
-    private final @Nullable Path[] paths = new Path[COUNT];
+    private @Nullable Path[] paths = new Path[0];
 
     /// Creates a common JDK-produced archive and verifies one decoded entry.
     @Setup
     public void setup() throws IOException {
+        if (entryCount <= 0 || entrySize < 0) throw new IllegalArgumentException("Invalid archive dimensions");
+        names = new String[entryCount];
+        paths = new Path[entryCount];
         archive = Files.createTempFile("arkivo-performance-", ".zip");
-        byte[] body = new byte[SIZE];
+        byte[] body = new byte[entrySize];
         new Random(42).nextBytes(body);
-        System.arraycopy(body, 0, body, 2048, 2048);
+        int period = Math.max(1, Math.min(entrySize / 2, 16_384));
+        for (int offset = period; offset < entrySize; offset += period) {
+            System.arraycopy(body, 0, body, offset, Math.min(period, entrySize - offset));
+        }
         CRC32 crc = new CRC32(); crc.update(body);
         try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(archive))) {
             out.setLevel(6);
-            for (int i = 0; i < COUNT; i++) {
+            for (int i = 0; i < entryCount; i++) {
                 names[i] = "entry-" + i + ".bin";
                 ZipEntry e = new ZipEntry(Objects.requireNonNull(names[i]));
                 e.setMethod(method.equals("stored") ? ZipEntry.STORED : ZipEntry.DEFLATED);
-                e.setSize(SIZE); e.setCrc(crc.getValue());
+                e.setTimeLocal(java.time.LocalDateTime.of(2020, 1, 2, 3, 4, 6));
+                e.setSize(entrySize); e.setCrc(crc.getValue());
                 out.putNextEntry(e); out.write(body); out.closeEntry();
             }
         }
+        System.out.printf("Archive: %d entries, %d bytes/entry, %d ZIP bytes%n",
+                entryCount, entrySize, Files.size(archive));
         openShared();
         if (!Arrays.equals(body, readOne(0))) throw new AssertionError("Decoded entry differs");
         if (operation.equals("open")) closeShared();
@@ -82,7 +91,7 @@ public class ZipComparisonBenchmark {
                     .setPath(Objects.requireNonNull(archive)).get();
             default -> throw new IllegalArgumentException(api);
         }
-        if (fs != null) for (int i = 0; i < COUNT; i++) paths[i] = fs.getPath(Objects.requireNonNull(names[i]));
+        if (fs != null) for (int i = 0; i < entryCount; i++) paths[i] = fs.getPath(Objects.requireNonNull(names[i]));
     }
     /// Opens the requested entry using the active API.
     private InputStream input(int i) throws IOException {
@@ -106,7 +115,7 @@ public class ZipComparisonBenchmark {
     public void cleanup() throws IOException {
         closeShared(); Files.delete(Objects.requireNonNull(archive));
     }
-    /// Measures one index lifecycle or one complete 4 KiB entry read.
+    /// Measures one index lifecycle or one complete entry read of the configured size.
     @Benchmark
     public long run() throws IOException {
         if (operation.equals("open")) {
@@ -120,12 +129,12 @@ public class ZipComparisonBenchmark {
                 default: throw new IllegalArgumentException(api);
             }
         }
-        cursor = (cursor + 509) & (COUNT - 1);
+        cursor = (int) (((long) cursor + 509) % entryCount);
         try (InputStream in = input(cursor)) {
             long size = 0;
             int n;
             while ((n = in.read(buffer)) >= 0) size += n;
-            if (size != SIZE) throw new AssertionError(size);
+            if (size != entrySize) throw new AssertionError(size);
             return size;
         }
     }

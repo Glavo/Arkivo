@@ -10,12 +10,16 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.stream.IntStream;
@@ -127,6 +131,24 @@ final class ZipDescriptorCompatibilityTest {
         }
     }
 
+    /// Indexed reads accept every complete descriptor layout at physical EOF, even after the index was loaded.
+    @ParameterizedTest
+    @MethodSource("layouts")
+    void indexedReadsDescriptorAtPhysicalEof(boolean[] layout, @TempDir Path directory) throws IOException {
+        Fixture fixture = fixture(layout[0], layout[1], 0, SIGNATURE_CRC_CONTENT);
+        Path archive = directory.resolve("descriptor.zip");
+        Files.write(archive, fixture.archive());
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            Path entry = fileSystem.getPath("payload");
+            assertEquals(SIGNATURE_CRC_CONTENT.length, Files.size(entry));
+            int end = fixture.descriptorOffset() + (layout[0] ? 20 : 12) + (layout[1] ? 4 : 0);
+            try (var output = FileChannel.open(archive, StandardOpenOption.WRITE)) {
+                output.truncate(end);
+            }
+            assertArrayEquals(SIGNATURE_CRC_CONTENT, Files.readAllBytes(entry));
+        }
+    }
+
     /// Supplies CRC and size words, including ZIP64 high words, for each consumption mode.
     private static Stream<Arguments> corruptions() {
         return layouts().flatMap(layout -> IntStream.range(0, layout[0] ? 5 : 3).boxed()
@@ -176,7 +198,8 @@ final class ZipDescriptorCompatibilityTest {
     /// Requires a complete descriptor even when all compressed bytes have already been decoded.
     @ParameterizedTest(name = "zip64={0}, signature={1}, descriptor prefix={2}")
     @MethodSource("truncations")
-    void rejectsTruncatedDescriptor(boolean zip64, boolean signature, int length) throws IOException {
+    void rejectsTruncatedDescriptor(boolean zip64, boolean signature, int length, @TempDir Path directory)
+            throws IOException {
         Fixture fixture = fixture(zip64, signature, 0);
         byte[] truncated = Arrays.copyOf(fixture.archive(), fixture.descriptorOffset() + length);
         assertThrows(IOException.class, () -> {
@@ -187,6 +210,16 @@ final class ZipDescriptorCompatibilityTest {
                 }
             }
         });
+        Path archive = directory.resolve("truncated.zip");
+        Files.write(archive, fixture.archive());
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            Path entry = fileSystem.getPath("payload");
+            assertEquals(CONTENT.length, Files.size(entry));
+            try (var output = FileChannel.open(archive, StandardOpenOption.WRITE)) {
+                output.truncate(truncated.length);
+            }
+            assertThrows(IOException.class, () -> Files.newInputStream(entry));
+        }
     }
 
     /// Builds two JDK-produced entries and replaces only the first local header and descriptor layout.

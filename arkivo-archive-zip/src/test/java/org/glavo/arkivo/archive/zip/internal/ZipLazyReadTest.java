@@ -10,6 +10,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import java.io.*;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -25,6 +27,45 @@ import static org.junit.jupiter.api.Assertions.*;
 /// Checks lazy metadata I/O and the bounded ownership of cached path channels.
 @NotNullByDefault
 final class ZipLazyReadTest {
+    /// Descriptor reads handle fragmentation and reject stalled sources before handing out an entry stream.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 7, 24})
+    void validatesDescriptorsWithShortReads(int chunk) throws IOException {
+        CountingChannel source = new CountingChannel(archive());
+        try (var fs = ZipArkivoFileSystem.open(source)) {
+            Path entry = fs.getPath("b");
+            assertEquals(5, Files.size(entry));
+            source.maximumReadSize = chunk;
+            if (chunk == 0) {
+                assertThrows(IOException.class, () -> Files.newInputStream(entry));
+                source.maximumReadSize = 1;
+            }
+            assertEquals("valid", Files.readString(entry));
+        }
+    }
+
+    /// Repeated and alternating DOS timestamps retain each entry's own modification time.
+    @Test
+    void preservesDosTimestampsAcrossIndexCacheHits() throws IOException {
+        var first = java.time.LocalDateTime.of(2020, 1, 2, 3, 4, 6);
+        var times = List.of(first, first, first.plusDays(1), first, first.plusSeconds(2));
+        var bytes = new ByteArrayOutputStream();
+        try (var zip = new ZipOutputStream(bytes)) {
+            for (int i = 0; i < times.size(); i++) {
+                var entry = new ZipEntry("entry-" + i);
+                entry.setTimeLocal(times.get(i));
+                zip.putNextEntry(entry);
+                zip.closeEntry();
+            }
+        }
+        try (var fs = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(bytes.toByteArray()))) {
+            for (int i = 0; i < times.size(); i++) {
+                assertEquals(times.get(i).atZone(java.time.ZoneId.systemDefault()).toInstant(),
+                        Files.getLastModifiedTime(fs.getPath("entry-" + i)).toInstant());
+            }
+        }
+    }
+
     /// Enumerating a sufficiently large archive does not read its local header; attributes load it once.
     @Test
     void loadsLocalMetadataOnlyWhenRequested() throws IOException {
@@ -144,13 +185,19 @@ final class ZipLazyReadTest {
         private final ReadOnlyByteArrayChannel delegate;
         /// Reads beginning within the first local header.
         private int headerReads;
+        /// Maximum bytes delivered by a physical read; zero simulates a stalled source.
+        private int maximumReadSize = Integer.MAX_VALUE;
         /// Owns a defensive snapshot of the archive.
         private CountingChannel(byte[] bytes) { delegate = new ReadOnlyByteArrayChannel(bytes); }
         /// Counts local-header access before delegating the read.
         @Override
         public int read(ByteBuffer target) throws IOException {
             if (delegate.position() < 31) headerReads++;
-            return delegate.read(target);
+            ByteBuffer view = target.slice();
+            view.limit(Math.min(view.remaining(), maximumReadSize));
+            int count = delegate.read(view);
+            target.position(target.position() + view.position());
+            return count;
         }
         /// Delegates write rejection.
         @Override

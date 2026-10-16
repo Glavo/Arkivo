@@ -581,7 +581,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
         ArrayList<Path> paths = new ArrayList<>();
         for (String child : loadedIndex.children.getOrDefault(key, List.of())) {
-            paths.add(directory.resolve(getPath(child).getFileName()));
+            paths.add(directory.resolve(child.substring(child.lastIndexOf('/') + 1)));
         }
         return new FixedDirectoryStream<>(paths, filter);
     }
@@ -922,6 +922,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
             var prepared = ZipEntryNameDecoder.forCentralDirectory(config.legacyMetadataDecoder(), centralDirectory);
             ZipEntryNameDecoder decoder = prepared.decoder();
+            int previousDosTimestamp = 0;
+            @Nullable FileTime previousDosTime = null;
 
             while (centralDirectory.hasRemaining()) {
                 int offset = centralDirectory.position();
@@ -995,7 +997,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         localHeaderOffset,
                         "local header offset"
                 );
-                FileTime dosFallback = ZipExtraFieldMetadata.dosTime(lastModifiedDate, lastModifiedTime);
+                int dosTimestamp = lastModifiedDate << 16 | lastModifiedTime;
+                if (previousDosTime == null || dosTimestamp != previousDosTimestamp) {
+                    previousDosTime = ZipExtraFieldMetadata.dosTime(lastModifiedDate, lastModifiedTime);
+                    previousDosTimestamp = dosTimestamp;
+                }
+                // Consecutive entries often share the same DOS timestamp; keep this cache local to one index load.
+                FileTime dosFallback = previousDosTime;
                 ZipExtraFieldMetadata.EntryMetadata entryMetadata = ZipExtraFieldMetadata.resolve(
                         new byte[0], extraData, dosFallback);
                 ZipEntryRecord entry = new ZipEntryRecord(
@@ -1318,14 +1326,22 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             ZipEntryRecord entry,
             boolean requireCrc
     ) throws IOException {
-        long remaining = channel.size() - offset;
-        if (remaining < 12) {
+        // A complete short descriptor may end at physical EOF; no separate source-size query is needed.
+        ByteBuffer descriptor = ByteBuffer.allocate(ZIP_DATA_DESCRIPTOR_MAX_SIZE).order(ByteOrder.LITTLE_ENDIAN);
+        channel.position(offset);
+        while (descriptor.hasRemaining()) {
+            int count = channel.read(descriptor);
+            if (count < 0) {
+                break;
+            }
+            if (count == 0) {
+                throw new IOException("ZIP data descriptor read made no progress");
+            }
+        }
+        descriptor.flip();
+        if (descriptor.remaining() < 12) {
             throw new IOException("ZIP data descriptor is truncated");
         }
-        int readSize = (int) Math.min(remaining, ZIP_DATA_DESCRIPTOR_MAX_SIZE);
-        ByteBuffer descriptor = ByteBuffer.allocate(readSize).order(ByteOrder.LITTLE_ENDIAN);
-        readFully(channel, offset, descriptor);
-        descriptor.flip();
 
         boolean preferZip64 = entry.compressedSize > UINT32_MAX
                 || entry.uncompressedSize > UINT32_MAX
