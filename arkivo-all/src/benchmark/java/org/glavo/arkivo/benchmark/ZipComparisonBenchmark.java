@@ -28,10 +28,14 @@ public class ZipComparisonBenchmark {
     @Param({"stored", "deflated"}) public String method = "deflated";
     /// Opens and closes the index or reads one entry from an existing index.
     @Param({"open", "read"}) public String operation = "read";
-    /// The number of flat archive entries.
+    /// The number of data entries in their common directory.
     @Param({"2048"}) public int entryCount = 2048;
     /// The uncompressed bytes in one entry.
     @Param({"4096"}) public int entrySize = 4096;
+    /// The number of implicit parent directories traversed before each data entry.
+    @Param({"0"}) public int pathDepth = 0;
+    /// The common relative directory prefix, including its trailing separator when nonempty.
+    private String directoryPrefix = "";
     /// The generated archive.
     private @Nullable Path archive;
     /// An optional pre-opened NIO view.
@@ -52,7 +56,10 @@ public class ZipComparisonBenchmark {
     /// Creates a common JDK-produced archive and verifies one decoded entry.
     @Setup
     public void setup() throws IOException {
-        if (entryCount <= 0 || entrySize < 0) throw new IllegalArgumentException("Invalid archive dimensions");
+        if (entryCount <= 0 || entrySize < 0 || pathDepth < 0) {
+            throw new IllegalArgumentException("Invalid archive dimensions");
+        }
+        directoryPrefix = "parent/".repeat(pathDepth);
         names = new String[entryCount];
         paths = new Path[entryCount];
         archive = Files.createTempFile("arkivo-performance-", ".zip");
@@ -66,7 +73,7 @@ public class ZipComparisonBenchmark {
         try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(archive))) {
             out.setLevel(6);
             for (int i = 0; i < entryCount; i++) {
-                names[i] = "entry-" + i + ".bin";
+                names[i] = directoryPrefix + "entry-" + i + ".bin";
                 ZipEntry e = new ZipEntry(Objects.requireNonNull(names[i]));
                 e.setMethod(method.equals("stored") ? ZipEntry.STORED : ZipEntry.DEFLATED);
                 e.setTimeLocal(java.time.LocalDateTime.of(2020, 1, 2, 3, 4, 6));
@@ -138,9 +145,9 @@ public class ZipComparisonBenchmark {
             return size;
         }
     }
-    /// Forces lazy index initialization and counts every flat file-system entry.
-    private static long count(FileSystem fs) throws IOException {
-        try (var files = Files.list(fs.getPath("/"))) { return files.count(); }
+    /// Forces lazy index initialization and counts every data entry in the common directory.
+    private long count(FileSystem fs) throws IOException {
+        try (var files = Files.list(fs.getPath("/" + directoryPrefix))) { return files.count(); }
     }
     /// Counts every indexed ZIP entry, including entry-object materialization.
     private static long count(Enumeration<?> entries) {

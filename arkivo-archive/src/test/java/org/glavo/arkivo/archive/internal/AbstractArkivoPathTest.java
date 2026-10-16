@@ -124,6 +124,15 @@ final class AbstractArkivoPathTest {
         }
     }
 
+    /// Entry-name extraction strips only the root marker, including for empty and dot-containing paths.
+    @ParameterizedTest
+    @ValueSource(strings = {"", "/", "entry", "/entry", "./a/../b", "/./a/../b", "a//b///", "/a//b///"})
+    void extractsArchiveNamesWithoutNormalizingComponents(String name) {
+        TestPath path = new TestFileSystem(null).getPath(name);
+        String text = path.toString();
+        assertEquals(path.isAbsolute() ? text.substring(1) : text, path.archivePath());
+    }
+
     /// Verifies separators, component access, parents, roots, subpaths, and iteration.
     @Test
     void parsesAndExposesPathComponents() {
@@ -225,6 +234,9 @@ final class AbstractArkivoPathTest {
         TestPath replacement = fileSystem.getPath("/replacement");
         assertSame(base, base.resolve(empty));
         assertSame(replacement, base.resolve(replacement));
+        TestPath relative = fileSystem.getPath("relative/child");
+        assertSame(relative, empty.resolve(relative));
+        assertEquals(fileSystem.getPath("/relative/child"), fileSystem.getPath("/").resolve(relative));
         assertEquals(fileSystem.getPath("/a/b/c/d"), base.resolve("c/d"));
         assertEquals(fileSystem.getPath("/a/c"), base.resolveSibling("c"));
         assertEquals(fileSystem.getPath("sibling"), fileSystem.getPath("single").resolveSibling("sibling"));
@@ -333,6 +345,68 @@ final class AbstractArkivoPathTest {
         assertEquals(fileSystem.getPath("/replacement"), path.toRealPath());
         assertEquals(7, fileSystem.provider.attributeReads);
         assertEquals(1, fileSystem.provider.linkReads);
+    }
+
+    /// Ordinary traversal constructs only parent prefixes and, for relative inputs, the absolute result.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 8, 32})
+    void reusesResolvedPathsWithoutSkippingAttributeChecks(int depth) throws IOException {
+        for (boolean absolute : new boolean[]{false, true}) {
+            TestFileSystem fs = new TestFileSystem(null);
+            String name = "parent/".repeat(Math.max(0, depth - 1)) + (depth == 0 ? "" : "value");
+            fs.addFile("/" + name);
+            TestPath path = fs.getPath((absolute ? "/" : "") + name);
+            fs.pathCreations = 0;
+            Path result = path.toRealPath();
+            assertEquals("/" + name, result.toString());
+            assertEquals(Math.max(0, depth - 1) + (absolute ? 0 : 1), fs.pathCreations);
+            assertEquals(Math.max(1, depth), fs.provider.attributeReads);
+            assertEquals(0, fs.provider.linkReads);
+            if (absolute) assertSame(path, result);
+        }
+    }
+
+    /// Expanding chained targets retains the original suffix and resolves its parent elements afterward.
+    @ParameterizedTest
+    @ValueSource(strings = {"outer/../value", "/outer/../value", "./outer/../value/."})
+    void retainsSuffixWhenExpandingLinkTargets(String name) throws IOException {
+        TestFileSystem fs = new TestFileSystem(null);
+        fs.addFile("/real/sub/child");
+        fs.addFile("/real/value/leaf");
+        fs.addSymbolicLink("/dir/link", "../real/sub");
+        fs.addSymbolicLink("/outer", "dir/link");
+        assertEquals(fs.getPath("/real/value"), fs.getPath(name).toRealPath());
+        assertEquals(2, fs.provider.linkReads);
+    }
+
+    /// Missing creation suffixes are retained only after the preceding link and parent components are resolved.
+    @Test
+    void resolvesCreationSuffixesAfterLinks() throws IOException {
+        TestFileSystem fs = new TestFileSystem(null);
+        fs.addFile("/real/sub/child");
+        fs.addSymbolicLink("/alias", "real/sub");
+        assertEquals(fs.getPath("/real/new"), fs.getPath("/alias/../new").resolvePath(true, true, false));
+        assertEquals(fs.getPath("/real/sub/new/deep"),
+                fs.getPath("/alias/new/deep").resolvePath(true, true, true));
+        for (String name : List.of("/alias/new/deep", "/alias/new/../deep", "/alias/new/./deep")) {
+            assertThrows(NoSuchFileException.class, () -> fs.getPath(name).resolvePath(true, true, false));
+        }
+        for (String name : List.of("/alias/new/../deep", "/alias/new/./deep")) {
+            assertThrows(NoSuchFileException.class, () -> fs.getPath(name).resolvePath(true, true, true));
+        }
+    }
+
+    /// Targets with no ordinary components still resolve against the correct root or containing directory.
+    @ParameterizedTest
+    @ValueSource(strings = {"", ".", "/", "/."})
+    void resolvesEmptyAndRootLinkTargets(String target) throws IOException {
+        TestFileSystem fs = new TestFileSystem(null);
+        fs.addFile("/value");
+        fs.addFile("/dir/value");
+        fs.addSymbolicLink("/dir/link", target);
+        String prefix = target.startsWith("/") ? "/" : "/dir/";
+        assertEquals(fs.getPath(prefix), fs.getPath("/dir/link").toRealPath());
+        assertEquals(fs.getPath(prefix + "value"), fs.getPath("/dir/link/value").toRealPath());
     }
 
     /// Root and no-follow lookups still verify existence without reading a link target.
@@ -444,6 +518,9 @@ final class AbstractArkivoPathTest {
 
         /// Provider implementing controlled real-path lookups for this file system.
         private final TestProvider provider;
+
+        /// Number of paths constructed from already parsed components.
+        private int pathCreations;
 
         /// Whether this test file system remains open.
         private boolean open = true;
@@ -830,6 +907,7 @@ final class AbstractArkivoPathTest {
         /// Creates another test path.
         @Override
         protected TestPath createPath(boolean absolute, List<String> names) {
+            getFileSystem().pathCreations++;
             return new TestPath(getFileSystem(), absolute, names);
         }
 

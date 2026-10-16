@@ -22,7 +22,6 @@ import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -127,11 +126,11 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
         throw new ProviderMismatchException();
     }
 
-    /// Returns this path as a normalized archive entry path without a leading separator.
+    /// Returns this path without a leading separator, retaining `.` and `..` elements.
     ///
     /// @return slash-separated name elements without a root marker
     public final String archivePath() {
-        return String.join("/", names);
+        return absolute ? text.substring(1) : text;
     }
 
     /// Returns the owning file system.
@@ -280,7 +279,11 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
         if (that.names.isEmpty()) {
             return this;
         }
-        ArrayList<String> resolvedNames = new ArrayList<>(names);
+        if (names.isEmpty()) {
+            return absolute ? createPath(true, that.names) : that;
+        }
+        ArrayList<String> resolvedNames = new ArrayList<>(names.size() + that.names.size());
+        resolvedNames.addAll(names);
         resolvedNames.addAll(that.names);
         return createPath(absolute, resolvedNames);
     }
@@ -404,15 +407,18 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     final AbstractArkivoPath<F> resolvePath(
             boolean followFinalLink, boolean allowMissingFinal, boolean allowMissingParents
     ) throws IOException {
-        ArrayDeque<String> pending = new ArrayDeque<>(names);
-        ArrayList<String> resolved = new ArrayList<>();
+        // Ordinary paths can traverse their immutable components without copying a work queue.
+        List<String> pending = names;
+        int next = 0;
+        ArrayList<String> resolved = new ArrayList<>(names.size());
+        AbstractArkivoPath<F> result = this;
         @Nullable BasicFileAttributes attributes = null;
         int symbolicLinkCount = 0;
-        while (!pending.isEmpty()) {
+        while (next < pending.size()) {
             if (attributes != null && !attributes.isDirectory()) {
-                throw new NotDirectoryException(createPath(true, resolved).toString());
+                throw new NotDirectoryException(result.toString());
             }
-            String name = pending.removeFirst();
+            String name = pending.get(next++);
             if (name.equals(".")) {
                 continue;
             }
@@ -424,26 +430,30 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
                 continue;
             }
             resolved.add(name);
-            AbstractArkivoPath<F> candidate = createPath(true, resolved);
+            result = absolute && next == pending.size() && names.equals(resolved)
+                    ? this : createPath(true, resolved);
             try {
-                attributes = candidate.readEntryAttributes();
+                attributes = result.readEntryAttributes();
             } catch (NoSuchFileException exception) {
-                if (allowMissingFinal && pending.isEmpty()) {
-                    return equals(candidate) ? this : candidate;
+                if (allowMissingFinal && next == pending.size()) {
+                    return equals(result) ? this : result;
                 }
-                if (allowMissingParents && !pending.contains(".") && !pending.contains("..")) {
-                    resolved.addAll(pending);
-                    return createPath(true, resolved);
+                if (allowMissingParents) {
+                    List<String> remaining = pending.subList(next, pending.size());
+                    if (!remaining.contains(".") && !remaining.contains("..")) {
+                        resolved.addAll(remaining);
+                        return createPath(true, resolved);
+                    }
                 }
                 throw exception;
             }
-            if (attributes.isSymbolicLink() && (followFinalLink || !pending.isEmpty())) {
+            if (attributes.isSymbolicLink() && (followFinalLink || next < pending.size())) {
                 final AbstractArkivoPath<F> target;
                 try {
-                    target = requireCompatiblePath(candidate.readLinkTarget());
+                    target = requireCompatiblePath(result.readLinkTarget());
                 } catch (NotLinkException exception) {
                     // The link may have been replaced after its attributes were read.
-                    attributes = candidate.readEntryAttributes();
+                    attributes = result.readEntryAttributes();
                     continue;
                 }
                 if (++symbolicLinkCount > MAXIMUM_SYMBOLIC_LINKS) {
@@ -453,14 +463,16 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
                 if (target.absolute) {
                     resolved.clear();
                 }
-                for (int index = target.names.size() - 1; index >= 0; index--) {
-                    pending.addFirst(target.names.get(index));
-                }
+                ArrayList<String> expanded = new ArrayList<>(target.names.size() + pending.size() - next);
+                expanded.addAll(target.names);
+                expanded.addAll(pending.subList(next, pending.size()));
+                pending = expanded;
+                next = 0;
                 attributes = null;
             }
         }
-        AbstractArkivoPath<F> result = createPath(true, resolved);
         if (attributes == null) {
+            result = absolute && names.equals(resolved) ? this : createPath(true, resolved);
             result.readEntryAttributes();
         }
         return equals(result) ? this : result;
@@ -585,6 +597,9 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     /// Joins path text components with archive separators.
     private static String joinedPathText(String first, String... more) {
         Objects.requireNonNull(first, "first");
+        if (more.length == 0) {
+            return first;
+        }
         StringBuilder builder = new StringBuilder(first);
         for (String part : more) {
             Objects.requireNonNull(part, "part");
@@ -641,7 +656,7 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
         if (names.isEmpty()) {
             return absolute ? "/" : "";
         }
-        String joinedNames = String.join("/", names);
+        String joinedNames = names.size() == 1 ? names.get(0) : String.join("/", names);
         return absolute ? "/" + joinedNames : joinedNames;
     }
 }
