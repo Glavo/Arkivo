@@ -24,8 +24,8 @@ import java.util.Objects;
 /// records retain their existing bytes.
 ///
 /// The legacy decoder is used only when neither a valid Info-ZIP Unicode extra field nor the UTF-8 flag supplies the
-/// text encoding. The default decoder evaluates unmarked UTF-8 and legacy encodings,
-/// falling back to CP437 when evidence is insufficient. Custom decoders determine their own conversion and failure policy.
+/// text encoding. The default policy infers an encoding for indexed reading; streaming reading tries strict UTF-8
+/// and falls back to CP437 on malformed input. Custom decoders determine their own conversion and failure policy.
 /// [ZipLegacyMetadataDecoder#forCodePages(Charset, Charset)] provides an opt-in creator-aware compatibility policy.
 @NotNullByDefault
 public final class ZipArchiveOptions {
@@ -42,9 +42,10 @@ public final class ZipArchiveOptions {
     /// Archive-wide inference applies when this instance is configured directly. A custom decoder, including a
     /// wrapper that delegates to this instance, receives individual fields without an archive-preparation phase.
     ///
-    /// Streaming readers and direct calls analyze individual values without looking ahead or retaining
-    /// previous-call evidence. Their results can differ from indexed reading. CP437 is used when no
-    /// candidate can be selected. Detection is heuristic and does not consult the system locale.
+    /// Streaming readers and direct calls decode each complete value as strict UTF-8, falling back to CP437 only
+    /// if the bytes are malformed UTF-8. They do not perform statistical detection, look ahead, or retain evidence
+    /// from previous calls. Their results can differ from indexed reading. Indexed detection is heuristic and
+    /// falls back to CP437 when no candidate can be selected. Neither policy consults the system locale.
     /// Use [ArchiveMetadataDecoder#forCharset(Charset)] to select a known encoding. Explicit Unicode
     /// metadata remains authoritative and is decoded strictly by the reader.
     /// This decoder supports concurrent calls and does not retain caller buffers.

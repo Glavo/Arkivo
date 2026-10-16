@@ -36,7 +36,7 @@ public final class ZipEntryNameDecoder {
     /// The decoder used when no authoritative Unicode charset is available.
     private final ArchiveMetadataDecoder legacyMetadataDecoder;
 
-    /// The inferred archive charset, or null for single-field inference and custom callbacks.
+    /// The inferred archive charset, or null for UTF-8/CP437 decoding and custom callbacks.
     private final @Nullable Charset archiveCharset;
 
     /// Creates an entry name decoder.
@@ -208,10 +208,6 @@ public final class ZipEntryNameDecoder {
         if (archiveCharset != null) {
             @Nullable String ascii = ZipAutoMetadataDecoder.decodeAscii(rawValue);
             return ascii != null ? ascii : strictDecode(rawValue, archiveCharset);
-        }
-
-        if (legacyMetadataDecoder instanceof ZipAutoMetadataDecoder automatic) {
-            return automatic.decode(rawValue, versionMadeBy, externalAttributes, headerSource);
         }
 
         String decoded;

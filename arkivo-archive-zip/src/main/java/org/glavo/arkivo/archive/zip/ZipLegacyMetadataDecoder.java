@@ -18,8 +18,9 @@ import java.util.Objects;
 /// ZIP readers invoke this decoder only when no usable Info-ZIP Unicode extra field or UTF-8 general-purpose flag
 /// supplies the encoding. Structural extra-field validation remains the reader's responsibility.
 ///
-/// The [default ZIP decoder][ZipArchiveOptions#DEFAULT_LEGACY_METADATA_DECODER] detects legacy encodings with CP437
-/// fallback. A custom decoder supplies the final text; there is no implicit CP437 fallback
+/// The [default ZIP policy][ZipArchiveOptions#DEFAULT_LEGACY_METADATA_DECODER] infers an encoding for indexed reading
+/// and tries strict UTF-8 followed by CP437 for streaming reading. A custom decoder supplies the final text;
+/// there is no implicit CP437 fallback
 /// if it throws an exception or returns `null`.
 @FunctionalInterface
 @NotNullByDefault

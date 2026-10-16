@@ -26,6 +26,11 @@ import java.util.Objects;
 /// password lookup, CRC validation, or authentication. An unopened body with a data descriptor must instead be decoded
 /// to locate its end and is validated while being consumed. After `next()` returns `false`, no current entry exists.
 ///
+/// Names without valid Unicode metadata use the configured legacy decoder. By default, each name is decoded as
+/// strict UTF-8, with CP437 fallback only for malformed UTF-8 bytes; no statistical encoding inference is performed.
+/// An explicit UTF-8 flag requires strict UTF-8 decoding without fallback. Indexed readers may infer a different
+/// encoding from central-directory names. See [ZipArchiveOptions#DEFAULT_LEGACY_METADATA_DECODER].
+///
 /// Exceeding an entry-size or total-entry-size limit prevents further cursor advancement. Closing the entry or reader
 /// then releases resources without draining the rejected body or validating its remaining data descriptor.
 /// For a stored entry with a data descriptor, a bulk read that produces bytes before a later read or validation failure

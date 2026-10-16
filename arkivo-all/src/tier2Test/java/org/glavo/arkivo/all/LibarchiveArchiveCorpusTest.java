@@ -70,7 +70,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /// Verifies archive readers against pinned, independently produced libarchive fixtures.
 @NotNullByDefault
@@ -171,21 +170,34 @@ public final class LibarchiveArchiveCorpusTest {
         }
     }
 
-    /// Infers each local-header name without central-directory or preceding-entry evidence.
+    /// Uses CP437 for non-UTF-8 local names by default and preserves upstream names with an explicit charset.
     @ParameterizedTest(name = "{0}")
     @MethodSource("legacyZipNames")
-    void infersStreamingZipNames(String fixture, String encoding, List<String> names, long size) throws IOException {
-        assumeFalse(fixture.equals("test_read_format_zip_filename_koi8r.zip.uu"),
-                "Short KOI8-R names are ambiguous without archive-wide evidence or an explicit code page");
-        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(decodeFixtureBytes(fixture)))) {
-            for (String name : names) {
-                assertTrue(reader.next());
-                assertLegacyZipName(name, encoding, size, reader.readAttributes(ZipArkivoEntryAttributes.class));
-                try (var input = reader.openInputStream()) {
-                    assertEquals(size, input.readAllBytes().length);
+    void decodesStreamingZipNames(String fixture, String encoding, List<String> names, long size) throws IOException {
+        var explicit = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
+                ArchiveMetadataDecoder.forCharset(Charset.forName(encoding)));
+        byte[] archive = decodeFixtureBytes(fixture);
+        for (var options : List.of(ZipArchiveOptions.READ_DEFAULTS, explicit)) {
+            try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive), options)) {
+                for (String name : names) {
+                    assertTrue(reader.next());
+                    var attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                    if (options == explicit) {
+                        assertLegacyZipName(name, encoding, size, attributes);
+                    } else {
+                        byte[] rawName = name.getBytes(Charset.forName(encoding));
+                        assertArrayEquals(rawName, attributes.rawPath());
+                        assertEquals(new String(rawName, Charset.forName("IBM437")).replace('\\', '/'),
+                                attributes.path());
+                        assertEquals(0, attributes.generalPurposeFlags() & 0x800);
+                        assertEquals(size, attributes.size());
+                    }
+                    try (var input = reader.openInputStream()) {
+                        assertEquals(size, input.readAllBytes().length);
+                    }
                 }
+                assertFalse(reader.next());
             }
-            assertFalse(reader.next());
         }
     }
 

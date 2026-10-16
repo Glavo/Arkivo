@@ -364,7 +364,7 @@ final class JSZipCorpusTest {
         });
     }
 
-    /// Reads the names asserted by upstream unicode.js with inferred or explicitly configured CP866 decoding.
+    /// Indexed reading infers upstream CP866 names; streaming requires the explicit charset to recover those names.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void readsLegacyRussianNames(boolean explicitCharset) throws IOException {
@@ -385,7 +385,9 @@ final class JSZipCorpusTest {
                 String path = expected.getName().replaceAll("/$", "");
                 var streamed = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 var indexed = Files.readAttributes(fileSystem.getPath("/" + path), ZipArkivoEntryAttributes.class);
-                assertEquals(expected.getName(), streamed.path());
+                String streamedName = explicitCharset ? expected.getName()
+                        : new String(names.get(count).getBytes(charset), Charset.forName("IBM437"));
+                assertEquals(streamedName, streamed.path());
                 assertEquals(0, streamed.generalPurposeFlags() & 0x800);
                 assertEquals(0, indexed.generalPurposeFlags() & 0x800);
                 assertArrayEquals(names.get(count).getBytes(charset), streamed.rawPath());

@@ -63,7 +63,7 @@ public final class ZipAutoMetadataDecoderTest {
 
     /// High bytes at either end bypass the ASCII shortcut, including a long all-ASCII prefix.
     @Test
-    public void arrayAndBufferInferenceAgree() throws IOException {
+    public void arrayAndBufferFallbackAgree() throws IOException {
         for (int length : new int[]{1, 7, 4097}) {
             for (int position : new int[]{0, length - 1}) {
                 byte[] raw = new byte[length];
@@ -77,7 +77,7 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Recognizes unmarked Unicode and decisive legacy script samples through both public reading paths.
+    /// Indexed reading infers legacy names; streaming uses UTF-8/CP437 unless a charset is configured.
     @ParameterizedTest
     @CsvSource({
             "UTF-8, résumé/日本語.txt",
@@ -99,17 +99,23 @@ public final class ZipAutoMetadataDecoderTest {
             assertArrayEquals(name.getBytes(Charset.forName(encoding)),
                     Files.readAttributes(fs.getPath(name), ZipArkivoEntryAttributes.class).rawPath());
         }
-        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertTrue(reader.next());
-            assertEquals(name, reader.readAttributes().path());
-            try (var input = reader.openInputStream()) {
-                assertArrayEquals(new byte[]{1, 2, 3}, input.readAllBytes());
+        var explicit = ZipArchiveOptions.READ_DEFAULTS.withLegacyMetadataDecoder(
+                ArchiveMetadataDecoder.forCharset(Charset.forName(encoding)));
+        for (var options : List.of(ZipArchiveOptions.READ_DEFAULTS, explicit)) {
+            String expected = options == explicit || encoding.equals("UTF-8") ? name
+                    : new String(name.getBytes(Charset.forName(encoding)), Charset.forName("IBM437"));
+            try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive), options)) {
+                assertTrue(reader.next());
+                assertEquals(expected.replace('\\', '/'), reader.readAttributes().path());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(new byte[]{1, 2, 3}, input.readAllBytes());
+                }
+                assertFalse(reader.next());
             }
-            assertFalse(reader.next());
         }
     }
 
-    /// Long ASCII prefixes leave non-ASCII evidence available to both streaming and indexed readers.
+    /// Long ASCII prefixes do not bypass UTF-8 validation or indexed inference of the remaining bytes.
     @ParameterizedTest
     @CsvSource({"UTF-8, 日本語こんにちは世界.txt", "GB18030, 软件安装说明.txt",
             "windows-31j, 日本語こんにちは世界.txt"})
@@ -124,7 +130,9 @@ public final class ZipAutoMetadataDecoderTest {
             }
             try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
                 assertTrue(reader.next());
-                assertEquals(name, reader.readAttributes().path());
+                String expected = encoding.equals("UTF-8") ? name
+                        : new String(name.getBytes(Charset.forName(encoding)), Charset.forName("IBM437"));
+                assertEquals(expected.replace('\\', '/'), reader.readAttributes().path());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(new byte[]{1, 2, 3}, input.readAllBytes());
                 }
@@ -133,13 +141,51 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Keeps inputs without usable pair evidence on the deterministic ZIP fallback.
+    /// Invalid UTF-8 uses CP437 for the complete field rather than replacing or splicing decoded fragments.
     @ParameterizedTest
-    @ValueSource(strings = {"82", "E9", "FF", "C3", "81FF"})
-    public void ambiguousBytesUseCp437(String hex) throws IOException {
+    @ValueSource(strings = {"82", "E9", "FF", "C3", "81FF", "C080", "EDA080", "F4908080",
+            "E282", "C3A9FF", "F09F9880C3", "61C3A9E282"})
+    public void malformedUtf8UsesCp437(String hex) throws IOException {
         byte[] raw = java.util.HexFormat.of().parseHex(hex);
+        assertThrows(CharacterCodingException.class,
+                () -> StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(raw)));
         assertEquals(new String(raw, Charset.forName("IBM437")),
                 ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(raw));
+        assertEquals(new String(raw, Charset.forName("IBM437")),
+                ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER.decode(ByteBuffer.wrap(raw).asReadOnlyBuffer()));
+    }
+
+    /// Every valid UTF-8 field wins regardless of length, script, controls, or CP437's alternative interpretation.
+    @ParameterizedTest
+    @ValueSource(strings = {"", "plain.txt", "é", "中", "日本語", "😀", "é\u0085.txt", "\u0000"})
+    public void validUtf8DoesNotRequireStatisticalEvidence(String name) throws IOException {
+        byte[] raw = name.getBytes(StandardCharsets.UTF_8);
+        assertEquals(name, ZipAutoMetadataDecoder.DEFAULT.decode(raw));
+        assertEquals(name, ZipAutoMetadataDecoder.DEFAULT.decode(ByteBuffer.wrap(raw)));
+    }
+
+    /// Unicode anchors and preceding legacy names do not change later streaming conversions.
+    @Test
+    public void streamingDecodingIsIndependentOfEntryOrder() throws IOException {
+        var samples = new ArrayList<>(List.of(
+                new Sample("软件安装说明.txt", "GB18030", null, true, 0),
+                new Sample("résumé.txt", "UTF-8", null, false, 0),
+                new Sample("软件安装说明.txt", "GB18030", null, false, 0),
+                new Sample("München.txt", "IBM437", null, false, 0)));
+        for (int order = 0; order < 2; order++) {
+            byte[] bytes = archive(samples.toArray(Sample[]::new));
+            try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+                for (var sample : samples) {
+                    assertTrue(reader.next());
+                    String expected = sample.unicode() || sample.encoding().equals("UTF-8") ? sample.name()
+                            : new String(sample.name().getBytes(Charset.forName(sample.encoding())),
+                                    Charset.forName("IBM437"));
+                    assertEquals(expected, reader.readAttributes().path());
+                }
+                assertFalse(reader.next());
+            }
+            Collections.reverse(samples);
+        }
     }
 
     /// Applies ASCII bypass only after checking authoritative Unicode, without bypassing user callbacks.
@@ -179,8 +225,8 @@ public final class ZipAutoMetadataDecoderTest {
     @Test
     public void bufferStateAndConcurrentCalls() {
         IntStream.range(0, 100).parallel().forEach(index -> {
-            String expected = index % 2 == 0 ? "résumé.txt" : "软件安装说明.txt";
-            byte[] raw = expected.getBytes(Charset.forName(index % 2 == 0 ? "UTF-8" : "GB18030"));
+            String expected = index % 2 == 0 ? "résumé.txt" : "München.txt";
+            byte[] raw = expected.getBytes(Charset.forName(index % 2 == 0 ? "UTF-8" : "IBM437"));
             ByteBuffer buffer = index % 3 == 0 ? ByteBuffer.allocateDirect(raw.length + 2)
                     : ByteBuffer.allocate(raw.length + 2);
             buffer.position(1).put(raw).flip().position(1);
@@ -655,7 +701,7 @@ public final class ZipAutoMetadataDecoderTest {
         }
     }
 
-    /// Controls remain lossless metadata in both streaming inference and the frozen archive strategy.
+    /// Controls remain lossless metadata in both streaming decoding and the frozen archive strategy.
     @Test
     public void controlCharactersDoNotInvalidateUtf8(@TempDir Path directory) throws IOException {
         var samples = new Sample[]{
@@ -817,12 +863,16 @@ public final class ZipAutoMetadataDecoderTest {
         try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
             assertThrows(IOException.class, reader::next);
         }
-        Files.write(file, archive(new Sample("../软件安装说明.txt", "GB18030", null, false, 0)));
+        byte[] unsafe = archive(new Sample("../软件安装说明.txt", "GB18030", null, false, 0));
+        Files.write(file, unsafe);
         assertThrows(IOException.class, () -> {
             try (var fs = ZipArkivoFileSystem.open(file); var stream = Files.newDirectoryStream(fs.getPath("/"))) {
                 stream.iterator().hasNext();
             }
         });
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(unsafe))) {
+            assertThrows(IOException.class, reader::next);
+        }
         Files.write(file, archive(new Sample("软件安装说明.txt", "GB18030", null, false, 0),
                 new Sample("软件安装说明.txt", "GB18030", null, false, 0)));
         assertThrows(IOException.class, () -> {
