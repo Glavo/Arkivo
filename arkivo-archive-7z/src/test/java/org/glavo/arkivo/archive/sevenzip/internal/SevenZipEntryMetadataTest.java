@@ -51,8 +51,10 @@ final class SevenZipEntryMetadataTest {
 
         methodId[0] ^= 0x7f;
         properties[0] = 0;
-        byte[] returnedMethodId = metadata.methodId();
-        byte[] returnedProperties = metadata.coderProperties();
+        var graph = Objects.requireNonNull(metadata.coderGraph());
+        var coder = graph.coders().get(0);
+        byte[] returnedMethodId = coder.method().methodId();
+        byte[] returnedProperties = coder.properties();
         returnedMethodId[0] ^= 0x7f;
         returnedProperties[0] = 0;
 
@@ -64,10 +66,10 @@ final class SevenZipEntryMetadataTest {
         assertEquals(123L, metadata.packedSize());
         assertEquals(SevenZipEntryMetadata.UNKNOWN_CRC32, metadata.packedCrc32());
         assertEquals(SevenZipEntryMetadata.UNKNOWN_CRC32, metadata.crc32());
-        assertArrayEquals(SevenZipCoderMethod.LZMA2.methodId(), metadata.methodId());
-        assertArrayEquals(new byte[]{16}, metadata.coderProperties());
-        assertTrue(metadata.hasMethod(SevenZipCoderMethod.LZMA2.methodId()));
-        assertFalse(metadata.hasMethod(SevenZipCoderMethod.COPY.methodId()));
+        assertArrayEquals(SevenZipCoderMethod.LZMA2.methodId(), coder.method().methodId());
+        assertArrayEquals(new byte[]{16}, coder.properties());
+        assertEquals(1, graph.coders().size());
+        assertEquals(SevenZipCoderMethod.LZMA2, coder.method());
         assertEquals(creationTime, metadata.creationTime());
         assertEquals(accessTime, metadata.lastAccessTime());
         assertEquals(modifiedTime, metadata.lastModifiedTime());

@@ -23,7 +23,6 @@ import org.glavo.arkivo.archive.PasswordRequest;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemImpl;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipHeaderReader;
-import org.glavo.arkivo.archive.sevenzip.internal.SevenZipHeaderParser;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipSignatureHeader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -49,7 +48,6 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -2268,19 +2266,12 @@ public final class SevenZipArchiveIntegrationTest {
 
                 try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
                     assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+                    var attributes = Files.readAttributes(fileSystem.getPath("/content.bin"), SevenZipArkivoEntryAttributes.class);
+                    var graph = Objects.requireNonNull(attributes.coderGraph());
+                    byte[] expectedMethodId = methodIds.get(index);
+                    assertTrue(graph.coders().stream().anyMatch(coder -> Arrays.equals(
+                            expectedMethodId, coder.method().methodId())), filter.method().optionName());
                 }
-
-                byte[] archive = Files.readAllBytes(archivePath);
-                ByteBuffer signature = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
-                long nextHeaderOffset = signature.getLong(12);
-                long nextHeaderSize = signature.getLong(20);
-                int headerStart = Math.toIntExact(SevenZipSignatureHeader.SIZE + nextHeaderOffset);
-                int headerEnd = Math.toIntExact(headerStart + nextHeaderSize);
-                byte[] nextHeader = Arrays.copyOfRange(archive, headerStart, headerEnd);
-                assertTrue(
-                        SevenZipHeaderParser.parseEntries(nextHeader).get(0).hasMethod(methodIds.get(index)),
-                        filter.method().optionName()
-                );
             } finally {
                 deleteTemporaryArchive(archivePath);
             }

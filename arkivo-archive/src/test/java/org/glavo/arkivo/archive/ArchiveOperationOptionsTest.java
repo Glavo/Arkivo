@@ -78,21 +78,17 @@ public final class ArchiveOperationOptionsTest {
     public void createOptionsAreImmutable() {
         ArkivoEditStorageFactory storageFactory = ArkivoEditStorageFactory.memory();
         ArkivoPasswordProvider passwordProvider = ArkivoPasswordProvider.none();
-        ArchiveMetadataDecoder charsetDecoder = ArchiveMetadataDecoder.forCharset(StandardCharsets.UTF_8);
         ArchiveCreateOptions configured = ArchiveCreateOptions.DEFAULT
                 .withThreadSafety(ArkivoFileSystemThreadSafety.NONE)
                 .withEditStorageFactory(storageFactory)
-                .withPasswordProvider(passwordProvider)
-                .withMetadataDecoder(charsetDecoder);
+                .withPasswordProvider(passwordProvider);
 
         assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, ArchiveCreateOptions.DEFAULT.threadSafety());
         assertEquals(ArkivoFileSystemThreadSafety.NONE, configured.threadSafety());
         assertSame(storageFactory, configured.editStorageFactory());
         assertSame(passwordProvider, configured.passwordProvider());
-        assertSame(charsetDecoder, configured.metadataDecoder());
         assertNull(ArchiveCreateOptions.DEFAULT.editStorageFactory());
         assertNull(ArchiveCreateOptions.DEFAULT.passwordProvider());
-        assertNull(ArchiveCreateOptions.DEFAULT.metadataDecoder());
     }
 
     /// Verifies update options carry publication and read-limit policy together.

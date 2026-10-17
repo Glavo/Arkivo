@@ -84,7 +84,7 @@ final class SevenZipArkivoFileSystemConfigTest {
         SevenZipFilterChain filters = SevenZipFilterChain.of(SevenZipFilter.delta(4));
         ArkivoEditStorageFactory storageFactory = () -> storage;
         SevenZipArchiveOptions.Create options = new SevenZipArchiveOptions.Create(
-                new ArchiveCreateOptions(ArkivoFileSystemThreadSafety.STRICT, storageFactory, null, null),
+                new ArchiveCreateOptions(ArkivoFileSystemThreadSafety.STRICT, storageFactory, null),
                 compression,
                 filters,
                 4,
@@ -240,54 +240,11 @@ final class SevenZipArkivoFileSystemConfigTest {
         );
     }
 
-    /// Verifies the public configuration constructor normalizes default access and validates split sizes.
-    @Test
-    void constructsConfigurationDirectly() {
-        ArkivoPasswordProvider passwordProvider = request -> new byte[]{1, 2, 3};
-        SevenZipCompression compression = SevenZipCompression.lzma2(1 << 20);
-        SevenZipFilterChain filters = SevenZipFilterChain.of(SevenZipFilter.delta(4));
-        SevenZipArkivoFileSystemConfig config = new SevenZipArkivoFileSystemConfig(
-                Set.of(),
-                passwordProvider,
-                compression,
-                filters,
-                4096L,
-                true,
-                ArkivoFileSystemThreadSafety.STRICT
-        );
-
-        assertEquals(Set.of(StandardOpenOption.READ), config.openOptions());
-        assertFalse(config.archiveWritable());
-        assertFalse(config.archiveUpdate());
-        assertSame(passwordProvider, config.passwordProvider());
-        assertSame(compression, config.compression());
-        assertSame(filters, config.filters());
-        assertEquals(4096L, config.splitSize());
-        assertTrue(config.splitSizeConfigured());
-        assertTrue(config.encryptHeaders());
-        assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
-        assertSame(ArchiveReadLimits.UNLIMITED, config.readLimits());
-
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> new SevenZipArkivoFileSystemConfig(
-                        Set.of(StandardOpenOption.READ),
-                        null,
-                        SevenZipCompression.copy(),
-                        SevenZipFilterChain.EMPTY,
-                        0L,
-                        false,
-                        ArkivoFileSystemThreadSafety.CONCURRENT_READ
-                )
-        );
-    }
-
-    /// Verifies generic writer and update parsers select their documented default access modes.
+    /// Verifies typed creation and update factories select their documented default access modes.
     @Test
     void selectsOperationSpecificDefaultAccessModes() {
-        ArchiveOptions empty = ArchiveOptions.fromEnvironment(Map.of());
-
-        SevenZipArkivoFileSystemConfig writer = SevenZipArkivoFileSystemConfig.fromWriterOptions(empty);
+        SevenZipArkivoFileSystemConfig writer = SevenZipArkivoFileSystemConfig.fromCreateOptions(
+                SevenZipArchiveOptions.CREATE_DEFAULTS);
         assertEquals(Set.of(
                 StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING,
@@ -296,10 +253,15 @@ final class SevenZipArkivoFileSystemConfigTest {
         assertTrue(writer.archiveWritable());
         assertFalse(writer.archiveUpdate());
 
-        SevenZipArkivoFileSystemConfig update = SevenZipArkivoFileSystemConfig.fromUpdateOptions(empty);
+        SevenZipArkivoFileSystemConfig update = SevenZipArkivoFileSystemConfig.fromUpdateOptions(
+                SevenZipArchiveOptions.UPDATE_DEFAULTS);
         assertEquals(Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE), update.openOptions());
         assertTrue(update.archiveWritable());
         assertTrue(update.archiveUpdate());
+        assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoFileSystemConfig.fromCreateOptions(
+                SevenZipArchiveOptions.CREATE_DEFAULTS, 0L));
+        assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoFileSystemConfig.fromUpdateOptions(
+                SevenZipArchiveOptions.UPDATE_DEFAULTS, 0L));
     }
 
     /// Verifies raw archive open options reject every unsupported access-mode combination.

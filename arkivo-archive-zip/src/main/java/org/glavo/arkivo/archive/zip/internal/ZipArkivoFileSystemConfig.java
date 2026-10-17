@@ -10,7 +10,6 @@ import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
@@ -222,43 +221,14 @@ public final class ZipArkivoFileSystemConfig {
     /// @throws NullPointerException if `options` is `null`
     /// @throws IllegalArgumentException if an option value is invalid or the open options conflict
     public static ZipArkivoFileSystemConfig fromOptions(ArchiveOptions options) {
-        return fromOptions(options, DEFAULT_READ_OPEN_OPTIONS);
-    }
-
-    /// Parses ZIP streaming writer configuration from archive options.
-    ///
-    /// @param options the generic archive options
-    /// @return normalized write-oriented ZIP configuration
-    /// @throws NullPointerException if `options` is `null`
-    /// @throws IllegalArgumentException if an option value is invalid or the open options conflict
-    public static ZipArkivoFileSystemConfig fromWriterOptions(ArchiveOptions options) {
-        return fromOptions(options, DEFAULT_WRITE_OPEN_OPTIONS);
-    }
-
-    /// Parses ZIP complete-rewrite update configuration from archive options.
-    ///
-    /// @param options the generic archive options
-    /// @return normalized update-oriented ZIP configuration
-    /// @throws NullPointerException if `options` is `null`
-    /// @throws IllegalArgumentException if an option value is invalid or the open options conflict
-    public static ZipArkivoFileSystemConfig fromUpdateOptions(ArchiveOptions options) {
-        return fromOptions(options, DEFAULT_UPDATE_OPEN_OPTIONS);
-    }
-
-    /// Parses ZIP file system configuration from archive options with open option defaults.
-    private static ZipArkivoFileSystemConfig fromOptions(
-            ArchiveOptions options,
-            Set<? extends OpenOption> defaultOpenOptions
-    ) {
         Objects.requireNonNull(options, "options");
-        Objects.requireNonNull(defaultOpenOptions, "defaultOpenOptions");
 
-        if (options.isEmpty() && defaultOpenOptions.equals(DEFAULT_READ_OPEN_OPTIONS)) {
+        if (options.isEmpty()) {
             return DEFAULTS;
         }
 
         ArkivoPasswordProvider passwordProvider = passwordProvider(options);
-        Set<OpenOption> openOptions = openOptions(options, defaultOpenOptions);
+        Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, DEFAULT_READ_OPEN_OPTIONS);
         ZipEncryption defaultEncryption =
                 options.getOrDefault(DEFAULT_ENCRYPTION, ZipEncryption.NONE);
         long splitSize = splitSize(options);
@@ -279,9 +249,6 @@ public final class ZipArkivoFileSystemConfig {
         ArchiveReadLimits readLimits =
                 options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
         ZipEntryNameErrorAction errorAction = options.getOrDefault(ENTRY_NAME_ERROR_ACTION, ZipEntryNameErrorAction.REPORT);
-        if (errorAction != ZipEntryNameErrorAction.REPORT && defaultOpenOptions.contains(StandardOpenOption.WRITE)) {
-            throw new IllegalArgumentException("Entry-name recovery is only supported for read-only ZIP operations");
-        }
         return new ZipArkivoFileSystemConfig(
                 openOptions,
                 passwordProvider,
@@ -505,18 +472,6 @@ public final class ZipArkivoFileSystemConfig {
             }
         }
         throw new IllegalArgumentException("Expected integral value for key: arkivo.zip.splitSize");
-    }
-
-    /// Parses open options from archive options.
-    private static @Unmodifiable Set<OpenOption> openOptions(
-            ArchiveOptions archiveOptions,
-            Set<? extends OpenOption> defaultOpenOptions
-    ) {
-        Set<OpenOption> options = archiveOptions.getOrDefault(
-                ArchiveEnvironmentOptions.OPEN_OPTIONS,
-                Set.copyOf(defaultOpenOptions)
-        );
-        return normalizeOpenOptions(options);
     }
 
     /// Normalizes and validates open options.

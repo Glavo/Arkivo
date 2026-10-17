@@ -89,22 +89,6 @@ public final class ArArchiveOptions {
         public Create withCommon(ArchiveCreateOptions value) {
             return new Create(value);
         }
-
-        /// Returns the configured metadata decoder or the AR default.
-        ///
-        /// @return the effective decoder used by file-system metadata views
-        public ArchiveMetadataDecoder metadataDecoder() {
-            @Nullable ArchiveMetadataDecoder metadataDecoder = common.metadataDecoder();
-            return metadataDecoder != null ? metadataDecoder : DEFAULT_METADATA_DECODER;
-        }
-
-        /// Returns a copy with the metadata decoder.
-        ///
-        /// @param value the replacement decoder used by file-system metadata views
-        /// @return an immutable creation configuration containing `value`
-        public Create withMetadataDecoder(ArchiveMetadataDecoder value) {
-            return new Create(common.withMetadataDecoder(Objects.requireNonNull(value, "value")));
-        }
     }
 
     /// Configures complete-rewrite updates of AR archives.

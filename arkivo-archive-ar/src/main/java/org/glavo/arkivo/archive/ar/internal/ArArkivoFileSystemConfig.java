@@ -73,7 +73,7 @@ public record ArArkivoFileSystemConfig(
     public static ArArkivoFileSystemConfig fromCreateOptions(ArArchiveOptions.Create options) {
         var common = options.common();
         var read = new ArchiveReadOptions(common.threadSafety(), common.editStorageFactory(), null,
-                common.metadataDecoder(), ArchiveReadLimits.UNLIMITED);
+                null, ArchiveReadLimits.UNLIMITED);
         return new ArArkivoFileSystemConfig(Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW),
                 read, null);
     }

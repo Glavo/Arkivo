@@ -290,16 +290,6 @@ final class SevenZipFolderMethod {
         return unpackSizes[finalOutputStreamIndex];
     }
 
-    /// Returns a copy of the first coder's method ID for entry metadata views.
-    byte[] firstMethodId() {
-        return methodId(0);
-    }
-
-    /// Returns a copy of the first coder's properties for entry metadata views.
-    byte[] firstProperties() {
-        return properties(0);
-    }
-
     /// Returns whether every coder in this graph uses the Copy method.
     boolean isCopyOnly() {
         for (byte[] methodId : methodIds) {
@@ -308,16 +298,6 @@ final class SevenZipFolderMethod {
             }
         }
         return true;
-    }
-
-    /// Returns whether this graph contains the given method ID.
-    boolean containsMethod(byte[] expectedMethodId) {
-        for (byte[] methodId : methodIds) {
-            if (Arrays.equals(methodId, expectedMethodId)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /// Returns an immutable public snapshot of this coder graph.

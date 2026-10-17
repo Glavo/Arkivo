@@ -49,10 +49,9 @@ final class ArArchiveOptionsTest {
         var read = ArArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(limits));
         assertSame(read.common(), ArArkivoFileSystemConfig.fromReadOptions(read).readOptions());
         var create = ArArkivoFileSystemConfig.fromCreateOptions(ArArchiveOptions.CREATE_DEFAULTS
-                .withCommon(ArchiveCreateOptions.DEFAULT.withEditStorageFactory(storage)).withMetadataDecoder(decoder));
+                .withCommon(ArchiveCreateOptions.DEFAULT.withEditStorageFactory(storage)));
         assertEquals(Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW), create.openOptions());
         assertSame(storage, create.readOptions().editStorageFactory());
-        assertSame(decoder, create.readOptions().metadataDecoder());
         assertSame(ArchiveReadLimits.UNLIMITED, create.readOptions().limits());
 
         var environment = ArArkivoFileSystemConfig.fromEnvironment(Map.of("arkivo.ar.metadataDecoder", "ISO-8859-1"));
@@ -60,7 +59,7 @@ final class ArArchiveOptionsTest {
         assertEquals(Set.of(StandardOpenOption.READ), environment.openOptions());
     }
 
-    /// Verifies every operation role preserves common options and exposes its effective metadata decoder.
+    /// Verifies common options are preserved and read/update roles expose the effective metadata decoder.
     @Test
     void derivesCommonAndMetadataConfiguration() {
         ArchiveMetadataDecoder metadataDecoder =
@@ -76,22 +75,16 @@ final class ArArchiveOptionsTest {
                 .withCommon(readCommon)
                 .withMetadataDecoder(metadataDecoder);
         ArArchiveOptions.Create create = ArArchiveOptions.CREATE_DEFAULTS
-                .withCommon(createCommon)
-                .withMetadataDecoder(metadataDecoder);
+                .withCommon(createCommon);
         ArArchiveOptions.Update update = ArArchiveOptions.UPDATE_DEFAULTS
                 .withCommon(updateCommon)
                 .withMetadataDecoder(metadataDecoder);
 
         assertEquals(readCommon, read.common().withMetadataDecoder(null));
         assertSame(metadataDecoder, read.metadataDecoder());
-        assertEquals(createCommon, create.common().withMetadataDecoder(null));
-        assertSame(metadataDecoder, create.metadataDecoder());
+        assertSame(createCommon, create.common());
         assertEquals(updateCommon, update.common().withMetadataDecoder(null));
         assertSame(metadataDecoder, update.metadataDecoder());
-        assertSame(
-                ArArchiveOptions.DEFAULT_METADATA_DECODER,
-                ArArchiveOptions.CREATE_DEFAULTS.metadataDecoder()
-        );
         assertSame(
                 ArArchiveOptions.DEFAULT_METADATA_DECODER,
                 ArArchiveOptions.UPDATE_DEFAULTS.metadataDecoder()
@@ -111,10 +104,6 @@ final class ArArchiveOptionsTest {
                 () -> ArArchiveOptions.READ_DEFAULTS.withMetadataDecoder(null)
         );
         assertThrows(NullPointerException.class, () -> ArArchiveOptions.CREATE_DEFAULTS.withCommon(null));
-        assertThrows(
-                NullPointerException.class,
-                () -> ArArchiveOptions.CREATE_DEFAULTS.withMetadataDecoder(null)
-        );
         assertThrows(NullPointerException.class, () -> ArArchiveOptions.UPDATE_DEFAULTS.withCommon(null));
         assertThrows(
                 NullPointerException.class,

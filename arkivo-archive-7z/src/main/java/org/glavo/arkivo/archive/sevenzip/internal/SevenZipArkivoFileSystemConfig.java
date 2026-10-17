@@ -9,7 +9,6 @@ import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
@@ -154,43 +153,6 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The maximum accepted logical entry count, or `NO_READ_LIMIT`.
     private final ArchiveReadLimits readLimits;
 
-    /// Creates parsed 7z file system configuration.
-    ///
-    /// @param openOptions the options used to select read-only, forward-only creation, or complete-rewrite update mode
-    /// @param passwordProvider the password source for encrypted input or output, or `null` when encryption is unavailable
-    /// @param compression the default compression for non-empty output entries
-    /// @param filters the preprocessing filter chain applied before `compression`
-    /// @param splitSize the positive output-volume limit, or `NO_SPLIT_SIZE` for single-volume output
-    /// @param encryptHeaders whether newly written archive metadata is encrypted
-    /// @param threadSafety the synchronization strategy for file-system operations
-    /// @throws IllegalArgumentException if `splitSize` or the access-mode combination is invalid
-    /// @throws UnsupportedOperationException if `openOptions` requests append or another unsupported access option
-    public SevenZipArkivoFileSystemConfig(
-            Set<? extends OpenOption> openOptions,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            SevenZipCompression compression,
-            SevenZipFilterChain filters,
-            long splitSize,
-            boolean encryptHeaders,
-            ArkivoFileSystemThreadSafety threadSafety
-    ) {
-        this(
-                openOptions,
-                passwordProvider,
-                compression,
-                filters,
-                DEFAULT_SOLID_FILE_COUNT,
-                splitSize,
-                splitSize != NO_SPLIT_SIZE,
-                encryptHeaders,
-                threadSafety,
-                null,
-                null,
-                ArchiveReadLimits.UNLIMITED
-        );
-    }
-
-
     /// Creates parsed 7z file system configuration with update staging and publication settings.
     private SevenZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
@@ -234,43 +196,9 @@ public final class SevenZipArkivoFileSystemConfig {
     /// @throws IllegalArgumentException if mutually exclusive options are present or an option is invalid for the
     ///                                  selected access mode
     public static SevenZipArkivoFileSystemConfig fromOptions(ArchiveOptions options) {
-        return fromOptions(options, DEFAULT_READ_OPEN_OPTIONS);
-    }
-
-
-    /// Parses 7z output configuration from archive options.
-    ///
-    /// @param options the generic options, interpreted with create-or-replace write access as the default
-    /// @return a validated forward-only output configuration
-    /// @throws IllegalArgumentException if mutually exclusive options are present or an option is invalid for
-    ///                                  forward-only output
-    public static SevenZipArkivoFileSystemConfig fromWriterOptions(ArchiveOptions options) {
-        return fromOptions(options, DEFAULT_WRITE_OPEN_OPTIONS);
-    }
-
-
-    /// Parses 7z complete-rewrite update configuration from archive options.
-    ///
-    /// @param options the generic options, interpreted with read/write access as the default
-    /// @return a validated complete-rewrite update configuration
-    /// @throws IllegalArgumentException if mutually exclusive options are present or an option is invalid for update
-    public static SevenZipArkivoFileSystemConfig fromUpdateOptions(ArchiveOptions options) {
-        return fromOptions(
-                options,
-                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-        );
-    }
-
-
-    /// Parses 7z configuration using the requested default archive open options.
-    private static SevenZipArkivoFileSystemConfig fromOptions(
-            ArchiveOptions options,
-            Set<? extends OpenOption> defaultOpenOptions
-    ) {
         Objects.requireNonNull(options, "options");
-        Objects.requireNonNull(defaultOpenOptions, "defaultOpenOptions");
 
-        if (options.isEmpty() && defaultOpenOptions.equals(DEFAULT_READ_OPEN_OPTIONS)) {
+        if (options.isEmpty()) {
             return DEFAULTS;
         }
 
@@ -281,7 +209,7 @@ public final class SevenZipArkivoFileSystemConfig {
         ArchiveReadLimits readLimits =
                 options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
         SevenZipArkivoFileSystemConfig config = new SevenZipArkivoFileSystemConfig(
-                options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.copyOf(defaultOpenOptions)),
+                options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, DEFAULT_READ_OPEN_OPTIONS),
                 passwordProvider(options),
                 options.getOrDefault(COMPRESSION, SevenZipCompression.copy()),
                 filters(options),

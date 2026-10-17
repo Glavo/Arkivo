@@ -8,6 +8,7 @@ import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -186,15 +187,20 @@ final class ZipEntryNameErrorActionTest {
     /// Read recovery is accepted through environment options but cannot enter a write or update session.
     @ParameterizedTest
     @EnumSource(value = ZipEntryNameErrorAction.class, names = {"SKIP", "REPLACE"})
-    void restrictsEnvironmentRecoveryToReading(ZipEntryNameErrorAction action) {
+    void restrictsEnvironmentRecoveryToReading(ZipEntryNameErrorAction action, @TempDir Path directory) throws IOException {
         var options = ArchiveOptions.fromEnvironment(Map.of("arkivo.zip.entryNameErrorAction", action));
         assertEquals(action, ZipArkivoFileSystemConfig.fromOptions(options).entryNameErrorAction());
-        assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromUpdateOptions(options));
-        assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromWriterOptions(options));
-        var readOptions = ArchiveOptions.fromEnvironment(Map.of("arkivo.zip.entryNameErrorAction", action,
-                "arkivo.openOptions", Set.of(StandardOpenOption.READ)));
-        assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromUpdateOptions(readOptions));
-        assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromWriterOptions(readOptions));
+        Path archive = directory.resolve("recovery.zip");
+        byte[] original = archive(ZipEntry.STORED, false, true);
+        Files.write(archive, original);
+        for (var openOptions : List.of(
+                Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE))) {
+            var environment = Map.of("arkivo.zip.entryNameErrorAction", action, "arkivo.openOptions", openOptions);
+            assertThrows(IllegalArgumentException.class, () ->
+                    ZipArkivoFileSystemProvider.instance().newFileSystem(archive, environment));
+            assertArrayEquals(original, Files.readAllBytes(archive));
+        }
     }
 
     /// Consecutive omitted entries leave an empty logical archive without changing physical record counts.

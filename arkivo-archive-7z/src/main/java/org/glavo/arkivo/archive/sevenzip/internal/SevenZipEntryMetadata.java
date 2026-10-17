@@ -346,28 +346,6 @@ public final class SevenZipEntryMetadata {
         return crc32;
     }
 
-    /// Returns a copy of the 7z method ID used to store this entry.
-    ///
-    /// @return a newly allocated copy of the first coder's method ID
-    public byte[] methodId() {
-        return method.firstMethodId();
-    }
-
-    /// Returns whether this entry is stored with the given 7z method ID.
-    ///
-    /// @param expectedMethodId the raw method ID to find in the folder coder graph
-    /// @return `true` if any coder in the folder uses the given method ID
-    public boolean hasMethod(byte[] expectedMethodId) {
-        return method.containsMethod(expectedMethodId);
-    }
-
-    /// Returns a copy of the 7z coder properties used to store this entry.
-    ///
-    /// @return a newly allocated copy of the first coder's property bytes
-    public byte[] coderProperties() {
-        return method.firstProperties();
-    }
-
     /// Returns an immutable coder graph snapshot, or null when this entry has no packed stream.
     @Nullable SevenZipCoderGraph coderGraph() {
         return packedStreams.isEmpty() ? null : method.coderGraph();
