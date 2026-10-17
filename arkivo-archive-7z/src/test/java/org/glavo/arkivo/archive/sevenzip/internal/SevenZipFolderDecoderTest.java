@@ -20,14 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Tests 7z LZMA decoder pipeline setup behavior.
+/// Tests 7z folder decoder setup, coder properties, and resource limits.
 @NotNullByDefault
-public final class SevenZipLZMADecoderTest {
+public final class SevenZipFolderDecoderTest {
     /// Verifies the official modern BCJ method IDs are recognized as supported decoders.
     @Test
     public void recognizesModernBcjMethodIds() {
-        assertTrue(SevenZipLZMADecoder.isSupported(new byte[]{0x0a}));
-        assertTrue(SevenZipLZMADecoder.isSupported(new byte[]{0x0b}));
+        assertTrue(SevenZipFolderDecoder.isSupported(new byte[]{0x0a}));
+        assertTrue(SevenZipFolderDecoder.isSupported(new byte[]{0x0b}));
     }
 
     /// Verifies modern BCJ properties reject start offsets that violate instruction alignment.
@@ -35,14 +35,14 @@ public final class SevenZipLZMADecoderTest {
     public void modernBcjFiltersRejectMisalignedStartOffsets() {
         assertThrows(
                 IOException.class,
-                () -> SevenZipLZMADecoder.openARM64Filter(
+                () -> SevenZipFolderDecoder.openARM64Filter(
                         new ByteArrayInputStream(new byte[0]),
                         new byte[]{0x02, 0x00, 0x00, 0x00}
                 )
         );
         assertThrows(
                 IOException.class,
-                () -> SevenZipLZMADecoder.openRiscVFilter(
+                () -> SevenZipFolderDecoder.openRiscVFilter(
                         new ByteArrayInputStream(new byte[0]),
                         new byte[]{0x01, 0x00, 0x00, 0x00}
                 )
@@ -52,7 +52,7 @@ public final class SevenZipLZMADecoderTest {
     /// Verifies unsigned 32-bit BCJ start offsets are preserved instead of sign-extended.
     @Test
     public void acceptsUnsignedBcjStartOffset() throws IOException {
-        try (InputStream input = SevenZipLZMADecoder.openX86Filter(
+        try (InputStream input = SevenZipFolderDecoder.openX86Filter(
                 new ByteArrayInputStream(new byte[0]),
                 new byte[]{(byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff}
         )) {
@@ -64,7 +64,7 @@ public final class SevenZipLZMADecoderTest {
     @Test
     public void zstandardAcceptsCompatiblePropertyLengths() throws IOException {
         for (int propertyLength : new int[]{0, 1, 3, 5}) {
-            SevenZipLZMADecoder.openZstandard(
+            SevenZipFolderDecoder.openZstandard(
                     new ByteArrayInputStream(new byte[0]),
                     new byte[propertyLength],
                     0,
@@ -78,7 +78,7 @@ public final class SevenZipLZMADecoderTest {
     public void zstandardRejectsUnknownPropertyLengths() {
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipLZMADecoder.openZstandard(
+                () -> SevenZipFolderDecoder.openZstandard(
                         new ByteArrayInputStream(new byte[0]),
                         new byte[2],
                         0,
@@ -112,7 +112,7 @@ public final class SevenZipLZMADecoderTest {
     public void folderGraphEnforcesPpmdMemoryLimit() {
         byte[] properties = {4, 0, 8, 0, 0};
         SevenZipFolderMethod method = SevenZipFolderMethod.single(
-                SevenZipLZMADecoder.PPMD_METHOD_ID,
+                SevenZipFolderDecoder.PPMD_METHOD_ID,
                 properties,
                 0L
         );
@@ -122,7 +122,7 @@ public final class SevenZipLZMADecoderTest {
 
         DecompressionMemoryLimitException exception = assertThrows(
                 DecompressionMemoryLimitException.class,
-                () -> SevenZipLZMADecoder.openFolder(
+                () -> SevenZipFolderDecoder.openFolder(
                         List.of(new ByteArrayInputStream(new byte[0])),
                         new long[]{0L},
                         method,
@@ -142,7 +142,7 @@ public final class SevenZipLZMADecoderTest {
     @Test
     public void openFolderPreservesSetupFailureWhenInputCloseFails() {
         SevenZipFolderMethod method = SevenZipFolderMethod.single(
-                SevenZipLZMADecoder.LZMA_METHOD_ID,
+                SevenZipFolderDecoder.LZMA_METHOD_ID,
                 new byte[0],
                 0
         );
@@ -160,7 +160,7 @@ public final class SevenZipLZMADecoderTest {
     @Test
     public void openFolderPreservesSetupFailureWhenInputCloseFailsAtRuntime() {
         SevenZipFolderMethod method = SevenZipFolderMethod.single(
-                SevenZipLZMADecoder.LZMA_METHOD_ID,
+                SevenZipFolderDecoder.LZMA_METHOD_ID,
                 new byte[0],
                 0
         );
@@ -176,7 +176,7 @@ public final class SevenZipLZMADecoderTest {
 
     /// Opens a one-stream folder with the exact empty packed-input size used by setup-failure tests.
     private static InputStream openFolder(InputStream input, SevenZipFolderMethod method) throws IOException {
-        return SevenZipLZMADecoder.openFolder(
+        return SevenZipFolderDecoder.openFolder(
                 List.of(input),
                 new long[]{0L},
                 method,

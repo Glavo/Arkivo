@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.glavo.arkivo.encoding.detector.internal.EncodingDetector;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
@@ -51,28 +52,8 @@ final class ZipNameEncodingInference {
         var detector = new EncodingDetector();
         var names = new Samples();
         var legacyFields = new LegacyFields();
-        var evidence = new Evidence();
-        scan(centralDirectory, recoverNames, field -> {
-            if (field.unicode != null) {
-                var matches = detector.matching(field.bytes, field.unicode);
-                if (!matches.isEmpty()) {
-                    if (evidence.anchors == null) evidence.anchors = new HashSet<>(matches);
-                    else evidence.anchors.retainAll(matches);
-                }
-            } else if (!EncodingDetector.isAscii(field.bytes)) {
-                names.accept(field.bytes);
-                legacyFields.add(field.offset, field.bytes.remaining());
-            }
-            if (!EncodingDetector.isAscii(field.bytes)) {
-                evidence.preferences |= switch (field.preference) {
-                    case NONE -> 0;
-                    case OEM -> 1;
-                    case ANSI -> 2;
-                };
-            }
-        });
-        var preference = evidence.preferences == 1 ? EncodingDetector.Preference.OEM
-                : evidence.preferences == 2 ? EncodingDetector.Preference.ANSI : EncodingDetector.Preference.NONE;
+        var evidence = collectEvidence(centralDirectory, recoverNames, detector, names, legacyFields);
+        var preference = evidence.preference;
         if (evidence.anchors != null && evidence.anchors.isEmpty()) return ZipAutoMetadataDecoder.CP437;
         var ranked = detector.rank(names.values(), EncodingDetector.Kind.NAME, preference);
         var candidates = new ArrayList<EncodingDetector.Score>();
@@ -120,8 +101,11 @@ final class ZipNameEncodingInference {
         return ZipAutoMetadataDecoder.CP437;
     }
 
-    /// Visits complete central fields once without changing the caller's buffer.
-    private static void scan(ByteBuffer central, boolean recoverNames, FieldVisitor visitor) throws IOException {
+    /// Collects samples, decoding ranges, and encoding constraints without changing the caller's buffer.
+    private static Evidence collectEvidence(ByteBuffer central, boolean recoverNames, EncodingDetector detector,
+                                            Samples names, LegacyFields legacyFields) throws IOException {
+        @Nullable Set<Charset> anchors = null;
+        int preferences = 0;
         var buffer = central.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         while (buffer.hasRemaining()) {
             int offset = buffer.position();
@@ -154,25 +138,28 @@ final class ZipNameEncodingInference {
                     continue;
                 }
             }
-            visitor.visit(new Field(start, bytes, preference, unicode));
+            boolean ascii = EncodingDetector.isAscii(bytes);
+            if (unicode != null) {
+                var matches = detector.matching(bytes, unicode);
+                if (!matches.isEmpty()) {
+                    if (anchors == null) anchors = new HashSet<>(matches);
+                    else anchors.retainAll(matches);
+                }
+            } else if (!ascii) {
+                names.accept(bytes);
+                legacyFields.add(start, nameLength);
+            }
+            if (!ascii) {
+                preferences |= switch (preference) {
+                    case NONE -> 0;
+                    case OEM -> 1;
+                    case ANSI -> 2;
+                };
+            }
         }
-    }
-
-    /// Receives a field valid only during the current preparation pass.
-    @NotNullByDefault
-    private interface FieldVisitor {
-        /// Collects evidence and decoding ranges from one borrowed central-directory field.
-        void visit(Field field) throws IOException;
-    }
-
-    /// Describes borrowed metadata and its optional authoritative Unicode counterpart.
-    /// @param offset absolute field offset in the supplied central-directory buffer
-    /// @param bytes complete raw bytes
-    /// @param preference producer code-page family
-    /// @param unicode authoritative text, or null when legacy decoding is required
-    @NotNullByDefault
-    private record Field(int offset, @UnmodifiableView ByteBuffer bytes,
-                         EncodingDetector.Preference preference, @Nullable String unicode) {
+        var preference = preferences == 1 ? EncodingDetector.Preference.OEM
+                : preferences == 2 ? EncodingDetector.Preference.ANSI : EncodingDetector.Preference.NONE;
+        return new Evidence(anchors == null ? null : Set.copyOf(anchors), preference);
     }
 
     /// Stores only ranges requiring legacy decoding; extra fields are parsed once during collection.
@@ -216,17 +203,11 @@ final class ZipNameEncodingInference {
         }
     }
 
-    /// Holds temporary global counterpart constraints and compatibility hints.
+    /// Summarizes global counterpart constraints and compatibility hints after collection.
+    /// @param anchors lossless counterpart matches, or null if no counterpart supplied evidence
+    /// @param preference the unambiguous producer code-page family, or NONE when absent or conflicting
     @NotNullByDefault
-    private static final class Evidence {
-        /// Intersection of lossless counterpart matches, or null if no counterpart supplied evidence.
-        private @Nullable Set<Charset> anchors;
-        /// Bit set of observed OEM and ANSI preferences.
-        private int preferences;
-
-        /// Creates empty evidence for one preparation call.
-        private Evidence() {
-        }
+    private record Evidence(@Nullable @Unmodifiable Set<Charset> anchors, EncodingDetector.Preference preference) {
     }
 
     /// Selects content-ranked, distinct fields independently of central-directory order.

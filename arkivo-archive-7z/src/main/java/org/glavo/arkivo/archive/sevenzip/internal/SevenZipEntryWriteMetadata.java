@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
-import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -20,8 +19,7 @@ import java.util.Objects;
 /// @param creationTime the creation time, or null when absent
 /// @param windowsAttributes the Windows attributes, or UNKNOWN_WINDOWS_ATTRIBUTES when absent
 /// @param compression the entry-specific compression, or null to use the writer default
-/// @param filtersConfigured whether the entry overrides the writer's default filter chain
-/// @param filters the entry-specific filter chain, or null when filtersConfigured is false
+/// @param filters the entry-specific filter chain, empty to disable filters, or null to use the writer default
 @NotNullByDefault
 record SevenZipEntryWriteMetadata(
         @Nullable FileTime lastModifiedTime,
@@ -29,7 +27,6 @@ record SevenZipEntryWriteMetadata(
         @Nullable FileTime creationTime,
         int windowsAttributes,
         @Nullable SevenZipCompression compression,
-        boolean filtersConfigured,
         @Nullable SevenZipFilterChain filters
 ) {
     /// Seconds between the Windows epoch and the Unix epoch.
@@ -41,12 +38,6 @@ record SevenZipEntryWriteMetadata(
     /// Validates entry write metadata.
     SevenZipEntryWriteMetadata {
         validateTimes(lastModifiedTime, lastAccessTime, creationTime);
-        if (filtersConfigured && filters == null) {
-            throw new IllegalArgumentException("Configured entry filters must not be null");
-        }
-        if (!filtersConfigured && filters != null) {
-            throw new IllegalArgumentException("Inherited entry filters must be null");
-        }
     }
 
     /// Checks all supplied times before callers apply any of them to an entry.
@@ -77,11 +68,6 @@ record SevenZipEntryWriteMetadata(
         return seconds * WINDOWS_TICKS_PER_SECOND + fraction;
     }
 
-    /// Creates metadata containing only the requested Windows attributes.
-    static SevenZipEntryWriteMetadata withWindowsAttributes(int windowsAttributes) {
-        return new SevenZipEntryWriteMetadata(null, null, null, windowsAttributes, null, false, null);
-    }
-
     /// Returns the entry-specific compression or the writer default.
     SevenZipCompression resolvedCompression(SevenZipCompression defaultCompression) {
         Objects.requireNonNull(defaultCompression, "defaultCompression");
@@ -91,6 +77,6 @@ record SevenZipEntryWriteMetadata(
     /// Returns the entry-specific filter decision or the writer default.
     SevenZipFilterChain resolvedFilters(SevenZipFilterChain defaultFilters) {
         Objects.requireNonNull(defaultFilters, "defaultFilters");
-        return filtersConfigured ? Objects.requireNonNull(filters, "filters") : defaultFilters;
+        return filters != null ? filters : defaultFilters;
     }
 }

@@ -29,6 +29,7 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.time.Instant;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
@@ -178,6 +179,44 @@ final class SevenZipNamedAttributeContractTest {
                     ReadOnlyFileSystemException.class,
                     () -> Files.setAttribute(file, "7z:windowsAttributes", 0x1)
             );
+        }
+    }
+
+    /// Verifies update filter inheritance, disabling, and overrides survive later compression changes.
+    @Test
+    void preservesFilterOverridesWhenChangingCompression() throws IOException {
+        Path archive = createArchive();
+        var options = SevenZipArchiveOptions.UPDATE_DEFAULTS
+                .withCompression(SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE))
+                .withFilters(SevenZipFilterChain.of(SevenZipFilter.delta(3)));
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.update(archive, options)) {
+            Path inherited = fileSystem.getPath("/value.txt");
+            Path disabled = fileSystem.getPath("/disabled.txt");
+            Path overridden = fileSystem.getPath("/overridden.txt");
+            Files.copy(inherited, disabled);
+            Files.copy(inherited, overridden);
+            Objects.requireNonNull(Files.getFileAttributeView(disabled, SevenZipArkivoEntryAttributeView.class))
+                    .clearFilter();
+            Objects.requireNonNull(Files.getFileAttributeView(overridden, SevenZipArkivoEntryAttributeView.class))
+                    .setFilters(SevenZipFilterChain.of(SevenZipFilter.bcjX86()));
+            for (Path path : List.of(inherited, disabled, overridden)) {
+                Objects.requireNonNull(Files.getFileAttributeView(path, SevenZipArkivoEntryAttributeView.class))
+                        .setCompression(SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE));
+            }
+        }
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive)) {
+            for (String name : List.of("value.txt", "disabled.txt", "overridden.txt")) {
+                Path path = fileSystem.getPath(name);
+                assertEquals("value", Files.readString(path));
+                var methods = Objects.requireNonNull(
+                        Files.readAttributes(path, SevenZipArkivoEntryAttributes.class).coderGraph()
+                ).coders().stream().map(SevenZipCoder::method).toList();
+                assertEquals(switch (name) {
+                    case "value.txt" -> List.of(SevenZipCoderMethod.LZMA2, SevenZipCoderMethod.DELTA);
+                    case "disabled.txt" -> List.of(SevenZipCoderMethod.LZMA2);
+                    default -> List.of(SevenZipCoderMethod.LZMA2, SevenZipCoderMethod.BCJ_X86);
+                }, methods);
+            }
         }
     }
 

@@ -10,8 +10,12 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
-/// Verifies 7z reports precise capability failures when optional compression formats are absent.
+/// Verifies core 7z codecs remain usable and optional codecs report precise failures when absent.
 @NotNullByDefault
 public final class SevenZipOptionalFormatProbe {
     /// The compression formats excluded from the runtime class path used by this probe.
@@ -28,6 +32,7 @@ public final class SevenZipOptionalFormatProbe {
 
     /// Checks both coder directions without optional compression formats on the runtime class path.
     public static void main(String @Unmodifiable [] arguments) throws Exception {
+        requireCoreCodecs();
         for (String formatName : OPTIONAL_FORMAT_NAMES) {
             requireMissingFormat(formatName, () -> SevenZipCompressionFormats.newInputStream(
                     formatName,
@@ -53,6 +58,37 @@ public final class SevenZipOptionalFormatProbe {
                 1L << 20,
                 new ByteArrayOutputStream()
         ));
+    }
+
+    /// Round-trips raw LZMA and LZMA2 without any optional codecs on the class path.
+    private static void requireCoreCodecs() throws IOException {
+        byte[] content = "7z core codec round trip ".repeat(32).getBytes(StandardCharsets.UTF_8);
+        int dictionarySize = 1 << 16;
+        for (boolean endMarker : new boolean[]{false, true}) {
+            var encoded = new ByteArrayOutputStream();
+            try (OutputStream output = SevenZipCompressionFormats.openRawLZMAEncoder(
+                    dictionarySize, endMarker, encoded)) {
+                output.write(content);
+            }
+            try (InputStream input = SevenZipCompressionFormats.openRawLZMADecoder(
+                    new ByteArrayInputStream(encoded.toByteArray()), 0x5d, dictionarySize,
+                    content.length, ArchiveReadLimits.UNLIMITED)) {
+                if (!Arrays.equals(content, input.readAllBytes())) {
+                    throw new AssertionError("Raw LZMA round trip failed without optional codecs");
+                }
+            }
+        }
+        var encoded = new ByteArrayOutputStream();
+        try (OutputStream output = SevenZipCompressionFormats.openLZMA2Encoder(dictionarySize, encoded)) {
+            output.write(content);
+        }
+        try (InputStream input = SevenZipCompressionFormats.openLZMA2Decoder(
+                new ByteArrayInputStream(encoded.toByteArray()), dictionarySize,
+                content.length, ArchiveReadLimits.UNLIMITED)) {
+            if (!Arrays.equals(content, input.readAllBytes())) {
+                throw new AssertionError("LZMA2 round trip failed without optional codecs");
+            }
+        }
     }
 
     /// Requires one default-codec operation to fail with the stable missing-format diagnostic.

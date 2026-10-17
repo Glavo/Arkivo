@@ -27,7 +27,7 @@ import java.util.Set;
 
 /// Opens supported coder streams stored in 7z folders.
 @NotNullByDefault
-final class SevenZipLZMADecoder {
+final class SevenZipFolderDecoder {
     /// The 7z Copy method ID.
     static final byte[] COPY_METHOD_ID = new byte[]{0x00};
 
@@ -86,7 +86,7 @@ final class SevenZipLZMADecoder {
     private static final byte @Unmodifiable [] RISCV_FILTER_METHOD_ID = new byte[]{0x0b};
 
     /// Creates no instances.
-    private SevenZipLZMADecoder() {
+    private SevenZipFolderDecoder() {
     }
 
     /// Returns whether the method ID identifies the Copy method.

@@ -433,9 +433,6 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         /// The entry-specific compression, or `null` to use the writer default.
         private @Nullable SevenZipCompression compression;
 
-        /// Whether this entry overrides the writer's default filter chain.
-        private boolean filtersConfigured;
-
         /// The entry-specific filter chain, or null when inherited.
         private @Nullable SevenZipFilterChain filters;
 
@@ -523,7 +520,6 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             try {
                 entry.ensurePending();
                 this.filters = filters;
-                this.filtersConfigured = true;
             } finally {
                 unlock();
             }
@@ -563,7 +559,6 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                     creationTime,
                     windowsAttributes,
                     compression,
-                    filtersConfigured,
                     filters
             );
         }

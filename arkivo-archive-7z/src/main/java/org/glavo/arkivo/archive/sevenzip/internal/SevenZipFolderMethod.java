@@ -293,7 +293,7 @@ final class SevenZipFolderMethod {
     /// Returns whether every coder in this graph uses the Copy method.
     boolean isCopyOnly() {
         for (byte[] methodId : methodIds) {
-            if (!SevenZipLZMADecoder.isCopy(methodId)) {
+            if (!SevenZipFolderDecoder.isCopy(methodId)) {
                 return false;
             }
         }

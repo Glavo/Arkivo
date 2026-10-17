@@ -108,9 +108,4 @@ final class Rar5HuffmanDecoder {
         sortedSymbols = new int[0];
         populated = false;
     }
-
-    /// Returns whether at least one canonical code is available.
-    boolean isPopulated() {
-        return populated;
-    }
 }

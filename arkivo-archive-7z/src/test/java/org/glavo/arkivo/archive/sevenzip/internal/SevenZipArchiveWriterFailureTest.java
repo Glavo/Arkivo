@@ -41,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class SevenZipArchiveWriterFailureTest {
     /// Entry metadata that inherits the writer's compression and filters.
     private static final SevenZipEntryWriteMetadata METADATA =
-            SevenZipEntryWriteMetadata.withWindowsAttributes(0);
+            new SevenZipEntryWriteMetadata(null, null, null, 0, null, null);
 
     /// Small x86-like data that exercises BCJ2 branch output without large temporary files.
     private static final byte @Unmodifiable [] BODY = body();

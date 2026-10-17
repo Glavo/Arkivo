@@ -21,15 +21,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Objects;
 
-/// Resolves optional compression formats and adapts their immutable codecs to 7z coder streams.
+/// Configures codecs for 7z coder streams, resolving optional compression formats when needed.
 @NotNullByDefault
 final class SevenZipCompressionFormats {
-    /// The stable optional raw LZMA format name.
-    private static final String RAW_LZMA_NAME = "lzma-raw";
-
-    /// The stable optional raw LZMA2 format name.
-    private static final String LZMA2_NAME = "lzma2";
-
     /// The stable optional PPMd format name.
     private static final String PPMD_NAME = "ppmd";
 
@@ -77,12 +71,8 @@ final class SevenZipCompressionFormats {
             boolean endMarker,
             OutputStream target
     ) throws IOException {
-        CompressionCodec<?> codec = requireDefaultCodec(RAW_LZMA_NAME);
-        if (!(codec instanceof RawLZMACodec rawCodec)) {
-            throw incompatibleCodec(RAW_LZMA_NAME);
-        }
         return newOwningOutputStream(
-                rawCodec
+                RawLZMACodec.DEFAULT
                         .withDictionarySize(Math.toIntExact(dictionarySize))
                         .withEndMarker(endMarker),
                 target
@@ -91,12 +81,8 @@ final class SevenZipCompressionFormats {
 
     /// Opens a raw LZMA2 encoder that owns the downstream coder stream.
     static OutputStream openLZMA2Encoder(long dictionarySize, OutputStream target) throws IOException {
-        CompressionCodec<?> codec = requireDefaultCodec(LZMA2_NAME);
-        if (!(codec instanceof LZMA2Codec lzma2Codec)) {
-            throw incompatibleCodec(LZMA2_NAME);
-        }
         return newOwningOutputStream(
-                lzma2Codec.withDictionarySize(Math.toIntExact(dictionarySize)),
+                LZMA2Codec.DEFAULT.withDictionarySize(Math.toIntExact(dictionarySize)),
                 target
         );
     }
@@ -141,15 +127,11 @@ final class SevenZipCompressionFormats {
             long decodedSize,
             ArchiveReadLimits readLimits
     ) throws IOException {
-        CompressionCodec<?> codec = requireDefaultCodec(RAW_LZMA_NAME);
-        if (!(codec instanceof RawLZMACodec rawCodec)) {
-            throw incompatibleCodec(RAW_LZMA_NAME);
-        }
         LZMAProperties properties = LZMAProperties.decode(
                 property,
                 Math.toIntExact(dictionarySize)
         );
-        RawLZMACodec configured = rawCodec
+        RawLZMACodec configured = RawLZMACodec.DEFAULT
                 .withProperties(properties)
                 .withDecodedSize(decodedSize);
         return newOwningInputStream(withDecodingLimits(configured, decodedSize, readLimits), source);
@@ -162,13 +144,9 @@ final class SevenZipCompressionFormats {
             long maximumOutputSize,
             ArchiveReadLimits readLimits
     ) throws IOException {
-        CompressionCodec<?> codec = requireDefaultCodec(LZMA2_NAME);
-        if (!(codec instanceof LZMA2Codec lzma2Codec)) {
-            throw incompatibleCodec(LZMA2_NAME);
-        }
         return newOwningInputStream(
                 withDecodingLimits(
-                        lzma2Codec.withDictionarySize(Math.toIntExact(dictionarySize)),
+                        LZMA2Codec.DEFAULT.withDictionarySize(Math.toIntExact(dictionarySize)),
                         maximumOutputSize,
                         readLimits
                 ),

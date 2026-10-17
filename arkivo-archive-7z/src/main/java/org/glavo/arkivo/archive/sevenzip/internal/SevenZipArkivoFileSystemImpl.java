@@ -1342,7 +1342,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             return new SevenZipBoundedInputStream(packedInputs.get(0), metadata.size(), metadata.crc32());
         }
 
-        InputStream decoded = SevenZipLZMADecoder.openFolder(
+        InputStream decoded = SevenZipFolderDecoder.openFolder(
                 packedInputs,
                 metadata.packedStreams().stream().mapToLong(SevenZipPackedStream::size).toArray(),
                 metadata.method(),
@@ -2056,7 +2056,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     metadata.creationTime(),
                     metadata.windowsAttributes(),
                     settings.compression(),
-                    settings.filtersConfigured(),
                     settings.filters()
             );
 
@@ -2288,7 +2287,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         } else {
             windowsAttributes = SevenZipPosixSupport.regularFileWindowsAttributes(permissions);
         }
-        return new SevenZipEntryWriteMetadata(lastModifiedTime, null, null, windowsAttributes, null, false, null);
+        return new SevenZipEntryWriteMetadata(lastModifiedTime, null, null, windowsAttributes, null, null);
     }
 
     /// Returns POSIX permissions stored by a file attribute.
@@ -2643,7 +2642,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 SevenZipEntryMetadata.NO_DATA_OFFSET,
                 0L,
                 0L,
-                SevenZipLZMADecoder.COPY_METHOD_ID,
+                SevenZipFolderDecoder.COPY_METHOD_ID,
                 new byte[0],
                 metadata.creationTime(),
                 metadata.lastAccessTime(),
@@ -2843,7 +2842,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         Objects.requireNonNull(compression, "compression");
         mutateOutputSettings(path, settings -> new UpdateOutputSettings(
                 compression,
-                settings.filtersConfigured(),
                 settings.filters()
         ));
     }
@@ -2859,7 +2857,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         Objects.requireNonNull(filters, "filters");
         mutateOutputSettings(path, settings -> new UpdateOutputSettings(
                 settings.compression(),
-                true,
                 filters
         ));
     }
@@ -2938,27 +2935,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Stores per-entry output method overrides for update rewriting.
     ///
     /// @param compression       the entry compression override, or null for the archive default
-    /// @param filtersConfigured whether the filter chain overrides the archive default
-    /// @param filters           the filter-chain override, or null when inherited
+    /// @param filters           the filter-chain override, empty to disable filters, or null when inherited
     @NotNullByDefault
     private record UpdateOutputSettings(
             @Nullable SevenZipCompression compression,
-            boolean filtersConfigured,
             @Nullable SevenZipFilterChain filters
     ) {
-        /// Validates one per-entry output override.
-        private UpdateOutputSettings {
-            if (filtersConfigured && filters == null) {
-                throw new IllegalArgumentException("Configured update filters must not be null");
-            }
-            if (!filtersConfigured && filters != null) {
-                throw new IllegalArgumentException("Inherited update filters must be null");
-            }
-        }
-
         /// The default settings that inherit archive output methods.
         private static final UpdateOutputSettings DEFAULTS =
-                new UpdateOutputSettings(null, false, null);
+                new UpdateOutputSettings(null, null);
     }
 
     /// Prepares a new archive entry path for forward-only writing.

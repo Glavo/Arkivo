@@ -10,9 +10,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies canonical RAR Huffman table construction, decoding, reset, and malformed alphabets.
 @NotNullByDefault
@@ -31,9 +29,11 @@ final class RarHuffmanDecoderTest {
         assertEquals(2, legacy.decode(legacyInput));
 
         Rar5HuffmanDecoder rar5 = new Rar5HuffmanDecoder();
-        assertFalse(rar5.isPopulated());
+        assertThrows(
+                IOException.class,
+                () -> rar5.decode(new Rar5BitInput(new ByteArrayInputStream(encoded)))
+        );
         rar5.build(lengths, 0, lengths.length);
-        assertTrue(rar5.isPopulated());
         Rar5BitInput rar5Input = new Rar5BitInput(new ByteArrayInputStream(encoded));
         assertEquals(0, rar5.decode(rar5Input));
         assertEquals(1, rar5.decode(rar5Input));
@@ -72,14 +72,12 @@ final class RarHuffmanDecoderTest {
 
         Rar5HuffmanDecoder rar5 = new Rar5HuffmanDecoder();
         rar5.build(new byte[0], 0, 0);
-        assertFalse(rar5.isPopulated());
         assertThrows(
                 IOException.class,
                 () -> rar5.decode(new Rar5BitInput(new ByteArrayInputStream(new byte[0])))
         );
         rar5.build(new byte[]{1, 1}, 0, 2);
         rar5.reset();
-        assertFalse(rar5.isPopulated());
         assertThrows(
                 IOException.class,
                 () -> rar5.decode(new Rar5BitInput(new ByteArrayInputStream(new byte[]{0})))

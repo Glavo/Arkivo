@@ -285,7 +285,7 @@ public final class SevenZipHeaderParser {
                     .stream()
                     .mapToLong(SevenZipPackedStream::size)
                     .toArray();
-            decoded = SevenZipLZMADecoder.openFolder(
+            decoded = SevenZipFolderDecoder.openFolder(
                     packedInputs,
                     packedInputSizes,
                     method,
@@ -777,7 +777,7 @@ public final class SevenZipHeaderParser {
             if (inputStreamCount <= 0 || outputStreamCount <= 0) {
                 throw new IOException("7z coder stream counts must be positive");
             }
-            if (!SevenZipLZMADecoder.isSupported(methodId)) {
+            if (!SevenZipFolderDecoder.isSupported(methodId)) {
                 throw new IOException("Unsupported 7z coder method: " + Arrays.toString(methodId));
             }
             coders[coderIndex] = new CoderInfo(
@@ -1764,7 +1764,7 @@ public final class SevenZipHeaderParser {
         /// Returns whether every coder in this folder uses the 7z Copy method.
         private boolean isCopyOnly() {
             for (CoderInfo coder : coders) {
-                if (!SevenZipLZMADecoder.isCopy(coder.methodId())) {
+                if (!SevenZipFolderDecoder.isCopy(coder.methodId())) {
                     return false;
                 }
             }
