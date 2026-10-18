@@ -326,7 +326,10 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             uncompressedSize = zip64Sizes.uncompressedSize;
         }
         ZipCompressionFormats.validateStoredSize(flags, method, extraData, compressedSize, uncompressedSize);
-        boolean zip64DataDescriptor = headerCompressedSize == UINT32_MAX
+        // Some streaming writers declare ZIP64 only through version 4.5, with zero local sizes and no extra field.
+        // Descriptor matching still validates the observed sizes and can fall back to a ZIP32 descriptor.
+        boolean zip64DataDescriptor = versionNeededToExtract >= 45
+                || headerCompressedSize == UINT32_MAX
                 || headerUncompressedSize == UINT32_MAX
                 || hasZip64ExtraField(extraData);
         ZipExtraFieldMetadata.EntryMetadata entryMetadata = ZipExtraFieldMetadata.resolve(

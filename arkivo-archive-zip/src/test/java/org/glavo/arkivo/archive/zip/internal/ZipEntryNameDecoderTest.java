@@ -20,11 +20,27 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests raw ZIP entry name decoding.
 @NotNullByDefault
 public final class ZipEntryNameDecoderTest {
+    /// A path field without a name does not hide a later complete record; empty comments remain valid.
+    @Test
+    public void emptyUnicodePathDoesNotHideLaterName() throws IOException {
+        byte[] raw = "legacy.txt".getBytes(StandardCharsets.US_ASCII);
+        byte[] empty = unicodeExtraField(ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID, raw, "");
+        byte[] valid = unicodeExtraField(ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID, raw, "\u03a9.txt");
+        assertEquals("\u03a9.txt", ZipEntryNameDecoder.decodeUnicodeExtraField(raw, concatenate(empty, valid),
+                ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID));
+        assertNull(ZipEntryNameDecoder.decodeUnicodeExtraField(raw, empty,
+                ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID));
+        assertEquals("", ZipEntryNameDecoder.decodeUnicodeExtraField(raw,
+                unicodeExtraField(ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID, raw, ""),
+                ZipEntryNameDecoder.UNICODE_COMMENT_EXTRA_FIELD_ID));
+    }
+
     /// Explicit Unicode metadata bypasses compatibility rules, including when Unicode decoding fails.
     @Test
     public void codePageCompatibilityDoesNotOverrideUnicode() throws IOException {

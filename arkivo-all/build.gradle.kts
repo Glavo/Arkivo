@@ -786,6 +786,96 @@ tasks.named<Test>("tier2Test") {
     systemProperty("arkivo.ziprs.testDataDirectory", zipRsTestDataDirectory.get().asFile.absolutePath)
 }
 
+val yauzlManifestFile = rootProject.file("gradle/test-data/yauzl.properties")
+val yauzlManifest = Properties().apply { yauzlManifestFile.inputStream().use(::load) }
+val yauzlRoot = yauzlManifest.getProperty("archiveRoot")
+val yauzlSha256 = yauzlManifest.getProperty("archiveSha256")
+val yauzlDirectory = rootProject.layout.buildDirectory.dir("test-data/yauzl/${yauzlManifest.getProperty("version")}")
+
+val downloadYauzlTestSources = tasks.register<DownloadVerifiedFile>("downloadYauzlTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned yauzl regression sources."
+    sourceUrl.set(yauzlManifest.getProperty("archiveUrl"))
+    expectedSha256.set(yauzlSha256)
+    expectedSize.set(yauzlManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(testDataCacheDirectory.map {
+        it.file("downloads/sha256/$yauzlSha256/${yauzlManifest.getProperty("archiveName")}")
+    })
+}
+
+val prepareYauzlTestCorpus = tasks.register<Sync>("prepareYauzlTestCorpus") {
+    group = "verification"
+    description = "Extracts yauzl regression inputs, reference assertions, and license."
+    dependsOn(downloadYauzlTestSources)
+    from(downloadYauzlTestSources.flatMap { it.destination }.map { tarTree(resources.gzip(it.asFile)) }) {
+        include("$yauzlRoot/LICENSE", "$yauzlRoot/test/**")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == yauzlRoot) {
+                "Unexpected yauzl source archive path: $relativePath"
+            }
+            relativePath = RelativePath(relativePath.isFile, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(yauzlManifestFile) { rename { "UPSTREAM.properties" } }
+    into(yauzlDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareYauzlTestCorpus)
+    inputs.dir(yauzlDirectory)
+    systemProperty("arkivo.yauzl.testDataDirectory", yauzlDirectory.get().asFile.absolutePath)
+}
+
+val nodeTarManifestFile = rootProject.file("gradle/test-data/node-tar.properties")
+val nodeTarManifest = Properties().apply { nodeTarManifestFile.inputStream().use(::load) }
+val nodeTarRoot = nodeTarManifest.getProperty("archiveRoot")
+val nodeTarSha256 = nodeTarManifest.getProperty("archiveSha256")
+val nodeTarDirectory = rootProject.layout.buildDirectory.dir("test-data/node-tar/${nodeTarManifest.getProperty("version")}")
+
+val downloadNodeTarTestSources = tasks.register<DownloadVerifiedFile>("downloadNodeTarTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned node-tar regression sources."
+    sourceUrl.set(nodeTarManifest.getProperty("archiveUrl"))
+    expectedSha256.set(nodeTarSha256)
+    expectedSize.set(nodeTarManifest.getProperty("archiveSize").toLong())
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(testDataCacheDirectory.map {
+        it.file("downloads/sha256/$nodeTarSha256/${nodeTarManifest.getProperty("archiveName")}")
+    })
+}
+
+val prepareNodeTarTestCorpus = tasks.register<Sync>("prepareNodeTarTestCorpus") {
+    group = "verification"
+    description = "Extracts node-tar regression inputs, reference assertions, and license."
+    dependsOn(downloadNodeTarTestSources)
+    from(downloadNodeTarTestSources.flatMap { it.destination }.map { tarTree(resources.gzip(it.asFile)) }) {
+        include("$nodeTarRoot/LICENSE.md", "$nodeTarRoot/test/**")
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.size > 1 && segments[0] == nodeTarRoot) {
+                "Unexpected node-tar source archive path: $relativePath"
+            }
+            relativePath = RelativePath(relativePath.isFile, *segments.drop(1).toTypedArray())
+        }
+        includeEmptyDirs = false
+    }
+    from(nodeTarManifestFile) { rename { "UPSTREAM.properties" } }
+    into(nodeTarDirectory)
+}
+
+tasks.named<Test>("tier2Test") {
+    dependsOn(prepareNodeTarTestCorpus)
+    inputs.dir(nodeTarDirectory)
+    systemProperty("arkivo.node-tar.testDataDirectory", nodeTarDirectory.get().asFile.absolutePath)
+}
+
 val gnuGzipManifestFile = rootProject.file("gradle/test-data/gnu-gzip.properties")
 val gnuGzipManifest = Properties().apply { gnuGzipManifestFile.inputStream().use(::load) }
 val gnuGzipVersion = gnuGzipManifest.getProperty("version")

@@ -23,7 +23,9 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -283,6 +285,65 @@ final class LibzipCorpusTest {
         var expected = ArchiveCorpusAssertions.readZipReference(fixture("rename_ok.zip"));
         try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
             ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), expected);
+        }
+        ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readZipReference(archive), expected);
+    }
+
+    /// Replays `delete_renamed_rename.test`, including reuse of the original name by a newly added entry.
+    @Test
+    void reusesNameAfterDeletingRenamedEntry(@TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("reuse.zip");
+        Files.copy(fixture("testfile.zip"), archive);
+        var expected = ArchiveCorpusAssertions.readZipReference(fixture("test2.zip"));
+        try (var fs = ZipArkivoFileSystem.update(archive)) {
+            Files.move(fs.getPath("testfile.txt"), fs.getPath("something"));
+            Files.writeString(fs.getPath("test"), "test");
+            Files.delete(fs.getPath("something"));
+            Files.move(fs.getPath("test"), fs.getPath("testfile.txt"));
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fs), expected);
+        }
+        assertPublishedContents(archive, expected);
+    }
+
+    /// Replays `rename_fail.test` without allowing a rejected rename to alter either entry.
+    @Test
+    void preservesEntriesAfterRenameCollision(@TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("collision.zip");
+        Files.copy(fixture("testcomment.zip"), archive);
+        var expected = ArchiveCorpusAssertions.readZipReference(archive);
+        try (var fs = ZipArkivoFileSystem.update(archive)) {
+            assertThrows(FileAlreadyExistsException.class,
+                    () -> Files.move(fs.getPath("file1"), fs.getPath("file4")));
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fs), expected);
+            // Commit another operation so the assertion covers publication, not only an unchanged source file.
+            Files.move(fs.getPath("file3"), fs.getPath("temporary"));
+            Files.move(fs.getPath("temporary"), fs.getPath("file3"));
+        }
+        assertPublishedContents(archive, expected);
+    }
+
+    /// Replays `rename_deleted.test` using path identity instead of libzip's entry indexes.
+    @Test
+    void rejectsRenameOfDeletedEntry(@TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("deleted.zip");
+        Files.copy(fixture("testcomment.zip"), archive);
+        var expected = ArchiveCorpusAssertions.readZipReference(fixture("testcomment13.zip"));
+        try (var fs = ZipArkivoFileSystem.update(archive)) {
+            Files.delete(fs.getPath("file2"));
+            Files.delete(fs.getPath("file4"));
+            assertThrows(NoSuchFileException.class,
+                    () -> Files.move(fs.getPath("file2"), fs.getPath("othername")));
+            assertFalse(Files.exists(fs.getPath("othername")));
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fs), expected);
+        }
+        assertPublishedContents(archive, expected);
+    }
+
+    /// Checks committed contents with both Arkivo and an independent ZIP decoder.
+    private static void assertPublishedContents(Path archive, List<ArchiveCorpusAssertions.EntryDigest> expected)
+            throws IOException {
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fs), expected);
         }
         ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readZipReference(archive), expected);
     }

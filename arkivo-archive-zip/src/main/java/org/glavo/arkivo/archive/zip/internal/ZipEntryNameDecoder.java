@@ -132,6 +132,7 @@ public final class ZipEntryNameDecoder {
     /// Decodes a complete Info-ZIP Unicode extra field value, or returns `null` when no valid field is present.
     ///
     /// A truncated unknown trailing field is ignored, while a truncated recognized field remains malformed.
+    /// Unicode path records without a name are ignored; empty Unicode comments are valid.
     ///
     /// @param rawValue the non-Unicode bytes whose CRC-32 must match the Unicode record
     /// @param extraData the encoded extra field records
@@ -160,7 +161,9 @@ public final class ZipEntryNameDecoder {
             if (field.id() == expectedFieldId) {
                 String value = decodeUnicodeExtraFieldData(rawValue, extraData, field.dataOffset(), field.dataSize(),
                         errorAction);
-                if (value != null) {
+                // A path record without a name is incomplete; a later record may supply the name.
+                // Empty Unicode comments, unlike paths, remain meaningful values.
+                if (value != null && (expectedFieldId != UNICODE_PATH_EXTRA_FIELD_ID || !value.isEmpty())) {
                     return value;
                 }
             }

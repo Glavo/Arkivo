@@ -66,6 +66,31 @@ final class ZipDescriptorCompatibilityTest {
                 new boolean[]{true, false}, new boolean[]{true, true});
     }
 
+    /// Version 4.5 alone permits ZIP64 descriptors while still accepting ZIP32 and preserving the following entry.
+    @ParameterizedTest
+    @MethodSource("layouts")
+    void readsDescriptorsWithoutLocalZip64Extra(boolean[] layout) throws IOException {
+        for (byte[] content : new byte[][]{CONTENT, SIGNATURE_CRC_CONTENT}) {
+            Fixture fixture = fixture(layout[0], layout[1], 0, content, false);
+            byte[] bytes = fixture.archive().clone();
+            ByteArrayAccess.writeShortLittleEndian(bytes, 4, (short) 45);
+            for (int chunk : new int[]{1, 7, 8192}) {
+                try (var reader = ZipArkivoStreamingReader.open(new FragmentedInput(bytes, chunk))) {
+                    assertTrue(reader.next());
+                    try (var input = reader.openInputStream()) {
+                        assertArrayEquals(content, input.readAllBytes());
+                    }
+                    assertTrue(reader.next());
+                    assertEquals("following", reader.readAttributes().path());
+                    try (var input = reader.openInputStream()) {
+                        assertArrayEquals(FOLLOWING, input.readAllBytes());
+                    }
+                    assertFalse(reader.next());
+                }
+            }
+        }
+    }
+
     /// Reads complete entries, partially closed entries, and entries skipped without opening a stream.
     @ParameterizedTest(name = "zip64={0}, signature={1}, placeholder={2}, chunk={3}, consumption={4}, CRC collision={5}")
     @MethodSource("configurations")
@@ -309,6 +334,12 @@ final class ZipDescriptorCompatibilityTest {
 
     /// Builds independently compressed entries with selectable content and descriptor representation.
     private static Fixture fixture(boolean zip64, boolean signature, int placeholder, byte[] content) throws IOException {
+        return fixture(zip64, signature, placeholder, content, zip64);
+    }
+
+    /// Selects descriptor width independently of the presence of a local ZIP64 extra field.
+    private static Fixture fixture(boolean zip64, boolean signature, int placeholder, byte[] content, boolean zip64Extra)
+            throws IOException {
         var output = new ByteArrayOutputStream();
         try (var zip = new ZipOutputStream(output)) {
             ZipEntry payload = new ZipEntry("payload");
@@ -336,10 +367,12 @@ final class ZipDescriptorCompatibilityTest {
         var rebuilt = new ByteArrayOutputStream();
         if (zip64) {
             ByteArrayAccess.writeShortLittleEndian(local, 4, (short) 45);
+        }
+        if (zip64Extra) {
             ByteArrayAccess.writeShortLittleEndian(local, 28, (short) (extraLength + 20));
         }
         rebuilt.writeBytes(local);
-        if (zip64) {
+        if (zip64Extra) {
             byte[] extra = new byte[20];
             ByteArrayAccess.writeShortLittleEndian(extra, 0, (short) 1);
             ByteArrayAccess.writeShortLittleEndian(extra, 2, (short) 16);

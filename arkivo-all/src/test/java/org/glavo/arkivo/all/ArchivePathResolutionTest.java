@@ -70,6 +70,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies component traversal and symbolic-link policies in read-only and update archive sessions.
 @NotNullByDefault
 final class ArchivePathResolutionTest {
+    /// Rejects moves into a directory's own subtree, including a destination reached through a symbolic link.
+    ///
+    /// The operation sequences exercise Jimfs's `testMove_cannotMoveDirIntoOwnSubtree` scenario.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "tar", "7z", "zip"})
+    void rejectsMovesIntoOwnSubtree(String format, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("subtree." + format);
+        try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+            Files.createDirectories(fs.getPath("/tree/branch/leaf"));
+            Files.writeString(fs.getPath("/tree/branch/leaf/content"), "retained");
+            Files.createSymbolicLink(fs.getPath("/alias"), fs.getPath("tree/branch/leaf"));
+        }
+        try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+            for (String destination : List.of("/tree/branch/moved", "/alias/moved")) {
+                assertThrows(IOException.class,
+                        () -> Files.move(fs.getPath("/tree/branch"), fs.getPath(destination)));
+                assertEquals("retained", Files.readString(fs.getPath("/tree/branch/leaf/content")));
+                assertFalse(Files.exists(fs.getPath(destination)));
+            }
+            Files.writeString(fs.getPath("/marker"), "committed");
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+            assertEquals("retained", Files.readString(fs.getPath("/alias/content")));
+            assertEquals("committed", Files.readString(fs.getPath("/marker")));
+            assertFalse(Files.exists(fs.getPath("/tree/branch/moved")));
+            assertFalse(Files.exists(fs.getPath("/alias/moved")));
+        }
+    }
+
     /// Malformed target bytes cannot redirect reads or updates to a different name containing replacement characters.
     @ParameterizedTest
     @ValueSource(strings = {"ar", "7z", "zip"})
