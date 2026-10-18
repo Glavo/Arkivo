@@ -3263,10 +3263,10 @@ public final class ZipArchiveIntegrationTest {
         }
     }
 
-    /// Verifies that local ZIP entry names must match central directory entry names.
+    /// Uses the central name when the local name differs, but rejects raw copying of the conflict.
     @Test
-    public void rejectsMismatchedLocalEntryName() throws IOException {
-        byte[] localName = "local.txt".getBytes(StandardCharsets.UTF_8);
+    public void readsMismatchedLocalEntryName() throws IOException {
+        byte[] localName = "different-local-name.txt".getBytes(StandardCharsets.UTF_8);
         byte[] centralName = "entry.txt".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawLocalAndCentralNames(
                 localName,
@@ -3275,14 +3275,15 @@ public final class ZipArchiveIntegrationTest {
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-                IOException exception = assertThrows(
-                        IOException.class,
-                        () -> Files.readAttributes(fileSystem.getPath("/entry.txt"), ZipArkivoEntryAttributes.class)
-                );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP local header name does not match central directory"
-                ));
+                Path entry = fileSystem.getPath("/entry.txt");
+                assertEquals(0L, Files.readAttributes(entry, ZipArkivoEntryAttributes.class).size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(entry));
             }
+            assertThrows(IOException.class, () -> {
+                try (var fileSystem = ZipArkivoFileSystem.update(archivePath)) {
+                    Files.writeString(fileSystem.getPath("/new.txt"), "new");
+                }
+            });
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -3433,9 +3434,9 @@ public final class ZipArchiveIntegrationTest {
         }
     }
 
-    /// Verifies that local ZIP entry flags must match central directory flags.
+    /// Uses central name-encoding flags when the local flags differ.
     @Test
-    public void rejectsMismatchedLocalEntryFlags() throws IOException {
+    public void readsMismatchedLocalEntryFlags() throws IOException {
         byte[] name = "flags.txt".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameAndLocalCentralMetadata(
                 name,
@@ -3447,14 +3448,15 @@ public final class ZipArchiveIntegrationTest {
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-                IOException exception = assertThrows(
-                        IOException.class,
-                        () -> Files.readAttributes(fileSystem.getPath("/flags.txt"), ZipArkivoEntryAttributes.class)
-                );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP local header flags do not match central directory"
-                ));
+                Path entry = fileSystem.getPath("/flags.txt");
+                assertEquals(0L, Files.readAttributes(entry, ZipArkivoEntryAttributes.class).size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(entry));
             }
+            assertThrows(IOException.class, () -> {
+                try (var fileSystem = ZipArkivoFileSystem.update(archivePath)) {
+                    Files.writeString(fileSystem.getPath("/new.txt"), "new");
+                }
+            });
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -3488,9 +3490,9 @@ public final class ZipArchiveIntegrationTest {
         }
     }
 
-    /// Verifies that local ZIP entry methods must match central directory methods.
+    /// Uses the central compression method for unencrypted entry data.
     @Test
-    public void rejectsMismatchedLocalEntryMethod() throws IOException {
+    public void readsMismatchedLocalEntryMethod() throws IOException {
         byte[] name = "method.txt".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameAndLocalCentralMetadata(
                 name,
@@ -3502,22 +3504,23 @@ public final class ZipArchiveIntegrationTest {
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-                IOException exception = assertThrows(
-                        IOException.class,
-                        () -> Files.readAttributes(fileSystem.getPath("/method.txt"), ZipArkivoEntryAttributes.class)
-                );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP local header method does not match central directory"
-                ));
+                Path entry = fileSystem.getPath("/method.txt");
+                assertEquals(0L, Files.readAttributes(entry, ZipArkivoEntryAttributes.class).size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(entry));
             }
+            assertThrows(IOException.class, () -> {
+                try (var fileSystem = ZipArkivoFileSystem.update(archivePath)) {
+                    Files.writeString(fileSystem.getPath("/new.txt"), "new");
+                }
+            });
         } finally {
             deleteTemporaryArchive(archivePath);
         }
     }
 
-    /// Verifies that local ZIP entry CRC-32 values must match central directory values.
+    /// Uses the central CRC rather than a conflicting local CRC.
     @Test
-    public void rejectsMismatchedLocalEntryCrc32() throws IOException {
+    public void readsMismatchedLocalEntryCrc32() throws IOException {
         byte[] name = "crc.txt".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameAndLocalCentralMetadata(
                 name,
@@ -3535,22 +3538,23 @@ public final class ZipArchiveIntegrationTest {
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-                IOException exception = assertThrows(
-                        IOException.class,
-                        () -> Files.readAttributes(fileSystem.getPath("/crc.txt"), ZipArkivoEntryAttributes.class)
-                );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP local header CRC-32 does not match central directory"
-                ));
+                Path entry = fileSystem.getPath("/crc.txt");
+                assertEquals(0L, Files.readAttributes(entry, ZipArkivoEntryAttributes.class).size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(entry));
             }
+            assertThrows(IOException.class, () -> {
+                try (var fileSystem = ZipArkivoFileSystem.update(archivePath)) {
+                    Files.writeString(fileSystem.getPath("/new.txt"), "new");
+                }
+            });
         } finally {
             deleteTemporaryArchive(archivePath);
         }
     }
 
-    /// Verifies that local ZIP entry compressed sizes must match central directory sizes.
+    /// Uses the central compressed size rather than a conflicting local size.
     @Test
-    public void rejectsMismatchedLocalEntryCompressedSize() throws IOException {
+    public void readsMismatchedLocalEntryCompressedSize() throws IOException {
         byte[] name = "compressed.txt".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameAndLocalCentralMetadata(
                 name,
@@ -3568,49 +3572,45 @@ public final class ZipArchiveIntegrationTest {
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-                IOException exception = assertThrows(
-                        IOException.class,
-                        () -> Files.readAttributes(
-                                fileSystem.getPath("/compressed.txt"),
-                                ZipArkivoEntryAttributes.class
-                        )
-                );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP local header compressed size does not match central directory"
-                ));
+                Path entry = fileSystem.getPath("/compressed.txt");
+                assertEquals(0L, Files.readAttributes(entry, ZipArkivoEntryAttributes.class).size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(entry));
             }
+            assertThrows(IOException.class, () -> {
+                try (var fileSystem = ZipArkivoFileSystem.update(archivePath)) {
+                    Files.writeString(fileSystem.getPath("/new.txt"), "new");
+                }
+            });
         } finally {
             deleteTemporaryArchive(archivePath);
         }
     }
 
-    /// Verifies that local ZIP64 compressed sizes must match central directory sizes.
+    /// Uses the central compressed size rather than a conflicting local ZIP64 size.
     @Test
-    public void rejectsMismatchedLocalZip64CompressedSize() throws IOException {
+    public void readsMismatchedLocalZip64CompressedSize() throws IOException {
         byte[] name = "zip64-compressed.txt".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithLocalZip64Sizes(name, 0L, 1L, 0L, 0L));
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-                IOException exception = assertThrows(
-                        IOException.class,
-                        () -> Files.readAttributes(
-                                fileSystem.getPath("/zip64-compressed.txt"),
-                                ZipArkivoEntryAttributes.class
-                        )
-                );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP local header compressed size does not match central directory"
-                ));
+                Path entry = fileSystem.getPath("/zip64-compressed.txt");
+                assertEquals(0L, Files.readAttributes(entry, ZipArkivoEntryAttributes.class).size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(entry));
             }
+            assertThrows(IOException.class, () -> {
+                try (var fileSystem = ZipArkivoFileSystem.update(archivePath)) {
+                    Files.writeString(fileSystem.getPath("/new.txt"), "new");
+                }
+            });
         } finally {
             deleteTemporaryArchive(archivePath);
         }
     }
 
-    /// Verifies that local ZIP entry uncompressed sizes must match central directory sizes.
+    /// Uses the central uncompressed size rather than a conflicting local size.
     @Test
-    public void rejectsMismatchedLocalEntryUncompressedSize() throws IOException {
+    public void readsMismatchedLocalEntryUncompressedSize() throws IOException {
         byte[] name = "uncompressed.txt".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameAndLocalCentralMetadata(
                 name,
@@ -3628,40 +3628,95 @@ public final class ZipArchiveIntegrationTest {
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-                IOException exception = assertThrows(
-                        IOException.class,
-                        () -> Files.readAttributes(
-                                fileSystem.getPath("/uncompressed.txt"),
-                                ZipArkivoEntryAttributes.class
-                        )
-                );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP local header uncompressed size does not match central directory"
-                ));
+                Path entry = fileSystem.getPath("/uncompressed.txt");
+                assertEquals(0L, Files.readAttributes(entry, ZipArkivoEntryAttributes.class).size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(entry));
             }
+            assertThrows(IOException.class, () -> {
+                try (var fileSystem = ZipArkivoFileSystem.update(archivePath)) {
+                    Files.writeString(fileSystem.getPath("/new.txt"), "new");
+                }
+            });
         } finally {
             deleteTemporaryArchive(archivePath);
         }
     }
 
-    /// Verifies that local ZIP64 uncompressed sizes must match central directory sizes.
+    /// Uses the central uncompressed size rather than a conflicting local ZIP64 size.
     @Test
-    public void rejectsMismatchedLocalZip64UncompressedSize() throws IOException {
+    public void readsMismatchedLocalZip64UncompressedSize() throws IOException {
         byte[] name = "zip64-uncompressed.txt".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithLocalZip64Sizes(name, 1L, 0L, 0L, 0L));
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
-                IOException exception = assertThrows(
-                        IOException.class,
-                        () -> Files.readAttributes(
-                                fileSystem.getPath("/zip64-uncompressed.txt"),
-                                ZipArkivoEntryAttributes.class
-                        )
-                );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP local header uncompressed size does not match central directory"
-                ));
+                Path entry = fileSystem.getPath("/zip64-uncompressed.txt");
+                assertEquals(0L, Files.readAttributes(entry, ZipArkivoEntryAttributes.class).size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(entry));
+            }
+            assertThrows(IOException.class, () -> {
+                try (var fileSystem = ZipArkivoFileSystem.update(archivePath)) {
+                    Files.writeString(fileSystem.getPath("/new.txt"), "new");
+                }
+            });
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Reads nonempty data using central metadata and still rejects corruption of the actual payload.
+    @ParameterizedTest
+    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+    public void readsConflictingLocalMetadataAndChecksPayload(boolean deflated, boolean corrupt) throws IOException {
+        byte[] content = "Central metadata selects the entry and verifies its content.".getBytes(StandardCharsets.UTF_8);
+        byte[] body = deflated ? deflateRaw(content) : content.clone();
+        byte[] name = "entry.txt".getBytes(StandardCharsets.UTF_8);
+        if (corrupt) {
+            byte[] damaged = content.clone();
+            damaged[0] ^= 1;
+            body = deflated ? deflateRaw(damaged) : damaged;
+        }
+        byte[] archive = singleEntryZipWithEntryBody(name, body,
+                deflated ? ZipMethod.DEFLATED.id() : ZipMethod.STORED.id(),
+                crc32(content), body.length, content.length);
+        ByteBuffer header = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
+        header.putShort(6, (short) (1 << 11));
+        header.putShort(8, (short) (deflated ? ZipMethod.STORED.id() : ZipMethod.DEFLATED.id()));
+        header.putInt(14, (int) (crc32(content) ^ 1));
+        header.putInt(18, 0);
+        header.putInt(22, 0);
+        header.put(30, (byte) 0xff); // Invalid local UTF-8 must not be decoded by indexed reading.
+        Path archivePath = createTemporaryArchiveContent(archive);
+        try {
+            try (var fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path entry = fileSystem.getPath("/entry.txt");
+                assertEquals(content.length, Files.readAttributes(entry, ZipArkivoEntryAttributes.class).size());
+                if (corrupt) {
+                    assertThrows(IOException.class, () -> Files.readAllBytes(entry));
+                } else {
+                    assertArrayEquals(content, Files.readAllBytes(entry));
+                    assertArrayEquals(content, Files.readAllBytes(entry));
+                }
+            }
+            assertArrayEquals(archive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Rejects flag differences that change encryption or encrypted descriptor interpretation in either header.
+    @ParameterizedTest
+    @CsvSource({"1, 0", "0, 1", "64, 0", "0, 64", "8192, 0", "0, 8192", "9, 1", "1, 9"})
+    public void rejectsConflictingLocalEncryptionFlags(int localFlags, int centralFlags) throws IOException {
+        byte[] archive = singleEntryZipWithRawNameAndLocalCentralMetadata(
+                "entry.txt".getBytes(StandardCharsets.UTF_8), localFlags, centralFlags,
+                ZipMethod.DEFLATED.id(), ZipMethod.DEFLATED.id());
+        Path archivePath = createTemporaryArchiveContent(archive);
+        try {
+            try (var fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                IOException exception = assertThrows(IOException.class,
+                        () -> Files.readAttributes(fileSystem.getPath("/entry.txt"), ZipArkivoEntryAttributes.class));
+                assertEquals("ZIP local header flags do not match central directory", exception.getMessage());
             }
         } finally {
             deleteTemporaryArchive(archivePath);

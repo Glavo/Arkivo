@@ -176,7 +176,7 @@ final class ZipJsCorpusTest {
         }
     }
 
-    /// Retains strict indexed flag matching for PKZIP's reserved local bit while reading its independent local records.
+    /// Ignores PKZIP's reserved local flag during indexed reading without copying the conflict during updates.
     @Test
     void distinguishesPkzipVolumeLabelFlagMismatch(@TempDir Path directory) throws IOException {
         Path source = fixture("lorem-204-label.zip");
@@ -185,9 +185,7 @@ final class ZipJsCorpusTest {
         byte[] bytes = Files.readAllBytes(source);
         assertEquals(0x8000, Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(bytes, 6)));
         try (var fileSystem = ZipArkivoFileSystem.open(source)) {
-            IOException failure = assertThrows(IOException.class, () ->
-                    Files.readAttributes(fileSystem.getPath("/LOREM.TXT"), ZipArkivoEntryAttributes.class));
-            assertEquals("ZIP local header flags do not match central directory", failure.getMessage());
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), expected);
         }
         Path copy = directory.resolve("label.zip");
         Files.copy(source, copy);

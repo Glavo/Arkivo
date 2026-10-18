@@ -177,11 +177,9 @@ final class LibzipCorpusTest {
                 "incons-central-magic-bad2.zip", "incons-central-size-larger.zip",
                 "incons-ef-local-id-size.zip", "incons-ef-local-size.zip",
                 "incons-eocd-magic-bad.zip", "incons-file-count-high.zip", "incons-file-count-low.zip",
-                "incons-file-count-overflow.zip", "incons-local-compression-method.zip",
-                "incons-local-compsize-larger.zip", "incons-local-compsize-smaller.zip", "incons-local-crc.zip",
-                "incons-local-filename-long.zip", "incons-local-filename-missing.zip",
-                "incons-local-filename-short.zip", "incons-local-filename.zip", "incons-local-magic-bad.zip",
-                "incons-local-size-larger.zip", "incons-stored-size.zip", "incons-streamed.zip",
+                "incons-file-count-overflow.zip", "incons-local-filename-long.zip",
+                "incons-local-filename-short.zip", "incons-local-magic-bad.zip",
+                "incons-stored-size.zip", "incons-streamed.zip",
                 "incons-streamed-2.zip", "extra_field_align_1-ff.zip", "extra_field_align_2-ff.zip",
                 "extra_field_align_3-ff.zip", "extra_field_align_1-ef_ff.zip", "extra_field_align_2-ef_ff.zip",
                 "extra_field_align_3-ef_ff.zip");
@@ -274,6 +272,28 @@ final class LibzipCorpusTest {
                 assertArrayEquals(input.readAllBytes(), Files.readAllBytes(fileSystem.getPath("/storedok")));
             }
         }
+    }
+
+    /// Reads conflicting local copies using central metadata, but refuses raw copying during updates.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"incons-local-compression-method.zip", "incons-local-compsize-larger.zip",
+            "incons-local-compsize-smaller.zip", "incons-local-crc.zip", "incons-local-filename-missing.zip",
+            "incons-local-filename.zip", "incons-local-size-larger.zip"})
+    void readsConflictingLocalCopies(String name, @TempDir Path directory) throws IOException {
+        Path source = fixture(name);
+        var expected = ArchiveCorpusAssertions.readZipReference(source);
+        assertFalse(expected.isEmpty());
+        try (var fileSystem = ZipArkivoFileSystem.open(source)) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), expected);
+        }
+        Path copy = directory.resolve("conflicting.zip");
+        Files.copy(source, copy);
+        assertThrows(IOException.class, () -> {
+            try (var fileSystem = ZipArkivoFileSystem.update(copy)) {
+                Files.writeString(fileSystem.getPath("/added.txt"), "new");
+            }
+        });
+        assertArrayEquals(Files.readAllBytes(source), Files.readAllBytes(copy));
     }
 
     /// Requires checked rejection when deferred local validation and full entry reads are included.

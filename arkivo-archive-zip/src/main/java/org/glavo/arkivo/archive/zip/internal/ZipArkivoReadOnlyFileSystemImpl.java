@@ -79,6 +79,7 @@ import static org.glavo.arkivo.archive.zip.internal.ZipConstants.END_OF_CENTRAL_
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.LZMA_EOS_MARKER_FLAG;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.LZMA_PROPERTY_SIZE;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.LOCAL_FILE_HEADER_SIGNATURE;
+import static org.glavo.arkivo.archive.zip.internal.ZipConstants.MASKED_HEADER_FLAG;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.STRONG_ENCRYPTION_FLAG;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.UINT16_MAX;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.UINT32_MAX;
@@ -1229,6 +1230,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 throw new IOException("ZIP central directory entry is missing from the parsed index: " + decodedPath);
             }
             indexedEntry = resolveEntry(channel, indexedEntry, index);
+            // Raw copying must not carry conflicting local metadata into a newly written archive.
+            readLocalHeaderMetadata(channel, indexedEntry.localHeaderOffset, indexedEntry, index.readLimits, true);
             LocalRecordRange localRecord = localRecordRange(channel, indexedEntry);
             entries.add(new CentralDirectoryEntrySnapshot(
                     key,
@@ -1436,7 +1439,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             ZipEndRecord end = index.endRecord;
             long offset = resolveLocalHeaderOffset(channel, entry.localHeaderOffset, end.offsetAdjustment);
             LocalHeaderMetadata local = readLocalHeaderMetadata(
-                    channel, offset, entry, index.readLimits);
+                    channel, offset, entry, index.readLimits, false);
             ZipEntryRecord complete = new ZipEntryRecord(
                     entry.key, entry.rawPath, entry.path, entry.compressedSize, entry.uncompressedSize, entry.crc32,
                     entry.generalPurposeFlags, entry.versionMadeBy, entry.versionNeededToExtract,
@@ -1450,6 +1453,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             }
             validateLocalRecord(channel, complete, local.dataOffset, recordLimit);
             complete.dataOffset = local.dataOffset;
+            complete.reservedLocalMetadataSize = entry.reservedLocalMetadataSize;
             complete.localRecord = complete;
             entry.localRecord = complete;
             return complete;
@@ -1886,12 +1890,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         return signature.getInt() == LOCAL_FILE_HEADER_SIGNATURE;
     }
 
-    /// Reads and validates metadata from a local file header.
+    /// Reads local layout and extra fields, optionally checking duplicate metadata before raw copying.
     private static LocalHeaderMetadata readLocalHeaderMetadata(
             SeekableByteChannel channel,
             long offset,
             ZipEntryRecord entry,
-            ArkivoReadLimitTracker readLimits
+            ArkivoReadLimitTracker readLimits,
+            boolean requireConsistency
     ) throws IOException {
         ByteBuffer header = ByteBuffer.allocate(ZIP_LOCAL_FILE_HEADER_MIN_SIZE).order(ByteOrder.LITTLE_ENDIAN);
         readFully(channel, offset, header);
@@ -1901,21 +1906,23 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
         int flags = Short.toUnsignedInt(header.getShort(6));
         int method = Short.toUnsignedInt(header.getShort(8));
-        long crc32 = Integer.toUnsignedLong(header.getInt(ZIP_LOCAL_FILE_HEADER_CRC32_OFFSET));
-        long compressedSize = Integer.toUnsignedLong(header.getInt(ZIP_LOCAL_FILE_HEADER_COMPRESSED_SIZE_OFFSET));
-        long uncompressedSize = Integer.toUnsignedLong(header.getInt(ZIP_LOCAL_FILE_HEADER_UNCOMPRESSED_SIZE_OFFSET));
         int nameLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_NAME_LENGTH_OFFSET));
         int extraLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_EXTRA_LENGTH_OFFSET));
         long extraOffset = localHeaderVariableOffset(offset, nameLength, "local extra data offset");
         int flagDifference = flags ^ entry.generalPurposeFlags;
-        if ((flagDifference & ~DATA_DESCRIPTOR_FLAG) != 0
-                || flagDifference != 0 && ((flags | entry.generalPurposeFlags) & ENCRYPTED_FLAG) != 0) {
+        int encryptionFlags = ENCRYPTED_FLAG | STRONG_ENCRYPTION_FLAG | MASKED_HEADER_FLAG;
+        boolean encrypted = ((flags | entry.generalPurposeFlags) & ENCRYPTED_FLAG) != 0;
+        // Encryption changes the body layout; ZipCrypto also uses the descriptor flag to select its check byte.
+        if ((flagDifference & encryptionFlags) != 0
+                || (encrypted && (flagDifference & DATA_DESCRIPTOR_FLAG) != 0)
+                || (requireConsistency && (flagDifference & ~DATA_DESCRIPTOR_FLAG) != 0)) {
             throw new IOException("ZIP local header flags do not match central directory");
         }
-        if (method != entry.method) {
+        if (method != entry.method && (requireConsistency || encrypted
+                || method == WINZIP_AES_METHOD || entry.method == WINZIP_AES_METHOD)) {
             throw new IOException("ZIP local header method does not match central directory");
         }
-        if (nameLength != entry.rawPath.length) {
+        if (requireConsistency && nameLength != entry.rawPath.length) {
             throw new IOException("ZIP local header name does not match central directory");
         }
         // Retain reservations across failed loads so retries neither double-charge nor reuse another reader's budget.
@@ -1924,14 +1931,16 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             readLimits.acceptMetadata(Math.max(0, metadataSize - entry.reservedLocalMetadataSize), entry.path);
             entry.reservedLocalMetadataSize = Math.max(entry.reservedLocalMetadataSize, metadataSize);
         }
-        ByteBuffer name = ByteBuffer.allocate(nameLength);
-        readFully(
-                channel,
-                checkedZipOffsetAdd(offset, ZIP_LOCAL_FILE_HEADER_MIN_SIZE, "local file name offset"),
-                name
-        );
-        if (!Arrays.equals(name.array(), entry.rawPath)) {
-            throw new IOException("ZIP local header name does not match central directory");
+        if (requireConsistency) {
+            ByteBuffer name = ByteBuffer.allocate(nameLength);
+            readFully(
+                    channel,
+                    checkedZipOffsetAdd(offset, ZIP_LOCAL_FILE_HEADER_MIN_SIZE, "local file name offset"),
+                    name
+            );
+            if (!Arrays.equals(name.array(), entry.rawPath)) {
+                throw new IOException("ZIP local header name does not match central directory");
+            }
         }
 
         ByteBuffer extra = ByteBuffer.allocate(extraLength);
@@ -1939,7 +1948,10 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         byte[] extraData = extra.array();
         ZipExtraFields.validateForReading(extraData);
         validateLocalAesExtraData(flags, method, extraData, entry.centralDirectoryExtraData);
-        if ((flags & DATA_DESCRIPTOR_FLAG) == 0) {
+        if (requireConsistency && (flags & DATA_DESCRIPTOR_FLAG) == 0) {
+            long crc32 = Integer.toUnsignedLong(header.getInt(ZIP_LOCAL_FILE_HEADER_CRC32_OFFSET));
+            long compressedSize = Integer.toUnsignedLong(header.getInt(ZIP_LOCAL_FILE_HEADER_COMPRESSED_SIZE_OFFSET));
+            long uncompressedSize = Integer.toUnsignedLong(header.getInt(ZIP_LOCAL_FILE_HEADER_UNCOMPRESSED_SIZE_OFFSET));
             if (crc32 != entry.crc32) {
                 throw new IOException("ZIP local header CRC-32 does not match central directory");
             }

@@ -72,10 +72,11 @@ final class DotNetZipCorpusTest {
             "badzipfiles/localFileOffsetOutOfBounds.zip", "badzipfiles/nameDuplicates.zip", "badzipfiles/nameEmpty.zip",
             "badzipfiles/nameRooted.zip", "badzipfiles/numberOfEntriesDifferent.zip", "badzipfiles/NORMAL.zip",
             "badzipfiles/tttt.zip",
-            "StrangeZipFiles/filenameTimeAndSizesDifferentInLH.zip", "refzipfiles/appended.zip");
+            "refzipfiles/appended.zip");
 
     /// Other fixtures receive explicit checks instead of being silently omitted from the inventory.
     private static final @Unmodifiable List<String> SPECIAL = List.of(
+            "StrangeZipFiles/filenameTimeAndSizesDifferentInLH.zip",
             "badzipfiles/LZMA.zip", "badzipfiles/nameSlashedAndNonzero.zip",
             "compat/backslashes_FromUnix.zip", "compat/backslashes_FromWindows.zip",
             "refzipfiles/encrypted_entries_aes256.zip", "refzipfiles/encrypted_entries_mixed.zip",
@@ -189,6 +190,25 @@ final class DotNetZipCorpusTest {
                 ArchiveCorpusAssertions.readFileSystem(fileSystem);
             }
         });
+    }
+
+    /// Reads conflicting local names and sizes using central metadata without copying the conflicts on update.
+    @Test
+    void readsConflictingLocalMetadata(@TempDir Path directory) throws IOException {
+        Path source = fixture("StrangeZipFiles/filenameTimeAndSizesDifferentInLH.zip");
+        var expected = ArchiveCorpusAssertions.readZipReference(source);
+        assertFalse(expected.isEmpty());
+        try (var fileSystem = ZipArkivoFileSystem.open(source, BOUNDED)) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fileSystem), expected);
+        }
+        Path copy = directory.resolve("conflicting.zip");
+        Files.copy(source, copy);
+        assertThrows(IOException.class, () -> {
+            try (var fileSystem = ZipArkivoFileSystem.update(copy)) {
+                Files.writeString(fileSystem.getPath("/added.txt"), "new");
+            }
+        });
+        assertArrayEquals(Files.readAllBytes(source), Files.readAllBytes(copy));
     }
 
     /// Refuses encrypted bodies when no password provider is configured.

@@ -47,6 +47,9 @@ final class ZipConstants {
     /// The ZIP general purpose flag indicating strong encryption.
     static final int STRONG_ENCRYPTION_FLAG = 1 << 6;
 
+    /// The ZIP general purpose flag indicating masked local fields with central-directory encryption.
+    static final int MASKED_HEADER_FLAG = 1 << 13;
+
     /// The ZIP general purpose flag indicating a data descriptor follows entry data.
     static final int DATA_DESCRIPTOR_FLAG = 1 << 3;
 

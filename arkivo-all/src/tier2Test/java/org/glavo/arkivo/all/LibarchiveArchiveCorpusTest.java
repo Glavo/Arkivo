@@ -245,16 +245,17 @@ public final class LibarchiveArchiveCorpusTest {
         }
     }
 
-    /// Keeps mismatched local and central raw names rejected even when Unicode fields describe a usable path.
+    /// Uses central Unicode names even when a local name and its Unicode-field CRC disagree.
     @Test
-    void rejectsUnicodeFixtureWithInconsistentRawNames(@TempDir Path directory) throws IOException {
+    void readsUnicodeFixtureWithInconsistentRawNames(@TempDir Path directory) throws IOException {
         Path archive = decodeFixture("test_read_format_zip_7075_utf8_paths.zip.uu", "unicode.zip", directory);
-        IOException failure = assertThrows(IOException.class, () -> {
-            try (var fileSystem = ArkivoFormats.openFileSystem(archive)) {
-                ArchiveCorpusAssertions.readFileSystem(fileSystem);
-            }
-        });
-        assertEquals("ZIP local header name does not match central directory", failure.getMessage());
+        try (var fileSystem = ArkivoFormats.openFileSystem(archive)) {
+            var entries = ArchiveCorpusAssertions.readFileSystem(fileSystem);
+            // The fourth central Unicode field names a-ring; libarchive's xx expectation uses the changed local name.
+            assertEquals(List.of("File 1.txt", "File 2 - \u00f6.txt", "File 3 - \u00e4.txt", "File 4 - \u00e5.txt"),
+                    entries.stream().map(ArchiveCorpusAssertions.EntryDigest::path).sorted().toList());
+            ArchiveCorpusAssertions.assertEquivalentEntries(entries, ArchiveCorpusAssertions.readZipReference(archive));
+        }
     }
 
     /// Compares complete 7z bodies, including solid folders and filter chains, with an independent decoder.

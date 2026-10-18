@@ -30,19 +30,31 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Checks overlapping physical records without treating central-directory enumeration as local validation.
 @NotNullByDefault
 final class ZipOverlappingEntryTest {
-    /// Keeps a correctly named entry readable when another directory entry aliases its local header.
+    /// Reads both central names independently when they alias one local record.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void sharedHeaderValidatesEachName(boolean firstMatches) throws IOException {
+    void readsSharedHeaderUnderEachCentralName(boolean firstMatches) throws IOException {
         byte[] bytes = sharedHeader();
         if (firstMatches) bytes[30] = 'a';
-        String valid = firstMatches ? "a" : "b";
-        String invalid = firstMatches ? "b" : "a";
         try (var fs = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(bytes))) {
-            assertThrows(IOException.class, () -> Files.readAllBytes(fs.getPath(invalid)));
-            assertEquals(1033, Files.readAllBytes(fs.getPath(valid)).length);
-            assertThrows(IOException.class, () -> Files.readAttributes(fs.getPath(invalid),
-                    ZipArkivoEntryAttributes.class));
+            byte[] first = Files.readAllBytes(fs.getPath("a"));
+            assertEquals(1033, first.length);
+            assertArrayEquals(first, Files.readAllBytes(fs.getPath("b")));
+            assertEquals("a", Files.readAttributes(fs.getPath("a"), ZipArkivoEntryAttributes.class).path());
+            assertEquals("b", Files.readAttributes(fs.getPath("b"), ZipArkivoEntryAttributes.class).path());
+        }
+    }
+
+    /// Checks each alias's CRC independently without poisoning another alias's cached local metadata.
+    @Test
+    void validatesEachAliasAgainstItsOwnCentralCrc() throws IOException {
+        byte[] bytes = sharedHeader();
+        int centralOffset = ByteArrayAccess.readIntLittleEndian(bytes, bytes.length - 6);
+        ByteArrayAccess.writeIntLittleEndian(bytes, centralOffset + 16, 0);
+        try (var fs = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(bytes))) {
+            assertThrows(IOException.class, () -> Files.readAllBytes(fs.getPath("a")));
+            assertEquals(1033, Files.readAllBytes(fs.getPath("b")).length);
+            assertThrows(IOException.class, () -> Files.readAllBytes(fs.getPath("a")));
         }
     }
 

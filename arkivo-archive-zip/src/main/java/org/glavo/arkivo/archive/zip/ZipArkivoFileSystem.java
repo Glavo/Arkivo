@@ -35,9 +35,17 @@ import java.util.Objects;
 /// entry attributes or content validates that entry's local header and storage range; a malformed local record may
 /// therefore be reported only when the corresponding entry is accessed. Successfully loaded local metadata is cached.
 /// Local records must not extend into a subsequent distinct local header or the central directory.
+/// Read-only access uses central-directory names, compression methods, CRCs, and sizes even when their local copies
+/// differ. Local lengths locate entry data, and the local descriptor flag determines whether a descriptor follows it.
+/// Encryption flags and encryption-related method and AES metadata differences are rejected; encrypted entries
+/// must also agree on the descriptor flag. Local extra fields supplement central-directory metadata.
+/// Distinct central-directory names may refer to the same local record; each entry uses its own central metadata.
+/// Update sessions additionally check duplicate local metadata before retaining source records and reject conflicts
+/// rather than copying them into the output. Forward-only readers instead use local-header metadata.
 /// The metadata-size limit counts end records, the central directory, and local headers as they are loaded.
-/// Repeated access to the same local header does not charge the budget again; its reservation is retained if loading
-/// fails. Loading a local header may exceed the cumulative limit even when directory enumeration succeeded.
+/// Repeated access to an entry's local header does not charge the budget again; its reservation is retained if loading
+/// fails. Aliases reserve local metadata independently. Loading a local header may exceed the cumulative limit even
+/// when directory enumeration succeeded.
 /// Path-backed sessions may retain file handles until close, including while no entry stream is open.
 /// Closing an idle, sequentially read STORED entry channel reads its remaining bytes to validate the CRC and size.
 /// Input streams reading entry data directly from the archive also validate unread bytes during an idle close,

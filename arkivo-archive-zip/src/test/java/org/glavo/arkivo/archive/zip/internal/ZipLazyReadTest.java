@@ -134,6 +134,19 @@ final class ZipLazyReadTest {
         assertArrayEquals(bytes, Files.readAllBytes(path));
     }
 
+    /// Rechecking local consistency for an update snapshot does not reserve the same metadata twice.
+    @Test
+    void updateConsistencyCheckDoesNotChargeLocalMetadataTwice(@TempDir Path directory) throws IOException {
+        byte[] bytes = archiveWithLocalExtras(1, 128);
+        Path path = Files.write(directory.resolve("source.zip"), bytes);
+        var options = ZipArchiveOptions.UPDATE_DEFAULTS.withCommon(ArchiveUpdateOptions.DEFAULT.withLimits(
+                ArchiveReadLimits.builder().maximumMetadataSize(bytes.length).build()));
+        try (var fs = ZipArkivoFileSystem.update(path, options)) {
+            assertEquals(0, Files.size(fs.getPath("a")));
+        }
+        assertArrayEquals(bytes, Files.readAllBytes(path));
+    }
+
     /// End-record comments consume metadata budget even when the central directory is empty.
     @Test
     void emptyArchiveCommentUsesMetadataBudget() throws IOException {

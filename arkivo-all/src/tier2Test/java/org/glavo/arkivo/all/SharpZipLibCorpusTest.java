@@ -225,14 +225,14 @@ final class SharpZipLibCorpusTest {
         }
     }
 
-    /// Rejects contradictory local sizes, then resolves saturated sizes after correcting that independent defect.
+    /// Uses central ZIP64 sizes despite contradictory local sizes; streaming still needs valid local metadata.
     @Test
     void readsZip64CentralSizes() throws IOException {
         byte[] archive = fixture("Zip/ZipCorruptionHandling.cs", "TestFileBadCDGoodCD64", 0);
         try (var fileSystem = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(archive))) {
             Path path = fileSystem.getPath("/testfile");
-            IOException failure = assertThrows(IOException.class, () -> Files.size(path));
-            assertEquals("ZIP local header uncompressed size does not match central directory", failure.getMessage());
+            assertEquals(18, Files.size(path));
+            assertEquals("testfile contents\n", Files.readString(path));
         }
         int extra = 30 + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(archive, 26));
         assertEquals(1, Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(archive, extra)));

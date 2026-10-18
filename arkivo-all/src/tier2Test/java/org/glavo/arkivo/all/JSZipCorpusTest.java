@@ -305,15 +305,14 @@ final class JSZipCorpusTest {
         return comments;
     }
 
-    /// Retains strict local/central name agreement even for an archive accepted by JSZip.
+    /// Reads IZArc's differing local names through either reader without copying the conflict during updates.
     @ParameterizedTest
     @ValueSource(ints = {1, 7, 8192})
-    void rejectsInconsistentIzarcNamesButReadsLocalStream(int chunk, @TempDir Path directory) throws IOException {
+    void readsInconsistentIzarcNames(int chunk, @TempDir Path directory) throws IOException {
         Path source = fixture("slashes_and_izarc.zip");
         try (var fileSystem = ZipArkivoFileSystem.open(source)) {
-            IOException failure = assertThrows(IOException.class,
-                    () -> Files.readAllBytes(fileSystem.getPath("/test/Hello.txt")));
-            assertEquals("ZIP local header name does not match central directory", failure.getMessage());
+            ArchiveCorpusAssertions.assertEquivalentEntries(
+                    ArchiveCorpusAssertions.readFileSystem(fileSystem), referenceEntries(source));
         }
         try (var reader = ZipArkivoStreamingReader.open(new ChunkedInput(source, chunk))) {
             assertEquals(referenceEntries(source), ArchiveCorpusAssertions.readStreaming(reader));

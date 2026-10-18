@@ -47,8 +47,8 @@ public interface ZipLegacyMetadataDecoder extends ArchiveMetadataDecoder {
     /// without trying the other charset. Neither buffer is modified or retained. The returned decoder
     /// supports concurrent invocations and does not consult the system locale. ZIP readers still process
     /// explicit Unicode metadata before invoking it. This policy replaces automatic legacy-encoding detection.
-    /// This policy does not relax archive validation: indexed readers still reject different raw names
-    /// in the local header and central directory, even if different code pages could yield the same text.
+    /// Indexed readers decode central-directory names; forward-only readers decode local-header names.
+    /// These names need not agree in an archive accepted for read-only access.
     ///
     /// @param oemCharset the charset for DOS/OEM metadata and unavailable creator information
     /// @param ansiCharset the charset for ANSI/ISO metadata selected by the compatibility rules

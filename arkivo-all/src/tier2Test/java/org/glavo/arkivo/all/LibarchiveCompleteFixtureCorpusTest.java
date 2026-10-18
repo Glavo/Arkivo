@@ -62,7 +62,7 @@ final class LibarchiveCompleteFixtureCorpusTest {
 
     /// The SHA-256 digest of every fixture name and its complete stable probe outcome.
     private static final String EXPECTED_OUTCOME_DIGEST =
-            "b941687db6d99e39fba47c8f832e8a63c5df052aed12d6b74afed8c1bc9c7dc0";
+            "adf9824c159202cdc82833d5f265d3d09843ac844d608a8a24073ecad5a7102b";
 
     /// The maximum decoded stream retained while probing a compression fixture.
     private static final long MAXIMUM_DECODED_SIZE = 64L * 1024L * 1024L;
