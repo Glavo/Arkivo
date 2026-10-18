@@ -6,12 +6,18 @@ package org.glavo.arkivo.archive.zip;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.StreamSupport;
+import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -24,6 +30,57 @@ final class ZipArkivoPathTest {
     /// Provides an isolated backing path that does not require archive parsing.
     @TempDir
     Path temporaryDirectory;
+
+    /// Compares lexical operation combinations covered by OpenJDK zipfs `PathOps` with the running JDK provider.
+    @ParameterizedTest
+    @ValueSource(strings = {"", "/", ".", "..", "/..", "/./.", "a", "/a", "a/", "a/b", "/a/b",
+            "//a//b/", "a/./b", "a/b/..", "../a", "../../a", "/a/b/c", "a/b/c"})
+    void matchesJdkLexicalOperations(String name) throws IOException {
+        Path archive = temporaryDirectory.resolve("paths.zip");
+        try (var ignored = new ZipOutputStream(Files.newOutputStream(archive))) {
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive); var reference = FileSystems.newFileSystem(archive)) {
+            Path path = fs.getPath(name);
+            Path expected = reference.getPath(name);
+            assertEquals(expected.toString(), path.toString());
+            assertEquals(expected.isAbsolute(), path.isAbsolute());
+            assertEquals(expected.getNameCount(), path.getNameCount());
+            assertEquals(Objects.toString(expected.getRoot()), Objects.toString(path.getRoot()));
+            assertEquals(Objects.toString(expected.getParent()), Objects.toString(path.getParent()));
+            // Older JDK zipfs versions mishandle empty names; use the Path contract for those cases.
+            if (name.isEmpty()) {
+                assertEquals("", path.getFileName().toString());
+                assertEquals("", path.getName(0).toString());
+                assertEquals("", path.subpath(0, 1).toString());
+            } else {
+                assertEquals(Objects.toString(expected.getFileName()), Objects.toString(path.getFileName()));
+            }
+            assertEquals(expected.normalize().toString(), path.normalize().toString());
+            for (int start = 0; !name.isEmpty() && start < expected.getNameCount(); start++) {
+                assertEquals(expected.getName(start).toString(), path.getName(start).toString());
+                for (int end = start + 1; end <= expected.getNameCount(); end++) {
+                    assertEquals(expected.subpath(start, end).toString(), path.subpath(start, end).toString());
+                }
+            }
+            for (String other : List.of("", "/", "a", "ab", "/a", "b", "a/b", "/a/b", "b/", "../c")) {
+                Path operand = fs.getPath(other);
+                Path referenceOperand = reference.getPath(other);
+                String context = name + " against " + other;
+                if (name.isEmpty() || other.isEmpty()) {
+                    assertEquals(name.isEmpty() && other.isEmpty(), path.startsWith(operand), context);
+                    assertEquals(name.isEmpty() && other.isEmpty(), path.endsWith(operand), context);
+                } else {
+                    assertEquals(expected.startsWith(referenceOperand), path.startsWith(operand), context);
+                    assertEquals(expected.endsWith(referenceOperand), path.endsWith(operand), context);
+                }
+                assertEquals(expected.resolve(referenceOperand).toString(), path.resolve(operand).toString(), context);
+                assertEquals(expected.resolveSibling(referenceOperand).toString(),
+                        path.resolveSibling(operand).toString(), context);
+                assertEquals(expected.resolve(other).toString(), path.resolve(other).toString(), context);
+                assertEquals(expected.resolveSibling(other).toString(), path.resolveSibling(other).toString(), context);
+            }
+        }
+    }
 
     /// Verifies ZIP paths implement the core NIO path operations without reading archive entries.
     @Test

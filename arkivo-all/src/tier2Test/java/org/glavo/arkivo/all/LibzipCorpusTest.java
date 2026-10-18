@@ -4,6 +4,7 @@
 package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.all.commonscompress.ArchiveCorpusAssertions;
+import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
@@ -26,6 +27,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
@@ -49,6 +51,94 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Exercises libzip regression archives with independent content digests and upstream operation expectations.
 @NotNullByDefault
 final class LibzipCorpusTest {
+    /// Replays `fseek_ok`, `fseek_fail`, `fseek_deflated`, and `read_seek_read` with NIO seek semantics.
+    @ParameterizedTest
+    @ValueSource(strings = {"test.zip", "testdeflated.zip"})
+    void seeksAfterEndOfEntry(String name) throws IOException {
+        String entryName;
+        byte[] expected;
+        try (var reference = new java.util.zip.ZipFile(fixture(name).toFile())) {
+            // The upstream program seeks entry index zero; the archive may contain other entries.
+            var entry = reference.entries().nextElement();
+            entryName = entry.getName();
+            try (var input = reference.getInputStream(entry)) {
+                expected = input.readAllBytes();
+            }
+        }
+        try (var fs = ZipArkivoFileSystem.open(fixture(name));
+             var channel = Files.newByteChannel(fs.getPath(entryName))) {
+            assertEquals(expected.length, channel.size());
+            ByteBuffer buffer = ByteBuffer.allocate(expected.length + 5);
+            while (buffer.position() < expected.length) assertTrue(channel.read(buffer) > 0);
+            assertEquals(-1, channel.read(buffer));
+            assertEquals(expected.length, channel.position());
+            assertArrayEquals(expected, Arrays.copyOf(buffer.array(), buffer.position()));
+
+            // Unlike libzip, NIO permits positions beyond EOF; Arkivo also supports compressed entry seeks.
+            for (long position : new long[]{expected.length + 3L, Long.MAX_VALUE}) {
+                channel.position(position);
+                assertEquals(-1, channel.read(buffer.clear()));
+                assertEquals(position, channel.position());
+                assertThrows(IllegalArgumentException.class, () -> channel.position(-1));
+                assertEquals(position, channel.position());
+            }
+            channel.position(2);
+            buffer.clear().limit(2);
+            while (buffer.hasRemaining()) assertTrue(channel.read(buffer) > 0);
+            assertArrayEquals(Arrays.copyOfRange(expected, 2, 4), Arrays.copyOf(buffer.array(), 2));
+            channel.position(0);
+            buffer.clear().limit(expected.length);
+            while (buffer.hasRemaining()) assertTrue(channel.read(buffer) > 0);
+            assertArrayEquals(expected, Arrays.copyOf(buffer.array(), expected.length));
+            assertEquals(-1, channel.read(buffer.clear()));
+        }
+    }
+
+    /// Selects libzip's ASCII, UTF-8, CP437, and legacy-comment rename inputs and saved outputs.
+    private static Stream<Arguments> encodedRenames() {
+        return Stream.of(
+                Arguments.of("testfile-UTF8.zip", "testfile.zip"),
+                Arguments.of("testfile.zip", "testfile-UTF8.zip"),
+                Arguments.of("testfile.zip", "testfile-cp437.zip"),
+                Arguments.of("test-cp437-fc.zip", "test-cp437-fc-utf-8-filename.zip"));
+    }
+
+    /// Renames Unicode paths while preserving opaque comments and matching the upstream decoded output.
+    @ParameterizedTest(name = "{0} -> {1}")
+    @MethodSource("encodedRenames")
+    void renamesEncodedEntries(String source, String result, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("encoded-rename.zip");
+        Files.copy(fixture(source), archive);
+        var original = ArchiveCorpusAssertions.readZipReference(fixture(source));
+        var expected = ArchiveCorpusAssertions.readZipReference(fixture(result));
+        assertEquals(1, original.size());
+        assertEquals(1, expected.size());
+        var decoder = ArchiveMetadataDecoder.forCharset(Charset.forName("IBM437"));
+        var options = ZipArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                ZipArchiveOptions.UPDATE_DEFAULTS.common().withMetadataDecoder(decoder));
+        byte @Nullable [] comment;
+        try (var fs = ZipArkivoFileSystem.update(archive, options)) {
+            Path from = fs.getPath(original.get(0).path());
+            Path to = fs.getPath(expected.get(0).path());
+            comment = Files.readAttributes(from, ZipArkivoEntryAttributes.class).rawComment();
+            Files.move(from, to);
+            assertFalse(Files.exists(from));
+            assertArrayEquals(comment, Files.readAttributes(to, ZipArkivoEntryAttributes.class).rawComment());
+        }
+        assertPublishedContents(archive, expected);
+        try (var reader = ZipArkivoStreamingReader.open(archive)) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readStreaming(reader), expected);
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive);
+             var upstream = ZipArkivoFileSystem.open(fixture(result))) {
+            Path name = fs.getPath(expected.get(0).path());
+            var attributes = Files.readAttributes(name, ZipArkivoEntryAttributes.class);
+            assertArrayEquals(comment, attributes.rawComment());
+            assertArrayEquals(Files.readAttributes(upstream.getPath(name.toString()),
+                    ZipArkivoEntryAttributes.class).rawComment(), attributes.rawComment());
+        }
+    }
+
     /// Chooses the outer archive when its comment contains a complete ZIP or ZIP64 archive.
     @ParameterizedTest
     @ValueSource(strings = {"zip-in-archive-comment.zip", "zip64-in-archive-comment.zip"})

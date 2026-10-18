@@ -110,6 +110,30 @@ final class ArchiveDirectoryStreamContractTest {
                         .map(safety -> Arguments.of(format, update, safety))));
     }
 
+    /// Preserves empty and dot root spellings, the root cases in OpenJDK zipfs `DirectoryStreamTests`.
+    @ParameterizedTest(name = "{0}, update={1}, safety={2}")
+    @MethodSource("configurations")
+    void preservesRootSpelling(String format, boolean update, ArkivoFileSystemThreadSafety safety,
+                              @TempDir Path directory) throws IOException {
+        try (var fs = open(format, update, safety, directory)) {
+            for (String spelling : List.of("", "/", ".", "./", "/./")) {
+                Path root = fs.getPath(spelling);
+                var expected = Set.of(root.resolve("first"), root.resolve("skip"), root.resolve("second"));
+                var seen = new HashSet<Path>();
+                var returned = new HashSet<Path>();
+                try (var stream = Files.newDirectoryStream(root, path -> {
+                    assertTrue(expected.contains(path), path.toString());
+                    assertTrue(seen.add(path));
+                    return true;
+                })) {
+                    stream.forEach(path -> assertTrue(returned.add(path)));
+                }
+                assertEquals(expected, seen);
+                assertEquals(expected, returned);
+            }
+        }
+    }
+
     /// Reads each accepted path once and rejects iterator removal without altering archive contents.
     @ParameterizedTest(name = "{0}, update={1}, safety={2}")
     @MethodSource("configurations")

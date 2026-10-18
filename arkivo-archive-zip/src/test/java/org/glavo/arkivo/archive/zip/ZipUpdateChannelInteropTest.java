@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -35,12 +36,52 @@ import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Compares bounded ZIP update sequences with a byte-array model and JDK ZIPFS file channels.
 @NotNullByDefault
 final class ZipUpdateChannelInteropTest {
+    /// Exercises JDK-8229887 replacement metadata across shrinking, empty, and growing bodies.
+    @ParameterizedTest
+    @ValueSource(ints = {ZipEntry.STORED, ZipEntry.DEFLATED})
+    void replacesEntryWithoutRetainingOldCompressionMetadata(int method, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("replacement-metadata.zip");
+        createArchive(archive, method, new byte[]{11, 13, 17, 19, 23});
+        for (int length : new int[]{2, 0, 8193, 1}) {
+            byte[] replacement = new byte[length];
+            new Random(8229887L + length).nextBytes(replacement);
+            try (var fs = ZipArkivoFileSystem.update(archive)) {
+                Files.write(fs.getPath("body.bin"), replacement);
+                assertArrayEquals(replacement, Files.readAllBytes(fs.getPath("body.bin")));
+            }
+            var crc = new CRC32();
+            crc.update(replacement);
+            try (var reference = new ZipFile(archive.toFile()); var fs = ZipArkivoFileSystem.open(archive)) {
+                assertEquals(2, reference.size());
+                @Nullable var changed = reference.getEntry("body.bin");
+                @Nullable var unchanged = reference.getEntry("untouched.bin");
+                assertNotNull(changed);
+                assertNotNull(unchanged);
+                // Replacements use Arkivo's default method, including originally STORED entries.
+                assertEquals(ZipEntry.DEFLATED, changed.getMethod());
+                assertEquals(length, changed.getSize());
+                assertEquals(crc.getValue(), changed.getCrc());
+                assertEquals(method, unchanged.getMethod());
+                try (var input = reference.getInputStream(changed)) {
+                    assertArrayEquals(replacement, input.readAllBytes());
+                }
+                assertArrayEquals(replacement, Files.readAllBytes(fs.getPath("body.bin")));
+                assertArrayEquals(new byte[]{3, 5, 7}, Files.readAllBytes(fs.getPath("untouched.bin")));
+                var attributes = Files.readAttributes(fs.getPath("body.bin"), ZipArkivoEntryAttributes.class);
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
+                assertEquals(length, attributes.size());
+                assertEquals(changed.getCompressedSize(), attributes.compressedSize());
+            }
+        }
+    }
+
     /// Prevents publication when a staged replacement cannot be opened, fully read, or closed.
     @ParameterizedTest
     @ValueSource(strings = {"open", "read", "close", "stall"})
