@@ -4,12 +4,15 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -34,6 +37,64 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests archive-comment boundaries, preservation, and truncation using JDK-produced ZIP files.
 @NotNullByDefault
 final class ZipArchiveCommentTest {
+    /// Keeps complete nested archives opaque, including an empty outer archive and a maximum-length comment.
+    @ParameterizedTest
+    @CsvSource({"0,0,0", "0,0,65535", "2,0,0", "2,0,65535", "2,27,0", "2,27,65535"})
+    void ignoresCompleteArchivesInComment(int count, int prefix, int paddedLength, @TempDir Path directory)
+            throws IOException {
+        byte[] outer = archive("", ZipEntry.STORED, count);
+        byte[] inner = archive("", ZipEntry.DEFLATED, 1);
+        int commentLength = Math.max(inner.length, paddedLength);
+        byte[] bytes = new byte[prefix + outer.length + commentLength];
+        System.arraycopy(outer, 0, bytes, prefix, outer.length);
+        System.arraycopy(inner, 0, bytes, bytes.length - inner.length, inner.length);
+        ByteArrayAccess.writeShortLittleEndian(bytes, prefix + outer.length - 2, (short) commentLength);
+        Path path = Files.write(directory.resolve("nested.zip"), bytes);
+        try (var fs = ZipArkivoFileSystem.open(path)) {
+            assertEntries(fs, count);
+            assertEquals(prefix, fs.preambleSize());
+        }
+        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            for (int i = 0; i < count; i++) {
+                assertTrue(reader.next());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(CONTENT, input.readAllBytes());
+                }
+            }
+            assertFalse(reader.next());
+        }
+        try (var fs = ZipArkivoFileSystem.update(path)) {
+            Files.write(fs.getPath("added"), CONTENT);
+        }
+        try (var fs = ZipArkivoFileSystem.open(path)) {
+            for (int i = 0; i < count; i++) {
+                assertArrayEquals(CONTENT, Files.readAllBytes(fs.getPath("entry" + i)));
+            }
+            assertArrayEquals(CONTENT, Files.readAllBytes(fs.getPath("added")));
+        }
+        byte[] rewritten = Files.readAllBytes(path);
+        assertArrayEquals(Arrays.copyOfRange(bytes, bytes.length - commentLength, bytes.length),
+                Arrays.copyOfRange(rewritten, rewritten.length - commentLength, rewritten.length));
+    }
+
+    /// Ignores an earlier EOF-shaped end signature whose declared directory is not present.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2})
+    void ignoresFalseEndRecordInPreamble(int count) throws IOException {
+        byte[] original = archive("", ZipEntry.STORED, count);
+        int prefix = 80;
+        byte[] bytes = new byte[prefix + original.length];
+        System.arraycopy(original, 0, bytes, prefix, original.length);
+        ByteArrayAccess.writeIntLittleEndian(bytes, 48, 0x06054b50);
+        ByteArrayAccess.writeShortLittleEndian(bytes, 58, (short) 1);
+        ByteArrayAccess.writeIntLittleEndian(bytes, 60, 46);
+        ByteArrayAccess.writeShortLittleEndian(bytes, 68, (short) (bytes.length - 70));
+        try (var fs = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(bytes))) {
+            assertEntries(fs, count);
+            assertEquals(prefix, fs.preambleSize());
+        }
+    }
+
     /// Entry bytes independently checked before and after archive updates.
     private static final byte @Unmodifiable [] CONTENT = "archive comment payload".getBytes(StandardCharsets.US_ASCII);
 

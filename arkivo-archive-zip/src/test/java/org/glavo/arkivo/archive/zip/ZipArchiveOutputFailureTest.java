@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -94,6 +95,68 @@ final class ZipArchiveOutputFailureTest {
     private static Stream<Arguments> outputFailures() {
         return Stream.of(false, true).flatMap(split -> Stream.of(FailureKind.values())
                 .flatMap(kind -> Stream.of(false, true).map(partial -> Arguments.of(split, kind, partial))));
+    }
+
+    /// Supplies exception and partial-progress combinations for replacement archive publication.
+    private static Stream<Arguments> updateFailures() {
+        return Stream.of(FailureKind.values()).flatMap(kind ->
+                Stream.of(false, true).map(partial -> Arguments.of(kind, partial)));
+    }
+
+    /// Sweeps update-output failures using CPython's write-call enumeration, without its recovery-after-error policy.
+    @ParameterizedTest(name = "{0}, partial={1}")
+    @MethodSource("updateFailures")
+    void stopsAtEveryUpdateOutputPosition(FailureKind kind, boolean partial) throws IOException {
+        FaultTarget original = new FaultTarget();
+        writeArchive(original, false);
+        byte @Unmodifiable [] archive = original.bytes();
+        byte[] unchanged = archive.clone();
+        FaultTarget baseline = new FaultTarget();
+        try (var fs = openUpdate(archive, baseline)) {
+            Files.writeString(fs.getPath("data.bin"), "replacement");
+            Files.writeString(fs.getPath("added"), "addition");
+        }
+        assertEquals(1, baseline.commits);
+        try (var fs = ZipArkivoFileSystem.open(index -> index < baseline.streams.size()
+                ? new ReadOnlyByteArrayChannel(baseline.streams.get((int) index).toByteArray()) : null)) {
+            assertEquals("replacement", Files.readString(fs.getPath("data.bin")));
+            assertEquals("addition", Files.readString(fs.getPath("added")));
+            assertEquals("replacement", Files.readString(fs.getPath("link")));
+        }
+        assertTrue(baseline.operations > 10);
+        for (int operation = 1; operation <= baseline.operations; operation++) {
+            FaultTarget target = new FaultTarget();
+            Throwable failure = kind.create();
+            target.arm(operation, failure, partial);
+            @Nullable ZipArkivoFileSystem fs = null;
+            try {
+                fs = openUpdate(archive, target);
+                Files.writeString(fs.getPath("data.bin"), "replacement");
+                Files.writeString(fs.getPath("added"), "addition");
+                fs.close();
+                throw new AssertionError("Fault position was not reached: " + operation);
+            } catch (IOException | RuntimeException | Error exception) {
+                assertSame(failure, exception, "operation " + operation);
+            }
+            byte[] incomplete = target.bytes();
+            if (fs != null) {
+                ignoreIOException(fs::close);
+                fs.close();
+            }
+            assertEquals(operation, target.operations, "operation " + operation);
+            assertArrayEquals(incomplete, target.bytes());
+            assertArrayEquals(unchanged, archive);
+            assertEquals(0, target.commits);
+            assertEquals(1, target.rollbacks);
+            assertEquals(1, target.transactionCloses);
+            assertEquals(target.streams.size(), target.channelCloses);
+        }
+    }
+
+    /// Opens an update with an immutable source and an independently recorded transactional destination.
+    private static ZipArkivoFileSystem openUpdate(byte @Unmodifiable [] source, FaultTarget target) throws IOException {
+        return ZipArkivoFileSystem.update(index -> index == 0 ? new ReadOnlyByteArrayChannel(source) : null,
+                target, ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE);
     }
 
     /// Fails each target write and volume-open operation from the first header through the end directory.

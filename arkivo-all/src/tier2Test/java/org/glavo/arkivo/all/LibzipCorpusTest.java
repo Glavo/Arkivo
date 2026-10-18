@@ -6,10 +6,14 @@ package org.glavo.arkivo.all;
 import org.glavo.arkivo.all.commonscompress.ArchiveCorpusAssertions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
+import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
+import org.glavo.arkivo.archive.zip.ZipEncryption;
+import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -33,16 +37,118 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Exercises libzip regression archives with independent content digests and upstream operation expectations.
 @NotNullByDefault
 final class LibzipCorpusTest {
+    /// Chooses the outer archive when its comment contains a complete ZIP or ZIP64 archive.
+    @ParameterizedTest
+    @ValueSource(strings = {"zip-in-archive-comment.zip", "zip64-in-archive-comment.zip"})
+    void ignoresArchiveEmbeddedInComment(String name, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("comment.zip");
+        Files.copy(fixture(name), archive);
+        String entry = name.startsWith("zip64") ? "testfile.txt" : "test";
+        long size = name.startsWith("zip64") ? 0 : 5;
+        long crc = name.startsWith("zip64") ? 0 : 0x3bb935c6L;
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            var attributes = Files.readAttributes(fs.getPath(entry), ZipArkivoEntryAttributes.class);
+            assertEquals(size, attributes.size());
+            byte[] content = Files.readAllBytes(fs.getPath(entry));
+            var checksum = new java.util.zip.CRC32();
+            checksum.update(content);
+            assertEquals(crc, checksum.getValue());
+            try (var entries = Files.newDirectoryStream(fs.getPath("/"))) {
+                assertEquals(List.of(fs.getPath("/" + entry)), StreamSupport.stream(entries.spliterator(), false).toList());
+            }
+        }
+        try (var fs = ZipArkivoFileSystem.update(archive)) {
+            Files.writeString(fs.getPath("added"), "new");
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            assertEquals(size, Files.readAllBytes(fs.getPath(entry)).length);
+            assertEquals("new", Files.readString(fs.getPath("added")));
+        }
+    }
+
+    /// Replays the per-entry comment changes in `set_comment_localonly.test` without changing file bodies.
+    @Test
+    void changesRawComments(@TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("comments.zip");
+        Files.copy(fixture("testcomment.zip"), archive);
+        try (var fs = ZipArkivoFileSystem.update(archive)) {
+            for (int i = 0; i < 4; i++) {
+                @Nullable var view = Files.getFileAttributeView(fs.getPath("file" + (i + 1)), ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setRawComment(i == 2 ? null : ("File comment no " + i).getBytes(StandardCharsets.US_ASCII));
+            }
+        }
+        assertPublishedContents(archive, ArchiveCorpusAssertions.readZipReference(fixture("testchangedlocal.zip")));
+        try (var actual = ZipArkivoFileSystem.open(archive);
+             var expected = ZipArkivoFileSystem.open(fixture("testchangedlocal.zip"))) {
+            for (int i = 1; i <= 4; i++) {
+                assertArrayEquals(Files.readAttributes(expected.getPath("file" + i), ZipArkivoEntryAttributes.class).rawComment(),
+                        Files.readAttributes(actual.getPath("file" + i), ZipArkivoEntryAttributes.class).rawComment());
+            }
+        }
+    }
+
+    /// Removes encryption by replacing the body, the supported equivalent of libzip's `encryption-remove.test`.
+    @Test
+    void replacesEncryptedBodyWithPlaintext(@TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("encryption.zip");
+        Files.copy(fixture("encrypt-aes128.zip"), archive);
+        var options = ZipArchiveOptions.UPDATE_DEFAULTS.withDefaultEncryption(ZipEncryption.NONE)
+                .withPasswordProvider(ArkivoPasswordProvider.fixed("foofoofoo".getBytes(StandardCharsets.US_ASCII)));
+        try (var fs = ZipArkivoFileSystem.update(archive, options)) {
+            Path entry = fs.getPath("encrypted");
+            assertArrayEquals("encrypted\n".getBytes(StandardCharsets.US_ASCII), Files.readAllBytes(entry));
+            Files.write(entry, Files.readAllBytes(entry));
+        }
+        assertPublishedContents(archive, ArchiveCorpusAssertions.readZipReference(fixture("encrypt-none.zip")));
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            assertEquals(ZipEncryption.NONE,
+                    Files.readAttributes(fs.getPath("encrypted"), ZipArkivoEntryAttributes.class).encryption());
+        }
+    }
+
+    /// Rejects unsupported existing-record edits without corrupting metadata copied into the replacement archive.
+    @ParameterizedTest
+    @ValueSource(strings = {"method", "encryption", "local-extra", "central-extra"})
+    void rejectedRecordEditsPreserveArchive(String operation, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("record.zip");
+        Files.copy(fixture("testfile-ef.zip"), archive);
+        var expected = ArchiveCorpusAssertions.readZipReference(archive);
+        try (var fs = ZipArkivoFileSystem.update(archive)) {
+            var path = fs.getPath("testfile.txt");
+            @Nullable var view = Files.getFileAttributeView(path, ZipArkivoEntryAttributeView.class);
+            assertNotNull(view);
+            var before = view.readAttributes();
+            assertThrows(UnsupportedOperationException.class, () -> {
+                switch (operation) {
+                    case "method" -> view.setMethod(ZipMethod.BZIP2);
+                    case "encryption" -> view.setEncryption(ZipEncryption.WINZIP_AES_128);
+                    case "local-extra" -> view.setLocalExtraData(new byte[]{(byte) 0xfe, (byte) 0xca, 0, 0});
+                    case "central-extra" -> view.setCentralDirectoryExtraData(new byte[]{(byte) 0xfe, (byte) 0xca, 0, 0});
+                    default -> throw new AssertionError(operation);
+                }
+            });
+            var after = view.readAttributes();
+            assertEquals(before.compressionMethodId(), after.compressionMethodId());
+            assertEquals(before.encryption(), after.encryption());
+            assertArrayEquals(before.localExtraData(), after.localExtraData());
+            assertArrayEquals(before.centralDirectoryExtraData(), after.centralDirectoryExtraData());
+        }
+        assertPublishedContents(archive, expected);
+    }
+
     /// Returns ordinary archives whose complete contents can be read independently by Commons Compress.
     private static Stream<String> readableArchives() {
         return Stream.of("test.zip", "test2.zip", "testdeflated.zip", "testdeflated2.zip", "teststored.zip",

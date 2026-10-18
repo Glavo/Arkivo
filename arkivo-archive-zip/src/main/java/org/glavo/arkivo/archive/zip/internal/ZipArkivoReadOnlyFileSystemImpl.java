@@ -1273,7 +1273,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         );
     }
 
-    /// Validates that local entry data and a structurally valid optional descriptor end before the central directory.
+    /// Validates that local data and its optional descriptor do not overlap another header or the central directory.
     ///
     /// The descriptor CRC is deliberately deferred until that entry is read or its raw local record is copied. This
     /// keeps an unrelated bad entry CRC from making every other entry in the archive inaccessible.
@@ -1281,7 +1281,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             SeekableByteChannel channel,
             ZipEntryRecord entry,
             long dataOffset,
-            long centralDirectoryOffset
+            long recordLimit
     ) throws IOException {
         ZipCompressionFormats.validateStoredSize(entry.generalPurposeFlags, entry.method,
                 entry.centralDirectoryExtraData, entry.compressedSize, entry.uncompressedSize);
@@ -1293,8 +1293,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     "local record end"
             );
         }
-        if (recordEnd > centralDirectoryOffset) {
-            throw new IOException("ZIP local record extends into the central directory: " + entry.path);
+        if (recordEnd > recordLimit) {
+            throw new IOException("ZIP local record overlaps another archive record: " + entry.path);
         }
     }
 
@@ -1444,12 +1444,44 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     entry.centralDirectoryExtraData, entry.rawComment, entry.lastModifiedDosTime,
                     ZipExtraFieldMetadata.resolve(local.extraData, entry.centralDirectoryExtraData,
                             entry.dosFallback), entry.directory, local.usesDataDescriptor(), entry.dosFallback);
-            validateLocalRecord(channel, complete, local.dataOffset, end.actualCentralDirectoryOffset);
+            long recordLimit = nextLocalRecordOffset(channel, index, offset, end.offsetAdjustment);
+            if (end.offsetAdjustment != 0) {
+                recordLimit = Math.min(recordLimit, nextLocalRecordOffset(channel, index, offset, 0));
+            }
+            validateLocalRecord(channel, complete, local.dataOffset, recordLimit);
             complete.dataOffset = local.dataOffset;
             complete.localRecord = complete;
             entry.localRecord = complete;
             return complete;
         }
+    }
+
+    /// Finds the next distinct physical header under one of the supported offset interpretations.
+    ///
+    /// Ordinary archives use only central-directory offsets. Preambles can require adjusted offsets, while some
+    /// producers retain already-absolute offsets; the signature check must agree with local-header resolution.
+    private static long nextLocalRecordOffset(
+            SeekableByteChannel channel, ZipIndex index, long offset, long adjustment) throws IOException {
+        List<ZipEntryRecord> entries = index.storageEntries;
+        int low = 0;
+        int high = entries.size();
+        long storedOffset = offset - adjustment;
+        while (low < high) {
+            int middle = (low + high) >>> 1;
+            if (entries.get(middle).localHeaderOffset <= storedOffset) low = middle + 1;
+            else high = middle;
+        }
+        long limit = index.endRecord.actualCentralDirectoryOffset;
+        for (int i = low; i < entries.size(); i++) {
+            long recorded = entries.get(i).localHeaderOffset;
+            long candidate = checkedZipOffsetAdd(recorded, adjustment, "local record boundary");
+            if (candidate >= limit) break;
+            if (index.endRecord.offsetAdjustment == 0
+                    || resolveLocalHeaderOffset(channel, recorded, index.endRecord.offsetAdjustment) == candidate) {
+                return candidate;
+            }
+        }
+        return limit;
     }
 
     /// Decodes a ZIP entry into staging storage and transfers its lifetime to a read-only channel.
@@ -1979,7 +2011,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         readFully(channel, searchOffset, buffer);
         buffer.flip();
 
-        for (int index = searchSize - ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE; index >= 0; index--) {
+        for (int index = findEndRecordOffset(channel, buffer, searchOffset); index >= 0; index--) {
             if (buffer.getInt(index) != END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
                 continue;
             }
@@ -2034,6 +2066,43 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
 
         throw new IOException("ZIP end of central directory record not found");
+    }
+
+    /// Selects an enclosing end record before considering complete archives stored inside its comment.
+    ///
+    /// Earlier signatures must end at EOF and point to a plausible directory; all directory records and ZIP64
+    /// fields are validated by the index loader. A lone candidate is retained so malformed metadata still fails
+    /// through the ordinary validation path rather than being treated as an absent archive.
+    private static int findEndRecordOffset(ArchiveChannel channel, ByteBuffer tail, long searchOffset)
+            throws IOException {
+        int last = tail.limit() - ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE;
+        while (last >= 0 && !isEndRecordCandidate(tail, last)) last--;
+        for (int index = 0; index <= last - ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE; index++) {
+            if (tail.get(index) != 'P' || !isEndRecordCandidate(tail, index)) continue;
+            long offset = searchOffset + index;
+            if (hasZip64EndLocator(channel, offset)) return index;
+            long size = Integer.toUnsignedLong(tail.getInt(index + ZIP_END_OF_CENTRAL_DIRECTORY_SIZE_OFFSET));
+            int count = Short.toUnsignedInt(tail.getShort(index + 10));
+            if (size == 0 && count == 0) return index;
+            if (count == 0 || size < (long) count * ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE || size > offset) continue;
+            long start = offset - size;
+            if (start >= searchOffset) {
+                if (tail.getInt((int) (start - searchOffset)) == CENTRAL_DIRECTORY_HEADER_SIGNATURE) return index;
+            } else {
+                ByteBuffer signature = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
+                readFully(channel, start, signature);
+                if (signature.getInt(0) == CENTRAL_DIRECTORY_HEADER_SIGNATURE) return index;
+            }
+        }
+        return last;
+    }
+
+    /// Returns whether a complete classic end record declares a comment ending at the archive boundary.
+    private static boolean isEndRecordCandidate(ByteBuffer tail, int offset) {
+        return tail.getInt(offset) == END_OF_CENTRAL_DIRECTORY_SIGNATURE
+                && offset + ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE
+                + Short.toUnsignedInt(tail.getShort(offset + ZIP_END_OF_CENTRAL_DIRECTORY_COMMENT_LENGTH_OFFSET))
+                == tail.limit();
     }
 
     /// Returns a central directory size that can be buffered for indexing.
@@ -2472,7 +2541,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         readFully(channel, searchOffset, buffer);
         buffer.flip();
 
-        for (int index = searchSize - ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE; index >= 0; index--) {
+        for (int index = findEndRecordOffset(channel, buffer, searchOffset); index >= 0; index--) {
             if (buffer.getInt(index) != END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
                 continue;
             }

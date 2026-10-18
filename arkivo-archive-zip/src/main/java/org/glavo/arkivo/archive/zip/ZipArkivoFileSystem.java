@@ -34,6 +34,7 @@ import java.util.Objects;
 /// Directory enumeration validates central-directory metadata without loading every local header. Accessing complete
 /// entry attributes or content validates that entry's local header and storage range; a malformed local record may
 /// therefore be reported only when the corresponding entry is accessed. Successfully loaded local metadata is cached.
+/// Local records must not extend into a subsequent distinct local header or the central directory.
 /// The metadata-size limit counts end records, the central directory, and local headers as they are loaded.
 /// Repeated access to the same local header does not charge the budget again; its reservation is retained if loading
 /// fails. Loading a local header may exceed the cumulative limit even when directory enumeration succeeded.
