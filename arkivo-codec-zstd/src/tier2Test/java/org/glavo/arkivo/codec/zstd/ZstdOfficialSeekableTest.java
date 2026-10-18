@@ -9,13 +9,17 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.SeekableEncodingOptions;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.io.CleanupMode;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
@@ -23,8 +27,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
+import java.util.Objects;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,17 +40,218 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-/// Adapts Zstandard 1.5.7's seekable_tests.c and finite seekable_roundtrip.c parameter cases.
+/// Adapts Zstandard 1.5.7's seekable_tests.c and replays finite seekable_roundtrip.c inputs.
 ///
 /// The upstream out-of-range decompression errors map to Channel EOF for a valid empty index. A malformed
 /// extent is rejected while loading the index. Native frames independently verify the writer's table entries.
+/// The input-driven test uses `buildZstdSeekableRoundTripReference` and `ARKIVO_ZSTD_SEEKABLE_ROUND_TRIP_EXECUTABLE`;
+/// `ARKIVO_REQUIRE_ZSTD_SEEKABLE_ROUND_TRIP=true` makes a missing reference executable fail rather than skip.
 @NotNullByDefault
 @Timeout(30)
 final class ZstdOfficialSeekableTest {
     /// Holds generated seekable encodings; no binary fixtures are stored in the repository.
-    @TempDir
+    @TempDir(cleanup = CleanupMode.ON_SUCCESS)
     Path directory;
+
+    /// Replays the original parameter decoder, range assertions and fresh/retained native seekable contexts.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    @Timeout(120)
+    void officialInputDrivenRanges(boolean reuse) throws IOException, InterruptedException {
+        @Nullable String configured = System.getenv("ARKIVO_ZSTD_SEEKABLE_ROUND_TRIP_EXECUTABLE");
+        boolean available = configured != null && Files.isRegularFile(Path.of(configured));
+        if (Boolean.parseBoolean(System.getenv("ARKIVO_REQUIRE_ZSTD_SEEKABLE_ROUND_TRIP"))) {
+            assertTrue(available, "Set ARKIVO_ZSTD_SEEKABLE_ROUND_TRIP_EXECUTABLE to the built reference");
+        }
+        assumeTrue(available, "Official seekable reference is not configured");
+        String executable = Path.of(Objects.requireNonNull(configured)).toAbsolutePath().toString();
+        List<byte[]> seeds = seekableSeeds();
+        assertEquals(429, seeds.size());
+        List<String> results = run(executable, reuse, seeds.stream().map(seed -> "R " + bytes(seed)).toList(), "seeds");
+        assertEquals(seeds.size(), results.size());
+        List<String> verification = new ArrayList<>();
+        Path nativePath = directory.resolve("native-seekable.zst");
+        int emptyRanges = 0;
+        int endRanges = 0;
+        int interiorRanges = 0;
+        for (int number = 0; number < seeds.size(); number++) {
+            byte[] seed = seeds.get(number);
+            ZstdFuzzDataProducer producer = new ZstdFuzzDataProducer(seed);
+            int size = producer.reservePrefix();
+            int level = -131072 + (int) producer.range(0, 131072 + 22);
+            boolean checksum = producer.range(0, 1) != 0;
+            int count = (int) producer.range(0, size);
+            int offset = (int) producer.range(0, size - count);
+            byte[] plain = Arrays.copyOf(seed, size);
+            String[] result = results.get(number).split(" ");
+            assertEquals(6, result.length);
+            assertEquals(size, Integer.parseInt(result[0]));
+            assertEquals(level, Integer.parseInt(result[1]));
+            assertEquals(checksum ? 1 : 0, Integer.parseInt(result[2]));
+            assertEquals(count, Integer.parseInt(result[3]));
+            assertEquals(offset, Integer.parseInt(result[4]));
+            if (count == 0) emptyRanges++;
+            if (offset + count == size) endRanges++;
+            if (offset > 0 && count > 0 && offset + count < size) interiorRanges++;
+            try {
+                Files.write(nativePath, HexFormat.of().parseHex(result[5]));
+                checkSeekableRanges(nativePath, plain, checksum, offset, count);
+                // Mirror the original single-frame limit, then exercise the same range across smaller Java frames.
+                for (int frameSize : new int[]{Math.max(1, size), Math.max(1, Math.min(40, size / 3))}) {
+                    Path javaPath = encode(plain, frameSize, level, checksum);
+                    checkSeekableRanges(javaPath, plain, checksum, offset, count);
+                    verification.add("D " + bytes(plain) + " " + bytes(Files.readAllBytes(javaPath)) + " " + offset + " " + count);
+                }
+            } catch (IOException | RuntimeException | AssertionError failure) {
+                throw new AssertionError("Seed " + number + ", reuse=" + reuse + ", level=" + level
+                        + ", size=" + size + ", range=" + offset + "+" + count, failure);
+            }
+        }
+        assertTrue(emptyRanges > 0 && endRanges > 0 && interiorRanges > 0);
+        List<String> verified = run(executable, reuse, verification, "java-frames");
+        assertEquals(verification.size(), verified.size());
+        for (String line : verified) assertEquals("OK", line);
+    }
+
+    /// Checks original subranges and alternating seeks with guarded heap/direct output and independent channels.
+    private static void checkSeekableRanges(Path path, byte[] plain, boolean checksum, int offset, int count)
+            throws IOException {
+        try (var source = Files.newByteChannel(path)) {
+            var index = ZstdCodec.DEFAULT.readIndex(source);
+            assertNotNull(index);
+            assertEquals(0, source.position());
+            verifyNativeFrames(path, index, plain, checksum);
+            try (var first = index.newReadableByteChannel(source, ResourceOwnership.BORROWED)) {
+                for (boolean direct : new boolean[]{false, true}) {
+                    assertGuardedRange(first, plain, offset, count, direct);
+                    assertGuardedRange(first, plain, plain.length, 0, direct);
+                    if (plain.length != 0) {
+                        assertGuardedRange(first, plain, plain.length - 1, 1, direct);
+                        assertGuardedRange(first, plain, 0, 1, direct);
+                    }
+                    assertGuardedRange(first, plain, 0, plain.length, direct);
+                }
+            }
+            assertTrue(source.isOpen());
+            source.position(0);
+            try (var reopened = index.newReadableByteChannel(source, ResourceOwnership.BORROWED)) {
+                assertGuardedRange(reopened, plain, offset, count, true);
+            }
+        }
+    }
+
+    /// Verifies partial reads, untouched guards, positions and a zero-capacity read at logical EOF.
+    private static void assertGuardedRange(SeekableByteChannel channel, byte[] plain, int offset, int count,
+                                           boolean direct) throws IOException {
+        channel.position(offset);
+        ByteBuffer target = direct ? ByteBuffer.allocateDirect(count + 2) : ByteBuffer.allocate(count + 2);
+        target.put(0, (byte) 0x5a).put(count + 1, (byte) 0x5a).position(1).limit(count + 1);
+        if (count == 0) assertEquals(0, channel.read(target));
+        while (target.hasRemaining()) {
+            int before = target.position();
+            int read = channel.read(target);
+            assertTrue(read > 0);
+            assertEquals(before + read, target.position());
+        }
+        assertEquals(offset + count, channel.position());
+        assertEquals(count + 1, target.position());
+        assertEquals(count + 1, target.limit());
+        byte[] actual = new byte[count];
+        target.duplicate().position(1).get(actual);
+        assertArrayEquals(Arrays.copyOfRange(plain, offset, offset + count), actual);
+        assertEquals((byte) 0x5a, target.get(0));
+        assertEquals((byte) 0x5a, target.duplicate().clear().get(count + 1));
+        if (offset + count == plain.length) assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+    }
+
+    /// Generates endpoint profiles, input-derived random profiles and exhausted producer tails deterministically.
+    private static @Unmodifiable List<byte[]> seekableSeeds() {
+        List<byte[]> seeds = new ArrayList<>();
+        Random random = new Random(0x5ee_cab1eL);
+        for (int size : new int[]{0, 1, 39, 40, 41, 255, 4096}) {
+            for (int level : new int[]{-131072, -5, 0, 1, 9, 22}) {
+                for (int checksum = 0; checksum < 2; checksum++) {
+                    for (int range = 0; range < (size == 0 ? 1 : 4); range++) {
+                        byte[] plain = new byte[size];
+                        random.nextBytes(plain);
+                        int count = range < 2 ? 0 : range == 2 ? size : size / 2;
+                        int offset = range == 1 ? size : range == 3 ? (size - count) / 2 : 0;
+                        ByteArrayOutputStream tail = new ByteArrayOutputStream();
+                        parameter(tail, 131072 + 22, level + 131072);
+                        parameter(tail, 1, checksum);
+                        parameter(tail, size, count);
+                        parameter(tail, size - count, offset);
+                        seeds.add(seed(plain, tail.toByteArray()));
+                    }
+                }
+            }
+        }
+        for (int size = 0; size <= 64; size++) {
+            byte[] input = new byte[size];
+            random.nextBytes(input);
+            seeds.add(input);
+        }
+        for (int number = 0; number < 64; number++) {
+            byte[] plain = new byte[number * 67];
+            byte[] tail = new byte[16];
+            random.nextBytes(plain);
+            random.nextBytes(tail);
+            seeds.add(seed(plain, tail));
+        }
+        return List.copyOf(seeds);
+    }
+
+    /// Appends a chosen unsigned range value in the upstream producer's consumption order.
+    private static void parameter(ByteArrayOutputStream target, int maximum, int value) {
+        for (int index = width(maximum) - 1; index >= 0; index--) target.write(value >>> (8 * index));
+    }
+
+    /// Returns the number of bytes read for a range beginning at zero.
+    private static int width(int maximum) {
+        int result = 0;
+        for (; maximum != 0; maximum >>>= 8) result++;
+        return result;
+    }
+
+    /// Encodes payload reservation and tail-first parameters without changing the source payload.
+    private static byte[] seed(byte[] plain, byte[] tail) {
+        int width = 1;
+        while (width != width(plain.length + tail.length + width)) width = width(plain.length + tail.length + width);
+        byte[] input = Arrays.copyOf(plain, plain.length + tail.length + width);
+        for (int index = 0; index < tail.length; index++) input[plain.length + tail.length - 1 - index] = tail[index];
+        for (int index = 0; index < width; index++) input[plain.length + tail.length + index] = (byte) (tail.length >>> (8 * index));
+        assertEquals(plain.length, new ZstdFuzzDataProducer(input).reservePrefix());
+        return input;
+    }
+
+    /// Formats one byte field with an explicit empty token.
+    private static String bytes(byte[] bytes) {
+        return bytes.length + " " + (bytes.length == 0 ? "-" : HexFormat.of().formatHex(bytes));
+    }
+
+    /// Runs a bounded native batch, retaining inputs and diagnostics if the test fails.
+    private List<String> run(String executable, boolean reuse, List<String> requests, String name)
+            throws IOException, InterruptedException {
+        Path input = directory.resolve(name + ".input");
+        Path output = directory.resolve(name + ".output");
+        Path errors = directory.resolve(name + ".errors");
+        Files.write(input, requests, StandardCharsets.US_ASCII);
+        ProcessBuilder builder = reuse ? new ProcessBuilder(executable, "--reuse") : new ProcessBuilder(executable);
+        Process process = builder.redirectInput(input.toFile()).redirectOutput(output.toFile()).redirectError(errors.toFile()).start();
+        try {
+            if (!process.waitFor(60, TimeUnit.SECONDS)) fail("Official seekable reference timed out");
+            assertEquals(0, process.exitValue(), Files.readString(errors));
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+                assertTrue(process.waitFor(10, TimeUnit.SECONDS), "Official seekable reference did not terminate");
+            }
+        }
+        return Files.readAllLines(output, StandardCharsets.US_ASCII);
+    }
 
     /// Checks the upstream 4000-byte single-frame round trip and each exposed seek-table accessor.
     @Test

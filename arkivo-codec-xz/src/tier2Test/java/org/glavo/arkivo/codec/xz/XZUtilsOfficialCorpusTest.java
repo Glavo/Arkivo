@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.xz;
 
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.lzma.LZMACodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -11,9 +12,11 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -49,6 +52,44 @@ public final class XZUtilsOfficialCorpusTest {
     /// The SHA-256 of the common 457-byte LZMA2 test output.
     private static final String LZMA2_SHA256 =
             "a643326fcc1346e96252c48931c32085ac7e3304adebd2e6e25390108c0b649e";
+
+    /// Ports test_bcj_exact_size.c's empty PowerPC/LZMA2 Block to the zero-capacity one-shot contract.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    public void decodesEmptyBCJBlockWithoutOutputSpace(int kind) throws IOException {
+        byte[] encoded = Files.readAllBytes(corpusFile("good-1-empty-bcj-lzma2.xz"));
+        ByteBuffer source = kind == 1 ? ByteBuffer.allocateDirect(encoded.length) : ByteBuffer.allocate(encoded.length);
+        source.put(encoded).flip();
+        if (kind == 2) source = source.asReadOnlyBuffer();
+        ByteBuffer emptyTarget = ByteBuffer.wrap(new byte[]{0x5a, 0x5a}).position(1).limit(1);
+        XZCodec.DEFAULT.decompress(source, emptyTarget);
+        assertEquals(encoded.length, source.position());
+        assertEquals(1, emptyTarget.position());
+        assertEquals(1, emptyTarget.limit());
+        assertEquals((byte) 0x5a, emptyTarget.get(0));
+        assertEquals((byte) 0x5a, emptyTarget.duplicate().clear().get(1));
+        try (var decoder = XZCodec.DEFAULT.newDecoder()) {
+            for (int inputChunk : new int[]{encoded.length, 1}) {
+                ByteBuffer input = kind == 1 ? ByteBuffer.allocateDirect(encoded.length) : ByteBuffer.allocate(encoded.length);
+                input.put(encoded).flip().limit(0);
+                if (kind == 2) input = input.asReadOnlyBuffer();
+                ByteBuffer output = ByteBuffer.wrap(new byte[]{0x5a, 0x5a, 0x5a}).position(1).limit(2);
+                CodecOutcome outcome = CodecOutcome.NEEDS_INPUT;
+                for (int call = 0; outcome != CodecOutcome.FINISHED; call++) {
+                    assertTrue(call <= encoded.length + 1, "Empty Block must not require output space");
+                    input.limit(Math.min(encoded.length, input.position() + inputChunk));
+                    outcome = decoder.decode(input, output);
+                    assertTrue(outcome == CodecOutcome.NEEDS_INPUT || outcome == CodecOutcome.FINISHED);
+                    assertEquals(1, output.position());
+                    assertEquals(2, output.limit());
+                }
+                assertEquals(encoded.length, input.position());
+                assertEquals((byte) 0x5a, output.get(0));
+                assertEquals((byte) 0x5a, output.duplicate().clear().get(2));
+                decoder.reset();
+            }
+        }
+    }
 
     /// Verifies every official valid XZ stream against output metadata produced by the official 5.8.3 CLI.
     @ParameterizedTest(name = "{0}")

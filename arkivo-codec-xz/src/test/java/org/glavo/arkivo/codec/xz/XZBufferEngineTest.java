@@ -10,6 +10,8 @@ import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -29,6 +31,61 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests the transport-independent XZ encoder and decoder contracts.
 @NotNullByDefault
 public final class XZBufferEngineTest {
+    /// Ports test_bcj_exact_size.c through exact-size Codec output and one-byte incremental decoding.
+    /// Incremental backpressure permits a final probe, but it must not produce an additional decoded byte.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void powerPCExactOutputSize(int kind) throws IOException {
+        byte[] plain = "0123456789ABCDE\0".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        try (var encoder = new org.tukaani.xz.XZOutputStream(compressed,
+                new org.tukaani.xz.FilterOptions[]{new org.tukaani.xz.PowerPCOptions(),
+                        new org.tukaani.xz.LZMA2Options(0)}, org.tukaani.xz.XZ.CHECK_CRC32)) {
+            encoder.write(plain);
+        }
+        byte[] encoded = compressed.toByteArray();
+        ByteBuffer completeInput = kind == 1 ? ByteBuffer.allocateDirect(encoded.length) : ByteBuffer.allocate(encoded.length);
+        completeInput.put(encoded).flip();
+        if (kind == 2) completeInput = completeInput.asReadOnlyBuffer();
+        ByteBuffer exact = kind == 1 ? ByteBuffer.allocateDirect(plain.length) : ByteBuffer.allocate(plain.length);
+        CODEC.decompress(completeInput, exact);
+        assertEquals(encoded.length, completeInput.position());
+        assertEquals(plain.length, exact.position());
+        byte[] exactBytes = new byte[plain.length];
+        exact.flip().get(exactBytes);
+        assertArrayEquals(plain, exactBytes);
+        try (var decoder = CODEC.newDecoder()) {
+            for (int repetition = 0; repetition < 2; repetition++) {
+                ByteBuffer input = kind == 1 ? ByteBuffer.allocateDirect(encoded.length) : ByteBuffer.allocate(encoded.length);
+                input.put(encoded).flip().limit(0);
+                if (kind == 2) input = input.asReadOnlyBuffer();
+                ByteBuffer output = kind == 1 ? ByteBuffer.allocateDirect(plain.length + 2) : ByteBuffer.allocate(plain.length + 2);
+                output.put(0, (byte) 0x5a).put(plain.length + 1, (byte) 0x5a).position(1).limit(1);
+                ByteBuffer probe = ByteBuffer.allocate(1);
+                CodecOutcome outcome = CodecOutcome.NEEDS_INPUT;
+                for (int call = 0; outcome != CodecOutcome.FINISHED; call++) {
+                    assertTrue(call < encoded.length * 4 + 32, "Decoder requires extra output space or fails to progress");
+                    input.limit(Math.min(encoded.length, input.position() + 1));
+                    int outputLimit = output.limit();
+                    outcome = decoder.decode(input, output.position() == plain.length + 1 ? probe : output);
+                    assertEquals(0, probe.position(), "Unexpected output after the exact decoded extent");
+                    assertEquals(outputLimit, output.limit());
+                    assertTrue(outcome == CodecOutcome.NEEDS_INPUT || outcome == CodecOutcome.NEEDS_OUTPUT
+                            || outcome == CodecOutcome.FINISHED);
+                    output.limit(Math.min(plain.length + 1, output.position() + 1));
+                }
+                assertEquals(encoded.length, input.position());
+                assertEquals(plain.length + 1, output.position());
+                byte[] actual = new byte[plain.length];
+                output.duplicate().position(1).get(actual);
+                assertArrayEquals(plain, actual);
+                assertEquals((byte) 0x5a, output.get(0));
+                assertEquals((byte) 0x5a, output.duplicate().clear().get(plain.length + 1));
+                decoder.reset();
+            }
+        }
+    }
+
     /// Failed nested LZMA2 operations preserve the caller's compressed-input position on every buffer kind.
     @Test
     void failedBlockDecodingRetainsConsumedInput() throws IOException {

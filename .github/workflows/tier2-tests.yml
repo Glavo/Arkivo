@@ -115,6 +115,8 @@ jobs:
           ARKIVO_REQUIRE_ZSTD_STREAM_ROUND_TRIP: "true"
           ARKIVO_ZSTD_DICTIONARY_STREAM_ROUND_TRIP_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-dictionary-stream-round-trip-reference
           ARKIVO_REQUIRE_ZSTD_DICTIONARY_STREAM_ROUND_TRIP: "true"
+          ARKIVO_ZSTD_SEEKABLE_ROUND_TRIP_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-seekable-round-trip-reference
+          ARKIVO_REQUIRE_ZSTD_SEEKABLE_ROUND_TRIP: "true"
           ARKIVO_ZSTD_DICTIONARY_LOADER_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-dictionary-loader-reference
           ARKIVO_REQUIRE_ZSTD_DICTIONARY_LOADER: "true"
           ARKIVO_ZSTD_RAW_DICTIONARY_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-raw-dictionary-reference
@@ -123,7 +125,7 @@ jobs:
           ARKIVO_REQUIRE_ZSTD_DICTIONARY_ROUND_TRIP: "true"
           ARKIVO_ZSTD_DICTIONARY_DECOMPRESS_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-dictionary-decompress-reference
           ARKIVO_REQUIRE_ZSTD_DICTIONARY_DECOMPRESS: "true"
-        run: ./gradlew :arkivo-codec-zstd:buildZstdDecodeCorpus :arkivo-codec-zstd:buildZstdFseReference :arkivo-codec-zstd:buildZstdHuffmanReference :arkivo-codec-zstd:buildZstdBlockReference :arkivo-codec-zstd:buildZstdPrefixReference :arkivo-codec-zstd:buildZstdRoundTripReference :arkivo-codec-zstd:buildZstdStreamRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryStreamRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryLoaderReference :arkivo-codec-zstd:buildZstdRawDictionaryReference :arkivo-codec-zstd:buildZstdDictionaryRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryDecompressReference :arkivo-codec-zstd:tier2Test --no-daemon --stacktrace
+        run: ./gradlew :arkivo-codec-zstd:buildZstdDecodeCorpus :arkivo-codec-zstd:buildZstdFseReference :arkivo-codec-zstd:buildZstdHuffmanReference :arkivo-codec-zstd:buildZstdBlockReference :arkivo-codec-zstd:buildZstdPrefixReference :arkivo-codec-zstd:buildZstdRoundTripReference :arkivo-codec-zstd:buildZstdStreamRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryStreamRoundTripReference :arkivo-codec-zstd:buildZstdSeekableRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryLoaderReference :arkivo-codec-zstd:buildZstdRawDictionaryReference :arkivo-codec-zstd:buildZstdDictionaryRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryDecompressReference :arkivo-codec-zstd:tier2Test --no-daemon --stacktrace
 
   sevenzip-interop:
     name: Required official 7-Zip interoperability
