@@ -7,7 +7,6 @@ import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
-import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
@@ -1078,14 +1077,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
     }
 
-    /// Reads current central directory metadata without taking ownership of a repeatable single-volume source.
-    static CentralDirectorySnapshot readCentralDirectorySnapshot(
-            ArkivoSeekableChannelSource source,
-            ZipArkivoFileSystemConfig config
-    ) throws IOException {
-        return readCentralDirectorySnapshot((ArkivoVolumeSource) source, config);
-    }
-
     /// Reads current central directory metadata without taking ownership of a repeatable volume source.
     static CentralDirectorySnapshot readCentralDirectorySnapshot(
             ArkivoVolumeSource source,
@@ -1115,15 +1106,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 null,
                 snapshotReadConfig(config)
         );
-    }
-
-    /// Opens a read-only companion over a channel source without taking ownership of that source.
-    static ZipArkivoReadOnlyFileSystemImpl openUpdateReader(
-            ZipArkivoFileSystemProvider provider,
-            ArkivoSeekableChannelSource source,
-            ZipArkivoFileSystemConfig config
-    ) throws IOException {
-        return openUpdateReader(provider, (ArkivoVolumeSource) source, config);
     }
 
     /// Opens a read-only companion over a volume source without taking ownership of that source.
@@ -1156,7 +1138,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 config.threadSafety(),
                 null,
                 null,
-                config.readLimits()
+                config.readLimits(),
+                ZipEntryNameErrorAction.REPORT
         );
     }
 

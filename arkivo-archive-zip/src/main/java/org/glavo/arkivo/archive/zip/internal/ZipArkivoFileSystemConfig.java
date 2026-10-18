@@ -26,9 +26,31 @@ import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.Set;
 
-/// Stores parsed ZIP file system configuration.
+/// Holds validated ZIP settings after typed options or an NIO environment have been resolved.
+///
+/// @param openOptions the normalized backing archive access mode; copied during construction
+/// @param passwordProvider the entry password provider, or `null` when unavailable
+/// @param defaultEncryption the encryption for new entries without an explicit override
+/// @param splitSize the maximum output volume size, or [#NO_SPLIT_SIZE]
+/// @param legacyMetadataDecoder the decoder for names without Unicode metadata
+/// @param threadSafety the file-system synchronization strategy
+/// @param editStorageFactory the staging-storage factory, or `null` to select a default
+/// @param commitTarget the publication target override, or `null` to select a default
+/// @param readLimits the resource limits for the archive read portion of the operation
+/// @param entryNameErrorAction the name-decoding error action; must be `REPORT` for writable archives
 @NotNullByDefault
-public final class ZipArkivoFileSystemConfig {
+public record ZipArkivoFileSystemConfig(
+        @Unmodifiable Set<OpenOption> openOptions,
+        @Nullable ArkivoPasswordProvider passwordProvider,
+        ZipEncryption defaultEncryption,
+        long splitSize,
+        ArchiveMetadataDecoder legacyMetadataDecoder,
+        ArkivoFileSystemThreadSafety threadSafety,
+        @Nullable ArkivoEditStorageFactory editStorageFactory,
+        @Nullable ArkivoCommitTarget commitTarget,
+        ArchiveReadLimits readLimits,
+        ZipEntryNameErrorAction entryNameErrorAction
+) {
     /// The NIO environment key for read-only entry-name error handling.
     private static final ArchiveOption<ZipEntryNameErrorAction> ENTRY_NAME_ERROR_ACTION =
             ArchiveOption.of("arkivo.zip.entryNameErrorAction", ZipEntryNameErrorAction.class);
@@ -69,121 +91,27 @@ public final class ZipArkivoFileSystemConfig {
     private static final @Unmodifiable Set<OpenOption> DEFAULT_UPDATE_OPEN_OPTIONS =
             Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE);
 
-    /// The ZIP-standard decoder used when no legacy decoder is configured.
-    private static final ArchiveMetadataDecoder DEFAULT_LEGACY_METADATA_DECODER =
-            ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER;
-
     /// The default parsed ZIP file system configuration.
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(
             DEFAULT_READ_OPEN_OPTIONS,
             null,
             ZipEncryption.NONE,
             NO_SPLIT_SIZE,
-            DEFAULT_LEGACY_METADATA_DECODER,
+            ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER,
             ArkivoFileSystemThreadSafety.CONCURRENT_READ,
             null,
             null,
-            ArchiveReadLimits.UNLIMITED
+            ArchiveReadLimits.UNLIMITED,
+            ZipEntryNameErrorAction.REPORT
     );
 
-    /// The open options used to open the backing archive path.
-    private final @Unmodifiable Set<OpenOption> openOptions;
-
-    /// The provider used to decrypt encrypted ZIP entries.
-    private final @Nullable ArkivoPasswordProvider passwordProvider;
-
-    /// The encryption method used for new entries that do not override encryption.
-    private final ZipEncryption defaultEncryption;
-
-    /// The maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
-    private final long splitSize;
-
-    /// The decoder used for legacy ZIP entry names.
-    private final ArchiveMetadataDecoder legacyMetadataDecoder;
-
-    /// The action applied to entry-name decoding errors in read-only operations.
-    private final ZipEntryNameErrorAction entryNameErrorAction;
-
-    /// The requested ZIP file system thread-safety strategy.
-    private final ArkivoFileSystemThreadSafety threadSafety;
-
-    /// The configured edit-storage factory, or `null` when the file system should choose a default.
-    private final @Nullable ArkivoEditStorageFactory editStorageFactory;
-
-    /// The configured commit target override, or `null` when the file system should choose a default.
-    private final @Nullable ArkivoCommitTarget commitTarget;
-
-    /// The resource limits for the archive read portion of this operation.
-    private final ArchiveReadLimits readLimits;
-
-    /// Creates parsed ZIP file system configuration.
+    /// Copies and normalizes the access options, and validates the output and decoding settings.
     ///
-    /// @param openOptions the backing archive open options; this set is copied
-    /// @param passwordProvider the entry password provider, or `null` when unavailable
-    /// @param defaultEncryption the encryption for new entries without an explicit override
-    /// @param splitSize the maximum output volume size, or [#NO_SPLIT_SIZE]
-    /// @param legacyMetadataDecoder the decoder for names without Unicode metadata
-    /// @param threadSafety the synchronization strategy
-    /// @param editStorageFactory the edit-storage factory, or `null` to select a default
-    /// @param commitTarget the publication target override, or `null` to select a default
-    /// @throws NullPointerException if `openOptions`, an option element, `defaultEncryption`,
-    /// `legacyMetadataDecoder`, or `threadSafety` is `null`
-    /// @throws IllegalArgumentException if the open options conflict or `splitSize` is outside the ZIP limits
-    public ZipArkivoFileSystemConfig(
-            Set<? extends OpenOption> openOptions,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            ZipEncryption defaultEncryption,
-            long splitSize,
-            ArchiveMetadataDecoder legacyMetadataDecoder,
-            ArkivoFileSystemThreadSafety threadSafety,
-            @Nullable ArkivoEditStorageFactory editStorageFactory,
-            @Nullable ArkivoCommitTarget commitTarget
-    ) {
-        this(
-                openOptions,
-                passwordProvider,
-                defaultEncryption,
-                splitSize,
-                legacyMetadataDecoder,
-                threadSafety,
-                editStorageFactory,
-                commitTarget,
-                ArchiveReadLimits.UNLIMITED
-        );
-    }
-
-    /// Creates parsed ZIP file system configuration with common archive read limits.
-    ZipArkivoFileSystemConfig(
-            Set<? extends OpenOption> openOptions,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            ZipEncryption defaultEncryption,
-            long splitSize,
-            ArchiveMetadataDecoder legacyMetadataDecoder,
-            ArkivoFileSystemThreadSafety threadSafety,
-            @Nullable ArkivoEditStorageFactory editStorageFactory,
-            @Nullable ArkivoCommitTarget commitTarget,
-            ArchiveReadLimits readLimits
-    ) {
-        this(openOptions, passwordProvider, defaultEncryption, splitSize, legacyMetadataDecoder, threadSafety,
-                editStorageFactory, commitTarget, readLimits, ZipEntryNameErrorAction.REPORT);
-    }
-
-    /// Creates parsed configuration with a read-only entry-name recovery action.
-    private ZipArkivoFileSystemConfig(
-            Set<? extends OpenOption> openOptions,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            ZipEncryption defaultEncryption,
-            long splitSize,
-            ArchiveMetadataDecoder legacyMetadataDecoder,
-            ArkivoFileSystemThreadSafety threadSafety,
-            @Nullable ArkivoEditStorageFactory editStorageFactory,
-            @Nullable ArkivoCommitTarget commitTarget,
-            ArchiveReadLimits readLimits,
-            ZipEntryNameErrorAction entryNameErrorAction
-    ) {
-        Set<OpenOption> normalizedOpenOptions = normalizeOpenOptions(
-                Objects.requireNonNull(openOptions, "openOptions")
-        );
+    /// @throws NullPointerException if a non-nullable component or an open-option element is `null`
+    /// @throws IllegalArgumentException if the open options conflict, `splitSize` is outside the ZIP limits,
+    /// or name-decoding recovery is requested for a writable archive
+    public ZipArkivoFileSystemConfig {
+        openOptions = normalizeOpenOptions(openOptions);
         if (splitSize != NO_SPLIT_SIZE
                 && (splitSize < ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE
                 || splitSize > ZipArkivoFileSystem.MAXIMUM_SPLIT_SIZE)) {
@@ -191,23 +119,15 @@ public final class ZipArkivoFileSystemConfig {
                     "splitSize must be NO_SPLIT_SIZE or between MINIMUM_SPLIT_SIZE and MAXIMUM_SPLIT_SIZE"
             );
         }
-        this.openOptions = normalizedOpenOptions;
-        this.entryNameErrorAction = Objects.requireNonNull(entryNameErrorAction, "entryNameErrorAction");
+        Objects.requireNonNull(entryNameErrorAction, "entryNameErrorAction");
         if (entryNameErrorAction != ZipEntryNameErrorAction.REPORT
-                && normalizedOpenOptions.contains(StandardOpenOption.WRITE)) {
+                && openOptions.contains(StandardOpenOption.WRITE)) {
             throw new IllegalArgumentException("Entry-name recovery is only supported for read-only ZIP operations");
         }
-        this.passwordProvider = passwordProvider;
-        this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
-        this.splitSize = splitSize;
-        this.legacyMetadataDecoder = Objects.requireNonNull(
-                legacyMetadataDecoder,
-                "legacyMetadataDecoder"
-        );
-        this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
-        this.editStorageFactory = editStorageFactory;
-        this.commitTarget = commitTarget;
-        this.readLimits = Objects.requireNonNull(readLimits, "readLimits");
+        Objects.requireNonNull(defaultEncryption, "defaultEncryption");
+        Objects.requireNonNull(legacyMetadataDecoder, "legacyMetadataDecoder");
+        Objects.requireNonNull(threadSafety, "threadSafety");
+        Objects.requireNonNull(readLimits, "readLimits");
     }
 
     /// Parses ZIP file system configuration from archive options.
@@ -231,7 +151,7 @@ public final class ZipArkivoFileSystemConfig {
         ArchiveMetadataDecoder legacyMetadataDecoder =
                 options.getOrDefault(
                         LEGACY_METADATA_DECODER,
-                        DEFAULT_LEGACY_METADATA_DECODER
+                        ZipArchiveOptions.DEFAULT_LEGACY_METADATA_DECODER
                 );
         ArkivoFileSystemThreadSafety threadSafety =
                 options.getOrDefault(
@@ -296,7 +216,8 @@ public final class ZipArkivoFileSystemConfig {
                 options.common().threadSafety(),
                 options.common().editStorageFactory(),
                 null,
-                ArchiveReadLimits.UNLIMITED
+                ArchiveReadLimits.UNLIMITED,
+                ZipEntryNameErrorAction.REPORT
         );
     }
 
@@ -316,85 +237,16 @@ public final class ZipArkivoFileSystemConfig {
                 options.common().threadSafety(),
                 options.common().editStorageFactory(),
                 options.common().commitTarget(),
-                options.common().limits()
+                options.common().limits(),
+                ZipEntryNameErrorAction.REPORT
         );
     }
 
-    /// Returns the open options used to open the backing archive path.
+    /// Returns whether the normalized access options include [StandardOpenOption#WRITE].
     ///
-    /// @return the immutable normalized open-option set
-    public @Unmodifiable Set<OpenOption> openOptions() {
-        return openOptions;
-    }
-
-    /// Returns whether the archive file should be opened for forward-only ZIP writes.
-    ///
-    /// @return `true` when the normalized options contain [StandardOpenOption#WRITE]
+    /// @return `true` for both creation and update modes
     public boolean archiveWritable() {
         return openOptions.contains(StandardOpenOption.WRITE);
-    }
-
-    /// Returns the provider used to decrypt encrypted ZIP entries.
-    ///
-    /// @return the password provider, or `null` when unavailable
-    public @Nullable ArkivoPasswordProvider passwordProvider() {
-        return passwordProvider;
-    }
-
-    /// Returns the encryption method used for new entries that do not override encryption.
-    ///
-    /// @return the default entry encryption method
-    public ZipEncryption defaultEncryption() {
-        return defaultEncryption;
-    }
-
-    /// Returns the maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
-    ///
-    /// @return the maximum volume size, or [#NO_SPLIT_SIZE]
-    public long splitSize() {
-        return splitSize;
-    }
-
-    /// Returns the decoder used for legacy ZIP entry names.
-    ///
-    /// @return the legacy metadata decoder
-    public ArchiveMetadataDecoder legacyMetadataDecoder() {
-        return legacyMetadataDecoder;
-    }
-
-    /// Returns the entry-name decoding error action.
-    ///
-    /// @return the action applied to character-decoding failures
-    public ZipEntryNameErrorAction entryNameErrorAction() {
-        return entryNameErrorAction;
-    }
-
-    /// Returns the requested ZIP file system thread-safety strategy.
-    ///
-    /// @return the synchronization strategy
-    public ArkivoFileSystemThreadSafety threadSafety() {
-        return threadSafety;
-    }
-
-    /// Returns the configured edit-storage factory, or `null` when the file system should choose a default.
-    ///
-    /// @return the edit-storage factory, or `null` to select a default
-    public @Nullable ArkivoEditStorageFactory editStorageFactory() {
-        return editStorageFactory;
-    }
-
-    /// Returns the configured commit target override, or `null` when the file system should choose a default.
-    ///
-    /// @return the publication target override, or `null` to select a default
-    public @Nullable ArkivoCommitTarget commitTarget() {
-        return commitTarget;
-    }
-
-    /// Returns all resource limits for the archive read portion of this operation.
-    ///
-    /// @return the immutable archive read limits
-    public ArchiveReadLimits readLimits() {
-        return readLimits;
     }
 
     /// Converts a raw NIO encryption value.
