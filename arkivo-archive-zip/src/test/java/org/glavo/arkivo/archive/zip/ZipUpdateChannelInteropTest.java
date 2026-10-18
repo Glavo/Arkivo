@@ -209,6 +209,33 @@ final class ZipUpdateChannelInteropTest {
         }
     }
 
+    /// Tests append positioning at the numeric limit without involving a native file offset.
+    @ParameterizedTest
+    @ValueSource(ints = {ZipEntry.STORED, ZipEntry.DEFLATED})
+    void memoryAppendIgnoresMaximumPosition(int method, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("memory-append.zip");
+        createArchive(archive, method, new byte[]{1, 2, 3});
+        var defaults = ZipArchiveOptions.UPDATE_DEFAULTS;
+        var options = defaults.withCommon(defaults.common().withEditStorageFactory(ArkivoEditStorageFactory.memory()));
+        try (var fileSystem = ZipArkivoFileSystem.update(archive, options)) {
+            Path entry = fileSystem.getPath("/body.bin");
+            try (var channel = Files.newByteChannel(entry, Set.of(StandardOpenOption.APPEND))) {
+                channel.position(Long.MAX_VALUE);
+                assertEquals(Long.MAX_VALUE, channel.position());
+                assertEquals(3, channel.size());
+                assertEquals(1, channel.write(ByteBuffer.wrap(new byte[]{4})));
+                assertEquals(4, channel.position());
+                assertEquals(4, channel.size());
+            }
+            assertArrayEquals(new byte[]{1, 2, 3, 4}, Files.readAllBytes(entry));
+        }
+        try (ZipFile zip = new ZipFile(archive.toFile())) {
+            try (var input = zip.getInputStream(zip.getEntry("body.bin"))) {
+                assertArrayEquals(new byte[]{1, 2, 3, 4}, input.readAllBytes());
+            }
+        }
+    }
+
     /// Combines original entry methods, staging backends, buffer kinds, and deterministic operation sequences.
     private static Stream<Arguments> configurations() {
         return Stream.of(ZipEntry.STORED, ZipEntry.DEFLATED).flatMap(method ->
@@ -293,7 +320,8 @@ final class ZipUpdateChannelInteropTest {
             // Append writes ignore explicit seeks, including a position well beyond the current end.
             try (var channel = Files.newByteChannel(path, Set.of(StandardOpenOption.APPEND));
                  var other = FileChannel.open(referencePath, StandardOpenOption.APPEND)) {
-                for (long position : new long[]{0, Long.MAX_VALUE}) {
+                // Native file systems can reject offsets near Long.MAX_VALUE before an append write.
+                for (long position : new long[]{0, expected.length + 1_048_576L}) {
                     byte[] suffix = new byte[]{19, 23, 29};
                     channel.position(position);
                     other.position(position);

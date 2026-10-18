@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -200,12 +201,16 @@ final class ArchiveSizeLimitChannelTest {
     }
 
     /// Verifies a rejected read-only destination neither consumes input nor spends the size allowance.
-    @Test
-    void rejectedTargetLeavesAllowanceAndInputUnchanged() throws IOException {
-        ReadableByteChannel delegate = Channels.newChannel(new ByteArrayInputStream(new byte[]{1, 2, 3}));
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectedTargetLeavesAllowanceAndInputUnchanged(boolean direct) throws IOException {
+        ByteArrayInputStream input = new ByteArrayInputStream(new byte[]{1, 2, 3});
+        ReadableByteChannel delegate = Channels.newChannel(input);
         try (ReadableByteChannel limited = ArchiveSizeLimitChannel.wrap(delegate, 2L)) {
-            ByteBuffer rejected = ByteBuffer.allocateDirect(8).position(2).limit(7).asReadOnlyBuffer().mark();
+            ByteBuffer storage = direct ? ByteBuffer.allocateDirect(8) : ByteBuffer.allocate(8);
+            ByteBuffer rejected = storage.position(2).limit(7).asReadOnlyBuffer().mark();
             assertThrows(IllegalArgumentException.class, () -> limited.read(rejected));
+            assertEquals(3, input.available());
             assertEquals(2, rejected.position());
             assertEquals(7, rejected.limit());
             assertEquals(2, rejected.reset().position());

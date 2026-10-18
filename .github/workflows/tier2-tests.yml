@@ -42,6 +42,9 @@ on:
 permissions:
   contents: read
 
+env:
+  JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8
+
 concurrency:
   group: tier2-tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -72,7 +75,7 @@ jobs:
           cache-provider: basic
 
       - name: Run Tier 2 tests
-        run: ./gradlew -g .gradle-user-home tier2Test --no-daemon --stacktrace
+        run: ./gradlew tier2Test --no-daemon --stacktrace
 
   zstd-reference:
     name: Required official Zstandard references
@@ -118,7 +121,7 @@ jobs:
           ARKIVO_REQUIRE_ZSTD_DICTIONARY_ROUND_TRIP: "true"
           ARKIVO_ZSTD_DICTIONARY_DECOMPRESS_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-zstd/build/reference-tools/zstd-dictionary-decompress-reference
           ARKIVO_REQUIRE_ZSTD_DICTIONARY_DECOMPRESS: "true"
-        run: ./gradlew -g .gradle-user-home :arkivo-codec-zstd:buildZstdDecodeCorpus :arkivo-codec-zstd:buildZstdFseReference :arkivo-codec-zstd:buildZstdHuffmanReference :arkivo-codec-zstd:buildZstdBlockReference :arkivo-codec-zstd:buildZstdPrefixReference :arkivo-codec-zstd:buildZstdRoundTripReference :arkivo-codec-zstd:buildZstdStreamRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryLoaderReference :arkivo-codec-zstd:buildZstdRawDictionaryReference :arkivo-codec-zstd:buildZstdDictionaryRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryDecompressReference :arkivo-codec-zstd:tier2Test --no-daemon --stacktrace
+        run: ./gradlew :arkivo-codec-zstd:buildZstdDecodeCorpus :arkivo-codec-zstd:buildZstdFseReference :arkivo-codec-zstd:buildZstdHuffmanReference :arkivo-codec-zstd:buildZstdBlockReference :arkivo-codec-zstd:buildZstdPrefixReference :arkivo-codec-zstd:buildZstdRoundTripReference :arkivo-codec-zstd:buildZstdStreamRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryLoaderReference :arkivo-codec-zstd:buildZstdRawDictionaryReference :arkivo-codec-zstd:buildZstdDictionaryRoundTripReference :arkivo-codec-zstd:buildZstdDictionaryDecompressReference :arkivo-codec-zstd:tier2Test --no-daemon --stacktrace
 
   sevenzip-interop:
     name: Required official 7-Zip interoperability
@@ -141,9 +144,14 @@ jobs:
 
       - name: Install official 7-Zip
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes 7zip
-          executable="$(command -v 7z)"
+          directory="$RUNNER_TEMP/7zip-26.04"
+          archive="$RUNNER_TEMP/7z2604-linux-x64.tar.xz"
+          mkdir -p "$directory"
+          curl --fail --location --retry 3 --output "$archive" \
+            https://github.com/ip7z/7zip/releases/download/26.04/7z2604-linux-x64.tar.xz
+          echo "fc0327ba27e89bd086cf426dff17d77de582953cdbbc10a6576540a06853ffcd  $archive" | sha256sum --check --strict
+          tar -xJf "$archive" -C "$directory" 7zz
+          executable="$directory/7zz"
           test -x "$executable"
           echo "ARKIVO_7Z_EXECUTABLE=$executable" >> "$GITHUB_ENV"
           "$executable" i
@@ -151,4 +159,4 @@ jobs:
       - name: Verify encrypted BCJ2 archives
         env:
           ARKIVO_REQUIRE_7Z: "true"
-        run: ./gradlew -g .gradle-user-home :arkivo-archive-7z:tier2Test --tests '*SevenZipOfficialCliInteropTest' --no-daemon --stacktrace
+        run: ./gradlew :arkivo-archive-7z:tier2Test --tests '*SevenZipOfficialCliInteropTest' --no-daemon --stacktrace

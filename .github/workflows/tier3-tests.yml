@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8
+
 concurrency:
   group: tier3-tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -34,4 +37,4 @@ jobs:
           cache-provider: basic
 
       - name: Run Tier 3 tests
-        run: ./gradlew -g .gradle-user-home tier3Test --no-daemon --stacktrace
+        run: ./gradlew tier3Test --no-daemon --stacktrace

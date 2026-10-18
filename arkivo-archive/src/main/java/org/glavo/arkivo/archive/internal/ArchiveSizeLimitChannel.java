@@ -68,13 +68,15 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
     /// failure other than [AsynchronousCloseException], the limit failure is reported with the delegate failure
     /// suppressed. Asynchronous closure (including interruption), runtime failures, and errors remain primary and
     /// carry the newly latched limit failure as suppressed context.
-    /// After a limit failure, nonempty reads keep reporting that failure while the channel remains open. Empty reads
-    /// are delegated without probing; reads after delegate closure throw [ClosedChannelException].
+    /// After a limit failure, nonempty reads into writable targets keep reporting that failure while the channel
+    /// remains open. Empty reads are delegated without probing; reads after delegate closure throw [ClosedChannelException].
+    /// A nonempty read-only target is rejected before calling the delegate or changing the allowance.
     ///
     /// @param target the destination buffer
     /// @return the number of bytes read, possibly zero, or `-1` at end of input
     /// @throws ArkivoReadLimitException if a nonempty read exceeds the configured maximum or a previous read exceeded it
     /// @throws IOException if the delegate read fails
+    /// @throws IllegalArgumentException if `target` is read-only and has remaining bytes
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -83,6 +85,9 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
         }
         if (!target.hasRemaining()) {
             return delegate.read(target);
+        }
+        if (target.isReadOnly()) {
+            throw new IllegalArgumentException("target must be writable");
         }
         @Nullable ArkivoReadLimitException previousFailure = failure;
         if (previousFailure != null) {

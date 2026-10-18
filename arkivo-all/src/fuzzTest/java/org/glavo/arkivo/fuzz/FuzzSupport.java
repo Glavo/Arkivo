@@ -425,7 +425,7 @@ final class FuzzSupport {
             int maximumKeyLength
     ) {
         buffer.put(offset + 8, (byte) 1);
-        buffer.putShort(offset + 10, (short) 1);
+        buffer.putShort(offset + 10, (short) 3);
         int header = offset + 14;
         buffer.putShort(header, (short) treeDepth);
         buffer.putInt(header + 2, rootNode);
@@ -435,7 +435,12 @@ final class FuzzSupport {
         buffer.putShort(header + 18, (short) DMG_SECTOR_SIZE);
         buffer.putShort(header + 20, (short) maximumKeyLength);
         buffer.putInt(header + 22, totalNodes);
+        // The header, reserved user data, and allocation bitmap are separate records.
         buffer.putShort(offset + DMG_SECTOR_SIZE - 2, (short) 14);
+        buffer.putShort(offset + DMG_SECTOR_SIZE - 4, (short) 120);
+        buffer.putShort(offset + DMG_SECTOR_SIZE - 6, (short) 248);
+        buffer.putShort(offset + DMG_SECTOR_SIZE - 8, (short) (DMG_SECTOR_SIZE - 8));
+        buffer.put(offset + 248, (byte) (0xff << (8 - totalNodes)));
     }
 
     /// Compresses an archive seed with the named outer compression format.
