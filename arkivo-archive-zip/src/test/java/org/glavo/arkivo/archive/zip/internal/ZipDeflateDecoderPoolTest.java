@@ -238,6 +238,27 @@ final class ZipDeflateDecoderPoolTest {
         assertTrue(members(pool, "active").isEmpty());
     }
 
+    /// Defers engine disposal after failed source cleanup until a successful retry releases the lease.
+    @Test
+    void retainsWorkspaceUntilSourceCleanupSucceeds() throws Exception {
+        try (var pool = new ZipDeflateDecoderPool(1)) {
+            var source = new FailingSource(compress(new byte[]{1}), false, true);
+            var lease = pool.open(source, 1, ArchiveReadLimits.UNLIMITED);
+            Object workspace = workspace(lease);
+            var closed = workspace.getClass().getDeclaredField("closed");
+            closed.setAccessible(true);
+            assertSame(source.failure, assertThrows(IOException.class, lease::close));
+            assertFalse(closed.getBoolean(workspace));
+            assertEquals(1, members(pool, "active").size());
+            assertTrue(members(pool, "idle").isEmpty());
+            lease.close();
+            assertTrue(closed.getBoolean(workspace));
+            assertTrue(members(pool, "active").isEmpty());
+            assertTrue(members(pool, "idle").isEmpty());
+            assertEquals(2, source.closeAttempts);
+        }
+    }
+
     /// Interrupt-driven cleanup never returns an otherwise completed engine to the idle cache.
     @Test
     void discardsWorkspaceOnInterruptedCleanup() throws Exception {

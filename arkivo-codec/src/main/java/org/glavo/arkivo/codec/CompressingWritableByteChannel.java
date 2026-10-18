@@ -15,10 +15,13 @@ import java.util.Objects;
 
 /// Accepts uncompressed bytes and writes encoded bytes to a backing channel.
 ///
-/// Contexts are stateful and not safe for concurrent data operations. A write is a blocking codec operation: on success
+/// A write is a blocking codec operation: on success
 /// it advances the source position by the returned count, and Arkivo-provided contexts consume every remaining source
 /// byte. A nonempty operation that cannot make transport or codec progress fails with `IOException` instead of
 /// busy-waiting.
+/// Channels created by the default [CompressionCodec] factories serialize encoding, flushing, and frame operations,
+/// including their per-call progress counts. Callers must coordinate sequences of separate operations and must not
+/// access a supplied buffer until its operation returns.
 ///
 /// Closing or finishing always releases the encoder. A borrowed backing channel remains open; an owned channel is closed
 /// after final output is written. Finalization failure still makes this channel closed for writes, while an owned-target

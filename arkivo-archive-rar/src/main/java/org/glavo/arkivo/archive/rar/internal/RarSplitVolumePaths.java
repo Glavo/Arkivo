@@ -120,9 +120,7 @@ public final class RarSplitVolumePaths {
                 firstVolumePath,
                 prefix,
                 width,
-                suffix,
-                FIRST_MODERN_CONTINUATION_VOLUME_NUMBER,
-                Integer.MAX_VALUE
+                suffix
         );
     }
 
@@ -140,9 +138,7 @@ public final class RarSplitVolumePaths {
                 firstVolumePath,
                 prefix,
                 1,
-                suffix,
-                FIRST_MODERN_CONTINUATION_VOLUME_NUMBER,
-                Integer.MAX_VALUE
+                suffix
         );
     }
 
@@ -206,53 +202,34 @@ public final class RarSplitVolumePaths {
     }
 
     /// Resolves modern numbered `partN.rar` volume paths.
+    ///
+    /// @param firstVolumePath the first volume whose sibling paths retain its file-system provider
+    /// @param prefix the file-name prefix before the numeric volume number
+    /// @param width the minimum numeric width
+    /// @param suffix the file-name suffix after the numeric volume number
     @NotNullByDefault
-    private static final class NumberedPathResolver implements VolumePathResolver {
-        /// The first volume whose sibling paths retain its file-system provider.
-        private final Path firstVolumePath;
-
-        /// The file-name prefix before the numeric volume number.
-        private final String prefix;
-
-        /// The minimum numeric width.
-        private final int width;
-
-        /// The file-name suffix after the numeric volume number.
-        private final String suffix;
-
-        /// The first continuation volume number.
-        private final int firstContinuationVolumeNumber;
-
-        /// The maximum supported volume number.
-        private final int maximumVolumeNumber;
-
+    private record NumberedPathResolver(
+            Path firstVolumePath,
+            String prefix,
+            int width,
+            String suffix
+    ) implements VolumePathResolver {
         /// Creates a modern numbered volume resolver.
-        private NumberedPathResolver(
-                Path firstVolumePath,
-                String prefix,
-                int width,
-                String suffix,
-                int firstContinuationVolumeNumber,
-                int maximumVolumeNumber
-        ) {
-            this.firstVolumePath = firstVolumePath;
-            this.prefix = Objects.requireNonNull(prefix, "prefix");
-            this.width = width;
-            this.suffix = Objects.requireNonNull(suffix, "suffix");
-            this.firstContinuationVolumeNumber = firstContinuationVolumeNumber;
-            this.maximumVolumeNumber = maximumVolumeNumber;
+        private NumberedPathResolver {
+            Objects.requireNonNull(prefix, "prefix");
+            Objects.requireNonNull(suffix, "suffix");
         }
 
         /// Returns the first continuation volume number.
         @Override
         public int firstContinuationVolumeNumber() {
-            return firstContinuationVolumeNumber;
+            return FIRST_MODERN_CONTINUATION_VOLUME_NUMBER;
         }
 
         /// Returns the maximum supported volume number.
         @Override
         public int maximumVolumeNumber() {
-            return maximumVolumeNumber;
+            return Integer.MAX_VALUE;
         }
 
         /// Returns the path for a continuation volume number.
@@ -263,18 +240,14 @@ public final class RarSplitVolumePaths {
     }
 
     /// Resolves legacy `r00`, `r01`, ..., `z99` continuation volume paths.
+    ///
+    /// @param firstVolumePath the first volume whose sibling paths retain its file-system provider
+    /// @param prefix the file-name prefix before the legacy continuation extension
     @NotNullByDefault
-    private static final class LegacyPathResolver implements VolumePathResolver {
-        /// The first volume whose sibling paths retain its file-system provider.
-        private final Path firstVolumePath;
-
-        /// The file-name prefix before the legacy continuation extension.
-        private final String prefix;
-
+    private record LegacyPathResolver(Path firstVolumePath, String prefix) implements VolumePathResolver {
         /// Creates a legacy volume resolver.
-        private LegacyPathResolver(Path firstVolumePath, String prefix) {
-            this.firstVolumePath = firstVolumePath;
-            this.prefix = Objects.requireNonNull(prefix, "prefix");
+        private LegacyPathResolver {
+            Objects.requireNonNull(prefix, "prefix");
         }
 
         /// Returns the first continuation volume number.

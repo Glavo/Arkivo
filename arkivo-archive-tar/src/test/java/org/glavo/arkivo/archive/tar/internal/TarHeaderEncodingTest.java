@@ -243,13 +243,15 @@ final class TarHeaderEncodingTest {
 
     /// Verifies snapshot validation neither emits PAX metadata nor consumes the supplied body.
     @ParameterizedTest
-    @ValueSource(ints = {0, 1, 2, 3})
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5})
     void rejectsSnapshotHeadersBeforeOutput(int field) throws IOException {
         ByteArrayOutputStream target = new ByteArrayOutputStream();
         long size = field == 3 ? 1L << 33 : 1L;
         TarEntryAttributes attributes = new TarEntryAttributes(
-                "p".repeat(101), TarEntryAttributes.REGULAR_TYPE, false, field == 0 ? Integer.MAX_VALUE : 0644,
-                field == 1 ? -1L : 0L, field == 2 ? -1L : 0L, null, null, null, size,
+                "p".repeat(101), field >= 4 ? TarEntryAttributes.CHARACTER_DEVICE_TYPE : TarEntryAttributes.REGULAR_TYPE,
+                false, field == 0 ? Integer.MAX_VALUE : 0644,
+                field == 1 ? -1L : 0L, field == 2 ? -1L : 0L,
+                field == 4 ? -1L : 0L, field == 5 ? -1L : 0L, null, null, null, size,
                 FileTime.fromMillis(1234L), null, null, null);
         ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{7});
         try (TarArkivoStreamingWriterImpl writer = new TarArkivoStreamingWriterImpl(target, ArkivoEditStorage.memory());

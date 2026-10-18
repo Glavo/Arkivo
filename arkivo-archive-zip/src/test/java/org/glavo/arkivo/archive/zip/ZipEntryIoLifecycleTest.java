@@ -3,16 +3,24 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
@@ -21,7 +29,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -34,6 +50,271 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies terminal state and cleanup retry behavior of ZIP entry streams and channels.
 @NotNullByDefault
 final class ZipEntryIoLifecycleTest {
+    /// Strict closure cancels stored, compressed, and encrypted streams without another physical read.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void cancelsEntryStreamsWithoutDraining(int operation) throws Exception {
+        for (ZipMethod method : new ZipMethod[]{ZipMethod.STORED, ZipMethod.DEFLATED, ZipMethod.BZIP2}) {
+            for (ZipEncryption encryption : new ZipEncryption[]{ZipEncryption.NONE, ZipEncryption.WINZIP_AES_256}) {
+                for (boolean failClose : new boolean[]{false, true}) {
+                    var password = ArkivoPasswordProvider.fixed(new byte[]{'p'});
+                    var output = new ByteArrayOutputStream();
+                    var create = ZipArchiveOptions.CREATE_DEFAULTS.withPasswordProvider(password)
+                            .withDefaultEncryption(encryption);
+                    try (var writer = ZipArkivoStreamingWriter.open(output, create)) {
+                        var entry = writer.beginFile("a");
+                        Objects.requireNonNull(entry.attributeView(ZipArkivoEntryAttributeView.class)).setMethod(method);
+                        try (var body = entry.openOutputStream()) {
+                            body.write(new byte[]{1, 2, 3});
+                        }
+                    }
+                    var physical = new AtomicReference<GatedArchiveChannel>();
+                    ArkivoSeekableChannelSource source = () -> {
+                        var channel = new GatedArchiveChannel(output.toByteArray());
+                        physical.set(channel);
+                        return channel;
+                    };
+                    var defaults = ZipArchiveOptions.READ_DEFAULTS.withPasswordProvider(password);
+                    var options = defaults.withCommon(defaults.common().withThreadSafety(ArkivoFileSystemThreadSafety.STRICT));
+                    try (var fs = ZipArkivoFileSystem.open(source, options)) {
+                        var input = Files.newInputStream(fs.getPath("a"));
+                        var gate = physical.get();
+                        gate.armed = true;
+                        gate.failClose = failClose;
+                        var active = new FutureTask<>(() -> {
+                            if (operation == 2) input.close();
+                            else input.read();
+                            return true;
+                        });
+                        if (operation != 0) startChannelTask(active);
+                        try {
+                            if (operation != 0) assertTrue(gate.entered.await(5, TimeUnit.SECONDS));
+                            var cancel = new FutureTask<>(() -> {
+                                if (failClose) assertThrows(IOException.class, fs::close);
+                                fs.close();
+                                return true;
+                            });
+                            startChannelTask(cancel);
+                            assertTrue(cancel.get(5, TimeUnit.SECONDS));
+                            if (operation != 0) {
+                                assertTrue(assertThrows(ExecutionException.class,
+                                        () -> active.get(5, TimeUnit.SECONDS)).getCause() instanceof IOException);
+                            }
+                            assertEquals(operation == 0 ? 0 : 1, gate.readCalls.get(), method + "/" + encryption);
+                            input.close();
+                            assertEquals(failClose ? 2 : 1, gate.closeCalls.get());
+                            assertThrows(IOException.class, input::read);
+                        } finally {
+                            gate.release.countDown();
+                            input.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A completed entry still honors zero-length reads without changing EOF state.
+    @Test
+    void zeroLengthReadAfterEndOfEntry() throws IOException {
+        byte[] archive = ZipTestArchiveFixtures.singleStoredZipArchive("a", new byte[]{1});
+        try (var fs = ZipArkivoFileSystem.open(() -> new ReadOnlyByteArrayChannel(archive));
+             var input = Files.newInputStream(fs.getPath("a"))) {
+            assertArrayEquals(new byte[]{1}, input.readAllBytes());
+            assertEquals(0, input.read(new byte[0], 0, 0));
+            assertEquals(-1, input.read());
+        }
+    }
+
+    /// Public stored-entry reads do not reuse a slice position before the preceding CRC update completes.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesStoredChannelReadsAndSeeks(boolean seek) throws Exception {
+        byte[] bytes = ZipTestArchiveFixtures.singleStoredZipArchive("a", new byte[]{1, 2, 3});
+        var physical = new AtomicReference<GatedArchiveChannel>();
+        ArkivoSeekableChannelSource source = () -> {
+            var channel = new GatedArchiveChannel(bytes);
+            physical.set(channel);
+            return channel;
+        };
+        try (var fs = ZipArkivoFileSystem.open(source);
+             var channel = Files.newByteChannel(fs.getPath("a"))) {
+            var gate = physical.get();
+            gate.armed = true;
+            ByteBuffer first = ByteBuffer.allocate(1);
+            ByteBuffer second = ByteBuffer.allocateDirect(1);
+            var read = new FutureTask<>(() -> channel.read(first));
+            startChannelTask(read);
+            try {
+                assertTrue(gate.entered.await(5, TimeUnit.SECONDS));
+                var next = new FutureTask<>(() -> {
+                    if (seek) channel.position(2);
+                    return channel.read(second);
+                });
+                awaitChannelWait(startChannelTask(next));
+                assertFalse(next.isDone());
+                assertEquals(1, gate.readCalls.get());
+                gate.release.countDown();
+                assertEquals(1, read.get(5, TimeUnit.SECONDS));
+                assertEquals(1, next.get(5, TimeUnit.SECONDS));
+                assertEquals(1, first.get(0));
+                assertEquals(seek ? 3 : 2, second.get(0));
+                assertEquals(seek ? 3 : 2, channel.position());
+            } finally {
+                gate.release.countDown();
+            }
+        }
+    }
+
+    /// Cancelling a read or graceful close reaches the physical source without starting another validation read.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void cancelsStoredChannelWithoutDraining(int operation) throws Exception {
+        for (boolean failClose : new boolean[]{false, true}) {
+            byte[] bytes = ZipTestArchiveFixtures.singleStoredZipArchive("a", new byte[]{1, 2, 3});
+            var physical = new AtomicReference<GatedArchiveChannel>();
+            ArkivoSeekableChannelSource source = () -> {
+                var channel = new GatedArchiveChannel(bytes);
+                physical.set(channel);
+                return channel;
+            };
+            var defaults = ZipArchiveOptions.READ_DEFAULTS;
+            var options = defaults.withCommon(defaults.common().withThreadSafety(ArkivoFileSystemThreadSafety.STRICT));
+            try (var fs = ZipArkivoFileSystem.open(source, options)) {
+                var channel = Files.newByteChannel(fs.getPath("a"));
+                var gate = physical.get();
+                gate.armed = true;
+                gate.failClose = failClose;
+                var active = new FutureTask<>(() -> {
+                    if (operation == 2) channel.close();
+                    else channel.read(ByteBuffer.allocate(1));
+                    return true;
+                });
+                startChannelTask(active);
+                try {
+                    assertTrue(gate.entered.await(5, TimeUnit.SECONDS));
+                    var cancel = new FutureTask<>(() -> {
+                        if (failClose) {
+                            assertThrows(IOException.class, () -> {
+                                if (operation == 0) channel.close();
+                                else fs.close();
+                            });
+                        }
+                        if (operation == 0) channel.close();
+                        else fs.close();
+                        return true;
+                    });
+                    startChannelTask(cancel);
+                    assertTrue(cancel.get(5, TimeUnit.SECONDS));
+                    assertTrue(assertThrows(ExecutionException.class,
+                            () -> active.get(5, TimeUnit.SECONDS)).getCause() instanceof IOException);
+                    assertEquals(1, gate.readCalls.get());
+                    assertFalse(channel.isOpen());
+                    channel.close();
+                    assertEquals(failClose ? 2 : 1, gate.closeCalls.get());
+                } finally {
+                    gate.release.countDown();
+                    channel.close();
+                }
+            }
+        }
+    }
+
+    /// Starts a bounded test operation without leaving a non-daemon thread behind on a deadlock regression.
+    private static Thread startChannelTask(FutureTask<?> task) {
+        Thread thread = new Thread(task, "zip-entry-channel-test");
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
+    }
+
+    /// Waits for a worker to reach the channel's operation lock.
+    private static void awaitChannelWait(Thread thread) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (thread.isAlive() && System.nanoTime() < deadline) {
+            if (thread.getState() == Thread.State.BLOCKED || thread.getState() == Thread.State.WAITING) return;
+            Thread.sleep(1);
+        }
+        throw new AssertionError("ZIP channel operation did not wait");
+    }
+
+    /// Gives each archive opening its own cursor and pauses one armed data read after copying bytes.
+    @NotNullByDefault
+    private static final class GatedArchiveChannel implements SeekableByteChannel {
+        /// The independently positioned archive snapshot.
+        private final ReadOnlyByteArrayChannel delegate;
+        /// Signals the blocked data read.
+        private final CountDownLatch entered = new CountDownLatch(1);
+        /// Releases the blocked read, either explicitly or on physical closure.
+        private final CountDownLatch release = new CountDownLatch(1);
+        /// Selects the first data read for blocking.
+        private final AtomicBoolean gated = new AtomicBoolean();
+        /// Counts reads after the entry channel has been opened.
+        private final AtomicInteger readCalls = new AtomicInteger();
+        /// Counts physical close attempts.
+        private final AtomicInteger closeCalls = new AtomicInteger();
+        /// Enables the gate after metadata parsing.
+        private volatile boolean armed;
+        /// Whether the next physical close should fail without closing the source.
+        private boolean failClose;
+        /// Whether physical closure completed.
+        private volatile boolean closed;
+
+        /// Creates an independent archive cursor.
+        private GatedArchiveChannel(byte[] bytes) {
+            delegate = new ReadOnlyByteArrayChannel(bytes);
+        }
+
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            int count = delegate.read(target);
+            if (armed) {
+                readCalls.incrementAndGet();
+                if (gated.compareAndSet(false, true)) {
+                    entered.countDown();
+                    try {
+                        if (!release.await(5, TimeUnit.SECONDS)) throw new IOException("Timed out waiting for source close");
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException(exception);
+                    }
+                    if (closed) throw new AsynchronousCloseException();
+                }
+            }
+            return count;
+        }
+
+        @Override
+        public int write(ByteBuffer source) { throw new NonWritableChannelException(); }
+
+        @Override
+        public long position() throws IOException { return delegate.position(); }
+
+        @Override
+        public SeekableByteChannel position(long value) throws IOException { delegate.position(value); return this; }
+
+        @Override
+        public long size() throws IOException { return delegate.size(); }
+
+        @Override
+        public SeekableByteChannel truncate(long size) { throw new NonWritableChannelException(); }
+
+        @Override
+        public boolean isOpen() { return !closed; }
+
+        @Override
+        public void close() throws IOException {
+            closeCalls.incrementAndGet();
+            if (failClose) {
+                failClose = false;
+                throw new IOException("Physical close failed");
+            }
+            closed = true;
+            delegate.close();
+            release.countDown();
+        }
+    }
+
     /// The directory containing generated archives.
     @TempDir
     Path temporaryDirectory;

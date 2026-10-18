@@ -14,8 +14,10 @@ import java.nio.ByteBuffer;
 /// buffer after an operation returns. Successful operations advance the source position by compressed bytes consumed and
 /// the target position by decoded bytes produced without changing either limit or byte order. Positions remain the
 /// authoritative progress record if an operation throws after partial progress. Every target must be writable, and each
-/// operation requires different source and target instances. These are caller preconditions: implementations are not
-/// required to reject a read-only target or the same source and target instance before making progress.
+/// operation requires different source and target instances whose remaining regions do not overlap in the underlying
+/// storage. Distinct views of the same storage are permitted when those regions do not overlap. These are caller
+/// preconditions: implementations are not required to detect overlapping regions or reject a read-only target or the
+/// same source and target instance before making progress.
 ///
 /// A completed encoding leaves trailing bytes unconsumed when its boundary is detectable from the compressed data.
 /// [#decode(ByteBuffer, ByteBuffer)] permits later input; [#finish(ByteBuffer, ByteBuffer)] asserts that its source

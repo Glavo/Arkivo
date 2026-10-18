@@ -288,11 +288,12 @@ final class PPMdCodecTest {
         assertFalse(source.isOpen());
     }
 
-    /// Rejects a configured PPMd model arena that exceeds the operation memory limit.
+    /// Enforces the aligned arena and fixed model workspace before allocating a decoder.
     @Test
     void enforcesModelMemoryLimit() {
         PPMdCodec codec = decoderCodec(0L);
-        long maximumMemorySize = codec.memorySize() - 1L;
+        long requiredMemorySize = 1_083_824L;
+        long maximumMemorySize = requiredMemorySize - 1L;
 
         DecompressionMemoryLimitException exception = assertThrows(
                 DecompressionMemoryLimitException.class,
@@ -300,9 +301,11 @@ final class PPMdCodecTest {
         );
 
         assertEquals(maximumMemorySize, exception.maximumMemorySize());
-        assertEquals(codec.memorySize(), exception.requiredMemorySize());
+        assertEquals(requiredMemorySize, exception.requiredMemorySize());
         assertEquals(DecompressionLimitException.Kind.MEMORY_SIZE, exception.kind());
-        assertDoesNotThrow(() -> codec.withMaximumMemorySize(codec.memorySize()).newDecoder().close());
+        assertThrows(DecompressionMemoryLimitException.class,
+                () -> codec.withMaximumMemorySize(codec.memorySize()).newDecoder());
+        assertDoesNotThrow(() -> codec.withMaximumMemorySize(requiredMemorySize).newDecoder().close());
 
         assertThrows(
                 DecompressionLimitException.class,
@@ -311,6 +314,26 @@ final class PPMdCodecTest {
         assertDoesNotThrow(
                 () -> codec.withDecodedSize(1L).withMaximumOutputSize(1L).newDecoder().close()
         );
+    }
+
+    /// Reuses a model at the exact memory ceiling without changing decoded output or reset behavior.
+    @Test
+    void decodesAndResetsAtMemoryLimit() throws IOException {
+        byte[] expected = "PPMd memory boundary".getBytes(StandardCharsets.US_ASCII);
+        PPMdCodec codec = modelCodec().withMemorySize(2_048).withDecodedSize(expected.length);
+        ByteBuffer packed = codec.compress(ByteBuffer.wrap(expected));
+        try (var decoder = codec.withMaximumMemorySize(37_292).newDecoder()) {
+            for (int iteration = 0; iteration < 3; iteration++) {
+                ByteBuffer output = ByteBuffer.allocate(expected.length);
+                assertEquals(org.glavo.arkivo.codec.CodecOutcome.FINISHED,
+                        decoder.finish(packed.duplicate(), output));
+                assertArrayEquals(expected, output.array());
+                decoder.reset();
+            }
+        }
+        DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                () -> codec.withMaximumMemorySize(37_291).newDecoder());
+        assertEquals(37_292, failure.requiredMemorySize());
     }
 
     /// Creates a valid raw PPMd7 configuration for the given exact decoded size.

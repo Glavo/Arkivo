@@ -10,10 +10,15 @@ import org.jetbrains.annotations.Nullable;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 
 /// Reads archive entries in order from a forward-only source.
 ///
@@ -36,8 +41,8 @@ public abstract class ArkivoStreamingReader implements Closeable {
     /// Whether this reader rejects all further cursor operations.
     private boolean closed;
 
-    /// Whether an earlier body or reader cleanup reported a failure.
-    private boolean closeFailed;
+    /// Failures delivered to the caller, allocated only after the first failure.
+    private @Nullable Set<Throwable> reportedFailures;
 
     /// Creates a streaming archive reader positioned before its first entry.
     protected ArkivoStreamingReader() {
@@ -56,12 +61,12 @@ public abstract class ArkivoStreamingReader implements Closeable {
         entryAvailable = false;
         try {
             closeCurrentChannel();
+            entryAvailable = advance();
+            return entryAvailable;
         } catch (IOException | RuntimeException | Error exception) {
-            closeFailed = true;
+            recordFailure(exception);
             throw exception;
         }
-        entryAvailable = advance();
-        return entryAvailable;
     }
 
     /// Advances the format-specific parser to its next entry.
@@ -99,7 +104,13 @@ public abstract class ArkivoStreamingReader implements Closeable {
     /// @throws UnsupportedOperationException if {@code type} is not supported by this format
     public final <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException {
         requireCurrentEntry();
-        return readCurrentAttributes(Objects.requireNonNull(type, "type"));
+        Objects.requireNonNull(type, "type");
+        try {
+            return readCurrentAttributes(type);
+        } catch (IOException | RuntimeException | Error exception) {
+            recordFailure(exception);
+            throw exception;
+        }
     }
 
     /// Reads current format-specific attributes.
@@ -119,6 +130,7 @@ public abstract class ArkivoStreamingReader implements Closeable {
     /// The body may be opened at most once for each cursor position. Closing the returned channel does not close this
     /// reader. Advancing or closing the reader closes the body channel when the caller has not already done so. An entry
     /// whose body channel was closed cannot be reopened before advancing.
+    /// Body-close failures use the same exception-wrapping policy as [#close()].
     ///
     /// @return the current entry's caller-closeable body channel
     /// @throws IOException if the body cannot be opened or the reader is closed
@@ -129,9 +141,15 @@ public abstract class ArkivoStreamingReader implements Closeable {
             throw new IllegalStateException("Archive entry body is already open");
         }
 
-        ReadableByteChannel channel = Objects.requireNonNull(openCurrentChannel(), "channel");
-        currentChannel = channel;
-        return channel;
+        try {
+            ReadableByteChannel channel = Objects.requireNonNull(openCurrentChannel(), "channel");
+            currentChannel = channel;
+            return channel instanceof InterruptibleChannel
+                    ? new InterruptibleEntryChannel(channel) : new EntryChannel(channel);
+        } catch (IOException | RuntimeException | Error exception) {
+            recordFailure(exception);
+            throw exception;
+        }
     }
 
     /// Opens the current entry body as an input stream.
@@ -158,8 +176,9 @@ public abstract class ArkivoStreamingReader implements Closeable {
     ///
     /// The reader rejects cursor operations as soon as closing starts, even if cleanup fails. Body-close failure remains
     /// primary and a reader-cleanup failure is suppressed on it. Repeated calls allow incomplete cleanup to be retried.
-    /// Close failures after an earlier cleanup failure, including body cleanup during [#next()], are wrapped in a new
-    /// `IOException` whose cause preserves the cleanup failure, avoiding try-with-resources self-suppression.
+    /// A cleanup failure already delivered by a cursor, metadata, body, or cleanup operation is wrapped in a new
+    /// `IOException` whose cause is that same failure. Other cleanup failures retain their type and identity.
+    /// This prevents implementations that reuse failure objects from causing try-with-resources self-suppression.
     ///
     /// @throws IOException if the current body or format-specific reader resources cannot be closed
     @Override
@@ -184,11 +203,10 @@ public abstract class ArkivoStreamingReader implements Closeable {
             }
         }
 
-        if (failure != null) {
-            if (closeFailed) {
-                throw new IOException("Archive reader cleanup failed again", failure);
-            }
-            closeFailed = true;
+        if (failure != null && !recordFailure(failure)) {
+            IOException cleanupFailure = new IOException("Archive reader cleanup repeated an earlier failure", failure);
+            recordFailure(cleanupFailure);
+            throw cleanupFailure;
         }
         if (failure instanceof IOException exception) {
             throw exception;
@@ -207,6 +225,64 @@ public abstract class ArkivoStreamingReader implements Closeable {
     ///
     /// @throws IOException if format-specific resources cannot be released
     protected abstract void closeReader() throws IOException;
+
+    /// Records failures delivered through an entry-body view for later reader cleanup.
+    @NotNullByDefault
+    private class EntryChannel implements ReadableByteChannel {
+        /// The format-specific body, whose ownership remains with the reader.
+        private final ReadableByteChannel delegate;
+
+        /// Creates a view that forwards body I/O and records delivered failures.
+        private EntryChannel(ReadableByteChannel delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            try {
+                return delegate.read(target);
+            } catch (IOException | RuntimeException | Error exception) {
+                recordFailure(exception);
+                throw exception;
+            }
+        }
+
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                delegate.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                if (!recordFailure(exception)) {
+                    IOException cleanupFailure = new IOException("Archive entry cleanup repeated an earlier failure", exception);
+                    recordFailure(cleanupFailure);
+                    throw cleanupFailure;
+                }
+                throw exception;
+            }
+        }
+    }
+
+    /// Records an exception by identity and returns whether it has not previously been delivered.
+    private synchronized boolean recordFailure(Throwable failure) {
+        if (reportedFailures == null) {
+            reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+        }
+        return reportedFailures.add(failure);
+    }
+
+    /// Preserves the interruptible-channel contract of a format-specific body.
+    @NotNullByDefault
+    private final class InterruptibleEntryChannel extends EntryChannel implements InterruptibleChannel {
+        /// Creates an interruptible view over an interruptible delegate.
+        private InterruptibleEntryChannel(ReadableByteChannel delegate) {
+            super(delegate);
+        }
+    }
 
     /// Closes the body channel opened for the previous cursor position.
     private void closeCurrentChannel() throws IOException {

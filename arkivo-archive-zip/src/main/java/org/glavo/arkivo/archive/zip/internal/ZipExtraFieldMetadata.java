@@ -172,8 +172,8 @@ final class ZipExtraFieldMetadata {
         }
         int offset = field.dataOffset();
         return new TimestampMetadata(
-                FileTime.from(Instant.ofEpochSecond(Integer.toUnsignedLong(ZipLittleEndian.readInt(source, offset + 4)))),
-                FileTime.from(Instant.ofEpochSecond(Integer.toUnsignedLong(ZipLittleEndian.readInt(source, offset)))),
+                FileTime.from(Instant.ofEpochSecond(Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(source, offset + 4)))),
+                FileTime.from(Instant.ofEpochSecond(Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(source, offset)))),
                 null);
     }
 
@@ -286,7 +286,7 @@ final class ZipExtraFieldMetadata {
 
     /// Converts one signed 32-bit Unix timestamp to a file time.
     private static FileTime unixTime(byte @Unmodifiable [] extraData, int offset) {
-        return FileTime.from(Instant.ofEpochSecond(ZipLittleEndian.readInt(extraData, offset)));
+        return FileTime.from(Instant.ofEpochSecond(ByteArrayAccess.readIntLittleEndian(extraData, offset)));
     }
 
     /// Parses an Info-ZIP new Unix extra field payload.

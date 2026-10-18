@@ -10,6 +10,7 @@ import org.glavo.arkivo.codec.DictionaryRequest;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
 
@@ -230,7 +231,7 @@ public final class CompressionDecoderSupport {
     /// Enforces a total maximum output size over a channel decoding session.
     @NotNullByDefault
     private static class OutputLimitingChannel
-            implements DecompressingReadableByteChannel {
+            implements DecompressingReadableByteChannel, ForceCloseable {
         /// The algorithm-specific decoder channel.
         private final DecompressingReadableByteChannel decoder;
 
@@ -241,7 +242,7 @@ public final class CompressionDecoderSupport {
         private final ByteBuffer probe = ByteBuffer.allocate(1);
 
         /// The number of decoded bytes returned to callers.
-        private long outputBytes;
+        private volatile long outputBytes;
 
         /// Whether excess decoded output has already been observed.
         private boolean exceeded;
@@ -257,7 +258,7 @@ public final class CompressionDecoderSupport {
 
         /// Reads decoded bytes without returning more than the configured maximum.
         @Override
-        public int read(ByteBuffer target) throws IOException {
+        public synchronized int read(ByteBuffer target) throws IOException {
             Objects.requireNonNull(target, "target");
             if (!decoder.isOpen()) {
                 throw new ClosedChannelException();
@@ -297,7 +298,7 @@ public final class CompressionDecoderSupport {
         }
 
         /// Decodes with optional frame-boundary reporting while enforcing the output limit.
-        protected final CodecResult decodeLimited(
+        protected final synchronized CodecResult decodeLimited(
                 ByteBuffer target,
                 boolean stopAtFrame
         ) throws IOException {
@@ -370,6 +371,12 @@ public final class CompressionDecoderSupport {
         @Override
         public void close() throws IOException {
             decoder.close();
+        }
+
+        /// Propagates cancellation without waiting for a limited read to finish.
+        @Override
+        public void forceClose() throws IOException {
+            ForceCloseable.forceClose(decoder);
         }
 
         /// Invokes the ordinary or frame-stopping decode operation.

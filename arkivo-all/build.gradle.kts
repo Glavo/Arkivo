@@ -1189,6 +1189,11 @@ val verifyModuleDescriptors by tasks.registering {
 
         val archiveModule = "org.glavo.arkivo.archive"
         val codecModule = "org.glavo.arkivo.codec"
+        check(descriptors.getValue("org.glavo.arkivo.archive.dmg").requires().any {
+            it.name() == "jdk.charsets" && ModuleDescriptor.Requires.Modifier.STATIC !in it.modifiers()
+        }) {
+            "DMG requires jdk.charsets at runtime for Apple Partition Map names"
+        }
         val expectedTransitiveRequirements = mapOf(
             "org.glavo.arkivo.all" to setOf(
                 archiveModule,

@@ -169,6 +169,117 @@ public final class ArkivoStreamingStateTest {
         }
     }
 
+    /// Parser, metadata, and body-open failures remain primary when automatic cleanup reuses the same object.
+    @Test
+    void readerClosePreservesOperationFailure() throws Exception {
+        for (String operation : List.of("advance", "attributes", "open")) {
+            for (Throwable failure : List.of(new java.io.IOException("operation failed"),
+                    new IllegalStateException("operation failed"), new AssertionError("operation failed"))) {
+                TestReader reader = new TestReader(failure);
+                if (!operation.equals("advance")) assertTrue(reader.next());
+                switch (operation) {
+                    case "advance" -> reader.advanceFailure = failure;
+                    case "attributes" -> reader.attributeFailure = failure;
+                    case "open" -> reader.openFailure = failure;
+                    default -> throw new AssertionError(operation);
+                }
+                Throwable actual = assertThrows(failure.getClass(), () -> {
+                    try (reader) {
+                        switch (operation) {
+                            case "advance" -> reader.next();
+                            case "attributes" -> reader.readAttributes();
+                            case "open" -> reader.openChannel();
+                            default -> throw new AssertionError(operation);
+                        }
+                    }
+                });
+                assertSame(failure, actual);
+                assertEquals(1, actual.getSuppressed().length);
+                assertSame(failure, actual.getSuppressed()[0].getCause());
+                assertThrows(ClosedChannelException.class, reader::next);
+                reader.close();
+                assertTrue(reader.closed);
+                assertEquals(2, reader.readerCloseAttempts);
+            }
+        }
+    }
+
+    /// A body failure remains primary even when body cleanup succeeds and source cleanup repeats that failure.
+    @Test
+    void readerClosePreservesBodyFailureAfterSuccessfulBodyCleanup() throws Exception {
+        for (boolean stream : new boolean[]{false, true}) {
+            for (Throwable failure : List.of(new java.io.IOException("body read failed"),
+                    new IllegalStateException("body read failed"), new AssertionError("body read failed"))) {
+                TestReader reader = new TestReader(failure);
+                assertTrue(reader.next());
+                Throwable actual = assertThrows(failure.getClass(), () -> {
+                    try (reader) {
+                        if (stream) {
+                            InputStream body = reader.openInputStream();
+                            Objects.requireNonNull(reader.bodyChannel).readFailure = failure;
+                            body.read();
+                        } else {
+                            ReadableByteChannel body = reader.openChannel();
+                            Objects.requireNonNull(reader.bodyChannel).readFailure = failure;
+                            body.read(ByteBuffer.allocate(1));
+                        }
+                    }
+                });
+                assertSame(failure, actual);
+                assertEquals(1, actual.getSuppressed().length);
+                assertSame(failure, actual.getSuppressed()[0].getCause());
+                assertFalse(Objects.requireNonNull(reader.bodyChannel).isOpen());
+                reader.close();
+                assertTrue(reader.closed);
+            }
+        }
+    }
+
+    /// Distinct cleanup failures retain their type and identity after a body read fails.
+    @Test
+    void distinctCleanupFailuresAreNotWrapped() throws Exception {
+        for (boolean closeBody : new boolean[]{false, true}) {
+            for (Throwable cleanupFailure : List.of(new java.io.EOFException("cleanup failed"),
+                    new IllegalStateException("cleanup failed"), new AssertionError("cleanup failed"))) {
+                TestReader reader = closeBody ? new TestReader(cleanupFailure, null) : new TestReader(cleanupFailure);
+                assertTrue(reader.next());
+                ReadableByteChannel body = reader.openChannel();
+                java.io.IOException readFailure = new java.io.IOException("read failed");
+                Objects.requireNonNull(reader.bodyChannel).readFailure = readFailure;
+                assertSame(readFailure, assertThrows(java.io.IOException.class, () -> body.read(ByteBuffer.allocate(1))));
+                assertSame(cleanupFailure, assertThrows(cleanupFailure.getClass(), () -> {
+                    if (closeBody) body.close();
+                    else reader.close();
+                }));
+                reader.close();
+                assertFalse(body.isOpen());
+            }
+        }
+    }
+
+    /// Closing a body cannot replace a read failure with try-with-resources self-suppression.
+    @Test
+    void bodyClosePreservesRepeatedReadFailure() throws Exception {
+        for (Throwable failure : List.of(new java.io.IOException("body failed"),
+                new IllegalStateException("body failed"), new AssertionError("body failed"))) {
+            try (TestReader reader = new TestReader(failure, null)) {
+                assertTrue(reader.next());
+                ReadableByteChannel body = reader.openChannel();
+                Objects.requireNonNull(reader.bodyChannel).readFailure = failure;
+                Throwable actual = assertThrows(failure.getClass(), () -> {
+                    try (body) {
+                        body.read(ByteBuffer.allocate(1));
+                    }
+                });
+                assertSame(failure, actual);
+                assertEquals(1, actual.getSuppressed().length);
+                assertSame(failure, actual.getSuppressed()[0].getCause());
+                body.close();
+                assertFalse(body.isOpen());
+            }
+        }
+    }
+
     /// Repeated body cleanup failures keep the original exception primary in try-with-resources.
     @Test
     void readerClosePreservesRepeatedBodyFailure() throws Exception {
@@ -466,6 +577,15 @@ public final class ArkivoStreamingStateTest {
         /// Failure thrown by the first format-reader close attempt, or null when cleanup succeeds.
         private final @Nullable Throwable firstReaderCloseFailure;
 
+        /// The failure injected into cursor advancement, or null for normal advancement.
+        private @Nullable Throwable advanceFailure;
+
+        /// The failure injected into attribute access, or null for normal metadata access.
+        private @Nullable Throwable attributeFailure;
+
+        /// The failure injected into body opening, or null for normal body access.
+        private @Nullable Throwable openFailure;
+
         /// Number of format-reader close attempts.
         private int readerCloseAttempts;
 
@@ -498,14 +618,16 @@ public final class ArkivoStreamingStateTest {
 
         /// Advances to the next test entry.
         @Override
-        protected boolean advance() {
+        protected boolean advance() throws java.io.IOException {
+            if (advanceFailure != null) throwInjectedFailure(advanceFailure);
             index++;
             return index < attributes.size();
         }
 
         /// Returns current test entry attributes.
         @Override
-        protected <A extends BasicFileAttributes> A readCurrentAttributes(Class<A> type) {
+        protected <A extends BasicFileAttributes> A readCurrentAttributes(Class<A> type) throws java.io.IOException {
+            if (attributeFailure != null) throwInjectedFailure(attributeFailure);
             attributeReadCount++;
             TestAttributes current = attributes.get(index);
             if (!type.isInstance(current)) {
@@ -516,7 +638,8 @@ public final class ArkivoStreamingStateTest {
 
         /// Opens a one-byte body containing the current entry number.
         @Override
-        protected ReadableByteChannel openCurrentChannel() {
+        protected ReadableByteChannel openCurrentChannel() throws java.io.IOException {
+            if (openFailure != null) throwInjectedFailure(openFailure);
             TrackingReadableByteChannel channel =
                     new TrackingReadableByteChannel(
                             new byte[]{(byte) (index + 1)},
@@ -540,6 +663,8 @@ public final class ArkivoStreamingStateTest {
     /// Exposes whether a test body delegate has been closed by its owning reader.
     @NotNullByDefault
     private static final class TrackingReadableByteChannel implements ReadableByteChannel {
+        /// A failure injected into body reads, or null for normal reads.
+        private @Nullable Throwable readFailure;
         /// Number of initial close attempts that throw the configured failure.
         private int failingCloseAttempts = 1;
 
@@ -566,6 +691,7 @@ public final class ArkivoStreamingStateTest {
         /// Reads bytes from the in-memory delegate.
         @Override
         public int read(ByteBuffer target) throws java.io.IOException {
+            if (readFailure != null) throwInjectedFailure(readFailure);
             return delegate.read(Objects.requireNonNull(target, "target"));
         }
 

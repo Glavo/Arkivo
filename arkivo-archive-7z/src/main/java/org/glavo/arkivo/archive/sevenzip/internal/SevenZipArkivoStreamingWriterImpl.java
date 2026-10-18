@@ -349,6 +349,9 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                 if ("..".equals(segment)) {
                     throw new IllegalArgumentException("7z streaming entry paths must not contain ..");
                 }
+                if (builder.isEmpty() && segment.length() >= 2 && segment.charAt(1) == ':') {
+                    throw new IllegalArgumentException("7z streaming entry paths must not contain drive roots");
+                }
                 if (!builder.isEmpty()) {
                     builder.append('/');
                 }
@@ -595,7 +598,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         /// Returns the synthesized owner.
         @Override
         public UserPrincipal getOwner() {
-            return SevenZipPosixSupport.owner();
+            return SevenZipPosixSupport.DEFAULT_OWNER;
         }
 
         /// Sets pending entry timestamps.
@@ -615,7 +618,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             lock();
             try {
                 entry.ensurePending();
-                SevenZipPosixSupport.requireDefaultOwner(owner);
+                SevenZipPosixSupport.USER_PRINCIPAL_LOOKUP_SERVICE.requireUser(owner);
             } finally {
                 unlock();
             }
@@ -628,7 +631,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             lock();
             try {
                 entry.ensurePending();
-                SevenZipPosixSupport.requireDefaultGroup(group);
+                SevenZipPosixSupport.USER_PRINCIPAL_LOOKUP_SERVICE.requireGroup(group);
             } finally {
                 unlock();
             }
@@ -806,13 +809,13 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         /// Returns the synthesized owner.
         @Override
         public UserPrincipal owner() {
-            return SevenZipPosixSupport.owner();
+            return SevenZipPosixSupport.DEFAULT_OWNER;
         }
 
         /// Returns the synthesized group.
         @Override
         public GroupPrincipal group() {
-            return SevenZipPosixSupport.group();
+            return SevenZipPosixSupport.DEFAULT_GROUP;
         }
 
         /// Returns POSIX permissions decoded from the current attributes or writable defaults.

@@ -72,6 +72,8 @@ final class SevenZipArkivoFileSystemConfigTest {
         assertSame(passwordProvider, config.passwordProvider());
         assertSame(storageFactory, config.editStorageFactory());
         assertSame(limits, config.readLimits());
+        assertSame(limits, SevenZipArkivoFileSystemConfig.fromOptions(
+                ArchiveOptions.fromEnvironment(Map.of("arkivo.readLimits", limits))).readLimits());
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
         assertNull(config.commitTarget());
     }

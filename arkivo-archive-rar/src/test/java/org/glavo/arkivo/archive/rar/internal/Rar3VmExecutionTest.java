@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
+
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -17,6 +19,63 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies RAR3 virtual-machine execution through checksummed synthetic bytecode programs.
 @NotNullByDefault
 final class Rar3VmExecutionTest {
+    /// Keeps committed persistent data accounted for when a later result reservation fails.
+    @Test
+    void accountsForPersistentReplacementAndResultFailures() throws IOException {
+        ProgramWriter writer = new ProgramWriter(new byte[]{7, 8});
+        writer.configureOutput(Rar3Vm.GLOBAL_ADDRESS + Rar3Vm.FIXED_GLOBAL_SIZE, 4);
+        writer.moveDirectImmediate(Rar3Vm.GLOBAL_ADDRESS + 0x30, 2);
+        writer.ret();
+        for (long maximum : new long[]{262_181, 262_183, 262_187, 262_188}) {
+            RarDecoderMemoryBudget budget = new RarDecoderMemoryBudget(maximum);
+            Rar3Vm.Program program = Rar3Vm.compile(writer.toByteArray(), budget);
+            assertEquals(2, budget.used());
+            try {
+                if (maximum < 262_188) {
+                    assertThrows(DecompressionMemoryLimitException.class,
+                            () -> program.execute(new byte[0], new int[7], 0, new byte[]{1, 2}, 0));
+                    assertEquals(maximum < 262_184 ? 2 : 4, budget.used());
+                } else {
+                    for (int iteration = 0; iteration < 3; iteration++) {
+                        byte[] result = program.execute(new byte[0], new int[7], 0, new byte[]{1, 2}, iteration);
+                        assertArrayEquals(new byte[]{1, 2, 7, 8}, result);
+                        assertEquals(8, budget.used());
+                        budget.release(result.length);
+                    }
+                }
+            } finally {
+                program.close();
+                program.close();
+            }
+            assertEquals(0, budget.used());
+        }
+    }
+
+    /// Rejects static data before allocating it and does not retain caller bytecode after compilation.
+    @Test
+    void accountsForCompiledStaticData() throws IOException {
+        ProgramWriter writer = new ProgramWriter(new byte[]{7, 8});
+        writer.configureOutput(Rar3Vm.GLOBAL_ADDRESS + Rar3Vm.FIXED_GLOBAL_SIZE, 2);
+        writer.ret();
+        RarDecoderMemoryBudget rejected = new RarDecoderMemoryBudget(1);
+        assertThrows(DecompressionMemoryLimitException.class, () -> Rar3Vm.compile(writer.toByteArray(), rejected));
+        assertEquals(0, rejected.used());
+        RarDecoderMemoryBudget budget = new RarDecoderMemoryBudget(262_184);
+        byte[] code = writer.toByteArray();
+        try (Rar3Vm.Program program = Rar3Vm.compile(code, budget)) {
+            java.util.Arrays.fill(code, (byte) 0);
+            byte[] result = program.execute(new byte[0], new int[7], 0, new byte[0], 0);
+            assertArrayEquals(new byte[]{7, 8}, result);
+            budget.release(result.length);
+            assertEquals(2, budget.used());
+        }
+        assertEquals(0, budget.used());
+    }
+    /// Compiles an isolated program without a workspace limit.
+    private static Rar3Vm.Program compile(byte[] code) throws IOException {
+        return Rar3Vm.compile(code, new RarDecoderMemoryBudget(-1));
+    }
+
     /// Verifies arithmetic, logical, byte-register, zero-extension, and sign-extension instructions.
     @Test
     void executesArithmeticAndWidthConversions() throws IOException {
@@ -231,7 +290,7 @@ final class Rar3VmExecutionTest {
         ProgramWriter writer = new ProgramWriter();
         writer.configureOutput(Rar3Vm.GLOBAL_ADDRESS, Rar3Vm.FIXED_GLOBAL_SIZE);
         writer.ret();
-        Rar3Vm.Program program = Rar3Vm.compile(writer.toByteArray());
+        Rar3Vm.Program program = compile(writer.toByteArray());
         int[] registers = new int[7];
         registers[0] = 11;
         registers[2] = 22;
@@ -271,7 +330,7 @@ final class Rar3VmExecutionTest {
         persistentWriter.configureOutput(Rar3Vm.GLOBAL_ADDRESS + Rar3Vm.FIXED_GLOBAL_SIZE, 2);
         persistentWriter.moveDirectImmediate(Rar3Vm.GLOBAL_ADDRESS + 0x30, 2);
         persistentWriter.ret();
-        Rar3Vm.Program persistentProgram = Rar3Vm.compile(persistentWriter.toByteArray());
+        Rar3Vm.Program persistentProgram = compile(persistentWriter.toByteArray());
         assertArrayEquals(
                 new byte[]{1, 2},
                 persistentProgram.execute(new byte[0], new int[7], 0, new byte[]{1, 2}, 0L)
@@ -285,13 +344,13 @@ final class Rar3VmExecutionTest {
     /// Verifies malformed programs, invalid invocation shapes, and out-of-memory output ranges are rejected.
     @Test
     void validatesCompilationAndInvocationBoundaries() throws IOException {
-        assertThrows(NullPointerException.class, () -> Rar3Vm.compile(null));
-        assertThrows(IOException.class, () -> Rar3Vm.compile(new byte[0]));
-        assertThrows(IOException.class, () -> Rar3Vm.compile(new byte[]{0}));
-        assertThrows(IOException.class, () -> Rar3Vm.compile(new byte[]{0, 1}));
+        assertThrows(NullPointerException.class, () -> compile(null));
+        assertThrows(IOException.class, () -> compile(new byte[0]));
+        assertThrows(IOException.class, () -> compile(new byte[]{0}));
+        assertThrows(IOException.class, () -> compile(new byte[]{0, 1}));
         assertThrows(
                 IOException.class,
-                () -> Rar3Vm.compile(
+                () -> compile(
                         new ProgramWriter(new byte[Rar3Vm.GLOBAL_SIZE - Rar3Vm.FIXED_GLOBAL_SIZE + 1])
                                 .toByteArray()
                 )
@@ -299,7 +358,7 @@ final class Rar3VmExecutionTest {
 
         ProgramWriter returnWriter = new ProgramWriter();
         returnWriter.ret();
-        Rar3Vm.Program program = Rar3Vm.compile(returnWriter.toByteArray());
+        Rar3Vm.Program program = compile(returnWriter.toByteArray());
         assertThrows(
                 IOException.class,
                 () -> program.execute(new byte[Rar3Vm.GLOBAL_ADDRESS + 1], new int[7], 0, new byte[0], 0L)
@@ -327,7 +386,7 @@ final class Rar3VmExecutionTest {
             byte[] global,
             long offset
     ) throws IOException {
-        return Rar3Vm.compile(writer.toByteArray()).execute(input, registers, registerMask, global, offset);
+        return compile(writer.toByteArray()).execute(input, registers, registerMask, global, offset);
     }
 
     /// Executes one comparison followed by a conditional branch and returns whether it was taken.

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -10,11 +11,24 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.CRC32;
 
 /// Limits reads from an input stream to a fixed byte count.
 @NotNullByDefault
-final class SevenZipBoundedInputStream extends InputStream {
+final class SevenZipBoundedInputStream extends InputStream implements ForceCloseable {
+    /// Serializes reads and graceful draining independently of cancellation.
+    private final ReentrantLock operationLock = new ReentrantLock();
+
+    /// Serializes forced cleanup independently of ordinary closure.
+    private final Object forceCloseLock = new Object();
+
+    /// Whether unread data must not be drained or verified.
+    private volatile boolean aborted;
+
+    /// Whether an earlier read failed.
+    private volatile boolean readFailed;
+
     /// The underlying input stream.
     private final InputStream input;
 
@@ -34,10 +48,10 @@ final class SevenZipBoundedInputStream extends InputStream {
     private boolean crc32Validated;
 
     /// Whether this stream has been closed.
-    private boolean closed;
+    private volatile boolean closed;
 
     /// Whether the underlying input stream has been closed.
-    private boolean inputClosed;
+    private volatile boolean inputClosed;
 
     /// Creates a bounded input stream.
     SevenZipBoundedInputStream(InputStream input, long size) {
@@ -67,8 +81,16 @@ final class SevenZipBoundedInputStream extends InputStream {
     /// Reads one byte.
     @Override
     public int read() throws IOException {
-        ensureOpen();
-        return readUnchecked();
+        operationLock.lock();
+        try {
+            ensureOpen();
+            return readUnchecked();
+        } catch (IOException | RuntimeException | Error exception) {
+            readFailed = true;
+            throw exception;
+        } finally {
+            operationLock.unlock();
+        }
     }
 
     /// Reads one byte without checking the wrapper open state for close-time draining.
@@ -96,8 +118,16 @@ final class SevenZipBoundedInputStream extends InputStream {
     @Override
     public int read(byte[] buffer, int offset, int length) throws IOException {
         Objects.checkFromIndexSize(offset, length, buffer.length);
-        ensureOpen();
-        return readUnchecked(buffer, offset, length);
+        operationLock.lock();
+        try {
+            ensureOpen();
+            return readUnchecked(buffer, offset, length);
+        } catch (IOException | RuntimeException | Error exception) {
+            readFailed = true;
+            throw exception;
+        } finally {
+            operationLock.unlock();
+        }
     }
 
     /// Reads bytes without checking the wrapper open state for close-time draining.
@@ -126,57 +156,69 @@ final class SevenZipBoundedInputStream extends InputStream {
         return count;
     }
 
-    /// Closes this stream and its underlying stream.
+    /// Closes this stream, validating unread bytes only when no read or cancellation is active.
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         if (closed && inputClosed) {
             return;
         }
-
-        Throwable failure = null;
+        @Nullable Throwable failure = null;
         if (!closed) {
             closed = true;
-            try {
-                byte[] discard = new byte[8192];
-                while (remaining > 0) {
-                    readUnchecked(discard, 0, discard.length);
+            if (!readFailed && !operationLock.isHeldByCurrentThread() && operationLock.tryLock()) {
+                try {
+                    byte[] discard = new byte[8192];
+                    while (!aborted && remaining > 0) {
+                        readUnchecked(discard, 0, discard.length);
+                    }
+                    if (!aborted) validateCrc32();
+                } catch (IOException | RuntimeException | Error exception) {
+                    aborted = true;
+                    failure = exception;
+                } finally {
+                    operationLock.unlock();
                 }
-                validateCrc32();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
+            } else {
+                aborted = true;
             }
         }
-
         if (!inputClosed) {
             try {
-                input.close();
-                inputClosed = true;
-            } catch (IOException | RuntimeException | Error exception) {
-                if (failure != null) {
-                    if (failure != exception) {
-                        failure.addSuppressed(exception);
-                    }
+                if (aborted) {
+                    forceClose();
                 } else {
-                    failure = exception;
+                    input.close();
+                    synchronized (forceCloseLock) {
+                        if (!aborted) inputClosed = true;
+                    }
                 }
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure == null) failure = exception;
+                else if (failure != exception) failure.addSuppressed(exception);
             }
         }
+        if (failure instanceof IOException exception) throw exception;
+        if (failure instanceof RuntimeException exception) throw exception;
+        if (failure instanceof Error exception) throw exception;
+    }
 
-        if (failure instanceof IOException exception) {
-            throw exception;
-        }
-        if (failure instanceof RuntimeException exception) {
-            throw exception;
-        }
-        if (failure instanceof Error exception) {
-            throw exception;
+    /// Cancels input without reading the rest of the bounded body or validating its checksum.
+    @Override
+    public void forceClose() throws IOException {
+        aborted = true;
+        closed = true;
+        synchronized (forceCloseLock) {
+            if (!inputClosed) {
+                ForceCloseable.forceClose(input);
+                inputClosed = true;
+            }
         }
     }
 
     /// Validates the CRC-32 value after the bounded stream body has been fully consumed.
     private void validateCrc32() throws IOException {
         CRC32 currentCrc32 = crc32;
-        if (currentCrc32 == null || crc32Validated) {
+        if (aborted || currentCrc32 == null || crc32Validated) {
             return;
         }
         crc32Validated = true;

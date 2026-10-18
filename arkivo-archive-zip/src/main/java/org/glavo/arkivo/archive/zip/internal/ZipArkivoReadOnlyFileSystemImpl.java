@@ -27,6 +27,7 @@ import org.glavo.arkivo.archive.zip.ZipEntryNameErrorAction;
 import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -544,7 +545,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             throw new NotLinkException(link.toString());
         }
         try (InputStream input = newInputStream(link, StandardOpenOption.READ)) {
-            return getPath(new String(input.readAllBytes(), StandardCharsets.UTF_8));
+            return getPath(StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(input.readAllBytes())).toString());
         }
     }
 
@@ -853,7 +854,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
         try (Operation ignored = beginReadOperation()) {
-            return ArkivoPathMatchers.create(syntaxAndPattern, '/');
+            return ArkivoPathMatchers.create(syntaxAndPattern);
         }
     }
 
@@ -861,7 +862,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
         try (Operation ignored = beginReadOperation()) {
-            return ZipPosixSupport.userPrincipalLookupService();
+            return ZipPosixSupport.USER_PRINCIPAL_LOOKUP_SERVICE;
         }
     }
 
@@ -902,13 +903,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// Reads the ZIP central directory index from archive storage.
     private ZipIndex readIndex() throws IOException {
         try (ArchiveChannel channel = openArchiveChannel()) {
-            ZipEndRecord endRecord = readEndRecord(channel);
-            ArkivoReadLimitTracker readLimits = ArkivoReadLimitTracker.fromLimits(
-                    config.maximumEntryCount(),
-                    config.maximumEntrySize(),
-                    config.maximumTotalEntrySize(),
-                    config.maximumMetadataSize()
-            );
+            ArkivoReadLimitTracker readLimits = ArkivoReadLimitTracker.fromLimits(config.readLimits());
+            ZipEndRecord endRecord = readEndRecord(channel, readLimits);
             readLimits.acceptMetadata(endRecord.centralDirectorySize, null);
             HashMap<String, ZipEntryRecord> entries = new HashMap<>();
             ArrayList<ZipEntryRecord> storageEntries = new ArrayList<>();
@@ -1052,6 +1048,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             validateDirectoryConflicts(entries, directories);
             return new ZipIndex(
                     endRecord,
+                    readLimits,
                     Map.copyOf(entries),
                     storageEntriesByOffset(storageEntries),
                     Set.copyOf(directories),
@@ -1170,7 +1167,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     ) throws IOException {
         ZipIndex index = fileSystem.index();
         try (ArchiveChannel channel = fileSystem.openArchiveChannel()) {
-            ZipEndRecord endRecord = readEndRecord(channel);
+            ZipEndRecord endRecord = index.endRecord;
             ByteBuffer centralDirectory =
                     ByteBuffer.allocate(centralDirectoryIndexSize(endRecord.centralDirectorySize));
             readFully(channel, endRecord.actualCentralDirectoryOffset, centralDirectory);
@@ -1248,7 +1245,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             if (indexedEntry == null) {
                 throw new IOException("ZIP central directory entry is missing from the parsed index: " + decodedPath);
             }
-            indexedEntry = resolveEntry(channel, indexedEntry, index.endRecord);
+            indexedEntry = resolveEntry(channel, indexedEntry, index);
             LocalRecordRange localRecord = localRecordRange(channel, indexedEntry);
             entries.add(new CentralDirectoryEntrySnapshot(
                     key,
@@ -1443,20 +1440,20 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         @Nullable ZipEntryRecord cached = entry.localRecord;
         if (cached != null) return cached;
         try (ArchiveChannel channel = openArchiveChannel()) {
-            return resolveEntry(channel, entry, index().endRecord);
+            return resolveEntry(channel, entry, index());
         }
     }
 
     /// Validates and publishes one complete local record, leaving failed loads retryable.
     private static ZipEntryRecord resolveEntry(
-            SeekableByteChannel channel, ZipEntryRecord entry, ZipEndRecord end) throws IOException {
+            SeekableByteChannel channel, ZipEntryRecord entry, ZipIndex index) throws IOException {
         synchronized (entry) {
             @Nullable ZipEntryRecord cached = entry.localRecord;
             if (cached != null) return cached;
+            ZipEndRecord end = index.endRecord;
             long offset = resolveLocalHeaderOffset(channel, entry.localHeaderOffset, end.offsetAdjustment);
             LocalHeaderMetadata local = readLocalHeaderMetadata(
-                    channel, offset, entry.rawPath, entry.generalPurposeFlags, entry.method, entry.crc32,
-                    entry.compressedSize, entry.uncompressedSize, entry.centralDirectoryExtraData);
+                    channel, offset, entry, index.readLimits);
             ZipEntryRecord complete = new ZipEntryRecord(
                     entry.key, entry.rawPath, entry.path, entry.compressedSize, entry.uncompressedSize, entry.crc32,
                     entry.generalPurposeFlags, entry.versionMadeBy, entry.versionNeededToExtract,
@@ -1516,7 +1513,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         try {
             validateEntryDataDescriptor(archive, dataOffset, entry);
             SeekableByteChannel compressed = ArchiveSliceChannel.open(archive, dataOffset, entry.compressedSize);
-            InputStream input = Channels.newInputStream(compressed);
+            InputStream input = StreamChannelAdapters.inputStream(compressed);
             @Nullable ZipDeflateDecoderPool.Lease deflateDecoder = null;
             ZipAesExtraField aes = entry.aesExtraField();
             if (entry.encrypted()) {
@@ -1528,15 +1525,15 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 deflateDecoder = deflateDecoders.open(input, entry.uncompressedSize, config.readLimits());
                 input = StreamChannelAdapters.inputStream(deflateDecoder);
             } else if (entry.compressionMethod() == ZipMethod.DEFLATE64.id()) {
-                input = openDeflate64InputStream(input, entry.uncompressedSize);
+                input = ZipCompressionFormats.newInputStream("deflate64", input, entry.uncompressedSize, config.readLimits());
             } else if (entry.compressionMethod() == ZipMethod.BZIP2.id()) {
-                input = openBzip2InputStream(input, entry.uncompressedSize);
+                input = ZipCompressionFormats.newInputStream("bzip2", input, entry.uncompressedSize, config.readLimits());
             } else if (isZstandardMethod(entry.compressionMethod())) {
-                input = openZstandardInputStream(input, entry.uncompressedSize);
+                input = ZipCompressionFormats.newInputStream("zstd", input, entry.uncompressedSize, config.readLimits());
             } else if (entry.compressionMethod() == ZipMethod.LZMA.id()) {
                 input = openLzmaInputStream(input, entry.uncompressedSize, entry.generalPurposeFlags);
             } else if (entry.compressionMethod() == ZipMethod.XZ.id()) {
-                input = openXzInputStream(input, entry.uncompressedSize);
+                input = ZipCompressionFormats.newInputStream("xz", input, entry.uncompressedSize, config.readLimits());
             }
             long expectedCrc32 = aes != null && !aes.usesCrc32() ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : entry.crc32;
             input = new ValidatingEntryInputStream(input, expectedCrc32, entry.uncompressedSize, deflateDecoder);
@@ -1567,21 +1564,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 "ZIP data descriptor offset"
         );
         dataDescriptorSize(channel, descriptorOffset, entry);
-    }
-
-    /// Opens a Deflate64 decoding stream and owns the compressed stream.
-    private InputStream openDeflate64InputStream(InputStream input, long decodedSize) throws IOException {
-        return ZipCompressionFormats.newInputStream("deflate64", input, decodedSize, config.readLimits());
-    }
-
-    /// Opens a BZip2 decoding stream and owns the compressed stream.
-    private InputStream openBzip2InputStream(InputStream input, long decodedSize) throws IOException {
-        return ZipCompressionFormats.newInputStream("bzip2", input, decodedSize, config.readLimits());
-    }
-
-    /// Opens a Zstandard decoding stream and owns the compressed stream.
-    private InputStream openZstandardInputStream(InputStream input, long decodedSize) throws IOException {
-        return ZipCompressionFormats.newInputStream("zstd", input, decodedSize, config.readLimits());
     }
 
     /// Opens a ZIP LZMA decoding stream and closes the compressed stream if setup fails.
@@ -1617,7 +1599,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             );
         } catch (IOException | RuntimeException | Error exception) {
             try {
-                input.close();
+                ForceCloseable.forceClose(input);
             } catch (IOException | RuntimeException | Error closeException) {
                 if (exception != closeException) {
                     exception.addSuppressed(closeException);
@@ -1625,11 +1607,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             }
             throw exception;
         }
-    }
-
-    /// Opens an XZ decoding stream and owns the compressed stream.
-    private InputStream openXzInputStream(InputStream input, long decodedSize) throws IOException {
-        return ZipCompressionFormats.newInputStream("xz", input, decodedSize, config.readLimits());
     }
 
     /// Opens a WinZip AES decrypting stream for an entry.
@@ -1756,6 +1733,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             throw new IOException("ZIP entry path must be relative");
         }
         @Nullable StringBuilder normalized = null;
+        boolean hasName = false;
         int start = 0;
         while (start <= path.length()) {
             int end = nextEntryPathSeparator(path, start);
@@ -1768,9 +1746,15 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     normalized = new StringBuilder(path.length());
                     if (start > 0) normalized.append(path, 0, start - 1);
                 }
-            } else if (normalized != null) {
-                if (!normalized.isEmpty()) normalized.append('/');
-                normalized.append(path, start, end);
+            } else {
+                if (!hasName && length >= 2 && path.charAt(start + 1) == ':') {
+                    throw new IOException("ZIP entry path must be relative");
+                }
+                hasName = true;
+                if (normalized != null) {
+                    if (!normalized.isEmpty()) normalized.append('/');
+                    normalized.append(path, start, end);
+                }
             }
             if (normalized == null && end < path.length() && path.charAt(end) == '\\') {
                 normalized = new StringBuilder(path.length()).append(path, 0, end);
@@ -1891,13 +1875,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     private static LocalHeaderMetadata readLocalHeaderMetadata(
             SeekableByteChannel channel,
             long offset,
-            byte[] expectedName,
-            int expectedFlags,
-            int expectedMethod,
-            long expectedCrc32,
-            long expectedCompressedSize,
-            long expectedUncompressedSize,
-            byte[] expectedExtraData
+            ZipEntryRecord entry,
+            ArkivoReadLimitTracker readLimits
     ) throws IOException {
         ByteBuffer header = ByteBuffer.allocate(ZIP_LOCAL_FILE_HEADER_MIN_SIZE).order(ByteOrder.LITTLE_ENDIAN);
         readFully(channel, offset, header);
@@ -1913,16 +1892,22 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         int nameLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_NAME_LENGTH_OFFSET));
         int extraLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_EXTRA_LENGTH_OFFSET));
         long extraOffset = localHeaderVariableOffset(offset, nameLength, "local extra data offset");
-        int flagDifference = flags ^ expectedFlags;
+        int flagDifference = flags ^ entry.generalPurposeFlags;
         if ((flagDifference & ~DATA_DESCRIPTOR_FLAG) != 0
-                || flagDifference != 0 && ((flags | expectedFlags) & ENCRYPTED_FLAG) != 0) {
+                || flagDifference != 0 && ((flags | entry.generalPurposeFlags) & ENCRYPTED_FLAG) != 0) {
             throw new IOException("ZIP local header flags do not match central directory");
         }
-        if (method != expectedMethod) {
+        if (method != entry.method) {
             throw new IOException("ZIP local header method does not match central directory");
         }
-        if (nameLength != expectedName.length) {
+        if (nameLength != entry.rawPath.length) {
             throw new IOException("ZIP local header name does not match central directory");
+        }
+        // Retain reservations across failed loads so retries neither double-charge nor reuse another reader's budget.
+        int metadataSize = ZIP_LOCAL_FILE_HEADER_MIN_SIZE + nameLength + extraLength;
+        synchronized (readLimits) {
+            readLimits.acceptMetadata(Math.max(0, metadataSize - entry.reservedLocalMetadataSize), entry.path);
+            entry.reservedLocalMetadataSize = Math.max(entry.reservedLocalMetadataSize, metadataSize);
         }
         ByteBuffer name = ByteBuffer.allocate(nameLength);
         readFully(
@@ -1930,7 +1915,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 checkedZipOffsetAdd(offset, ZIP_LOCAL_FILE_HEADER_MIN_SIZE, "local file name offset"),
                 name
         );
-        if (!Arrays.equals(name.array(), expectedName)) {
+        if (!Arrays.equals(name.array(), entry.rawPath)) {
             throw new IOException("ZIP local header name does not match central directory");
         }
 
@@ -1938,9 +1923,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         readFully(channel, extraOffset, extra);
         byte[] extraData = extra.array();
         ZipExtraFields.validateForReading(extraData);
-        validateLocalAesExtraData(flags, method, extraData, expectedExtraData);
+        validateLocalAesExtraData(flags, method, extraData, entry.centralDirectoryExtraData);
         if ((flags & DATA_DESCRIPTOR_FLAG) == 0) {
-            if (crc32 != expectedCrc32) {
+            if (crc32 != entry.crc32) {
                 throw new IOException("ZIP local header CRC-32 does not match central directory");
             }
             Zip64Values localZip64 = Zip64Values.read(
@@ -1950,10 +1935,10 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     0L,
                     0L
             );
-            if (localZip64.compressedSize() != expectedCompressedSize) {
+            if (localZip64.compressedSize() != entry.compressedSize) {
                 throw new IOException("ZIP local header compressed size does not match central directory");
             }
-            if (localZip64.uncompressedSize() != expectedUncompressedSize) {
+            if (localZip64.uncompressedSize() != entry.uncompressedSize) {
                 throw new IOException("ZIP local header uncompressed size does not match central directory");
             }
         }
@@ -1998,7 +1983,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     }
 
     /// Reads the ZIP end of central directory record needed for central directory indexing.
-    private static ZipEndRecord readEndRecord(ArchiveChannel channel) throws IOException {
+    private static ZipEndRecord readEndRecord(ArchiveChannel channel, ArkivoReadLimitTracker readLimits)
+            throws IOException {
         long size = channel.size();
         if (size < ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE) {
             throw new IOException("ZIP end of central directory record not found");
@@ -2028,6 +2014,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             long centralDirectoryOffset = Integer.toUnsignedLong(
                     buffer.getInt(index + ZIP_END_OF_CENTRAL_DIRECTORY_OFFSET_OFFSET)
             );
+            readLimits.acceptMetadata(ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE + commentLength, null);
             byte[] archiveComment = readBytes(
                     buffer,
                     index + ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE,
@@ -2040,7 +2027,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 channel.volumeStartOffset(endDiskNumber);
             }
             if (hasZip64EndLocator(channel, eocdOffset)) {
-                return readZip64EndRecord(channel, eocdOffset, archiveComment);
+                return readZip64EndRecord(channel, eocdOffset, archiveComment, readLimits);
             }
 
             int centralDirectoryDiskNumber = Short.toUnsignedInt(buffer.getShort(index + 6));
@@ -2090,7 +2077,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     private static ZipEndRecord readZip64EndRecord(
             ArchiveChannel channel,
             long eocdOffset,
-            byte[] archiveComment
+            byte[] archiveComment,
+            ArkivoReadLimitTracker readLimits
     ) throws IOException {
         long locatorOffset = eocdOffset - ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE;
         if (locatorOffset < 0) {
@@ -2118,6 +2106,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 zip64EndDiskNumber,
                 storedZip64EndOffset
         );
+        readLimits.acceptMetadata(eocdOffset - actualZip64EndOffset, null);
         ByteBuffer fixedRecord = ByteBuffer.allocate(ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE)
                 .order(ByteOrder.LITTLE_ENDIAN);
         readFully(channel, actualZip64EndOffset, fixedRecord);
@@ -2985,6 +2974,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// The immutable location and bounds of this central directory.
         private final ZipEndRecord endRecord;
 
+        /// The cumulative index and local-header budget; synchronized only while reserving local metadata.
+        private final ArkivoReadLimitTracker readLimits;
+
         /// The entry records keyed by normalized entry path.
         private final Map<String, ZipEntryRecord> entries;
 
@@ -3000,12 +2992,14 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// Creates a parsed ZIP central directory index.
         private ZipIndex(
                 ZipEndRecord endRecord,
+                ArkivoReadLimitTracker readLimits,
                 Map<String, ZipEntryRecord> entries,
                 List<ZipEntryRecord> storageEntries,
                 Set<String> directories,
                 Map<String, List<String>> children
         ) {
             this.endRecord = endRecord;
+            this.readLimits = readLimits;
             this.entries = entries;
             this.storageEntries = storageEntries;
             this.directories = directories;
@@ -3042,6 +3036,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     private static final class ZipEntryRecord {
         /// A successfully validated immutable snapshot, or null before first local-record access.
         private volatile @Nullable ZipEntryRecord localRecord;
+
+        /// The largest local-header reservation, guarded by this record's monitor and retained across failed loads.
+        private int reservedLocalMetadataSize;
 
         /// Validated payload offset, assigned before publishing a complete local snapshot.
         private long dataOffset = -1L;
@@ -3647,7 +3644,19 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
     /// Reads ZIP entry data and validates it against central directory metadata when the stream ends.
     @NotNullByDefault
-    private static final class ValidatingEntryInputStream extends InputStream {
+    private static final class ValidatingEntryInputStream extends InputStream implements ForceCloseable {
+        /// Separates data validation from cancellation of its input.
+        private final ReentrantLock operationLock = new ReentrantLock();
+
+        /// Serializes forced input cleanup independently of ordinary close-time draining.
+        private final Object forceCloseLock = new Object();
+
+        /// Whether remaining data must not be read or validated during cleanup.
+        private volatile boolean aborted;
+
+        /// Whether a data operation has already failed.
+        private volatile boolean readFailed;
+
         /// The decoded entry data stream.
         private final InputStream input;
 
@@ -3673,10 +3682,10 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         private boolean finishedEntry;
 
         /// Whether this stream has been closed.
-        private boolean closed;
+        private volatile boolean closed;
 
         /// Whether the decoded entry data stream has been closed.
-        private boolean inputClosed;
+        private volatile boolean inputClosed;
 
         /// Creates a validating ZIP entry stream.
         private ValidatingEntryInputStream(
@@ -3699,61 +3708,95 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
-            ensureOpen();
-            return readUnchecked(bytes, offset, length);
+            operationLock.lock();
+            try {
+                ensureOpen();
+                return readUnchecked(bytes, offset, length);
+            } catch (IOException | RuntimeException | Error exception) {
+                readFailed = true;
+                throw exception;
+            } finally {
+                operationLock.unlock();
+            }
         }
 
         /// Reads decoded bytes without checking the wrapper open state for close-time draining.
         private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
-            if (finishedEntry) {
-                return -1;
-            }
             if (length == 0) {
                 return 0;
+            }
+            if (finishedEntry) {
+                return -1;
             }
 
             int read = input.read(bytes, offset, length);
             if (read > 0) {
                 crc32.update(bytes, offset, read);
                 uncompressedSize += read;
-            } else if (read < 0) {
+            } else if (read < 0 && !aborted) {
                 finishEntry();
             }
             return read;
         }
 
-        /// Closes this entry stream after draining unread bytes for validation.
+        /// Validates unread bytes only when idle, with no prior read failure or cancellation.
         @Override
-        public void close() throws IOException {
+        public synchronized void close() throws IOException {
             if (closed && inputClosed) {
                 return;
             }
 
-            Throwable failure = null;
+            @Nullable Throwable failure = null;
             if (!closed) {
                 closed = true;
-                try {
-                    if (!finishedEntry) {
-                        byte[] discard = new byte[8192];
-                        while (readUnchecked(discard, 0, discard.length) >= 0) {
-                            // Drain unread entry data so central directory metadata can be validated.
+                if (!readFailed && !operationLock.isHeldByCurrentThread() && operationLock.tryLock()) {
+                    try {
+                        if (!finishedEntry && !aborted) {
+                            byte[] discard = new byte[8192];
+                            while (!aborted && readUnchecked(discard, 0, discard.length) >= 0) {
+                                // Validate only while closure remains graceful.
+                            }
                         }
+                    } catch (IOException | RuntimeException | Error exception) {
+                        aborted = true;
+                        failure = exception;
+                    } finally {
+                        operationLock.unlock();
                     }
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
+                } else {
+                    aborted = true;
                 }
             }
 
             if (!inputClosed) {
                 try {
-                    input.close();
-                    inputClosed = true;
+                    if (aborted) {
+                        forceClose();
+                    } else {
+                        input.close();
+                        synchronized (forceCloseLock) {
+                            if (!aborted) inputClosed = true;
+                        }
+                    }
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = mergeFailure(failure, exception);
                 }
             }
 
             throwFailure(failure);
+        }
+
+        /// Cancels the decoder and input without draining or confirming integrity.
+        @Override
+        public void forceClose() throws IOException {
+            aborted = true;
+            closed = true;
+            synchronized (forceCloseLock) {
+                if (!inputClosed) {
+                    ForceCloseable.forceClose(input);
+                    inputClosed = true;
+                }
+            }
         }
 
         /// Validates the decoded entry data against central directory metadata.
@@ -3782,7 +3825,16 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
 
     /// Exposes a stored entry channel and validates sequentially consumed data against central directory metadata.
     @NotNullByDefault
-    private static final class ValidatingStoredEntryByteChannel implements SeekableByteChannel {
+    private static final class ValidatingStoredEntryByteChannel implements SeekableByteChannel, ForceCloseable {
+        /// Protects the cursor and sequential checksum state, independently of physical closure.
+        private final ReentrantLock operationLock = new ReentrantLock();
+
+        /// Serializes physical cleanup without waiting for checksum draining.
+        private final Object closeLock = new Object();
+
+        /// Whether cancellation has permanently disabled close-time validation.
+        private volatile boolean aborted;
+
         /// The bounded stored entry data channel.
         private final SeekableByteChannel channel;
 
@@ -3805,10 +3857,10 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         private boolean finishedEntry;
 
         /// Whether this channel has been closed.
-        private boolean closed;
+        private volatile boolean closed;
 
         /// Whether the bounded stored entry data channel has been closed.
-        private boolean channelClosed;
+        private volatile boolean channelClosed;
 
         /// Creates a validating stored entry channel.
         private ValidatingStoredEntryByteChannel(
@@ -3824,9 +3876,14 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// Reads bytes from the current channel position.
         @Override
         public int read(ByteBuffer destination) throws IOException {
-            ensureOpen();
-            Objects.requireNonNull(destination, "destination");
-            return readUnchecked(destination);
+            operationLock.lock();
+            try {
+                ensureOpen();
+                Objects.requireNonNull(destination, "destination");
+                return readUnchecked(destination);
+            } finally {
+                operationLock.unlock();
+            }
         }
 
         /// Reads bytes without checking the wrapper open state for close-time draining.
@@ -3853,7 +3910,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                     }
                 }
             }
-            if (read < 0 && validationActive) {
+            if (read < 0 && validationActive && !aborted) {
                 finishEntry();
             }
             return read;
@@ -3870,19 +3927,29 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         /// Returns the current channel position.
         @Override
         public long position() throws IOException {
-            ensureOpen();
-            return channel.position();
+            operationLock.lock();
+            try {
+                ensureOpen();
+                return channel.position();
+            } finally {
+                operationLock.unlock();
+            }
         }
 
         /// Sets the current channel position.
         @Override
         public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureOpen();
-            channel.position(newPosition);
-            if (newPosition != validationPosition) {
-                validationActive = false;
+            operationLock.lock();
+            try {
+                ensureOpen();
+                channel.position(newPosition);
+                if (newPosition != validationPosition) {
+                    validationActive = false;
+                }
+                return this;
+            } finally {
+                operationLock.unlock();
             }
-            return this;
         }
 
         /// Returns the visible entry size.
@@ -3908,38 +3975,61 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             return !closed && channel.isOpen();
         }
 
-        /// Closes this channel after draining unread sequential data for validation.
+        /// Drains and validates an idle channel; if an operation is active, cancels it without further reads.
+        /// Failed physical cleanup is retryable and never restarts draining.
         @Override
-        public void close() throws IOException {
+        public synchronized void close() throws IOException {
             if (closed && channelClosed) {
                 return;
             }
 
-            Throwable failure = null;
+            @Nullable Throwable failure = null;
             if (!closed) {
                 closed = true;
-                if (validationActive && !finishedEntry && channel.isOpen()) {
+                if (!operationLock.isHeldByCurrentThread() && operationLock.tryLock()) {
                     try {
-                        ByteBuffer discard = ByteBuffer.allocate(8192);
-                        while (readUnchecked(discard) >= 0) {
-                            discard.clear();
+                        if (!aborted && validationActive && !finishedEntry && channel.isOpen()) {
+                            ByteBuffer discard = ByteBuffer.allocate(8192);
+                            while (!aborted && readUnchecked(discard) >= 0) {
+                                discard.clear();
+                            }
                         }
                     } catch (IOException | RuntimeException | Error exception) {
                         failure = exception;
+                    } finally {
+                        operationLock.unlock();
                     }
+                } else {
+                    aborted = true;
                 }
             }
 
-            if (!channelClosed) {
-                try {
-                    channel.close();
-                    channelClosed = true;
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = mergeFailure(failure, exception);
-                }
+            try {
+                closeChannel();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
             }
 
             throwFailure(failure);
+        }
+
+        /// Closes the source immediately, including during a graceful close that is draining input.
+        @Override
+        public void forceClose() throws IOException {
+            aborted = true;
+            closed = true;
+            closeChannel();
+        }
+
+        /// Closes the owned channel once, retaining failed cleanup for retry.
+        private void closeChannel() throws IOException {
+            synchronized (closeLock) {
+                if (!channelClosed) {
+                    if (aborted) ForceCloseable.forceClose(channel);
+                    else channel.close();
+                    channelClosed = true;
+                }
+            }
         }
 
         /// Validates the sequential entry bytes against central directory metadata.

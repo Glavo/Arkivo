@@ -10,6 +10,7 @@ module org.glavo.arkivo.archive.dmg {
     requires org.glavo.arkivo.codec.deflate;
     requires org.glavo.arkivo.codec.xz;
     requires java.xml;
+    requires jdk.charsets;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.archive.dmg;

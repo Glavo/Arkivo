@@ -19,6 +19,9 @@ import java.util.Objects;
 
 /// Opens AR archives as NIO file systems.
 ///
+/// Symbolic-link targets are decoded strictly as UTF-8. Reading or following a link with malformed target bytes
+/// throws [java.nio.charset.CharacterCodingException] instead of substituting characters in its path.
+///
 /// Opening an existing archive builds a logical snapshot of its members and stages member bodies through the selected
 /// edit storage. Subsequent external changes to the source are not reflected in paths or attribute snapshots. The
 /// thread-safety strategy in the common options governs concurrent operations and close coordination.

@@ -494,7 +494,7 @@ final class DMGTestFixtures {
         }
     }
 
-    /// Writes a B-tree header node and its first record offset.
+    /// Writes a B-tree header node with header, user-data, and allocation-map records.
     private static void writeBTreeHeader(
             byte[] target,
             int offset,
@@ -507,7 +507,7 @@ final class DMGTestFixtures {
             int maximumKeyLength
     ) {
         target[offset + 8] = 1;
-        ByteArrayAccess.writeShortBigEndian(target, offset + 10, (short) 1);
+        ByteArrayAccess.writeShortBigEndian(target, offset + 10, (short) 3);
         int header = offset + 14;
         ByteArrayAccess.writeShortBigEndian(target, header, (short) treeDepth);
         ByteArrayAccess.writeIntBigEndian(target, header + 2, rootNode);
@@ -518,6 +518,9 @@ final class DMGTestFixtures {
         ByteArrayAccess.writeShortBigEndian(target, header + 20, (short) maximumKeyLength);
         ByteArrayAccess.writeIntBigEndian(target, header + 22, totalNodes);
         ByteArrayAccess.writeShortBigEndian(target, offset + SECTOR_SIZE - 2, (short) 14);
+        ByteArrayAccess.writeShortBigEndian(target, offset + SECTOR_SIZE - 4, (short) 120);
+        ByteArrayAccess.writeShortBigEndian(target, offset + SECTOR_SIZE - 6, (short) 248);
+        ByteArrayAccess.writeShortBigEndian(target, offset + SECTOR_SIZE - 8, (short) (SECTOR_SIZE - 8));
     }
 
     /// Creates one HFS Plus catalog folder or file record.

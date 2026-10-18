@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.tar.internal;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.tar.TarArchiveOptions;
+import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
@@ -250,7 +251,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                         ? validateSparseMap(sparseSpec.logicalSize(), declaredBlocks, currentBodyRemaining)
                         : readSparseMapFromBody(sparseSpec.logicalSize(), resolvedAttributes.path());
             }
-            readLimits.acceptEntry(resolvedAttributes.path(), resolvedAttributes.size());
+            readLimits.acceptEntry(resolvedAttributes.path(), resolvedAttributes.bodySize());
             currentAttributes = resolvedAttributes;
             return true;
         }
@@ -435,6 +436,17 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                     "xstar status change time"
             );
         }
+        boolean device = typeFlag == TarEntryAttributes.CHARACTER_DEVICE_TYPE
+                || typeFlag == TarEntryAttributes.BLOCK_DEVICE_TYPE;
+        long deviceMajor = TarArkivoEntryAttributes.NO_DEVICE_NUMBER;
+        long deviceMinor = TarArkivoEntryAttributes.NO_DEVICE_NUMBER;
+        if (device) {
+            // V7 ends at linkname; later bytes do not contain USTAR device fields.
+            boolean hasDeviceFields = dialect == TarMetadataDecoder.HeaderDialect.USTAR
+                    || dialect == TarMetadataDecoder.HeaderDialect.GNU || dialect == TarMetadataDecoder.HeaderDialect.XSTAR;
+            deviceMajor = hasDeviceFields ? parseNonNegativeNumeric(header, 329, 8, "major device number") : 0L;
+            deviceMinor = hasDeviceFields ? parseNonNegativeNumeric(header, 337, 8, "minor device number") : 0L;
+        }
         TarEntryAttributes attributes = new TarEntryAttributes(
                 path,
                 typeFlag,
@@ -444,6 +456,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 parseIntNumeric(header, 100, 8, "entry mode"),
                 parseNonNegativeNumeric(header, 108, 8, "user id"),
                 parseNonNegativeNumeric(header, 116, 8, "group id"),
+                deviceMajor,
+                deviceMinor,
                 realEntry && rawPaxValue("uname") != null ? null : decodeOptionalMetadata(
                         readFieldBytes(header, 265, 32),
                         TarMetadataDecoder.MetadataKind.USER_NAME,
@@ -1040,6 +1054,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             int mode = attributes.mode();
             long userId = attributes.userId();
             long groupId = attributes.groupId();
+            long deviceMajor = attributes.deviceMajor();
+            long deviceMinor = attributes.deviceMinor();
             @Nullable String userName = attributes.userName();
             @Nullable String groupName = attributes.groupName();
             long size = attributes.bodySize();
@@ -1072,6 +1088,12 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             @Nullable String paxGroupId = paxValue("gid");
             if (paxGroupId != null) {
                 groupId = parsePaxNonNegativeLong(paxGroupId, "gid");
+            }
+            if (deviceMajor != TarArkivoEntryAttributes.NO_DEVICE_NUMBER) {
+                @Nullable String paxMajor = isPaxValueDeleted("SCHILY.devmajor") ? null : paxValue("SCHILY.devmajor");
+                @Nullable String paxMinor = isPaxValueDeleted("SCHILY.devminor") ? null : paxValue("SCHILY.devminor");
+                if (paxMajor != null) deviceMajor = parsePaxNonNegativeLong(paxMajor, "SCHILY.devmajor");
+                if (paxMinor != null) deviceMinor = parsePaxNonNegativeLong(paxMinor, "SCHILY.devminor");
             }
             @Nullable String paxUserName = paxValue("uname");
             if (paxUserName != null) {
@@ -1125,6 +1147,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                             mode,
                             userId,
                             groupId,
+                            deviceMajor,
+                            deviceMinor,
                             userName,
                             groupName,
                             linkName,
@@ -1349,6 +1373,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (!name.isEmpty() && !".".equals(name)) {
                 if ("..".equals(name)) {
                     throw new IOException("TAR entry path must not contain ..");
+                }
+                if (!hasName && name.length() >= 2 && name.charAt(1) == ':') {
+                    throw new IOException("TAR entry path must be relative");
                 }
                 hasName = true;
             }

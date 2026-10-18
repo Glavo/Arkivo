@@ -10,6 +10,7 @@ import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Decoder;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Encoder;
+import org.glavo.arkivo.codec.ppmd.internal.PPMd7Model;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -23,8 +24,10 @@ import java.util.Objects;
 /// from the embedding container.
 ///
 /// Codec instances are safe for concurrent use. Each created engine owns an independent mutable probability model.
-/// Decoder construction checks model memory and declared output against the operation-scoped limits before allocating
-/// the model.
+/// Decoder construction checks model memory and declared output against this codec's limits before allocating
+/// the model. The memory check includes the primitive-array payload of the aligned context arena, allocator free-list
+/// heads, symbol masks, probability tables, and state-index arrays. It excludes shared tables, objects, object headers,
+/// reference arrays, and input/output adapters and buffers.
 @NotNullByDefault
 public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     /// The default maximum context order used for compression.
@@ -260,7 +263,7 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
                     "Raw PPMd decompression requires an externally declared decoded size"
             );
         }
-        CompressionDecoderSupport.requireMemorySize(maximumMemorySize, memorySize);
+        CompressionDecoderSupport.requireMemorySize(maximumMemorySize, PPMd7Model.requiredMemorySize(memorySize));
         if (maximumOutputSize >= 0L && decodedSize > maximumOutputSize) {
             throw new DecompressionOutputLimitException(maximumOutputSize);
         }

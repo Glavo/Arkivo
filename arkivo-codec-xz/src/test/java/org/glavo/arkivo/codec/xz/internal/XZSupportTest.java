@@ -12,14 +12,31 @@ import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies canonical XZ integers, LZMA2 dictionary properties, and exact stream reads.
+/// Verifies XZ checksums, canonical integers, LZMA2 dictionary properties, and exact stream reads.
 @NotNullByDefault
 final class XZSupportTest {
+    /// Compares an unaligned stored CRC-32 without treating its high bit as a sign bit.
+    @Test
+    void comparesUnsignedStoredCrc32() {
+        byte[] bytes = "!123456789!----".getBytes(StandardCharsets.US_ASCII);
+        bytes[11] = 0x26;
+        bytes[12] = 0x39;
+        bytes[13] = (byte) 0xf4;
+        bytes[14] = (byte) 0xcb;
+        assertEquals(0xcbf4_3926L, XZSupport.crc32(bytes, 1, 9));
+        assertFalse(XZSupport.crc32Mismatch(bytes, 1, 9, 11));
+        bytes[14] ^= (byte) 0x80;
+        assertTrue(XZSupport.crc32Mismatch(bytes, 1, 9, 11));
+    }
+
     /// Verifies representative VLI boundaries against their canonical byte encodings.
     @Test
     void readsAndWritesCanonicalVariableLengthIntegers() throws IOException {

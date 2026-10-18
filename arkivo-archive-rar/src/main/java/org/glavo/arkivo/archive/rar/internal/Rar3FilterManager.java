@@ -14,6 +14,8 @@ import java.util.Objects;
 /// Parses RAR3 filter descriptors and retains filter definitions across solid entries.
 @NotNullByDefault
 final class Rar3FilterManager {
+    /// The session budget for retained definitions and parsed descriptors.
+    private final RarDecoderMemoryBudget memory;
     /// The largest accepted filter program.
     private static final int MAX_CODE_SIZE = 0x10000;
     /// The largest number of definitions in one filter sequence.
@@ -26,28 +28,32 @@ final class Rar3FilterManager {
     private int currentFilter;
 
     /// Creates an empty filter-definition sequence.
-    Rar3FilterManager() {
+    Rar3FilterManager(RarDecoderMemoryBudget memory) {
+        this.memory = memory;
     }
 
     /// Clears all definitions and selected-filter state.
+    /// Pending invocations must be discarded before their definitions are closed.
     void reset() {
+        for (Rar3FilterProgram program : programs) program.close();
         programs.clear();
         blockLengths.clear();
         currentFilter = 0;
     }
 
-    /// Parses one complete descriptor including its flags byte.
-    Descriptor parse(byte[] descriptor) throws IOException {
+    /// Parses a descriptor, clearing pending invocations before resetting definitions.
+    /// The returned descriptor owns its reserved arrays and must be passed to the supplied output's schedule method.
+    /// The output must use this manager's session budget.
+    Descriptor parse(byte[] descriptor, Rar3OutputPipeline output) throws IOException {
         Objects.requireNonNull(descriptor, "descriptor");
         if (descriptor.length == 0) throw new IOException("Empty RAR3 filter descriptor");
         int flags = descriptor[0] & 0xff;
         Rar3BitReader reader = new Rar3BitReader(descriptor, 1);
-        boolean resetQueuedFilters = false;
         if ((flags & 0x80) != 0) {
             long encodedFilter = reader.readEncodedUint32();
             if (encodedFilter == 0) {
+                output.clearPending();
                 reset();
-                resetQueuedFilters = true;
             } else {
                 encodedFilter--;
                 if (encodedFilter > MAX_FILTER_COUNT || encodedFilter > programs.size()) {
@@ -73,48 +79,68 @@ final class Rar3FilterManager {
         int blockLength = blockLengths.get(currentFilter);
         if (blockLength <= 0) throw new IOException("RAR3 filter block length is unavailable");
 
-        int[] registers = new int[7];
-        int registerMask = 0;
-        if ((flags & 0x10) != 0) {
-            registerMask = reader.readBits(7);
-            for (int register = 0; register < registers.length; register++) {
-                if ((registerMask & 1 << register) != 0) {
-                    registers[register] = (int) reader.readEncodedUint32();
+        long reserved = 7L * Integer.BYTES;
+        memory.reserve(reserved);
+        boolean transferred = false;
+        try {
+            int[] registers = new int[7];
+            int registerMask = 0;
+            if ((flags & 0x10) != 0) {
+                registerMask = reader.readBits(7);
+                for (int register = 0; register < registers.length; register++) {
+                    if ((registerMask & 1 << register) != 0) {
+                        registers[register] = (int) reader.readEncodedUint32();
+                    }
                 }
             }
-        }
 
-        if (currentFilter == programs.size()) {
-            long codeSize = reader.readEncodedUint32();
-            if (codeSize <= 0 || codeSize > MAX_CODE_SIZE) {
-                throw new IOException("Invalid RAR3 filter program size");
+            if (currentFilter == programs.size()) {
+                long codeSize = reader.readEncodedUint32();
+                if (codeSize <= 0 || codeSize > MAX_CODE_SIZE) {
+                    throw new IOException("Invalid RAR3 filter program size");
+                }
+                if (programs.size() >= MAX_FILTER_COUNT) throw new IOException("Too many RAR3 filter definitions");
+                memory.reserve(codeSize);
+                try {
+                    Rar3FilterProgram program = new Rar3FilterProgram(reader.readBytes((int) codeSize), memory);
+                    try {
+                        programs.add(program);
+                    } catch (RuntimeException | Error failure) {
+                        program.close();
+                        throw failure;
+                    }
+                } finally {
+                    memory.release(codeSize);
+                }
             }
-            if (programs.size() >= MAX_FILTER_COUNT) throw new IOException("Too many RAR3 filter definitions");
-            programs.add(new Rar3FilterProgram(reader.readBytes((int) codeSize)));
-        }
 
-        byte[] globalData = new byte[0];
-        if ((flags & 0x08) != 0) {
-            long globalSize = reader.readEncodedUint32();
-            if (globalSize > Rar3Vm.GLOBAL_SIZE - Rar3Vm.FIXED_GLOBAL_SIZE) {
-                throw new IOException("RAR3 filter global data is too large");
+            byte[] globalData = new byte[0];
+            if ((flags & 0x08) != 0) {
+                long globalSize = reader.readEncodedUint32();
+                if (globalSize > Rar3Vm.GLOBAL_SIZE - Rar3Vm.FIXED_GLOBAL_SIZE) {
+                    throw new IOException("RAR3 filter global data is too large");
+                }
+                memory.reserve(globalSize);
+                reserved += globalSize;
+                globalData = reader.readBytes((int) globalSize);
             }
-            globalData = reader.readBytes((int) globalSize);
+            Descriptor result = new Descriptor(
+                    (int) relativeOffset,
+                    blockLength,
+                    programs.get(currentFilter),
+                    registers,
+                    registerMask,
+                    globalData
+            );
+            transferred = true;
+            return result;
+        } finally {
+            if (!transferred) memory.release(reserved);
         }
-        return new Descriptor(
-                resetQueuedFilters,
-                (int) relativeOffset,
-                blockLength,
-                programs.get(currentFilter),
-                registers,
-                registerMask,
-                globalData
-        );
     }
 
-    /// Describes one scheduled invocation parsed from an archive descriptor.
+    /// Owns newly parsed register and global arrays and borrows its manager's filter program.
     ///
-    /// @param resetQueuedFilters whether previously queued invocations must be discarded
     /// @param relativeOffset raw bytes between the descriptor and filter block
     /// @param blockLength the number of raw bytes consumed by the filter
     /// @param program the selected filter definition
@@ -123,7 +149,6 @@ final class Rar3FilterManager {
     /// @param initialGlobal descriptor-provided global bytes
     @NotNullByDefault
     record Descriptor(
-            boolean resetQueuedFilters,
             int relativeOffset,
             int blockLength,
             Rar3FilterProgram program,
@@ -131,10 +156,9 @@ final class Rar3FilterManager {
             int initialRegisterMask,
             byte @Unmodifiable [] initialGlobal
     ) {
-        /// Makes mutable descriptor inputs immutable after parsing.
-        Descriptor {
-            initialRegisters = initialRegisters.clone();
-            initialGlobal = initialGlobal.clone();
+        /// Returns the reserved array payload transferred to the output pipeline.
+        long memorySize() {
+            return (long) initialRegisters.length * Integer.BYTES + initialGlobal.length;
         }
     }
 }

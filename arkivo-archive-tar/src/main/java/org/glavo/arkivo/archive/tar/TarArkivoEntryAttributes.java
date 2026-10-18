@@ -21,6 +21,9 @@ public interface TarArkivoEntryAttributes extends ArchiveEntryAttributes {
     /// The TAR type flag for hard link entries.
     byte HARD_LINK_TYPE = '1';
 
+    /// Indicates that an entry is not a character or block device.
+    long NO_DEVICE_NUMBER = -1L;
+
     /// Returns the decoded TAR entry path.
     String path();
 
@@ -43,6 +46,20 @@ public interface TarArkivoEntryAttributes extends ArchiveEntryAttributes {
     ///
     /// @return the non-negative numeric group identifier
     long groupId();
+
+    /// Returns the major device number for a character or block device.
+    ///
+    /// A device header without a recorded number supplies zero. PAX `SCHILY.devmajor` overrides the fixed header.
+    ///
+    /// @return the non-negative major number, or [#NO_DEVICE_NUMBER] for other entry types
+    long deviceMajor();
+
+    /// Returns the minor device number for a character or block device.
+    ///
+    /// A device header without a recorded number supplies zero. PAX `SCHILY.devminor` overrides the fixed header.
+    ///
+    /// @return the non-negative minor number, or [#NO_DEVICE_NUMBER] for other entry types
+    long deviceMinor();
 
     /// Returns the user name stored by the TAR header, or `null` when absent.
     ///

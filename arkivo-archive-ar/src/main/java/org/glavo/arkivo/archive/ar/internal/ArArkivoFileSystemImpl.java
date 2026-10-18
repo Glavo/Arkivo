@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.internal.ArkivoCommitTargetSupport;
@@ -467,7 +468,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                         failure = appendFailure(failure, exception);
                     }
                 }
-                if (!closeActionCompleted) {
+                if (!closeActionCompleted && (writer == null || writerClosed) && pendingCommitOutput == null) {
                     try {
                         closeAction.run();
                         closeActionCompleted = true;
@@ -553,13 +554,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
         try (Operation ignored = beginReadOperation()) {
-            return getPathMatcherLocked(syntaxAndPattern);
+            return ArkivoPathMatchers.create(syntaxAndPattern);
         }
-    }
-
-    /// Returns a path matcher while the caller holds the shared operation lock.
-    private PathMatcher getPathMatcherLocked(String syntaxAndPattern) {
-        return ArkivoPathMatchers.create(syntaxAndPattern, '/');
     }
 
     /// Returns the AR user principal lookup service.
@@ -1401,7 +1397,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             Objects.requireNonNull(attribute, "attribute");
             String name = attribute.name();
             if ("posix:permissions".equals(name)) {
-                permissions = posixPermissions(attribute);
+                permissions = PosixPermissions.copyOf(attribute.value(), "posix:permissions");
             } else if ("basic:lastModifiedTime".equals(name)) {
                 if (!(attribute.value() instanceof FileTime time)) {
                     throw new IllegalArgumentException("basic:lastModifiedTime must be a FileTime");
@@ -1423,11 +1419,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// @param lastModifiedTime the modification time, or `null` for the entry default
     @NotNullByDefault
     private record InitialAttributes(int mode, @Nullable FileTime lastModifiedTime) {
-    }
-
-    /// Returns POSIX permissions stored by a file attribute.
-    private static Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
-        return PosixPermissions.copyOf(attribute.value(), "posix:permissions");
     }
 
     /// Requires this file system to be in read or update mode.
@@ -2148,10 +2139,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE
             ))) {
-                ByteBuffer source = ByteBuffer.wrap(bytes);
-                while (source.hasRemaining()) {
-                    output.write(source);
-                }
+                StreamChannelAdapters.outputStream(output).write(bytes);
             }
             return content;
         } catch (IOException | RuntimeException | Error exception) {
@@ -2160,11 +2148,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
     }
 
-    /// Reads a UTF-8 member body as path text without an intermediate whole-body byte array.
+    /// Strictly decodes a UTF-8 member body as path text without an intermediate whole-body byte array.
     private static String readUtf8(@Nullable ArkivoStoredContent content) throws IOException {
         StringBuilder text = new StringBuilder();
         try (InputStream input = StoredContentSupport.openInputStream(content);
-             InputStreamReader reader = new InputStreamReader(input, StandardCharsets.UTF_8)) {
+             InputStreamReader reader = new InputStreamReader(input, StandardCharsets.UTF_8.newDecoder())) {
             char[] buffer = new char[1024];
             while (true) {
                 int count = reader.read(buffer);

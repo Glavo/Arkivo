@@ -7,6 +7,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
@@ -57,13 +58,23 @@ class HFSPlusForkChannel implements SeekableByteChannel {
     /// Reads bytes from the current logical fork position.
     ///
     /// Bytes delivered before a partition failure advance both the target and fork positions. The target limit is
-    /// unchanged, and a later read resumes after those bytes if the partition remains usable.
+    /// unchanged, and a later read resumes after those bytes if the partition remains usable. An interruptible fork
+    /// processes an existing thread interrupt before returning for an empty target or logical EOF.
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
         if (target.isReadOnly()) {
             throw new IllegalArgumentException("Target buffer is read-only");
+        }
+        if (this instanceof InterruptibleChannel && Thread.currentThread().isInterrupted()) {
+            ClosedByInterruptException failure = new ClosedByInterruptException();
+            try {
+                close();
+            } catch (IOException | RuntimeException | Error cleanup) {
+                if (cleanup != failure && cleanup.getCause() != failure) failure.addSuppressed(cleanup);
+            }
+            throw failure;
         }
         if (!target.hasRemaining()) {
             return 0;

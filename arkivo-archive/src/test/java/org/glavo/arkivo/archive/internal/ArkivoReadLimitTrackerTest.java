@@ -61,14 +61,15 @@ public final class ArkivoReadLimitTrackerTest {
 
         assertThrows(
                 NullPointerException.class,
-                () -> ArkivoReadLimitTracker.fromLimits((ArchiveReadLimits) null)
+                () -> ArkivoReadLimitTracker.fromLimits(null)
         );
     }
 
     /// Verifies entry count, known entry size, and known total size fail at their exact boundaries.
     @Test
     public void enforcesEntryAndKnownSizeLimits() throws IOException {
-        ArkivoReadLimitTracker countTracker = ArkivoReadLimitTracker.fromLimits(1L, -1L, -1L);
+        ArkivoReadLimitTracker countTracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumEntryCount(1L).build());
         countTracker.acceptEntry("first.bin", -1L);
         assertLimit(
                 assertThrows(
@@ -81,7 +82,8 @@ public final class ArkivoReadLimitTrackerTest {
                 null
         );
 
-        ArkivoReadLimitTracker entryTracker = ArkivoReadLimitTracker.fromLimits(-1L, 3L, -1L);
+        ArkivoReadLimitTracker entryTracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumEntrySize(3L).build());
         entryTracker.acceptEntry("exact.bin", 3L);
         assertLimit(
                 assertThrows(
@@ -94,7 +96,8 @@ public final class ArkivoReadLimitTrackerTest {
                 "large.bin"
         );
 
-        ArkivoReadLimitTracker totalTracker = ArkivoReadLimitTracker.fromLimits(-1L, -1L, 5L);
+        ArkivoReadLimitTracker totalTracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumTotalEntrySize(5L).build());
         totalTracker.acceptEntry("first.bin", 3L);
         totalTracker.acceptEntry("empty.bin", 0L);
         assertLimit(
@@ -109,28 +112,11 @@ public final class ArkivoReadLimitTrackerTest {
         );
     }
 
-    /// Verifies primitive factories and accounting methods reject invalid arguments before changing counters.
+    /// Verifies accounting methods reject invalid arguments before changing counters.
     @Test
     @SuppressWarnings("DataFlowIssue")
     public void validatesAccountingArguments() throws IOException {
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> ArkivoReadLimitTracker.fromLimits(-2L, -1L, -1L, -1L)
-        );
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> ArkivoReadLimitTracker.fromLimits(-1L, -2L, -1L, -1L)
-        );
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> ArkivoReadLimitTracker.fromLimits(-1L, -1L, -2L, -1L)
-        );
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> ArkivoReadLimitTracker.fromLimits(-1L, -1L, -1L, -2L)
-        );
-
-        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, -1L, -1L);
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(ArchiveReadLimits.UNLIMITED);
         assertThrows(IllegalArgumentException.class, () -> tracker.acceptMetadata(-1L, null));
         assertThrows(NullPointerException.class, () -> tracker.acceptEntry(null, 0L));
         assertThrows(IllegalArgumentException.class, () -> tracker.acceptEntry("entry.bin", -2L));
@@ -142,12 +128,7 @@ public final class ArkivoReadLimitTrackerTest {
     /// Verifies unrestricted cumulative counters saturate without rejecting further entries.
     @Test
     public void saturatesCumulativeSizesAtLongMaximum() throws IOException {
-        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
-                -1L,
-                -1L,
-                -1L,
-                -1L
-        );
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(ArchiveReadLimits.UNLIMITED);
 
         tracker.acceptMetadata(Long.MAX_VALUE, null);
         tracker.acceptMetadata(1L, null);
@@ -160,7 +141,8 @@ public final class ArkivoReadLimitTrackerTest {
     @ParameterizedTest
     @ValueSource(longs = {Long.MAX_VALUE - 1L, Long.MAX_VALUE})
     public void rejectsOverflowingCumulativeSizes(long maximum) throws IOException {
-        ArkivoReadLimitTracker metadata = ArkivoReadLimitTracker.fromLimits(-1L, -1L, -1L, maximum);
+        ArkivoReadLimitTracker metadata = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumMetadataSize(maximum).build());
         metadata.acceptMetadata(maximum, null);
         metadata.acceptMetadata(0L, "empty.bin");
         ArkivoReadLimitException metadataFailure = assertThrows(ArkivoReadLimitException.class,
@@ -169,7 +151,8 @@ public final class ArkivoReadLimitTrackerTest {
         assertLimit(assertThrows(ArkivoReadLimitException.class, metadata::requireWithinLimits),
                 metadataFailure.kind(), maximum, Long.MAX_VALUE, "overflow.bin");
 
-        ArkivoReadLimitTracker known = ArkivoReadLimitTracker.fromLimits(-1L, -1L, maximum);
+        ArkivoReadLimitTracker known = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumTotalEntrySize(maximum).build());
         known.acceptEntry("maximum.bin", maximum);
         known.acceptEntry("empty.bin", 0L);
         ArkivoReadLimitException knownFailure = assertThrows(ArkivoReadLimitException.class,
@@ -183,7 +166,8 @@ public final class ArkivoReadLimitTrackerTest {
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     public void rejectsObservedBytesBeyondMaximumLongTotal(boolean bulk) throws IOException {
-        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, -1L, Long.MAX_VALUE);
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumTotalEntrySize(Long.MAX_VALUE).build());
         tracker.acceptEntry("maximum.bin", Long.MAX_VALUE);
         tracker.acceptEntry("unknown.bin", -1L);
         ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{1, 2, 3});
@@ -209,7 +193,8 @@ public final class ArkivoReadLimitTrackerTest {
     @Test
     public void handlesUnknownSizeStreamBoundaries() throws IOException {
         byte[] content = new byte[8_193];
-        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, 9_000L, 9_000L);
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumEntrySize(9_000L).maximumTotalEntrySize(9_000L).build());
         tracker.acceptEntry("entry.bin", -1L);
 
         try (InputStream input = tracker.trackUnknownEntrySize(
@@ -229,7 +214,8 @@ public final class ArkivoReadLimitTrackerTest {
     /// Verifies skipped unknown-size bytes remain subject to per-entry limits and failures are sticky.
     @Test
     public void accountsForSkippedUnknownSizeBytes() throws IOException {
-        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, 3L, -1L);
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumEntrySize(3L).build());
         tracker.acceptEntry("entry.bin", -1L);
         try (InputStream input = tracker.trackUnknownEntrySize(
                 "entry.bin",
@@ -256,7 +242,8 @@ public final class ArkivoReadLimitTrackerTest {
     /// Verifies known and observed entry sizes share one total-size budget.
     @Test
     public void combinesKnownAndObservedTotalSizes() throws IOException {
-        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, -1L, 5L);
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumTotalEntrySize(5L).build());
         tracker.acceptEntry("known.bin", 3L);
         tracker.acceptEntry("unknown.bin", -1L);
         try (InputStream input = tracker.trackUnknownEntrySize(
@@ -279,8 +266,10 @@ public final class ArkivoReadLimitTrackerTest {
     public void boundsUnknownSizeReadsAndSkips(boolean skip) throws IOException {
         for (boolean totalLimit : new boolean[]{false, true}) {
             ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
-                    -1L, totalLimit ? 100L : 3L, totalLimit ? 5L : 100L
-            );
+                    ArchiveReadLimits.builder()
+                            .maximumEntrySize(totalLimit ? 100L : 3L)
+                            .maximumTotalEntrySize(totalLimit ? 5L : 100L)
+                            .build());
             tracker.acceptEntry("known.bin", 2L);
             tracker.acceptEntry("unknown.bin", -1L);
             ByteArrayInputStream source = new ByteArrayInputStream(new byte[16_384]);
@@ -308,7 +297,8 @@ public final class ArkivoReadLimitTrackerTest {
     @ValueSource(longs = {0L, 3L, Long.MAX_VALUE})
     public void probesUnknownSizeBoundariesWithoutOverflow(long maximum) throws IOException {
         int contentSize = maximum == Long.MAX_VALUE ? 3 : (int) maximum;
-        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, maximum, maximum);
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumEntrySize(maximum).maximumTotalEntrySize(maximum).build());
         tracker.acceptEntry("entry.bin", -1L);
         try (InputStream input = tracker.trackUnknownEntrySize(
                 "entry.bin", new ByteArrayInputStream(new byte[contentSize])
@@ -335,7 +325,8 @@ public final class ArkivoReadLimitTrackerTest {
     /// Verifies capping a read does not conceal an invalid caller range or modify bytes outside that range.
     @Test
     public void validatesOriginalReadRangeBeforeCapping() throws IOException {
-        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, 0L, -1L);
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumEntrySize(0L).build());
         tracker.acceptEntry("entry.bin", -1L);
         ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{42, 43});
         try (InputStream input = tracker.trackUnknownEntrySize("entry.bin", source)) {
@@ -354,8 +345,10 @@ public final class ArkivoReadLimitTrackerTest {
     @ValueSource(booleans = {false, true})
     public void interleavedBodiesRetainTheirOwnCountsAndShareFailure(boolean totalLimit) throws IOException {
         ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
-                -1L, totalLimit ? 4L : 3L, totalLimit ? 4L : -1L
-        );
+                ArchiveReadLimits.builder()
+                        .maximumEntrySize(totalLimit ? 4L : 3L)
+                        .maximumTotalEntrySize(totalLimit ? 4L : ArchiveReadLimits.UNLIMITED_SIZE)
+                        .build());
         tracker.acceptEntry("first.bin", -1L);
         tracker.acceptEntry("second.bin", -1L);
         ByteArrayInputStream firstSource = new ByteArrayInputStream(new byte[]{1, 2, 3, 4, 5});
@@ -388,7 +381,8 @@ public final class ArkivoReadLimitTrackerTest {
     /// Verifies metadata accounting is cumulative and reports the associated entry path.
     @Test
     public void enforcesCumulativeMetadataSize() throws IOException {
-        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(-1L, -1L, -1L, 10L);
+        ArkivoReadLimitTracker tracker = ArkivoReadLimitTracker.fromLimits(
+                ArchiveReadLimits.builder().maximumMetadataSize(10L).build());
         tracker.acceptMetadata(6L, null);
         tracker.acceptMetadata(4L, null);
 

@@ -110,7 +110,6 @@ public record TarArkivoFileSystemConfig(
     private static ArchiveOption<TarCompression> compressionOption(String name) {
         return ArchiveOption.of(
                 "arkivo.tar." + name,
-                TarCompression.class,
                 value -> {
                     if (value instanceof TarCompression compression) {
                         return compression;

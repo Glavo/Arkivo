@@ -21,6 +21,9 @@ import java.util.Objects;
 
 /// Opens 7z archives as NIO file systems.
 ///
+/// Symbolic-link targets are decoded strictly as UTF-8. Reading or following a link with malformed target bytes
+/// throws [java.nio.charset.CharacterCodingException] instead of substituting characters in its path.
+///
 /// Opening an existing archive indexes header metadata. Compressed bodies are decoded lazily, so the source path,
 /// seekable source, or volume source must continue to expose the same bytes until the file system closes. Paths and
 /// attributes form snapshots of the indexed header and do not observe external source changes. The common option's
@@ -36,6 +39,11 @@ import java.util.Objects;
 /// and use temporary files for larger bodies by default; update sessions always use temporary files by default.
 /// Path-backed temporary files are placed beside the archive, while explicit volume sessions use the platform
 /// temporary directory. Copy entries remain directly addressable and bypass staging.
+/// Closing an idle, sequentially read Copy entry channel reads its remaining bytes to validate any stored CRC.
+/// Input streams reading entry data directly from the archive also validate unread bytes during an idle close,
+/// unless an earlier read failed. Streams over staged content do not repeat archive-data validation.
+/// Closing an entry during an active data operation, or force-closing it in `STRICT` mode, cancels further validation.
+/// Successful closure alone therefore does not establish that all entry data has been verified.
 /// Storage close is deferred while a decoded seekable channel still owns a transient body.
 ///
 /// An entry being replaced through an open writable channel is hidden from new reads until that channel closes;

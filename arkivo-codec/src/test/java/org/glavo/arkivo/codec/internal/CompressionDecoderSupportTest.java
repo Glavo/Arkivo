@@ -9,6 +9,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -20,6 +21,10 @@ import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -31,6 +36,81 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies algorithm-independent decompression limit handling.
 @NotNullByDefault
 final class CompressionDecoderSupportTest {
+    /// A queued operation must not clear the shared probe after the active decoder has populated it.
+    @Test
+    void retainsProbeProgressUntilLimitIsRecorded() throws Exception {
+        for (int firstMode : new int[]{0, 1, 2}) {
+            for (int secondMode : new int[]{0, 1, 2}) {
+                CountDownLatch entered = new CountDownLatch(1);
+                CountDownLatch release = new CountDownLatch(1);
+                var delegate = new FramedTestChannel(new byte[]{1, 2}) {
+                    /// Produces probe output before pausing the decoder's first call.
+                    @Override
+                    public synchronized int read(ByteBuffer target) throws IOException {
+                        int count = super.read(target);
+                        if (entered.getCount() != 0) {
+                            entered.countDown();
+                            try {
+                                if (!release.await(5, TimeUnit.SECONDS)) throw new IOException("Probe was not released");
+                            } catch (InterruptedException exception) {
+                                Thread.currentThread().interrupt();
+                                throw new IOException("Probe interrupted", exception);
+                            }
+                        }
+                        return count;
+                    }
+                };
+                var channel = CompressionDecoderSupport.limitChannelOutput(delegate, 0);
+                ByteBuffer firstTarget = ByteBuffer.allocate(1);
+                ByteBuffer secondTarget = ByteBuffer.allocate(1);
+                var first = new FutureTask<>(() -> probeOperation(channel, firstTarget, firstMode));
+                var second = new FutureTask<>(() -> probeOperation(channel, secondTarget, secondMode));
+                Thread firstThread = new Thread(first, "active-limit-probe");
+                Thread secondThread = new Thread(second, "queued-limit-probe");
+                firstThread.setDaemon(true);
+                secondThread.setDaemon(true);
+                firstThread.start();
+                try {
+                    assertTrue(entered.await(5, TimeUnit.SECONDS));
+                    secondThread.start();
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (secondThread.getState() != Thread.State.BLOCKED) {
+                        assertTrue(secondThread.isAlive(), "queued probe returned early");
+                        assertTrue(System.nanoTime() < deadline, "queued probe did not block");
+                        Thread.sleep(1L);
+                    }
+                    release.countDown();
+                    assertInstanceOf(DecompressionOutputLimitException.class,
+                            assertThrows(ExecutionException.class, () -> first.get(5, TimeUnit.SECONDS)).getCause());
+                    assertInstanceOf(DecompressionOutputLimitException.class,
+                            assertThrows(ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS)).getCause());
+                    assertEquals(1, delegate.outputBytes());
+                    assertEquals(0, channel.outputBytes());
+                    assertEquals(0, firstTarget.position());
+                    assertEquals(0, secondTarget.position());
+                } finally {
+                    release.countDown();
+                    firstThread.join(TimeUnit.SECONDS.toMillis(5));
+                    secondThread.join(TimeUnit.SECONDS.toMillis(5));
+                    assertFalse(firstThread.isAlive());
+                    assertFalse(secondThread.isAlive());
+                    channel.close();
+                }
+            }
+        }
+    }
+
+    /// Invokes one output-limited entry point for the probe concurrency matrix.
+    private static long probeOperation(DecompressingReadableByteChannel.Framed channel,
+                                      ByteBuffer target, int mode) throws IOException {
+        return switch (mode) {
+            case 0 -> channel.read(target);
+            case 1 -> channel.decode(target).outputBytes();
+            case 2 -> channel.decodeFrame(target).outputBytes();
+            default -> throw new AssertionError(mode);
+        };
+    }
+
     /// Verifies common decoding-limit validation.
     @Test
     void validatesDecodingLimits() {

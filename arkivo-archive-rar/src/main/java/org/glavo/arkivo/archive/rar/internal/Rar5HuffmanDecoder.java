@@ -14,6 +14,9 @@ final class Rar5HuffmanDecoder {
     /// The largest code width accepted by the RAR5 format.
     private static final int MAX_CODE_LENGTH = 15;
 
+    /// The payload of the four fixed per-width tables, in bytes.
+    static final int FIXED_MEMORY_SIZE = 4 * (MAX_CODE_LENGTH + 1) * Integer.BYTES;
+
     /// The first canonical code assigned at each bit width.
     private final int[] firstCodes = new int[MAX_CODE_LENGTH + 1];
 
@@ -24,25 +27,30 @@ final class Rar5HuffmanDecoder {
     private final int[] lengthCounts = new int[MAX_CODE_LENGTH + 1];
 
     /// Symbols ordered first by code width and then by their numeric value.
-    private int[] sortedSymbols = new int[0];
+    private final int[] sortedSymbols;
+
+    /// Reusable insertion positions while building the sorted alphabet.
+    private final int[] writeIndexes = new int[MAX_CODE_LENGTH + 1];
 
     /// Whether this decoder contains at least one canonical code.
     private boolean populated;
 
-    /// Creates an empty canonical decoder.
-    Rar5HuffmanDecoder() {
+    /// Creates an empty canonical decoder with storage for at most the given number of symbols.
+    Rar5HuffmanDecoder(int maximumSymbols) {
+        sortedSymbols = new int[maximumSymbols];
     }
 
     /// Builds a complete canonical tree, also accepting a completely empty alphabet.
     void build(byte[] lengths, int offset, int symbolCount) throws IOException {
-        if (offset < 0 || symbolCount < 0 || offset > lengths.length - symbolCount) {
+        if (offset < 0 || symbolCount < 0 || offset > lengths.length - symbolCount
+                || symbolCount > sortedSymbols.length) {
             throw new IllegalArgumentException("Invalid RAR5 Huffman alphabet range");
         }
 
         Arrays.fill(firstCodes, 0);
         Arrays.fill(firstSymbolIndexes, 0);
         Arrays.fill(lengthCounts, 0);
-        sortedSymbols = new int[symbolCount];
+        populated = false;
 
         int assignedSymbols = 0;
         for (int symbol = 0; symbol < symbolCount; symbol++) {
@@ -56,9 +64,7 @@ final class Rar5HuffmanDecoder {
             }
         }
 
-        populated = assignedSymbols != 0;
-        if (!populated) {
-            sortedSymbols = new int[0];
+        if (assignedSymbols == 0) {
             return;
         }
 
@@ -74,13 +80,14 @@ final class Rar5HuffmanDecoder {
             throw new IOException("RAR5 Huffman tree is incomplete or oversubscribed");
         }
 
-        int[] writeIndexes = firstSymbolIndexes.clone();
+        System.arraycopy(firstSymbolIndexes, 0, writeIndexes, 0, firstSymbolIndexes.length);
         for (int symbol = 0; symbol < symbolCount; symbol++) {
             int length = lengths[offset + symbol] & 0xff;
             if (length != 0) {
                 sortedSymbols[writeIndexes[length]++] = symbol;
             }
         }
+        populated = true;
     }
 
     /// Decodes one symbol from the supplied compressed bit stream.
@@ -105,7 +112,6 @@ final class Rar5HuffmanDecoder {
         Arrays.fill(firstCodes, 0);
         Arrays.fill(firstSymbolIndexes, 0);
         Arrays.fill(lengthCounts, 0);
-        sortedSymbols = new int[0];
         populated = false;
     }
 }

@@ -12,6 +12,7 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.FileTime;
@@ -352,7 +353,8 @@ final class HFSPlusVolume {
         if (recordType == 3 || recordType == 4) {
             return null;
         }
-        String name = mappedName(new String(record, 8, nameLength * 2, StandardCharsets.UTF_16BE));
+        String name = mappedName(StandardCharsets.UTF_16BE.newDecoder()
+                .decode(ByteBuffer.wrap(record, 8, nameLength * 2)).toString());
         int required = recordType == 1 ? 88 : recordType == 2 ? 248 : -1;
         if (required < 0) {
             throw new IOException("Unknown HFS Plus catalog record type " + recordType);

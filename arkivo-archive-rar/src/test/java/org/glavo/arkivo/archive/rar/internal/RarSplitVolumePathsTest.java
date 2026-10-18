@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -73,6 +74,31 @@ final class RarSplitVolumePathsTest {
         Path third = touch("legacy.r01");
 
         assertEquals(List.of(first, second, third), RarSplitVolumePaths.discover(first));
+    }
+
+    /// Continues modern numbering when the next number exceeds the original digit width.
+    @Test
+    void expandsModernVolumeNumberWidth() throws IOException {
+        List<Path> expected = new ArrayList<>();
+        for (int number = 1; number <= 11; number++) {
+            expected.add(touch("numbered.part" + number + ".rar"));
+        }
+
+        assertEquals(expected, RarSplitVolumePaths.discover(expected.get(0)));
+    }
+
+    /// Continues legacy numbering from `r99` to `s00` without treating the extension as a decimal suffix.
+    @Test
+    void advancesLegacyExtensionLetter() throws IOException {
+        List<Path> expected = new ArrayList<>();
+        expected.add(touch("legacy.rar"));
+        for (int number = 0; number < 100; number++) {
+            expected.add(touch("legacy.r" + (number < 10 ? "0" : "") + number));
+        }
+        expected.add(touch("legacy.s00"));
+        touch("legacy.s02");
+
+        assertEquals(expected, RarSplitVolumePaths.discover(expected.get(0)));
     }
 
     /// Verifies modern continuation names take precedence when both naming layouts are present.

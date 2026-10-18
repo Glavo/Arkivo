@@ -162,12 +162,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         this.source = StreamChannelAdapters.inputStream(Objects.requireNonNull(source, "source"));
         this.input = new PushbackInputStream(this.source, PUSHBACK_BUFFER_SIZE);
         this.config = config;
-        this.readLimits = ArkivoReadLimitTracker.fromLimits(
-                config.maximumEntryCount(),
-                config.maximumEntrySize(),
-                config.maximumTotalEntrySize(),
-                config.maximumMetadataSize()
-        );
+        this.readLimits = ArkivoReadLimitTracker.fromLimits(config.readLimits());
         this.lock = ZipLocks.create(config.threadSafety());
     }
 
@@ -860,7 +855,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 }
                 length += read;
             }
-            int signature = readInt(signatureBytes, 0);
+            int signature = ByteArrayAccess.readIntLittleEndian(signatureBytes, 0);
             return signature == LOCAL_FILE_HEADER_SIGNATURE
                     || signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
                     || signature == END_OF_CENTRAL_DIRECTORY_SIGNATURE;
@@ -897,15 +892,15 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             long compressedSize,
             long uncompressedSize
     ) {
-        long descriptorCrc32 = Integer.toUnsignedLong(readInt(descriptor, 0));
+        long descriptorCrc32 = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(descriptor, 0));
         long descriptorCompressedSize;
         long descriptorUncompressedSize;
         if (descriptor.length == dataDescriptorSize(true)) {
             descriptorCompressedSize = ByteArrayAccess.readLongLittleEndian(descriptor, 4);
             descriptorUncompressedSize = ByteArrayAccess.readLongLittleEndian(descriptor, 12);
         } else {
-            descriptorCompressedSize = Integer.toUnsignedLong(readInt(descriptor, 4));
-            descriptorUncompressedSize = Integer.toUnsignedLong(readInt(descriptor, 8));
+            descriptorCompressedSize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(descriptor, 4));
+            descriptorUncompressedSize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(descriptor, 8));
         }
         return descriptorCrc32 == crc32
                 && descriptorCompressedSize == compressedSize
@@ -924,8 +919,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             descriptorCompressedSize = ByteArrayAccess.readLongLittleEndian(descriptor, 4);
             descriptorUncompressedSize = ByteArrayAccess.readLongLittleEndian(descriptor, 12);
         } else {
-            descriptorCompressedSize = Integer.toUnsignedLong(readInt(descriptor, 4));
-            descriptorUncompressedSize = Integer.toUnsignedLong(readInt(descriptor, 8));
+            descriptorCompressedSize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(descriptor, 4));
+            descriptorUncompressedSize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(descriptor, 8));
         }
         return descriptorCompressedSize == compressedSize
                 && descriptorUncompressedSize == uncompressedSize;
@@ -1014,6 +1009,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 if ("..".equals(name)) {
                     throw new IOException("ZIP entry path must not contain ..");
                 }
+                if (!hasName && name.length() >= 2 && name.charAt(1) == ':') {
+                    throw new IOException("ZIP entry path must be relative");
+                }
                 hasName = true;
             }
             start = end + 1;
@@ -1063,7 +1061,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                             new AesDecryptingInputStream(input, decryptor),
                             aes.overheadSize(),
                             decryptor,
-                            aes.authenticationCodeSize(),
+                            ZipAesExtraField.AUTHENTICATION_CODE_SIZE,
                             "WinZip AES data descriptor does not match entry data",
                             entry.zip64DataDescriptor,
                             false
@@ -1076,7 +1074,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                             new AesDecryptingInputStream(input, decryptor),
                             aes.overheadSize(),
                             decryptor,
-                            aes.authenticationCodeSize(),
+                            ZipAesExtraField.AUTHENTICATION_CODE_SIZE,
                             "WinZip AES data descriptor does not match entry data",
                             entry.zip64DataDescriptor,
                             false
@@ -1086,7 +1084,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     return new AesStoredDataDescriptorInputStream(
                             input,
                             openAesDecryptor(entry, aes, input),
-                            aes.authenticationCodeSize(),
+                            ZipAesExtraField.AUTHENTICATION_CODE_SIZE,
                             aes.overheadSize(),
                             entry.zip64DataDescriptor
                     );
@@ -1098,7 +1096,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                             new AesDecryptingInputStream(input, decryptor),
                             aes.overheadSize(),
                             decryptor,
-                            aes.authenticationCodeSize(),
+                            ZipAesExtraField.AUTHENTICATION_CODE_SIZE,
                             "WinZip AES data descriptor does not match entry data",
                             entry.zip64DataDescriptor,
                             false
@@ -1111,7 +1109,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                             new AesDecryptingInputStream(input, decryptor),
                             aes.overheadSize(),
                             decryptor,
-                            aes.authenticationCodeSize(),
+                            ZipAesExtraField.AUTHENTICATION_CODE_SIZE,
                             "WinZip AES data descriptor does not match entry data",
                             entry.zip64DataDescriptor,
                             false,
@@ -1125,7 +1123,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                             new AesDecryptingInputStream(input, decryptor),
                             aes.overheadSize(),
                             decryptor,
-                            aes.authenticationCodeSize(),
+                            ZipAesExtraField.AUTHENTICATION_CODE_SIZE,
                             "WinZip AES data descriptor does not match entry data",
                             entry.zip64DataDescriptor,
                             false
@@ -1138,7 +1136,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                             new AesDecryptingInputStream(input, decryptor),
                             aes.overheadSize(),
                             decryptor,
-                            aes.authenticationCodeSize(),
+                            ZipAesExtraField.AUTHENTICATION_CODE_SIZE,
                             "WinZip AES data descriptor does not match entry data",
                             entry.zip64DataDescriptor,
                             false
@@ -1174,7 +1172,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             if (compressionMethod == BZIP2_METHOD) {
                 return new KnownSizeEntryInputStream(
-                        openBzip2InputStream(decryptedData, entry.uncompressedSize),
+                        ZipCompressionFormats.newInputStream("bzip2", decryptedData, entry.uncompressedSize, config.readLimits()),
                         expectedCrc32,
                         entry.uncompressedSize
                 );
@@ -1188,21 +1186,21 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             if (compressionMethod == XZ_METHOD) {
                 return new KnownSizeEntryInputStream(
-                        openXzInputStream(decryptedData, entry.uncompressedSize),
+                        ZipCompressionFormats.newInputStream("xz", decryptedData, entry.uncompressedSize, config.readLimits()),
                         expectedCrc32,
                         entry.uncompressedSize
                 );
             }
             if (compressionMethod == DEFLATE64_METHOD) {
                 return new KnownSizeEntryInputStream(
-                        openDeflate64InputStream(decryptedData, entry.uncompressedSize),
+                        ZipCompressionFormats.newInputStream("deflate64", decryptedData, entry.uncompressedSize, config.readLimits()),
                         expectedCrc32,
                         entry.uncompressedSize
                 );
             }
             if (isZstandardMethod(compressionMethod)) {
                 return new KnownSizeEntryInputStream(
-                        openZstandardInputStream(decryptedData, entry.uncompressedSize),
+                        ZipCompressionFormats.newInputStream("zstd", decryptedData, entry.uncompressedSize, config.readLimits()),
                         expectedCrc32,
                         entry.uncompressedSize
                 );
@@ -1302,7 +1300,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 compressed = openTraditionalKnownSizeDecryptingStream(entry, compressed);
             }
             return new KnownSizeEntryInputStream(
-                    openBzip2InputStream(compressed, entry.uncompressedSize),
+                    ZipCompressionFormats.newInputStream("bzip2", compressed, entry.uncompressedSize, config.readLimits()),
                     entry.crc32,
                     entry.uncompressedSize
             );
@@ -1376,7 +1374,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 compressed = openTraditionalKnownSizeDecryptingStream(entry, compressed);
             }
             return new KnownSizeEntryInputStream(
-                    openXzInputStream(compressed, entry.uncompressedSize),
+                    ZipCompressionFormats.newInputStream("xz", compressed, entry.uncompressedSize, config.readLimits()),
                     entry.crc32,
                     entry.uncompressedSize
             );
@@ -1412,7 +1410,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 compressed = openTraditionalKnownSizeDecryptingStream(entry, compressed);
             }
             return new KnownSizeEntryInputStream(
-                    openZstandardInputStream(compressed, entry.uncompressedSize),
+                    ZipCompressionFormats.newInputStream("zstd", compressed, entry.uncompressedSize, config.readLimits()),
                     entry.crc32,
                     entry.uncompressedSize
             );
@@ -1448,27 +1446,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 compressed = openTraditionalKnownSizeDecryptingStream(entry, compressed);
             }
             return new KnownSizeEntryInputStream(
-                    openDeflate64InputStream(compressed, entry.uncompressedSize),
+                    ZipCompressionFormats.newInputStream("deflate64", compressed, entry.uncompressedSize, config.readLimits()),
                     entry.crc32,
                     entry.uncompressedSize
             );
         }
         throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
-    }
-
-    /// Opens a Deflate64 decoding stream and owns the compressed stream.
-    private InputStream openDeflate64InputStream(InputStream input, long decodedSize) throws IOException {
-        return ZipCompressionFormats.newInputStream("deflate64", input, decodedSize, config.readLimits());
-    }
-
-    /// Opens a BZip2 decoding stream and owns the compressed stream.
-    private InputStream openBzip2InputStream(InputStream input, long decodedSize) throws IOException {
-        return ZipCompressionFormats.newInputStream("bzip2", input, decodedSize, config.readLimits());
-    }
-
-    /// Opens a Zstandard decoding stream and owns the compressed stream.
-    private InputStream openZstandardInputStream(InputStream input, long decodedSize) throws IOException {
-        return ZipCompressionFormats.newInputStream("zstd", input, decodedSize, config.readLimits());
     }
 
     /// Opens a ZIP LZMA decoding stream and closes the compressed stream if setup fails.
@@ -1525,11 +1508,6 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 Integer.toUnsignedLong(dictionarySize),
                 usesEndMarker ? ZipArkivoEntryAttributes.UNKNOWN_SIZE : uncompressedSize
         );
-    }
-
-    /// Opens an XZ decoding stream and owns the compressed stream.
-    private InputStream openXzInputStream(InputStream input, long decodedSize) throws IOException {
-        return ZipCompressionFormats.newInputStream("xz", input, decodedSize, config.readLimits());
     }
 
     /// Opens a raw Deflate decoder for an entry with known metadata.

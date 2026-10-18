@@ -13,7 +13,7 @@ import java.util.Objects;
 @NotNullByDefault
 final class Rar4BitInput {
     /// The size of the reusable packed-input buffer.
-    private static final int BUFFER_SIZE = 64 * 1024;
+    static final int BUFFER_SIZE = 64 * 1024;
 
     /// The caller-owned packed input.
     private final InputStream input;

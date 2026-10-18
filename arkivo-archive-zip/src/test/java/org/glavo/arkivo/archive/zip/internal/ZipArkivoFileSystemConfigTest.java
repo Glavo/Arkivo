@@ -4,6 +4,9 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
@@ -11,6 +14,7 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
+import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -32,6 +36,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests ZIP file system environment configuration parsing.
 @NotNullByDefault
 public final class ZipArkivoFileSystemConfigTest {
+    /// Verifies typed and environment options preserve the complete read-limit policy.
+    @Test
+    public void preservesReadLimits() {
+        ArchiveReadLimits limits = ArchiveReadLimits.builder()
+                .maximumEntryCount(2L)
+                .maximumEntrySize(3L)
+                .maximumTotalEntrySize(4L)
+                .maximumMetadataSize(5L)
+                .maximumCompressionWindowSize(6L)
+                .maximumDecoderMemorySize(7L)
+                .build();
+
+        assertSame(limits, fromEnvironment(Map.of("arkivo.readLimits", limits)).readLimits());
+        assertSame(limits, ZipArkivoFileSystemConfig.fromReadOptions(
+                new ZipArchiveOptions.Read(ArchiveReadOptions.DEFAULT.withLimits(limits))).readLimits());
+        assertSame(limits, ZipArkivoFileSystemConfig.fromUpdateOptions(
+                new ZipArchiveOptions.Update(ArchiveUpdateOptions.DEFAULT.withLimits(limits), ZipEncryption.NONE))
+                .readLimits());
+        assertSame(ArchiveReadLimits.UNLIMITED, ZipArkivoFileSystemConfig.DEFAULTS.readLimits());
+    }
+
     /// Verifies that default ZIP configuration uses the split size sentinel.
     @Test
     public void defaultSplitSizeUsesSentinel() {

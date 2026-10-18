@@ -4,7 +4,10 @@
 package org.glavo.arkivo.archive.rar;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -67,6 +70,50 @@ public final class RarLegacyEncryptionTest {
 
     /// The reflected CRC32 lookup table used only by the independent RAR15 fixture encoder.
     private static final int @Unmodifiable [] CRC_TABLE = createCrcTable();
+
+    /// Applies memory limits to a real encrypted RAR 2.02 archive through both public reading APIs.
+    @Test
+    void enforcesRar20EncryptedDecoderMemoryLimit() throws IOException {
+        for (int maximum : new int[]{0, 8 << 20}) {
+            RarArchiveOptions defaults = passwordOptions(PASSWORD);
+            var options = defaults.withCommon(defaults.common().withLimits(
+                    ArchiveReadLimits.builder().maximumDecoderMemorySize(maximum).build()));
+            ByteArrayInputStream source = new ByteArrayInputStream(RAR20_ARCHIVE);
+            try (var reader = RarArkivoStreamingReader.open(source, options)) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                if (maximum == 0) {
+                    assertThrows(DecompressionMemoryLimitException.class, () -> {
+                        try (var input = reader.openInputStream()) {
+                            input.readAllBytes();
+                        }
+                    });
+                    int remaining = source.available();
+                    assertThrows(DecompressionMemoryLimitException.class, reader::next);
+                    assertThrows(DecompressionMemoryLimitException.class, reader::next);
+                    assertEquals(remaining, source.available());
+                } else {
+                    try (var input = reader.openInputStream()) {
+                        assertArrayEquals("file1\r\n".getBytes(StandardCharsets.US_ASCII), input.readAllBytes());
+                    }
+                    org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                    try (var input = reader.openInputStream()) {
+                        assertArrayEquals("file2\r\n".getBytes(StandardCharsets.US_ASCII), input.readAllBytes());
+                    }
+                    org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+                }
+            }
+            try (var fs = RarArkivoFileSystem.open(new ReadOnlyByteArrayChannel(RAR20_ARCHIVE), options)) {
+                for (int index = 2; index >= 1; index--) {
+                    Path path = fs.getPath("/FILE" + index + ".TXT");
+                    if (maximum == 0) {
+                        assertThrows(DecompressionMemoryLimitException.class, () -> Files.readAllBytes(path));
+                    } else {
+                        assertEquals("file" + index + "\r\n", Files.readString(path));
+                    }
+                }
+            }
+        }
+    }
 
     /// Reads both compressed members from a real RAR 2.02 encrypted archive.
     @Test

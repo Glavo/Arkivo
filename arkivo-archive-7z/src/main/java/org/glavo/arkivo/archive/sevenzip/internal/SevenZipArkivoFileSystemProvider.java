@@ -70,7 +70,7 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
         SevenZipArkivoFileSystemConfig config =
                 SevenZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.fromEnvironment(environment));
-        return fileSystems.open(parsedUri.archiveUri(), closeAction -> new SevenZipArkivoFileSystemImpl(
+        return fileSystems.open(parsedUri.archivePath(), closeAction -> new SevenZipArkivoFileSystemImpl(
                 this,
                 parsedUri.archivePath(),
                 null,
@@ -117,14 +117,14 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns an open 7z archive file system for a provider URI.
     @Override
     public FileSystem getFileSystem(URI uri) {
-        return fileSystems.require(parseUri(uri, false).archiveUri());
+        return fileSystems.require(parseUri(uri, false).archivePath());
     }
 
     /// Returns a path inside an open 7z archive file system.
     @Override
     public Path getPath(URI uri) {
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, true);
-        return fileSystems.require(parsedUri.archiveUri()).getPath(
+        return fileSystems.require(parsedUri.archivePath()).getPath(
                 Objects.requireNonNull(parsedUri.entryPath(), "entryPath")
         );
     }

@@ -69,6 +69,9 @@ public enum SevenZipCoderMethod {
     /// Reverses a RISC-V branch filter.
     BCJ_RISCV(0x0b);
 
+    /// The supported methods, retained to avoid allocating an array for each identifier lookup.
+    private static final SevenZipCoderMethod @Unmodifiable [] METHODS = values();
+
     /// The raw 7z method identifier.
     private final byte @Unmodifiable [] methodId;
 
@@ -87,7 +90,7 @@ public enum SevenZipCoderMethod {
     /// @throws IllegalArgumentException if the identifier is not recognized
     public static SevenZipCoderMethod fromMethodId(byte[] methodId) {
         Objects.requireNonNull(methodId, "methodId");
-        for (SevenZipCoderMethod method : values()) {
+        for (SevenZipCoderMethod method : METHODS) {
             if (Arrays.equals(method.methodId, methodId)) {
                 return method;
             }

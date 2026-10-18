@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -23,6 +24,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies 7z entry-name normalization and read/write path validation.
 @NotNullByDefault
 final class SevenZipEntryNameValidationTest {
+    /// Preserves colons that do not introduce a drive prefix in the first effective component.
+    ///
+    /// @param path a safe path with a leading dot component
+    @ParameterizedTest
+    @ValueSource(strings = {"./ab:cd", "./dir/C:value"})
+    void acceptsColonsOutsideDrivePrefixes(String path) throws IOException {
+        String key = "/" + path.substring(2);
+        try (var channel = new SeekableInMemoryByteChannel(SevenZipTestArchiveFixtures.emptyFileArchive(path));
+             var fs = SevenZipArkivoFileSystem.open(channel)) {
+            assertTrue(Files.isRegularFile(fs.getPath(key)));
+        }
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (var writer = SevenZipArkivoStreamingWriter.open(archive)) {
+            writer.beginFile(path).close();
+        }
+        try (var channel = new SeekableInMemoryByteChannel(archive.toByteArray());
+             var fs = SevenZipArkivoFileSystem.open(channel)) {
+            assertTrue(Files.isRegularFile(fs.getPath(key)));
+        }
+    }
+
     /// Verifies dot segments and repeated separators are normalized without replacing stored metadata.
     @Test
     void normalizesSafeNamesWithoutDiscardingStoredMetadata() throws IOException {
@@ -108,6 +130,9 @@ final class SevenZipEntryNameValidationTest {
                 Arguments.of("parent segment", "../evil.txt", "7z entry path must not contain .."),
                 Arguments.of("absolute", "/evil.txt", "7z entry path must be relative"),
                 Arguments.of("drive root", "C:/evil.txt", "7z entry path must be relative"),
+                Arguments.of("drive root after dot", "./C:/evil.txt", "7z entry path must be relative"),
+                Arguments.of("drive relative after empty component", ".//C:evil.txt", "7z entry path must be relative"),
+                Arguments.of("drive root after mixed separators", ".\\./C:\\evil.txt", "7z entry path must be relative"),
                 Arguments.of("backslash parent segment", "..\\evil.txt", "7z entry path must not contain ..")
         );
     }
@@ -120,6 +145,9 @@ final class SevenZipEntryNameValidationTest {
                 Arguments.of("absolute", "/evil.txt", "must be relative"),
                 Arguments.of("backslash absolute", "\\evil.txt", "must be relative"),
                 Arguments.of("drive root", "C:/evil.txt", "must not contain drive roots"),
+                Arguments.of("drive root after dot", "./C:/evil.txt", "must not contain drive roots"),
+                Arguments.of("drive relative after empty component", ".//C:evil.txt", "must not contain drive roots"),
+                Arguments.of("drive root after mixed separators", ".\\./C:\\evil.txt", "must not contain drive roots"),
                 Arguments.of("backslash drive root", "C:\\evil.txt", "must not contain drive roots"),
                 Arguments.of("parent segment", "safe/../evil.txt", "must not contain ..")
         );

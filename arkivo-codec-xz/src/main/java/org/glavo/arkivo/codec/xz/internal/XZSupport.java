@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -61,7 +62,8 @@ final class XZSupport {
 
     /// Returns whether one little-endian stored CRC-32 differs from a byte range.
     static boolean crc32Mismatch(byte[] bytes, int offset, int length, int storedOffset) {
-        return getLittleEndian(bytes, storedOffset, Integer.BYTES) != crc32(bytes, offset, length);
+        return Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(bytes, storedOffset))
+                != crc32(bytes, offset, length);
     }
 
     /// Reads one canonical XZ variable-length integer.
@@ -141,28 +143,5 @@ final class XZSupport {
             throw new EOFException("Truncated XZ stream");
         }
         return value;
-    }
-
-    /// Returns an unsigned little-endian integer from an array.
-    static long getLittleEndian(byte[] bytes, int offset, int length) {
-        long value = 0L;
-        for (int index = 0; index < length; index++) {
-            value |= (long) Byte.toUnsignedInt(bytes[offset + index]) << (index * 8);
-        }
-        return value;
-    }
-
-    /// Stores a fixed-width little-endian integer in an array.
-    static void putLittleEndian(byte[] bytes, int offset, long value, int length) {
-        for (int index = 0; index < length; index++) {
-            bytes[offset + index] = (byte) (value >>> (index * 8));
-        }
-    }
-
-    /// Writes one little-endian CRC-32 value.
-    static void writeCrc32(OutputStream output, long value) throws IOException {
-        for (int index = 0; index < Integer.BYTES; index++) {
-            output.write((int) (value >>> (index * 8)) & 0xff);
-        }
     }
 }

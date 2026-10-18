@@ -81,7 +81,7 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         ArkivoFileSystemProviderSupport.ParsedUri parsed = parseUri(uri, false);
         DMGArchiveOptions options = readOptions(ArchiveOptions.fromEnvironment(environment));
-        return fileSystems.open(parsed.archiveUri(), closeAction -> openPath(
+        return fileSystems.open(parsed.archivePath(), closeAction -> openPath(
                 parsed.archivePath(),
                 parsed.archiveUri(),
                 options,
@@ -128,14 +128,14 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns a registered URI-opened DMG file system.
     @Override
     public FileSystem getFileSystem(URI uri) {
-        return fileSystems.require(parseUri(uri, false).archiveUri());
+        return fileSystems.require(parseUri(uri, false).archivePath());
     }
 
     /// Returns a path inside a registered URI-opened DMG file system.
     @Override
     public Path getPath(URI uri) {
         ArkivoFileSystemProviderSupport.ParsedUri parsed = parseUri(uri, true);
-        return fileSystems.require(parsed.archiveUri()).getPath(
+        return fileSystems.require(parsed.archivePath()).getPath(
                 Objects.requireNonNull(parsed.entryPath(), "entryPath")
         );
     }
@@ -218,14 +218,14 @@ public final class DMGArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns `false` after verifying that the DMG entry exists.
     @Override
     public boolean isHidden(Path path) throws IOException {
-        readFileSystem(path).checkAccess(path);
+        readFileSystem(path).checkAccess(ArkivoFileSystemProviderSupport.resolveReadPath(path));
         return false;
     }
 
     /// Returns the HFS Plus file store for a DMG path.
     @Override
     public FileStore getFileStore(Path path) throws IOException {
-        return readFileSystem(path).fileStore(path);
+        return readFileSystem(path).fileStore(ArkivoFileSystemProviderSupport.resolveReadPath(path));
     }
 
     /// Checks read-only access to a DMG entry.

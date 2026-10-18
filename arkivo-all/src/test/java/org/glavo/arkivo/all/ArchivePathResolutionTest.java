@@ -22,6 +22,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
 import java.nio.file.AccessDeniedException;
@@ -68,6 +70,90 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies component traversal and symbolic-link policies in read-only and update archive sessions.
 @NotNullByDefault
 final class ArchivePathResolutionTest {
+    /// Malformed target bytes cannot redirect reads or updates to a different name containing replacement characters.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "7z", "zip"})
+    void rejectsMalformedSymbolicLinkTargets(String format, @TempDir Path directory) throws IOException {
+        List<byte[]> targets = List.of(new byte[]{(byte) 0xff}, new byte[]{(byte) 0xe2, (byte) 0x82},
+                new byte[]{(byte) 0xc0, (byte) 0xaf});
+        for (int i = 0; i < targets.size(); i++) {
+            Path archive = directory.resolve("invalid-" + i + "." + format);
+            createEncodedLinkArchive(format, archive, targets.get(i));
+            for (boolean update : new boolean[]{false, true}) {
+                try (var fs = update ? ArkivoFormats.updateFileSystem(format, archive)
+                        : ArkivoFormats.openFileSystem(format, archive)) {
+                    Path link = fs.getPath("link");
+                    assertTrue(Files.readAttributes(link, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).isSymbolicLink());
+                    assertThrows(CharacterCodingException.class, () -> Files.readSymbolicLink(link));
+                    assertThrows(CharacterCodingException.class, () -> Files.readString(link));
+                    if (update) {
+                        assertThrows(CharacterCodingException.class, () -> Files.writeString(link, "wrong"));
+                        // Force a rewrite to verify that raw malformed target bytes are retained, not silently repaired.
+                        Files.writeString(fs.getPath("unrelated"), "new");
+                    }
+                    assertEquals("original", Files.readString(fs.getPath("\ufffd")));
+                    assertEquals("original", Files.readString(fs.getPath("\ufffd\ufffd")));
+                }
+            }
+            try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+                assertThrows(CharacterCodingException.class, () -> Files.readSymbolicLink(fs.getPath("link")));
+                assertEquals("original", Files.readString(fs.getPath("\ufffd")));
+                assertEquals("original", Files.readString(fs.getPath("\ufffd\ufffd")));
+                assertEquals("new", Files.readString(fs.getPath("unrelated")));
+            }
+        }
+    }
+
+    /// A replacement character encoded as valid UTF-8 remains an ordinary path component.
+    @ParameterizedTest
+    @ValueSource(strings = {"ar", "7z", "zip"})
+    void acceptsEncodedReplacementCharacterInLinkTarget(String format, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("valid." + format);
+        createEncodedLinkArchive(format, archive, "\ufffd".getBytes(StandardCharsets.UTF_8));
+        try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+            assertEquals("\ufffd", Files.readSymbolicLink(fs.getPath("link")).toString());
+            assertEquals("original", Files.readString(fs.getPath("link")));
+        }
+        try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+            Files.writeString(fs.getPath("link"), "updated");
+        }
+        try (var fs = ArkivoFormats.openFileSystem(format, archive)) {
+            assertEquals("updated", Files.readString(fs.getPath("\ufffd")));
+        }
+    }
+
+    /// Creates raw link content and then applies the format's Unix symbolic-link mode.
+    private static void createEncodedLinkArchive(String format, Path archive, byte[] target) throws IOException {
+        try (var fs = ArkivoFormats.createFileSystem(format, archive)) {
+            Files.write(fs.getPath("link"), target);
+            Files.writeString(fs.getPath("\ufffd"), "original");
+            Files.writeString(fs.getPath("\ufffd\ufffd"), "original");
+        }
+        if (format.equals("7z")) {
+            try (var fs = ArkivoFormats.updateFileSystem(format, archive)) {
+                Files.setAttribute(fs.getPath("link"), "7z:unixMode", 0120777, LinkOption.NOFOLLOW_LINKS);
+            }
+        } else {
+            byte[] bytes = Files.readAllBytes(archive);
+            if (format.equals("ar")) {
+                System.arraycopy("120777  ".getBytes(StandardCharsets.US_ASCII), 0, bytes, 48, 8);
+            } else {
+                var buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+                boolean patched = false;
+                for (int offset = 0; offset + 50 <= bytes.length; offset++) {
+                    if (buffer.getInt(offset) == 0x02014b50 && buffer.getShort(offset + 28) == 4
+                            && buffer.getInt(offset + 46) == 0x6b6e696c) {
+                        buffer.putShort(offset + 4, (short) ((3 << 8) | 20));
+                        buffer.putInt(offset + 38, 0120777 << 16);
+                        patched = true;
+                    }
+                }
+                assertTrue(patched);
+            }
+            Files.write(archive, bytes);
+        }
+    }
+
     /// Checks NIO access predicates in forward-only, read-only, and update sessions.
     @ParameterizedTest
     @ValueSource(strings = {"ar", "tar", "7z", "zip"})

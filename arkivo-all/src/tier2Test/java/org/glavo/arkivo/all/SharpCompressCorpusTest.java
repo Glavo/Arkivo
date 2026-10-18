@@ -5,9 +5,11 @@ package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.archive.zip.ZipMethod;
@@ -16,6 +18,7 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -87,20 +90,38 @@ final class SharpCompressCorpusTest {
     @ParameterizedTest(name = "{0}")
     @MethodSource("streamingArchives")
     void readsOriginalFilesThroughStreamingReader(String name) throws IOException {
-        Set<String> seen = new HashSet<>();
         try (var reader = ArkivoFormats.openStreamingReader(archive(name), options(name))) {
-            while (reader.next()) {
-                var attributes = reader.readAttributes();
-                if (attributes.isDirectory()) {
-                    continue;
-                }
-                assertTrue(attributes.isRegularFile(), attributes.path());
-                String extension = extension(attributes.path());
-                assertTrue(seen.add(extension), attributes.path());
-                try (var input = reader.openInputStream()) {
-                    assertArrayEquals(original(extension), input.readAllBytes(), attributes.path());
-                    assertEquals(-1, input.read());
-                }
+            assertOriginalFiles(reader);
+        }
+    }
+
+    /// Reads independently produced RAR 1.5 and 2.x archives with a finite work-array budget.
+    @ParameterizedTest
+    @ValueSource(strings = {"Rar15.rar", "Rar2.rar"})
+    void readsLegacyRarWithMemoryLimit(String name) throws IOException {
+        var options = options(name).withLimits(ArchiveReadLimits.builder().maximumDecoderMemorySize(8 << 20).build());
+        try (var fileSystem = ArkivoFormats.openFileSystem(archive(name), options)) {
+            assertOriginalFiles(fileSystem);
+        }
+        try (var reader = ArkivoFormats.openStreamingReader(archive(name), options)) {
+            assertOriginalFiles(reader);
+        }
+    }
+
+    /// Checks sequential bodies against the three independent upstream originals.
+    private static void assertOriginalFiles(ArkivoStreamingReader reader) throws IOException {
+        Set<String> seen = new HashSet<>();
+        while (reader.next()) {
+            var attributes = reader.readAttributes();
+            if (attributes.isDirectory()) {
+                continue;
+            }
+            assertTrue(attributes.isRegularFile(), attributes.path());
+            String extension = extension(attributes.path());
+            assertTrue(seen.add(extension), attributes.path());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(original(extension), input.readAllBytes(), attributes.path());
+                assertEquals(-1, input.read());
             }
         }
         assertEquals(Set.of("exe", "jpg", "txt"), seen);

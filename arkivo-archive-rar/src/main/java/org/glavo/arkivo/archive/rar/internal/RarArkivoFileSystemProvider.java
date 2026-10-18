@@ -86,7 +86,7 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
-        return fileSystems.open(parsedUri.archiveUri(), closeAction -> RarArkivoFileSystemImpl.open(
+        return fileSystems.open(parsedUri.archivePath(), closeAction -> RarArkivoFileSystemImpl.open(
                 this,
                 parsedUri.archivePath(),
                 parsedUri.archiveUri(),
@@ -135,14 +135,14 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns an open RAR archive file system for a provider URI.
     @Override
     public FileSystem getFileSystem(URI uri) {
-        return fileSystems.require(parseUri(uri, false).archiveUri());
+        return fileSystems.require(parseUri(uri, false).archivePath());
     }
 
     /// Returns a path inside an open RAR archive file system.
     @Override
     public Path getPath(URI uri) {
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, true);
-        return fileSystems.require(parsedUri.archiveUri()).getPath(
+        return fileSystems.require(parsedUri.archivePath()).getPath(
                 Objects.requireNonNull(parsedUri.entryPath(), "entryPath")
         );
     }
@@ -223,14 +223,14 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns whether a RAR archive path is hidden.
     @Override
     public boolean isHidden(Path path) throws IOException {
-        readFileSystem(path).checkAccess(path);
+        readFileSystem(path).checkAccess(ArkivoFileSystemProviderSupport.resolveReadPath(path));
         return false;
     }
 
     /// Returns the file store for a RAR archive path.
     @Override
     public FileStore getFileStore(Path path) throws IOException {
-        return readFileSystem(path).fileStore(path);
+        return readFileSystem(path).fileStore(ArkivoFileSystemProviderSupport.resolveReadPath(path));
     }
 
     /// Checks access to a RAR archive path.

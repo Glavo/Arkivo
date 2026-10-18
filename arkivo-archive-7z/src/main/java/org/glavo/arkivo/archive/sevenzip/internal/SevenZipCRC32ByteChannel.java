@@ -3,7 +3,9 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -12,11 +14,21 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.CRC32;
 
 /// Validates CRC-32 while a read-only 7z entry channel is consumed sequentially.
 @NotNullByDefault
-final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
+final class SevenZipCRC32ByteChannel implements SeekableByteChannel, ForceCloseable {
+    /// Protects the cursor and sequential checksum state, independently of physical closure.
+    private final ReentrantLock operationLock = new ReentrantLock();
+
+    /// Serializes physical cleanup without waiting for checksum draining.
+    private final Object closeLock = new Object();
+
+    /// Whether cancellation has permanently disabled close-time validation.
+    private volatile boolean aborted;
+
     /// The wrapped entry channel.
     private final SeekableByteChannel channel;
 
@@ -42,10 +54,10 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
     private boolean crc32Validated;
 
     /// Whether this channel has been closed.
-    private boolean closed;
+    private volatile boolean closed;
 
     /// Whether the wrapped entry channel has been closed.
-    private boolean channelClosed;
+    private volatile boolean channelClosed;
 
     /// Creates a validating channel around a read-only entry channel.
     SevenZipCRC32ByteChannel(SeekableByteChannel channel, long size, long expectedCrc32) {
@@ -72,9 +84,14 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
     /// failure is propagated unchanged; validation continues on subsequent reads or close-time draining.
     @Override
     public int read(ByteBuffer destination) throws IOException {
-        ensureOpen();
-        Objects.requireNonNull(destination, "destination");
-        return readUnchecked(destination);
+        operationLock.lock();
+        try {
+            ensureOpen();
+            Objects.requireNonNull(destination, "destination");
+            return readUnchecked(destination);
+        } finally {
+            operationLock.unlock();
+        }
     }
 
     /// Reads bytes without checking the wrapper open state for close-time draining.
@@ -98,7 +115,7 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
                 }
             }
         }
-        if (validationActive) {
+        if (validationActive && !aborted) {
             if (read > 0) {
                 if (validationPosition == size) {
                     validateCrc32();
@@ -126,19 +143,29 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
     /// Returns the current channel position.
     @Override
     public long position() throws IOException {
-        ensureOpen();
-        return channel.position();
+        operationLock.lock();
+        try {
+            ensureOpen();
+            return channel.position();
+        } finally {
+            operationLock.unlock();
+        }
     }
 
     /// Sets the current channel position.
     @Override
     public SeekableByteChannel position(long newPosition) throws IOException {
-        ensureOpen();
-        channel.position(newPosition);
-        if (newPosition != validationPosition) {
-            validationActive = false;
+        operationLock.lock();
+        try {
+            ensureOpen();
+            channel.position(newPosition);
+            if (newPosition != validationPosition) {
+                validationActive = false;
+            }
+            return this;
+        } finally {
+            operationLock.unlock();
         }
-        return this;
     }
 
     /// Returns the channel size.
@@ -164,37 +191,42 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
         return !closed && channel.isOpen();
     }
 
-    /// Closes this channel after draining sequential reads when validation is still active.
+    /// Drains and validates an idle channel; if an operation is active, cancels it without further reads.
+    /// Failed physical cleanup is retryable and never restarts draining.
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         if (closed && channelClosed) {
             return;
         }
 
-        Throwable failure = null;
+        @Nullable Throwable failure = null;
         if (!closed) {
             closed = true;
-            try {
-                if (validationActive && !crc32Validated && channel.isOpen() && channel.position() == validationPosition) {
-                    drainForValidation();
+            if (!operationLock.isHeldByCurrentThread() && operationLock.tryLock()) {
+                try {
+                    if (!aborted && validationActive && !crc32Validated && channel.isOpen()
+                            && channel.position() == validationPosition) {
+                        drainForValidation();
+                    }
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                } finally {
+                    operationLock.unlock();
                 }
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
+            } else {
+                aborted = true;
             }
         }
 
-        if (!channelClosed) {
-            try {
-                channel.close();
-                channelClosed = true;
-            } catch (IOException | RuntimeException | Error exception) {
-                if (failure != null) {
-                    if (failure != exception) {
-                        failure.addSuppressed(exception);
-                    }
-                } else {
-                    failure = exception;
+        try {
+            closeChannel();
+        } catch (IOException | RuntimeException | Error exception) {
+            if (failure != null) {
+                if (failure != exception) {
+                    failure.addSuppressed(exception);
                 }
+            } else {
+                failure = exception;
             }
         }
 
@@ -209,17 +241,36 @@ final class SevenZipCRC32ByteChannel implements SeekableByteChannel {
         }
     }
 
+    /// Closes the source immediately, including during a graceful close that is draining input.
+    @Override
+    public void forceClose() throws IOException {
+        aborted = true;
+        closed = true;
+        closeChannel();
+    }
+
+    /// Closes the owned channel once, retaining failed cleanup for retry.
+    private void closeChannel() throws IOException {
+        synchronized (closeLock) {
+            if (!channelClosed) {
+                if (aborted) ForceCloseable.forceClose(channel);
+                else channel.close();
+                channelClosed = true;
+            }
+        }
+    }
+
     /// Drains remaining sequential bytes so the CRC-32 can be validated on close.
     private void drainForValidation() throws IOException {
         ByteBuffer discard = ByteBuffer.allocate(8192);
-        while (validationPosition < size) {
+        while (!aborted && validationPosition < size) {
             discard.clear();
             int read = readUnchecked(discard);
             if (read < 0) {
                 throw new EOFException("Unexpected end of 7z entry body");
             }
         }
-        validateCrc32();
+        if (!aborted) validateCrc32();
     }
 
     /// Validates the CRC-32 value after all entry bytes have been consumed.

@@ -561,8 +561,8 @@ public final class ArkivoFileSystemProviderSupport {
     ///
     /// Exclamation marks in the source URI are escaped to distinguish them from the outer entry delimiter.
     /// An opaque source URI additionally escapes its existing percent signs; that quoting layer is removed before
-    /// the source URI is passed to its provider. The resolved source path's ASCII URI supplies the registry key,
-    /// so equivalent Unicode and percent-escaped spellings identify the same registered file system.
+    /// the source URI is passed to its provider. Equivalent Unicode and percent-escaped spellings resolve to the
+    /// same source path. Registry identity follows the source provider's path equality rules.
     /// Source path components are retained without lexical normalization or symbolic-link resolution.
     ///
     /// @param uri provider URI to parse
@@ -662,16 +662,17 @@ public final class ArkivoFileSystemProviderSupport {
         }
     }
 
-    /// Opens a file system that unregisters itself by invoking the supplied close action.
+    /// Opens a file system that releases its URI reservation by invoking the supplied close action.
     ///
     /// @param <F> concrete file system type
     @FunctionalInterface
     @NotNullByDefault
     public interface RegisteredFileSystemFactory<F extends FileSystem> {
-        /// Opens one candidate file system.
+        /// Opens a file system while its URI is reserved against other open attempts.
         ///
-        /// @param closeAction action the file system must invoke when it closes
-        /// @return a newly opened candidate file system
+        /// @param closeAction action the file system must invoke after output publication and any pending rollback
+        ///                    have finished; setting its open state to false does not release the reservation
+        /// @return a newly opened file system
         /// @throws IOException if the archive file system cannot be opened
         F open(Runnable closeAction) throws IOException;
     }
@@ -681,74 +682,56 @@ public final class ArkivoFileSystemProviderSupport {
     /// @param <F> concrete file system type
     @NotNullByDefault
     public static final class Registry<F extends FileSystem> {
-        /// File systems indexed by the source provider's nested archive URI spelling.
-        private final ConcurrentHashMap<URI, F> fileSystems = new ConcurrentHashMap<>();
+        /// Source-path reservations whose reference is null until the factory publishes its file system.
+        private final ConcurrentHashMap<Path, AtomicReference<@Nullable F>> fileSystems = new ConcurrentHashMap<>();
 
         /// Creates an empty registry.
         public Registry() {
         }
 
-        /// Opens and atomically registers a file system for an archive URI.
+        /// Reserves an archive source path, opens its file system, and publishes the completed instance.
         ///
-        /// The factory may be called only after stale registrations have been removed. A candidate that loses a
-        /// concurrent publication race is closed before this method retries or reports the winning open instance.
+        /// The reservation is acquired before invoking the factory, which may modify the backing archive. Attempts to
+        /// open an equal source path fail while its factory is running or until its close action releases the reservation.
+        /// Factories for distinct source paths can run concurrently. A factory failure releases only its own reservation.
+        /// Source paths are compared using their provider's equality rules, without calling `normalize` or `toRealPath`.
         ///
-        /// @param archiveUri the nested archive URI used as the registry key
-        /// @param factory the callback that opens a candidate honoring the supplied unregister action
+        /// @param archivePath the resolved source path identifying the registration
+        /// @param factory the callback that opens a file system honoring the supplied unregister action
         /// @return the newly opened and registered file system
-        /// @throws IOException if a candidate cannot be opened or a losing candidate cannot be closed
-        /// @throws FileSystemAlreadyExistsException if an open file system is already registered
-        public F open(URI archiveUri, RegisteredFileSystemFactory<F> factory) throws IOException {
-            Objects.requireNonNull(archiveUri, "archiveUri");
+        /// @throws IOException if the file system cannot be opened
+        /// @throws FileSystemAlreadyExistsException if the source path is already reserved
+        public F open(Path archivePath, RegisteredFileSystemFactory<F> factory) throws IOException {
+            Objects.requireNonNull(archivePath, "archivePath");
             Objects.requireNonNull(factory, "factory");
-            while (true) {
-                F existing = fileSystems.get(archiveUri);
-                if (existing != null) {
-                    if (existing.isOpen()) {
-                        throw new FileSystemAlreadyExistsException(archiveUri.toString());
-                    }
-                    fileSystems.remove(archiveUri, existing);
-                    continue;
-                }
-
-                AtomicReference<@Nullable F> candidateReference = new AtomicReference<>();
-                Runnable closeAction = () -> {
-                    @Nullable F candidate = candidateReference.get();
-                    if (candidate != null) {
-                        fileSystems.remove(archiveUri, candidate);
-                    }
-                };
-                F candidate = factory.open(closeAction);
-                candidateReference.set(candidate);
-
-                existing = fileSystems.putIfAbsent(archiveUri, candidate);
-                if (existing == null) {
-                    return candidate;
-                }
-
-                candidate.close();
-                if (existing.isOpen()) {
-                    throw new FileSystemAlreadyExistsException(archiveUri.toString());
-                }
-                fileSystems.remove(archiveUri, existing);
+            AtomicReference<@Nullable F> reservation = new AtomicReference<>();
+            if (fileSystems.putIfAbsent(archivePath, reservation) != null) {
+                throw new FileSystemAlreadyExistsException(archivePath.toString());
+            }
+            try {
+                F fileSystem = Objects.requireNonNull(factory.open(
+                        () -> fileSystems.remove(archivePath, reservation)), "opened file system");
+                reservation.set(fileSystem);
+                return fileSystem;
+            } catch (IOException | RuntimeException | Error exception) {
+                fileSystems.remove(archivePath, reservation);
+                throw exception;
             }
         }
 
-        /// Returns the open file system registered for an archive URI.
+        /// Returns the open file system registered for an archive source path.
         ///
-        /// @param archiveUri the nested archive URI used as the registry key
+        /// @param archivePath the resolved source path identifying the registration
         /// @return the registered open file system
         /// @throws FileSystemNotFoundException if no open file system is registered
-        public F require(URI archiveUri) {
-            Objects.requireNonNull(archiveUri, "archiveUri");
-            F fileSystem = fileSystems.get(archiveUri);
+        public F require(Path archivePath) {
+            Objects.requireNonNull(archivePath, "archivePath");
+            @Nullable AtomicReference<@Nullable F> reservation = fileSystems.get(archivePath);
+            @Nullable F fileSystem = reservation == null ? null : reservation.get();
             if (fileSystem != null && fileSystem.isOpen()) {
                 return fileSystem;
             }
-            if (fileSystem != null) {
-                fileSystems.remove(archiveUri, fileSystem);
-            }
-            throw new FileSystemNotFoundException(archiveUri.toString());
+            throw new FileSystemNotFoundException(archivePath.toString());
         }
     }
 }

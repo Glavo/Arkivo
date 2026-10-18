@@ -24,7 +24,8 @@ import java.util.Objects;
 /// The automatic partition selection chooses the first direct HFS Plus or HFSX partition. Embedded HFS wrappers, APFS,
 /// FileVault, HFS hard-link resolution, native HFS case-folded lookup, extended attributes, resource-fork exposure, and
 /// `decmpfs` compressed files are not supported. Catalog paths therefore use their exact stored spelling and
-/// Unicode normalization.
+/// Unicode normalization. Malformed UTF-16 catalog names cause opening to fail with
+/// [java.nio.charset.CharacterCodingException]; invalid code units are not replaced.
 @NotNullByDefault
 public abstract sealed class DMGArkivoFileSystem extends ArkivoFileSystem permits DMGArkivoFileSystemImpl {
     /// Creates a DMG file system base with the selected common thread-safety strategy.

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -22,7 +23,16 @@ import java.util.Set;
 
 /// Replays an owned prefix before continuing from a readable channel.
 @NotNullByDefault
-public class PrefixReplayReadableByteChannel implements ReadableByteChannel, ForceCloseableChannel {
+public class PrefixReplayReadableByteChannel implements ReadableByteChannel, ForceCloseable {
+    /// Serializes prefix and source reads independently of the lifecycle monitor.
+    protected final Object readLock = new Object();
+
+    /// Serializes ordinary close attempts without preventing forced source cancellation.
+    private final Object closeLock = new Object();
+
+    /// Serializes forced cleanup independently of an ordinary close that may be draining input.
+    private final Object forceCloseLock = new Object();
+
     /// Bytes consumed while probing the backing channel.
     private final @UnmodifiableView ByteBuffer prefix;
 
@@ -47,7 +57,8 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
     /// Protects exception bookkeeping independently of source closure and interruptible read state.
     private final Object failureLock = new Object();
 
-    /// Exception identities already reported before source cleanup succeeds, guarded by the failure lock.
+    /// Delivered exception identities, retained across cancellation while graceful cleanup may still be in flight.
+    /// Guarded by the failure lock.
     private @Nullable Set<Throwable> reportedFailures;
 
     /// Creates a prefix-replaying channel that preserves source interruption support.
@@ -88,6 +99,13 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
     /// Reads replay bytes before reading from the backing source.
     @Override
     public int read(ByteBuffer target) throws IOException {
+        synchronized (readLock) {
+            return readLocked(target);
+        }
+    }
+
+    /// Reads while holding the read lock.
+    private int readLocked(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
         if (target.isReadOnly()) {
@@ -123,18 +141,21 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
     /// Failed source cleanup can be retried. An exception already reported by a read or close is wrapped in a new
     /// `IOException` if it recurs during cleanup, so automatic resource closure preserves the primary exception.
     @Override
-    public synchronized void close() throws IOException {
-        if (open) {
-            open = false;
-            if (ownership == ResourceOwnership.OWNED) {
-                sourceCloseRequired = true;
+    public void close() throws IOException {
+        synchronized (closeLock) {
+            synchronized (this) {
+                if (open) {
+                    open = false;
+                    if (ownership == ResourceOwnership.OWNED) {
+                        sourceCloseRequired = true;
+                    }
+                    if (activeReads > 0) {
+                        sourceCloseRequired = true;
+                        forceSourceCloseRequired = true;
+                    }
+                }
+                if (!sourceCloseRequired) return;
             }
-            if (activeReads > 0) {
-                sourceCloseRequired = true;
-                forceSourceCloseRequired = true;
-            }
-        }
-        if (sourceCloseRequired) {
             closeSource();
         }
     }
@@ -143,25 +164,38 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
     ///
     /// @throws IOException if the source cannot be closed
     @Override
-    public synchronized void forceClose() throws IOException {
-        open = false;
-        sourceCloseRequired = true;
-        forceSourceCloseRequired = true;
-        closeSource();
+    public void forceClose() throws IOException {
+        synchronized (forceCloseLock) {
+            synchronized (this) {
+                open = false;
+                sourceCloseRequired = true;
+                forceSourceCloseRequired = true;
+            }
+            closeSource();
+        }
     }
 
-    /// Performs pending source cleanup while the caller holds the lifecycle monitor.
+    /// Performs source cleanup outside the lifecycle monitor, retaining any concurrent escalation to forced close.
     private void closeSource() throws IOException {
+        boolean force;
+        synchronized (this) {
+            force = forceSourceCloseRequired;
+        }
         try {
-            if (forceSourceCloseRequired) {
-                ForceCloseableChannel.forceClose(source);
+            if (force) {
+                ForceCloseable.forceClose(source);
             } else {
                 source.close();
             }
-            sourceCloseRequired = false;
-            forceSourceCloseRequired = false;
-            synchronized (failureLock) {
-                reportedFailures = null;
+            synchronized (this) {
+                if (force || !forceSourceCloseRequired) {
+                    sourceCloseRequired = false;
+                    if (!forceSourceCloseRequired) {
+                        synchronized (failureLock) {
+                            reportedFailures = null;
+                        }
+                    }
+                }
             }
         } catch (IOException | RuntimeException | Error failure) {
             if (!recordFailure(failure)) {
@@ -173,7 +207,7 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
         }
     }
 
-    /// Records an exception without waiting for the lifecycle monitor held during source closure.
+    /// Records an exception independently of source closure and lifecycle state transitions.
     private boolean recordFailure(Throwable failure) {
         synchronized (failureLock) {
             if (reportedFailures == null) {
@@ -261,6 +295,13 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
         @Override
         public int read(ByteBuffer target) throws IOException {
             Objects.requireNonNull(target, "target");
+            synchronized (readLock) {
+                return readInterruptibly(target);
+            }
+        }
+
+        /// Registers and completes one read after acquiring exclusive read access.
+        private int readInterruptibly(ByteBuffer target) throws IOException {
             beginInterruptibleRead();
             try {
                 int read;

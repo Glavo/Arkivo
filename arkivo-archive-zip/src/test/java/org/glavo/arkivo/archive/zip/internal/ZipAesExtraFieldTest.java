@@ -5,10 +5,15 @@ package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -17,6 +22,42 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests WinZip AES extra field parsing.
 @NotNullByDefault
 public final class ZipAesExtraFieldTest {
+    /// Verifies the wire representation and derived encryption parameters for each AES strength.
+    @ParameterizedTest
+    @CsvSource({
+            "WINZIP_AES_128, 1, 16, 8",
+            "WINZIP_AES_192, 2, 24, 12",
+            "WINZIP_AES_256, 3, 32, 16"
+    })
+    public void roundTripsEncryptionParameters(ZipEncryption encryption, int strength, int keySize, int saltSize)
+            throws IOException {
+        ZipAesExtraField original = ZipAesExtraField.forEncryption(encryption, ZipConstants.DEFLATED_METHOD);
+        byte[] encoded = original.appendTo(new byte[0]);
+        assertArrayEquals(aesExtraField(1, strength, ZipConstants.DEFLATED_METHOD), encoded);
+
+        for (int version : new int[]{1, 2}) {
+            @Nullable ZipAesExtraField parsed = ZipAesExtraField.readValidated(
+                    aesExtraField(version, strength, ZipConstants.DEFLATED_METHOD));
+            assertNotNull(parsed);
+            assertEquals(encryption, parsed.encryption());
+            assertEquals(keySize, parsed.keySize());
+            assertEquals(saltSize, parsed.saltSize());
+            assertEquals(saltSize + 2 + 10, parsed.overheadSize());
+            assertEquals(version == 1, parsed.usesCrc32());
+            assertEquals(ZipConstants.DEFLATED_METHOD, parsed.compressionMethod());
+            assertEquals(version == 1, original.metadataMatches(parsed));
+            assertArrayEquals(aesExtraField(version, strength, ZipConstants.DEFLATED_METHOD),
+                    parsed.appendTo(new byte[0]));
+        }
+    }
+
+    /// Verifies that unsupported strength codes cannot create parsed AES metadata.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 4, 255})
+    public void rejectsUnsupportedStrength(int strength) throws IOException {
+        assertNull(ZipAesExtraField.readValidated(aesExtraField(1, strength, ZipConstants.DEFLATED_METHOD)));
+    }
+
     /// Verifies that the validating parser rejects malformed extra field record lengths.
     @Test
     public void validatingReadRejectsMalformedExtraFieldLength() {

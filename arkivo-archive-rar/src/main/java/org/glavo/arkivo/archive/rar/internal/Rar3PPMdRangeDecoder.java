@@ -39,6 +39,11 @@ final class Rar3PPMdRangeDecoder implements PPMdRangeDecoder {
         for (int index = 0; index < Integer.BYTES; index++) code = code << 8 | input.readBits(8);
     }
 
+    /// Releases the current entry's input without closing it or changing the separately owned PPMd model.
+    void detach() {
+        input = null;
+    }
+
     /// Returns the cumulative-frequency count and scales the current range.
     @Override
     public int currentCount(int scale) throws IOException {

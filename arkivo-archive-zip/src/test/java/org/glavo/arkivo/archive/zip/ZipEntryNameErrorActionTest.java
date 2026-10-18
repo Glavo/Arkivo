@@ -252,13 +252,15 @@ final class ZipEntryNameErrorActionTest {
         clearUtf8Flags(bytes);
         Path archive = directory.resolve("unsafe.zip");
         Files.write(archive, bytes);
-        var options = ZipArchiveOptions.READ_DEFAULTS.withEntryNameErrorAction(action)
-                .withLegacyMetadataDecoder(input -> "../escape");
-        try (var fs = ZipArkivoFileSystem.open(archive, options)) {
-            assertThrows(IOException.class, () -> list(fs));
-        }
-        try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes), options)) {
-            assertThrows(IOException.class, reader::next);
+        for (String path : new String[]{"../escape", "./C:/escape", ".//C:escape", ".\\./C:\\escape"}) {
+            var options = ZipArchiveOptions.READ_DEFAULTS.withEntryNameErrorAction(action)
+                    .withLegacyMetadataDecoder(input -> path);
+            try (var fs = ZipArkivoFileSystem.open(archive, options)) {
+                assertThrows(IOException.class, () -> list(fs));
+            }
+            try (var reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(bytes), options)) {
+                assertThrows(IOException.class, reader::next);
+            }
         }
     }
 

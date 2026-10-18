@@ -15,8 +15,6 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
-import java.nio.file.attribute.UserPrincipalLookupService;
-import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.util.Set;
 
 import static java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE;
@@ -38,7 +36,7 @@ final class ZipPosixSupport {
     static final GroupPrincipal DEFAULT_GROUP = new NamedGroupPrincipal("group");
 
     /// The user principal lookup service for synthesized ZIP principals.
-    private static final FixedUserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
+    static final FixedUserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
             new FixedUserPrincipalLookupService(DEFAULT_OWNER, DEFAULT_GROUP);
 
     /// The ZIP version made by value used for Unix external attributes.
@@ -61,11 +59,6 @@ final class ZipPosixSupport {
         return directory ? DEFAULT_DIRECTORY_PERMISSIONS : DEFAULT_FILE_PERMISSIONS;
     }
 
-    /// Returns the lookup service for synthesized ZIP owner and group principals.
-    static UserPrincipalLookupService userPrincipalLookupService() {
-        return USER_PRINCIPAL_LOOKUP_SERVICE;
-    }
-
     /// Returns the owner principal represented by a numeric Unix user identifier.
     static UserPrincipal owner(long userId) {
         return userId != ZipArkivoEntryAttributes.UNKNOWN_UNIX_ID
@@ -80,24 +73,15 @@ final class ZipPosixSupport {
                 : DEFAULT_GROUP;
     }
 
-    /// Requires the given owner principal to match the synthesized ZIP owner.
-    static void requireDefaultOwner(UserPrincipal owner) throws UserPrincipalNotFoundException {
-        USER_PRINCIPAL_LOOKUP_SERVICE.requireUser(owner);
-    }
-
-    /// Requires the given group principal to match the synthesized ZIP group.
-    static void requireDefaultGroup(GroupPrincipal group) throws UserPrincipalNotFoundException {
-        USER_PRINCIPAL_LOOKUP_SERVICE.requireGroup(group);
-    }
-
     /// Returns decoded POSIX permissions from ZIP metadata, or synthesized permissions when none are present.
     static @Unmodifiable Set<PosixFilePermission> permissions(
             int versionMadeBy,
             long externalAttributes,
             boolean directory
     ) {
-        Set<PosixFilePermission> permissions = permissionsFromExternalAttributes(versionMadeBy, externalAttributes);
-        return permissions != null ? permissions : defaultPermissions(directory);
+        int hostSystem = (versionMadeBy >>> 8) & 0xff;
+        int mode = (int) ((externalAttributes >>> 16) & 0xffff);
+        return hostSystem != 3 || mode == 0 ? defaultPermissions(directory) : PosixModes.permissions(mode);
     }
 
     /// Returns whether ZIP external file attributes describe a Unix symbolic link.
@@ -105,19 +89,6 @@ final class ZipPosixSupport {
         int hostSystem = (versionMadeBy >>> 8) & 0xff;
         int mode = (int) ((externalAttributes >>> 16) & 0xffff);
         return hostSystem == 3 && PosixModes.isSymbolicLink(mode);
-    }
-
-    /// Decodes POSIX permissions from ZIP external file attributes.
-    private static @Nullable @Unmodifiable Set<PosixFilePermission> permissionsFromExternalAttributes(
-            int versionMadeBy,
-            long externalAttributes
-    ) {
-        int hostSystem = (versionMadeBy >>> 8) & 0xff;
-        int mode = (int) ((externalAttributes >>> 16) & 0xffff);
-        if (hostSystem != 3 || mode == 0) {
-            return null;
-        }
-        return PosixModes.permissions(mode);
     }
 
     /// Encodes POSIX permissions as ZIP external file attributes.

@@ -158,6 +158,12 @@ final class ZipEntryNameValidationTest {
     @MethodSource("normalizedIndexedNames")
     void normalizesIndexedPathComponents(String name, String key) throws IOException {
         byte[] raw = name.getBytes(StandardCharsets.UTF_8);
+        try (var reader = ZipArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive(UTF8_FLAG, List.of(raw))))) {
+            assertTrue(reader.next());
+            assertEquals(name.replace('\\', '/'), reader.readAttributes().path());
+            assertFalse(reader.next());
+        }
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                 new ReadOnlyByteArrayChannel(archive(UTF8_FLAG, List.of(raw))))) {
             var path = fileSystem.getPath("/" + key);
@@ -174,6 +180,8 @@ final class ZipEntryNameValidationTest {
                 Arguments.of("plain.txt", "plain.txt"),
                 Arguments.of("a/b/c.txt", "a/b/c.txt"),
                 Arguments.of("./a", "a"),
+                Arguments.of("./ab:cd", "ab:cd"),
+                Arguments.of("./dir/C:value", "dir/C:value"),
                 Arguments.of(".\\a", "a"),
                 Arguments.of("a/./b", "a/b"),
                 Arguments.of("a//b", "a/b"),
@@ -221,6 +229,11 @@ final class ZipEntryNameValidationTest {
                         "ZIP entry path must not contain .."),
                 Arguments.of("absolute", bytes("/evil.txt"), 0, "ZIP entry path must be relative"),
                 Arguments.of("drive root", bytes("C:/evil.txt"), 0, "ZIP entry path must be relative"),
+                Arguments.of("drive root after dot", bytes("./C:/evil.txt"), 0, "ZIP entry path must be relative"),
+                Arguments.of("drive relative after empty component", bytes(".//C:evil.txt"), 0,
+                        "ZIP entry path must be relative"),
+                Arguments.of("drive root after mixed separators", bytes(".\\./C:\\evil.txt"), 0,
+                        "ZIP entry path must be relative"),
                 Arguments.of("backslash parent segment", bytes("..\\evil.txt"), 0,
                         "ZIP entry path must not contain .."),
                 Arguments.of("nested parent segment", bytes("safe/path/../evil.txt"), 0,
@@ -238,6 +251,9 @@ final class ZipEntryNameValidationTest {
                 Arguments.of("absolute", "/evil.txt", "must be relative"),
                 Arguments.of("backslash absolute", "\\evil.txt", "must be relative"),
                 Arguments.of("drive root", "C:/evil.txt", "must not contain drive roots"),
+                Arguments.of("drive root after dot", "./C:/evil.txt", "must not contain drive roots"),
+                Arguments.of("drive relative after empty component", ".//C:evil.txt", "must not contain drive roots"),
+                Arguments.of("drive root after mixed separators", ".\\./C:\\evil.txt", "must not contain drive roots"),
                 Arguments.of("backslash drive root", "C:\\evil.txt", "must not contain drive roots"),
                 Arguments.of("parent segment", "safe/../evil.txt", "must not contain ..")
         );

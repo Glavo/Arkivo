@@ -7,8 +7,12 @@ import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +22,7 @@ import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.createFragmentedHFSPl
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.createHFSPlusDisk;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.writeRawImage;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies rejection of malformed HFS Plus extent and B-tree metadata through the public DMG API.
@@ -26,6 +31,56 @@ final class HFSPlusValidationTest {
     /// The generated test directory.
     @TempDir
     Path temporaryDirectory;
+
+    /// Rejects malformed UTF-16 names instead of indexing a replacement-character path.
+    @ParameterizedTest
+    @ValueSource(ints = {0xd800, 0xdbff, 0xdc00, 0xdfff})
+    void rejectsMalformedCatalogNames(int codeUnit) throws IOException {
+        byte[] disk = createHFSPlusDisk();
+        int leaf = 5 * SECTOR_SIZE;
+        int file = leaf + Short.toUnsignedInt(ByteArrayAccess.readShortBigEndian(disk, leaf + SECTOR_SIZE - 4));
+        ByteArrayAccess.writeShortBigEndian(disk, file + 8, (short) codeUnit);
+        Path image = writeRawImage(temporaryDirectory.resolve("invalid-name.dmg"), disk);
+        assertThrows(CharacterCodingException.class, () -> {
+            try (var ignored = DMGArkivoFileSystem.open(image)) {
+                // Opening builds the catalog index.
+            }
+        });
+    }
+
+    /// Accepts explicitly encoded replacement characters and well-formed surrogate pairs without changing names.
+    @ParameterizedTest
+    @ValueSource(strings = {"\ufffdello.txt", "\ud83d\ude00llo.txt"})
+    void preservesValidUnicodeCatalogNames(String name) throws IOException {
+        byte[] disk = createHFSPlusDisk();
+        int leaf = 5 * SECTOR_SIZE;
+        int file = leaf + Short.toUnsignedInt(ByteArrayAccess.readShortBigEndian(disk, leaf + SECTOR_SIZE - 4));
+        byte[] encoded = name.getBytes(StandardCharsets.UTF_16BE);
+        assertEquals(18, encoded.length);
+        System.arraycopy(encoded, 0, disk, file + 8, encoded.length);
+        Path image = writeRawImage(temporaryDirectory.resolve("unicode-name.dmg"), disk);
+        try (var fileSystem = DMGArkivoFileSystem.open(image)) {
+            assertEquals("hello", Files.readString(fileSystem.getPath(name)));
+        }
+    }
+
+    /// Rejects header-node descriptors and record boundaries that contradict the fixed header-node layout.
+    @ParameterizedTest
+    @CsvSource({"9,256", "4,1", "10,0", "10,1", "10,2", "10,4", "510,16",
+            "508,15", "508,119", "508,121", "506,119", "506,247", "506,249",
+            "504,248", "504,503", "504,505"})
+    void rejectsMalformedHeaderRecordTables(int fieldOffset, int value) throws IOException {
+        for (int tree : new int[]{3 * SECTOR_SIZE, 4 * SECTOR_SIZE}) {
+            byte[] disk = createHFSPlusDisk();
+            ByteArrayAccess.writeShortBigEndian(disk, tree + fieldOffset, (short) value);
+            Path image = writeRawImage(temporaryDirectory.resolve("invalid-header-" + tree + ".dmg"), disk);
+            assertThrows(IOException.class, () -> {
+                try (var ignored = DMGArkivoFileSystem.open(image)) {
+                    // Both the extents and catalog tree headers must be validated.
+                }
+            });
+        }
+    }
 
     /// Resolves a descendant-first hierarchy without recursive Java calls.
     @Test

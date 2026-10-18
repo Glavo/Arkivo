@@ -3,23 +3,473 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies synthetic legacy RAR bit streams against Arkivo's native decoders.
 @NotNullByDefault
 public final class Rar4NativeDecoderTest {
+    /// Rolls back each construction stage without consuming another component's reservation.
+    @ParameterizedTest
+    @ValueSource(longs = {101_184, 101_376, 101_568, 101_760, 101_952})
+    void rollsBackRar3Construction(long required) throws IOException {
+        RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(17 + required - 1);
+        memory.reserve(17);
+        DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                () -> new Rar4Lz29Decoder(1 << 16, memory));
+        assertEquals(17 + required, failure.requiredMemorySize());
+        assertEquals(17, memory.used());
+        memory.release(17);
+    }
+
+    /// Enforces the LZ staging peak and retains only dictionary, PPMd fixed state, and live Huffman tables.
+    @ParameterizedTest
+    @ValueSource(longs = {233_031, 233_032})
+    void enforcesRar3LiteralMemory(long maximum) throws IOException {
+        RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(maximum);
+        Rar4Lz29Decoder decoder = new Rar4Lz29Decoder(1 << 16, memory);
+        assertEquals(101_952, memory.used());
+        try {
+            for (int attempt = 0; attempt < 2; attempt++) {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                if (maximum == 233_031) {
+                    DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                            () -> decoder.decode(new ByteArrayInputStream(rar3LiteralStream('A', true)), output, 1, false));
+                    assertEquals(233_032, failure.requiredMemorySize());
+                    assertEquals(0, output.size());
+                } else {
+                    decoder.decode(new ByteArrayInputStream(rar3LiteralStream('A', true)), output, 1, false);
+                    assertArrayEquals(new byte[]{'A'}, output.toByteArray());
+                }
+                assertEquals(101_960, memory.used());
+                decoder.invalidate();
+                assertEquals(101_952, memory.used());
+            }
+        } finally {
+            decoder.release();
+            decoder.release();
+        }
+        assertEquals(0, memory.used());
+    }
+
+    /// Charges both arenas during PPMd growth and retains capacity when a later block requests less memory.
+    @ParameterizedTest
+    @ValueSource(longs = {3_313_251, 3_313_252})
+    void enforcesRar3PpmGrowthPeak(long maximum) throws IOException {
+        byte[] small = {(byte) 0xa1, 0, 0x40, (byte) 0xfd, (byte) 0xc8, 0x3f, 0, 0};
+        byte[] large = small.clone();
+        large[1] = 1;
+        RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(maximum);
+        Rar4Lz29Decoder decoder = new Rar4Lz29Decoder(1 << 16, memory);
+        try {
+            decoder.decode(new ByteArrayInputStream(small), OutputStream.nullOutputStream(), 3, false);
+            assertEquals(1_150_548, memory.used());
+            if (maximum == 3_313_251) {
+                DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                        () -> decoder.decode(new ByteArrayInputStream(large), OutputStream.nullOutputStream(), 3, true));
+                assertEquals(3_313_252, failure.requiredMemorySize());
+                assertEquals(1_150_548, memory.used());
+            } else {
+                decoder.decode(new ByteArrayInputStream(large), OutputStream.nullOutputStream(), 3, true);
+                assertEquals(2_199_120, memory.used());
+            }
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            decoder.decode(new ByteArrayInputStream(small), output, 3, false);
+            assertArrayEquals(new byte[]{'A', 'A', 'A'}, output.toByteArray());
+            assertEquals(maximum == 3_313_251 ? 1_150_548 : 2_199_120, memory.used());
+        } finally {
+            decoder.release();
+        }
+        assertEquals(0, memory.used());
+    }
+
+    /// Applies one budget to RAR3 VM execution and recovers across failures and decoder-family switches.
+    @Test
+    void enforcesRar3FilterMemoryAndSessionCleanup() throws Exception {
+        Rar4Decoder.Session session = Rar4Decoder.newSession(1 << 16, 495_250);
+        var memoryField = Rar4Decoder.Session.class.getDeclaredField("memory");
+        memoryField.setAccessible(true);
+        RarDecoderMemoryBudget memory = (RarDecoderMemoryBudget) memoryField.get(session);
+        try {
+            for (int attempt = 0; attempt < 3; attempt++) {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                session.decode(new ByteArrayInputStream(rar3FilteredStream(5)), output, 29, 1 << 16, 3, false);
+                assertArrayEquals(new byte[]{'A', 'A', 'A'}, output.toByteArray());
+                session.decode(new ByteArrayInputStream(rar3LiteralStream('B', false)), output, 36, 1 << 16, 1, false);
+                session.decode(new ByteArrayInputStream(new byte[]{0x40}), output, 29, 1 << 16, 1, true);
+                assertArrayEquals(new byte[]{'A', 'A', 'A', 'B', 'B'}, output.toByteArray());
+                assertThrows(IOException.class, () -> session.decode(new ByteArrayInputStream(rar3FilteredStream(5)),
+                        new OutputStream() {
+                            /// Rejects the fully transformed block to exercise nested workspace cleanup.
+                            @Override
+                            public void write(int value) throws IOException {
+                                throw new IOException("test output failure");
+                            }
+                        }, 29, 1 << 16, 3, false));
+                assertEquals(0, memory.used());
+                session.decode(new ByteArrayInputStream(rar20LiteralStream(1)), output, 20, 1 << 16, 1, false);
+                session.decode(new ByteArrayInputStream(new byte[0]), output, 15, 1 << 16, 0, false);
+            }
+        } finally {
+            session.release();
+            session.release();
+        }
+        assertEquals(0, memory.used());
+        Rar4Decoder.Session rejected = Rar4Decoder.newSession(1 << 16, 495_249);
+        try {
+            DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                    () -> rejected.decode(new ByteArrayInputStream(rar3FilteredStream(5)),
+                            OutputStream.nullOutputStream(), 29, 1 << 16, 3, false));
+            assertEquals(495_250, failure.requiredMemorySize());
+            assertEquals(0, ((RarDecoderMemoryBudget) memoryField.get(rejected)).used());
+        } finally {
+            rejected.release();
+        }
+    }
+
+    /// Drops the packed input after success, a truncated range prefix, or a failing output sink.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void detachesRar3PpmInput(int failureMode) throws Exception {
+        byte[] packed = {(byte) 0xa1, 0, 0x40, (byte) 0xfd, (byte) 0xc8, 0x3f, 0, 0};
+        Rar4Lz29Decoder decoder = new Rar4Lz29Decoder(1 << 16, new RarDecoderMemoryBudget(-1));
+        var rangeField = Rar4Lz29Decoder.class.getDeclaredField("ppmRangeDecoder");
+        rangeField.setAccessible(true);
+        Object rangeDecoder = rangeField.get(decoder);
+        var inputField = Rar3PPMdRangeDecoder.class.getDeclaredField("input");
+        inputField.setAccessible(true);
+        try {
+            ByteArrayInputStream input = new ByteArrayInputStream(
+                    failureMode == 1 ? Arrays.copyOf(packed, 4) : packed) {
+                /// Detects accidental closure of borrowed compressed input.
+                @Override
+                public void close() {
+                    throw new AssertionError("Borrowed RAR input was closed");
+                }
+            };
+            OutputStream output = failureMode < 2 ? new ByteArrayOutputStream() : new OutputStream() {
+                /// Fails during emission after the PPMd range input has been attached.
+                @Override
+                public void write(int value) throws IOException {
+                    if (failureMode == 2) throw new IOException("test output failure");
+                    throw new IllegalStateException("test output failure");
+                }
+            };
+            if (failureMode == 0) {
+                decoder.decode(input, output, 3, false);
+                assertArrayEquals(new byte[]{'A', 'A', 'A'}, ((ByteArrayOutputStream) output).toByteArray());
+            } else if (failureMode < 3) {
+                assertThrows(IOException.class, () -> decoder.decode(input, output, 3, false));
+            } else {
+                assertThrows(IllegalStateException.class, () -> decoder.decode(input, output, 3, false));
+            }
+            assertNull(inputField.get(rangeDecoder));
+
+            if (failureMode == 0) {
+                ByteArrayOutputStream continuation = new ByteArrayOutputStream();
+                decoder.decode(new ByteArrayInputStream(new byte[]{(byte) 0x81, 0, 0, 0, 0, 0, 0}),
+                        continuation, 1, true);
+                assertArrayEquals(new byte[]{'A'}, continuation.toByteArray());
+                assertNull(inputField.get(rangeDecoder));
+            }
+            decoder.invalidate();
+            ByteArrayOutputStream recovered = new ByteArrayOutputStream();
+            decoder.decode(new ByteArrayInputStream(packed), recovered, 3, false);
+            assertArrayEquals(new byte[]{'A', 'A', 'A'}, recovered.toByteArray());
+            assertNull(inputField.get(rangeDecoder));
+        } finally {
+            decoder.release();
+        }
+        assertNull(inputField.get(rangeDecoder));
+    }
+
+    /// Recovers the session budget after rejection, output failure, and a change of decoder family.
+    @Test
+    void recoversLegacySessionMemoryBudget() throws IOException {
+        Rar4Decoder.Session session = Rar4Decoder.newSession(1 << 18, 203_792);
+        byte[] packed = rar20LiteralStream(1);
+        try {
+            for (int attempt = 0; attempt < 3; attempt++) {
+                ByteArrayInputStream oversizedInput = new ByteArrayInputStream(packed);
+                DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                        () -> session.decode(oversizedInput, OutputStream.nullOutputStream(), 15, 1 << 17, 0, false));
+                assertEquals(269_328, failure.actual());
+                assertEquals(packed.length, oversizedInput.available());
+                assertThrows(IOException.class,
+                        () -> session.decode(oversizedInput, OutputStream.nullOutputStream(), 15, 1 << 16, 0, true));
+                assertEquals(packed.length, oversizedInput.available());
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                session.decode(new ByteArrayInputStream(packed), output, 20, 1 << 16, 1, false);
+                assertArrayEquals(new byte[]{'A'}, output.toByteArray());
+                session.decode(new ByteArrayInputStream(new byte[]{0}), output, 26, 1 << 16, 1, true);
+                assertArrayEquals(new byte[]{'A', 'A'}, output.toByteArray());
+                assertThrows(IOException.class, () -> session.decode(new ByteArrayInputStream(packed),
+                        new OutputStream() {
+                            /// Rejects decoded output to exercise session failure cleanup.
+                            @Override
+                            public void write(int value) throws IOException {
+                                throw new IOException("test output failure");
+                            }
+                        }, 20, 1 << 16, 1, false));
+                assertEquals(0, session.decode(new ByteArrayInputStream(new byte[0]),
+                        OutputStream.nullOutputStream(), 15, 1 << 16, 0, false));
+            }
+        } finally {
+            session.release();
+            session.release();
+        }
+        assertThrows(IllegalArgumentException.class, () -> Rar4Decoder.newSession(1 << 16, -2));
+    }
+
+    /// Rejects incomplete engine construction without retaining reservations for partially allocated tables.
+    @Test
+    void rollsBackLegacyEngineConstruction() throws IOException {
+        RarDecoderMemoryBudget rar15 = new RarDecoderMemoryBudget(72_719);
+        assertThrows(DecompressionMemoryLimitException.class, () -> new Rar4Lz15Decoder(1 << 16, rar15));
+        assertEquals(0, rar15.used());
+        for (int tables = 0; tables <= 7; tables++) {
+            int maximum = (1 << 16) + 1364 + tables * 192 - 1;
+            RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(maximum);
+            assertThrows(DecompressionMemoryLimitException.class, () -> new Rar4Lz20Decoder(1 << 16, memory));
+            assertEquals(0, memory.used());
+        }
+    }
+
+    /// Checks the exact RAR 1.5 workspace ceiling, reuse, failure cleanup, and repeated release.
+    @Test
+    void accountsForRar15Workspace() throws IOException {
+        BitWriter writer = new BitWriter();
+        writer.write(0b00001, 5);
+        writer.write(0xe5, 8);
+        byte[] packed = writer.toByteArray();
+        for (int maximum : new int[]{203_791, 203_792}) {
+            RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(maximum);
+            Rar4Lz15Decoder decoder = new Rar4Lz15Decoder(1 << 16, memory);
+            assertEquals(72_720, memory.used());
+            try {
+                for (int attempt = 0; attempt < 3; attempt++) {
+                    ByteArrayInputStream input = new ByteArrayInputStream(packed);
+                    ByteArrayOutputStream output = new ByteArrayOutputStream();
+                    if (maximum < 203_792) {
+                        DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                                () -> decoder.decode(input, output, 1, false));
+                        assertEquals(203_792, failure.actual());
+                        assertEquals(packed.length, input.available());
+                    } else {
+                        decoder.decode(input, output, 1, false);
+                        assertArrayEquals(new byte[]{'A'}, output.toByteArray());
+                        assertThrows(IOException.class, () -> decoder.decode(new ByteArrayInputStream(packed),
+                                new OutputStream() {
+                                    /// Fails when decoded bytes are flushed.
+                                    @Override
+                                    public void write(int value) throws IOException {
+                                        throw new IOException("test output failure");
+                                    }
+                                }, 1, false));
+                    }
+                    assertEquals(72_720, memory.used());
+                }
+            } finally {
+                decoder.release();
+                decoder.release();
+            }
+            assertEquals(0, memory.used());
+        }
+    }
+
+    /// Counts RAR 2.x table-building scratch space when a new table is read after output staging exists.
+    @Test
+    void accountsForRar20TableRebuildPeak() throws IOException {
+        BitWriter writer = new BitWriter();
+        writeRar20LiteralTable(writer);
+        writer.write(0, 1);
+        writer.write(1, 1);
+        writeRar20LiteralTable(writer);
+        writer.write(0, 1);
+        for (boolean rebuild : new boolean[]{false, true}) {
+            byte[] packed = rebuild ? writer.toByteArray() : rar20LiteralStream(1);
+            int peak = rebuild ? 200_639 : 199_324;
+            for (int maximum : new int[]{peak - 1, peak}) {
+                RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(maximum);
+                Rar4Lz20Decoder decoder = new Rar4Lz20Decoder(1 << 16, memory);
+                assertEquals(68_244, memory.used());
+                try {
+                    for (int attempt = 0; attempt < 3; attempt++) {
+                        ByteArrayOutputStream output = new ByteArrayOutputStream();
+                        if (maximum < peak) {
+                            DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                                    () -> decoder.decode(new ByteArrayInputStream(packed), output, rebuild ? 2 : 1, false));
+                            assertEquals(peak, failure.actual());
+                        } else {
+                            decoder.decode(new ByteArrayInputStream(packed), output, rebuild ? 2 : 1, false);
+                            assertArrayEquals(rebuild ? new byte[]{'A', 'A'} : new byte[]{'A'}, output.toByteArray());
+                        }
+                        assertEquals(68_252, memory.used());
+                    }
+                } finally {
+                    decoder.release();
+                    decoder.release();
+                }
+                assertEquals(0, memory.used());
+            }
+        }
+    }
+
+    /// Keeps inactive ordinary and audio Huffman tables charged while switching modes within one entry.
+    @Test
+    void accountsForRar20InactiveTables() throws IOException {
+        BitWriter writer = new BitWriter();
+        writeRar20LiteralTable(writer);
+        writer.write(0, 1);
+        writer.write(1, 1);
+        writeRar20AudioTable(writer);
+        writer.write(0, 1);
+        writer.write(1, 1);
+        writeRar20LiteralTable(writer);
+        writer.write(0, 1);
+        byte[] packed = writer.toByteArray();
+        for (int maximum : new int[]{200_646, 200_647}) {
+            RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(maximum);
+            Rar4Lz20Decoder decoder = new Rar4Lz20Decoder(1 << 16, memory);
+            try {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                if (maximum < 200_647) {
+                    DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                            () -> decoder.decode(new ByteArrayInputStream(packed), output, 3, false));
+                    assertEquals(200_647, failure.actual());
+                } else {
+                    decoder.decode(new ByteArrayInputStream(packed), output, 3, false);
+                    assertArrayEquals(new byte[]{'A', 0, 'A'}, output.toByteArray());
+                }
+                assertEquals(68_260, memory.used());
+                decoder.invalidate();
+                assertEquals(68_244, memory.used());
+                decoder.decode(new ByteArrayInputStream(rar20AudioStream(1)), OutputStream.nullOutputStream(), 1, false);
+                assertEquals(68_252, memory.used());
+            } finally {
+                decoder.release();
+            }
+            assertEquals(0, memory.used());
+        }
+    }
+
+    /// Initializes each legacy engine when the first decoded entry carries the solid flag.
+    @Test
+    void initializesFirstSolidEntryWithDeclaredWindow() throws IOException {
+        BitWriter rar15 = new BitWriter();
+        rar15.write(0b00001, 5);
+        rar15.write(0xe5, 8);
+        for (int version : new int[]{15, 20, 29}) {
+            byte[] packed = switch (version) {
+                case 15 -> rar15.toByteArray();
+                case 20 -> rar20LiteralStream(1);
+                default -> rar3LiteralStream('A', true);
+            };
+            Rar4Decoder.Session session = Rar4Decoder.newSession(1 << 16, ArchiveReadLimits.UNLIMITED_SIZE);
+            try {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                session.decode(new ByteArrayInputStream(packed), output, version, 1 << 16, 1, true);
+                assertArrayEquals(new byte[]{'A'}, output.toByteArray());
+            } finally {
+                session.release();
+            }
+        }
+    }
+
+    /// Wraps the smallest declared window repeatedly and retains it for a solid continuation.
+    @Test
+    void wrapsSmallRar20Dictionary() throws IOException {
+        int length = (1 << 17) + 7;
+        byte[] expected = new byte[length];
+        Arrays.fill(expected, (byte) 'A');
+        Rar4Decoder.Session session = Rar4Decoder.newSession(1 << 16, ArchiveReadLimits.UNLIMITED_SIZE);
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            session.decode(new ByteArrayInputStream(rar20LiteralStream(length)), output, 20, 1 << 16, length, false);
+            assertArrayEquals(expected, output.toByteArray());
+            output.reset();
+            session.decode(new ByteArrayInputStream(repeatedZeroBits(3)), output, 20, 1 << 16, 3, true);
+            assertArrayEquals(new byte[]{'A', 'A', 'A'}, output.toByteArray());
+        } finally {
+            session.release();
+        }
+    }
+
+    /// Rejects a match beyond the declared history even when enough preceding bytes were emitted.
+    @Test
+    void enforcesDeclaredRar3MatchWindow() throws IOException {
+        int distance = 262_145;
+        byte[] packed = rar3HighDistanceStream(distance);
+        for (int window : new int[]{1 << 18, 1 << 19}) {
+            Rar4Decoder.Session session = Rar4Decoder.newSession(window, ArchiveReadLimits.UNLIMITED_SIZE);
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try {
+                if (window < distance) {
+                    IOException failure = assertThrows(IOException.class,
+                            () -> session.decode(new ByteArrayInputStream(packed), output, 29, window,
+                                    distance + 260, false));
+                    assertEquals("RAR4 match distance exceeds available dictionary history", failure.getMessage());
+                } else {
+                    session.decode(new ByteArrayInputStream(packed), output, 29, window, distance + 260, false);
+                    byte[] expected = new byte[distance + 260];
+                    Arrays.fill(expected, (byte) 'A');
+                    assertArrayEquals(expected, output.toByteArray());
+                }
+            } finally {
+                session.release();
+            }
+        }
+    }
+
+    /// Retains the active solid window when a continuation declares a smaller size.
+    @Test
+    void retainsRar3HistoryAcrossSmallerWindowDeclarations() throws IOException {
+        Rar4Decoder.Session session = Rar4Decoder.newSession(1 << 19, ArchiveReadLimits.UNLIMITED_SIZE);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        BitWriter continuation = new BitWriter();
+        continuation.write(0b11, 2);
+        continuation.write(0b1_1111, 5);
+        continuation.write(0, 1);
+        continuation.write(0, 12);
+        continuation.write(0, 1);
+        continuation.write(0b10, 2);
+        continuation.write(0, 2);
+        byte[] match = continuation.toByteArray();
+        try {
+            session.decode(new ByteArrayInputStream(rar3HighDistanceStream(262_145)), output, 29,
+                    1 << 19, 262_405, false);
+            output.reset();
+            session.decode(new ByteArrayInputStream(match), output, 29, 1 << 16, 260, true);
+            byte[] expected = new byte[260];
+            Arrays.fill(expected, (byte) 'A');
+            assertArrayEquals(expected, output.toByteArray());
+
+            // A non-solid entry discards both the larger window and its entropy tables.
+            session.decode(new ByteArrayInputStream(rar3LiteralStream('B', true)), output, 29, 1 << 16, 1, false);
+            assertThrows(IOException.class,
+                    () -> session.decode(new ByteArrayInputStream(match), output, 29, 1 << 16, 260, true));
+        } finally {
+            session.release();
+        }
+    }
+
     /// Decodes one literal through the adaptive RAR 1.5 flag and character models.
     @Test
     public void decodesRar15AdaptiveLiteral() throws IOException {
@@ -27,12 +477,13 @@ public final class Rar4NativeDecoderTest {
         writer.write(0b00001, 5);
         writer.write(0xe5, 8);
 
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(writer.toByteArray()),
                 output,
                 15,
+                1 << 22,
                 1,
                 false
         );
@@ -44,7 +495,7 @@ public final class Rar4NativeDecoderTest {
     /// Decodes long, short, and repeated matches while retaining the RAR 1.5 solid dictionary.
     @Test
     public void decodesRar15MatchesAcrossSolidEntries() throws IOException {
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
 
         BitWriter longMatchWriter = new BitWriter();
         longMatchWriter.write(0xab, 8);
@@ -60,6 +511,7 @@ public final class Rar4NativeDecoderTest {
                 new ByteArrayInputStream(longMatchWriter.toByteArray()),
                 longMatchOutput,
                 15,
+                1 << 22,
                 expectedLongMatch.length,
                 false
         );
@@ -77,6 +529,7 @@ public final class Rar4NativeDecoderTest {
                 new ByteArrayInputStream(shortMatchWriter.toByteArray()),
                 shortMatchOutput,
                 15,
+                1 << 22,
                 expectedShortMatch.length,
                 true
         );
@@ -92,6 +545,7 @@ public final class Rar4NativeDecoderTest {
                 new ByteArrayInputStream(repeatedMatchWriter.toByteArray()),
                 repeatedMatchOutput,
                 15,
+                1 << 22,
                 expectedShortMatch.length,
                 true
         );
@@ -108,6 +562,7 @@ public final class Rar4NativeDecoderTest {
                 new ByteArrayInputStream(recentDistanceWriter.toByteArray()),
                 recentDistanceOutput,
                 15,
+                1 << 22,
                 expectedShortMatch.length,
                 true
         );
@@ -119,7 +574,7 @@ public final class Rar4NativeDecoderTest {
     /// Rejects RAR 1.5 match codes that reference unavailable dictionary history.
     @Test
     public void rejectsRar15MatchesWithoutHistory() {
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
 
         BitWriter repeatedMatchWriter = new BitWriter();
         repeatedMatchWriter.write(0, 5);
@@ -131,6 +586,7 @@ public final class Rar4NativeDecoderTest {
                         new ByteArrayInputStream(repeatedMatchWriter.toByteArray()),
                         new ByteArrayOutputStream(),
                         15,
+                        1 << 22,
                         1L,
                         false
                 )
@@ -148,6 +604,7 @@ public final class Rar4NativeDecoderTest {
                         new ByteArrayInputStream(shortMatchWriter.toByteArray()),
                         new ByteArrayOutputStream(),
                         15,
+                        1 << 22,
                         2L,
                         false
                 )
@@ -162,12 +619,13 @@ public final class Rar4NativeDecoderTest {
     /// Decodes a RAR 2.x literal table and reuses it for a solid continuation.
     @Test
     public void decodesRar20LiteralsAndSolidContinuation() throws IOException {
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream firstOutput = new ByteArrayOutputStream();
         long firstCrc32 = session.decode(
                 new ByteArrayInputStream(rar20LiteralStream(6)),
                 firstOutput,
                 20,
+                1 << 22,
                 6,
                 false
         );
@@ -179,6 +637,7 @@ public final class Rar4NativeDecoderTest {
                 new ByteArrayInputStream(repeatedZeroBits(3)),
                 secondOutput,
                 20,
+                1 << 22,
                 3,
                 true
         );
@@ -192,12 +651,13 @@ public final class Rar4NativeDecoderTest {
     public void decodesRar20LongAndShortMatches() throws IOException {
         byte[] expected = new byte[6];
         Arrays.fill(expected, (byte) 'A');
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar20MatchStream()),
                 output,
                 20,
+                1 << 22,
                 expected.length,
                 false
         );
@@ -211,12 +671,13 @@ public final class Rar4NativeDecoderTest {
     public void decodesRar20RepeatedAndRecentMatches() throws IOException {
         byte[] expected = new byte[9];
         Arrays.fill(expected, (byte) 'A');
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar20RepeatedMatchStream()),
                 output,
                 20,
+                1 << 22,
                 expected.length,
                 false
         );
@@ -230,12 +691,13 @@ public final class Rar4NativeDecoderTest {
     public void decodesRar3LongAndShortMatches() throws IOException {
         byte[] expected = new byte[6];
         Arrays.fill(expected, (byte) 'A');
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar3MatchStream()),
                 output,
                 29,
+                1 << 22,
                 expected.length,
                 false
         );
@@ -249,12 +711,13 @@ public final class Rar4NativeDecoderTest {
     public void decodesRar3RepeatedAndRecentMatches() throws IOException {
         byte[] expected = new byte[9];
         Arrays.fill(expected, (byte) 'A');
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar3RepeatedMatchStream()),
                 output,
                 29,
+                1 << 22,
                 expected.length,
                 false
         );
@@ -267,13 +730,14 @@ public final class Rar4NativeDecoderTest {
     @Test
     public void decodesRar3ReplacementTables() throws IOException {
         byte[] expected = {'A', 'B'};
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
 
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar3ReplacementTableStream()),
                 output,
                 29,
+                1 << 22,
                 expected.length,
                 false
         );
@@ -286,16 +750,16 @@ public final class Rar4NativeDecoderTest {
     /// Uses the preceding file's end marker to select replacement or retained tables in a solid sequence.
     @Test
     public void selectsRar3SolidTablesAfterDeclaredOutputIsComplete() throws IOException {
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         try {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
-            session.decode(new ByteArrayInputStream(rar3LiteralStream('A', true)), output, 29, 1, false);
-            session.decode(new ByteArrayInputStream(rar3LiteralStream('B', false)), output, 29, 1, true);
+            session.decode(new ByteArrayInputStream(rar3LiteralStream('A', true)), output, 29, 1 << 22, 1, false);
+            session.decode(new ByteArrayInputStream(rar3LiteralStream('B', false)), output, 29, 1 << 22, 1, true);
             BitWriter continuation = new BitWriter();
             continuation.write(0, 1);
             continuation.write(1, 1);
             continuation.write(0, 2);
-            session.decode(new ByteArrayInputStream(continuation.toByteArray()), output, 29, 1, true);
+            session.decode(new ByteArrayInputStream(continuation.toByteArray()), output, 29, 1 << 22, 1, true);
             assertArrayEquals(new byte[]{'A', 'B', 'B'}, output.toByteArray());
         } finally {
             session.release();
@@ -307,11 +771,11 @@ public final class Rar4NativeDecoderTest {
     public void rejectsTruncatedRar3LiteralAndEndMarker() {
         byte[] packed = rar3LiteralStream('A', true);
         for (int length = 0; length < packed.length; length++) {
-            Rar4Decoder.Session session = Rar4Decoder.newSession();
+            Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
             byte[] truncated = Arrays.copyOf(packed, length);
             try {
                 assertThrows(IOException.class, () -> session.decode(
-                        new ByteArrayInputStream(truncated), new ByteArrayOutputStream(), 29, 1, false),
+                        new ByteArrayInputStream(truncated), new ByteArrayOutputStream(), 29, 1 << 22, 1, false),
                         "Truncated length: " + length);
             } finally {
                 session.release();
@@ -342,13 +806,14 @@ public final class Rar4NativeDecoderTest {
         byte[] expected = {'A', 'A', 'A'};
 
         for (int payloadSize : new int[]{5, 7, 8}) {
-            Rar4Decoder.Session session = Rar4Decoder.newSession();
+            Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
             ByteArrayOutputStream output = new ByteArrayOutputStream();
 
             long actualCrc32 = session.decode(
                     new ByteArrayInputStream(rar3FilteredStream(payloadSize)),
                     output,
                     29,
+                    1 << 22,
                     expected.length,
                     false
             );
@@ -364,13 +829,14 @@ public final class Rar4NativeDecoderTest {
     public void decodesRar3RepeatedLowDistance() throws IOException {
         byte[] expected = new byte[39];
         Arrays.fill(expected, (byte) 'A');
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
 
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar3RepeatedLowDistanceStream()),
                 output,
                 29,
+                1 << 22,
                 expected.length,
                 false
         );
@@ -385,13 +851,14 @@ public final class Rar4NativeDecoderTest {
     public void decodesRar3OldestRecentDistance() throws IOException {
         byte[] expected = new byte[30];
         Arrays.fill(expected, (byte) 'A');
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
 
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar3OldestRecentDistanceStream()),
                 output,
                 29,
+                1 << 22,
                 expected.length,
                 false
         );
@@ -408,13 +875,14 @@ public final class Rar4NativeDecoderTest {
         int adjustedMatchLength = 260;
         byte[] expected = new byte[distance + adjustedMatchLength];
         Arrays.fill(expected, (byte) 'A');
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
 
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar3HighDistanceStream(distance)),
                 output,
                 29,
+                1 << 22,
                 expected.length,
                 false
         );
@@ -428,12 +896,13 @@ public final class Rar4NativeDecoderTest {
     @Test
     public void decodesRar20AudioDeltas() throws IOException {
         int sampleCount = 64;
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(rar20AudioStream(sampleCount)),
                 output,
                 20,
+                1 << 22,
                 sampleCount,
                 false
         );
@@ -451,12 +920,13 @@ public final class Rar4NativeDecoderTest {
                 0x40, (byte) 0xfd, (byte) 0xc8, 0x3f,
                 0, 0
         };
-        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        Rar4Decoder.Session session = Rar4Decoder.newSession(ArchiveReadLimits.UNLIMITED_SIZE, ArchiveReadLimits.UNLIMITED_SIZE);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         long actualCrc32 = session.decode(
                 new ByteArrayInputStream(packed),
                 output,
                 29,
+                1 << 22,
                 3,
                 false
         );
@@ -469,6 +939,7 @@ public final class Rar4NativeDecoderTest {
                 new ByteArrayInputStream(continuation),
                 continuationOutput,
                 29,
+                1 << 22,
                 1,
                 true
         );
@@ -487,6 +958,15 @@ public final class Rar4NativeDecoderTest {
     /// Builds a normal RAR 2.x table containing one literal and one table marker.
     private static byte[] rar20LiteralStream(int literalCount) {
         BitWriter writer = new BitWriter();
+        writeRar20LiteralTable(writer);
+        for (int index = 0; index < literalCount; index++) {
+            writer.write(0, 1);
+        }
+        return writer.toByteArray();
+    }
+
+    /// Writes a normal-mode table containing literal A and the table-change marker.
+    private static void writeRar20LiteralTable(BitWriter writer) {
         writer.write(0, 1);
         writer.write(0, 1);
         writeLevelAlphabet(writer);
@@ -496,8 +976,6 @@ public final class Rar4NativeDecoderTest {
         writeZeroRun(writer, 65);
         writeLevelOne(writer);
         writeZeroRun(writer, 104);
-        writer.write(0, literalCount);
-        return writer.toByteArray();
     }
 
     /// Builds a normal RAR 2.x table and payload containing one literal followed by long and short matches.
@@ -794,6 +1272,18 @@ public final class Rar4NativeDecoderTest {
     /// Builds a one-channel audio table containing a zero delta and table marker.
     private static byte[] rar20AudioStream(int sampleCount) {
         BitWriter writer = new BitWriter();
+        writeRar20AudioTable(writer);
+        int remaining = sampleCount;
+        while (remaining > 0) {
+            int count = Math.min(remaining, 31);
+            writer.write(0, count);
+            remaining -= count;
+        }
+        return writer.toByteArray();
+    }
+
+    /// Writes a one-channel audio table containing zero delta and the table-change marker.
+    private static void writeRar20AudioTable(BitWriter writer) {
         writer.write(1, 1);
         writer.write(0, 1);
         writer.write(0, 2);
@@ -802,13 +1292,6 @@ public final class Rar4NativeDecoderTest {
         writeZeroRun(writer, 138);
         writeZeroRun(writer, 117);
         writeLevelOne(writer);
-        int remaining = sampleCount;
-        while (remaining > 0) {
-            int count = Math.min(remaining, 31);
-            writer.write(0, count);
-            remaining -= count;
-        }
-        return writer.toByteArray();
     }
 
     /// Returns a byte-aligned sequence containing the requested number of zero bits.

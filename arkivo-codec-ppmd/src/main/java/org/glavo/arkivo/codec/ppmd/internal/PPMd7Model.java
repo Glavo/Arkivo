@@ -14,6 +14,9 @@ import java.util.Objects;
 /// Encodes and decodes the PPMd Variant H context model shared by PPMd7 and RAR3 streams.
 @NotNullByDefault
 public final class PPMd7Model {
+    /// The instance-owned primitive-array payload outside the context arena, including allocator free-list heads.
+    public static final long FIXED_MEMORY_SIZE = 256L + (128L * 64 + 2L * 256) * Integer.BYTES
+            + PPMd7Allocator.FIXED_MEMORY_SIZE;
     /// The sentinel returned when arithmetic decoding selects an escape interval.
     private static final int NO_STATE = -1;
     /// The frequency threshold that triggers context rescaling.
@@ -125,6 +128,50 @@ public final class PPMd7Model {
         this.rangeEncoder = null;
     }
 
+    /// Returns the primitive-array payload allocated by a fresh model with the given arena size.
+    ///
+    /// Includes the aligned context arena, free-list heads, symbol masks, probability tables, and state-index arrays.
+    /// Excludes shared tables, objects, object headers, reference arrays, and caller-owned input and output buffers.
+    /// This calculation does not allocate the model or its arena.
+    ///
+    /// @param arenaSize the requested arena size, from 2 KiB through 256 MiB
+    /// @return the required payload in bytes
+    /// @throws IOException if the arena size is outside the supported range
+    public static long requiredMemorySize(long arenaSize) throws IOException {
+        return FIXED_MEMORY_SIZE + PPMd7Allocator.arenaMemorySize(arenaSize);
+    }
+
+    /// Returns the primitive-array payload retained by this model, including unused arena capacity.
+    /// Uses the exclusions described by [#requiredMemorySize(long)]. Reset does not release this payload.
+    ///
+    /// @return the retained payload in bytes
+    public long retainedMemorySize() {
+        return FIXED_MEMORY_SIZE + allocator.retainedArenaMemorySize();
+    }
+
+    /// Returns the peak primitive-array payload required by an initialization without changing the model.
+    /// Growth includes both old and replacement arenas; shrinking retains the existing capacity.
+    /// Uses the exclusions described by [#requiredMemorySize(long)].
+    ///
+    /// @param reset whether to initialize a new model arena
+    /// @param requestedMaximumOrder the new order, from 2 through 64; ignored for continuation
+    /// @param arenaSize the new arena size, from 2 KiB through 256 MiB; ignored for continuation
+    /// @return the peak payload in bytes
+    /// @throws IOException if continuation precedes initialization or the configuration is invalid
+    public long initializationPeakMemorySize(boolean reset, int requestedMaximumOrder, long arenaSize)
+            throws IOException {
+        if (!reset) {
+            if (!initialized) throw new IOException("PPMd continuation has no initialized model");
+            return retainedMemorySize();
+        }
+        if (requestedMaximumOrder < 2 || requestedMaximumOrder > 64) {
+            throw new IOException("PPMd maximum order must be between 2 and 64");
+        }
+        long required = PPMd7Allocator.arenaMemorySize(arenaSize);
+        long retained = allocator.retainedArenaMemorySize();
+        return FIXED_MEMORY_SIZE + retained + (required > retained ? required : 0);
+    }
+
     /// Creates an uninitialized PPMd encoding model.
     PPMd7Model(PPMd7RangeEncoder rangeEncoder) {
         this.rangeDecoder = null;
@@ -151,13 +198,8 @@ public final class PPMd7Model {
             int requestedMaximumOrder,
             long memorySize
     ) throws IOException {
-        if (!reset) {
-            if (!initialized) throw new IOException("PPMd continuation has no initialized model");
-            return;
-        }
-        if (requestedMaximumOrder < 2 || requestedMaximumOrder > 64) {
-            throw new IOException("PPMd maximum order must be between 2 and 64");
-        }
+        initializationPeakMemorySize(reset, requestedMaximumOrder, memorySize);
+        if (!reset) return;
         allocator.initialize(memorySize);
         maximumOrder = requestedMaximumOrder;
         previousSymbol = 0;

@@ -104,7 +104,10 @@ final class RarEntryNameValidationTest {
                 Arguments.of("backslash parent segment", "safe\\..\\evil.txt", "RAR entry path must not contain .."),
                 Arguments.of("absolute", "/evil.txt", "RAR entry path must be relative"),
                 Arguments.of("backslash absolute", "\\evil.txt", "RAR entry path must be relative"),
-                Arguments.of("drive root", "C:/evil.txt", "RAR entry path must be relative")
+                Arguments.of("drive root", "C:/evil.txt", "RAR entry path must be relative"),
+                Arguments.of("drive root after dot", "./C:/evil.txt", "RAR entry path must be relative"),
+                Arguments.of("drive relative after empty component", ".//C:evil.txt", "RAR entry path must be relative"),
+                Arguments.of("drive root after mixed separators", ".\\./C:\\evil.txt", "RAR entry path must be relative")
         );
     }
 

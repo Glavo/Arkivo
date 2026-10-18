@@ -14,14 +14,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies 7z folder coder graphs enforce structural invariants without rejecting valid directed acyclic graphs.
 @NotNullByDefault
 final class SevenZipFolderMethodTest {
-    /// Verifies linear construction derives bindings and retains defensive copies for multiple coders.
+    /// Verifies an explicitly bound linear graph retains defensive copies for multiple coders.
     @Test
     void constructsLinearPipelineDefensively() {
         byte[][] methodIds = {{0}, {0}, {0}};
         byte[][] properties = {{1}, {2}, {3}};
-        SevenZipFolderMethod method = new SevenZipFolderMethod(
+        SevenZipFolderMethod method = SevenZipFolderMethod.graph(
                 methodIds,
                 properties,
+                new int[]{1, 1, 1},
+                new int[]{1, 1, 1},
+                new int[]{1, 2},
+                new int[]{0, 1},
+                new int[]{0},
                 new long[]{7L, 8L, 9L}
         );
 
@@ -41,6 +46,25 @@ final class SevenZipFolderMethodTest {
         assertEquals(-1, method.packedStreamOrdinal(1));
         assertEquals(2, method.finalOutputStreamIndex());
         assertEquals(9L, method.finalUnpackSize());
+        assertTrue(method.isCopyOnly());
+    }
+
+    /// Verifies single-coder construction preserves its sole input, output, and copied properties.
+    @Test
+    void constructsSingleCoderDefensively() {
+        byte[] methodId = {0};
+        byte[] properties = {1};
+        SevenZipFolderMethod method = SevenZipFolderMethod.single(methodId, properties, 7L);
+        methodId[0] = 2;
+        properties[0] = 3;
+
+        assertArrayEquals(new byte[]{0}, method.methodId(0));
+        assertArrayEquals(new byte[]{1}, method.properties(0));
+        assertEquals(-1, method.boundOutputStreamIndex(0));
+        assertEquals(0, method.packedStreamOrdinal(0));
+        assertEquals(0, method.finalOutputStreamIndex());
+        assertEquals(7L, method.finalUnpackSize());
+        assertEquals(1, method.coderGraph().coders().size());
         assertTrue(method.isCopyOnly());
     }
 

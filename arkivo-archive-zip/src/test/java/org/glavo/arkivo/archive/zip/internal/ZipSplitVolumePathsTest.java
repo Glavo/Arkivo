@@ -3,15 +3,20 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
+import org.glavo.arkivo.archive.zip.ZipArkivoFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -66,6 +71,7 @@ final class ZipSplitVolumePathsTest {
         Path archive = temporaryDirectory.resolve("classic.zip");
         Path firstVolume = temporaryDirectory.resolve("classic.z01");
         Files.write(firstVolume, new byte[0]);
+        Files.write(temporaryDirectory.resolve("classic.z02"), new byte[0]);
 
         byte[] comment = new byte[28];
         ByteBuffer.wrap(comment).order(ByteOrder.LITTLE_ENDIAN)
@@ -104,6 +110,7 @@ final class ZipSplitVolumePathsTest {
         Path archive = temporaryDirectory.resolve("locator.zip");
         Path firstVolume = temporaryDirectory.resolve("locator.z01");
         Files.write(firstVolume, new byte[0]);
+        Files.write(temporaryDirectory.resolve("locator.z02"), new byte[0]);
         writeSections(
                 archive,
                 zip64EndRecord(2L, 2L),
@@ -123,6 +130,8 @@ final class ZipSplitVolumePathsTest {
         Path archive = temporaryDirectory.resolve("record.zip");
         Path firstVolume = temporaryDirectory.resolve("record.z01");
         Files.write(firstVolume, new byte[0]);
+        Files.write(temporaryDirectory.resolve("record.z02"), new byte[0]);
+        Files.write(temporaryDirectory.resolve("record.z03"), new byte[0]);
         writeSections(
                 archive,
                 zip64EndRecord(3L, 2L),
@@ -154,6 +163,41 @@ final class ZipSplitVolumePathsTest {
 
         IOException failure = assertThrows(IOException.class, () -> ZipSplitVolumePaths.discover(archive));
         assertEquals("ZIP split archive has too many conventional volumes", failure.getMessage());
+    }
+
+    /// Rejects an absent intermediate volume instead of returning an incomplete layout.
+    @Test
+    void rejectsMissingIntermediateVolume() throws IOException {
+        Path archive = temporaryDirectory.resolve("missing.zip");
+        Files.write(temporaryDirectory.resolve("missing.z01"), new byte[0]);
+        writeSections(archive, zip64Locator(0L, 0L, 3L),
+                classicEndRecord(UINT16_MAX, UINT16_MAX, new byte[0]));
+
+        NoSuchFileException failure = assertThrows(NoSuchFileException.class,
+                () -> ZipSplitVolumePaths.discover(archive));
+        assertEquals(temporaryDirectory.resolve("missing.z02").toString(), failure.getFile());
+    }
+
+    /// Stops at the first missing volume without allocating the declared billion-element path sequence.
+    ///
+    /// @param diskCount the untrusted ZIP64 locator volume count
+    @ParameterizedTest
+    @ValueSource(ints = {1_000_000_000, Integer.MAX_VALUE})
+    void rejectsHugeIncompleteLayout(int diskCount) throws IOException {
+        Path archive = temporaryDirectory.resolve("huge.zip");
+        Files.write(temporaryDirectory.resolve("huge.z01"), new byte[0]);
+        writeSections(archive, zip64Locator(0L, 0L, diskCount),
+                classicEndRecord(UINT16_MAX, UINT16_MAX, new byte[0]));
+
+        NoSuchFileException discoveryFailure = assertThrows(NoSuchFileException.class,
+                () -> ZipArkivoFormat.instance().discoverVolumePaths(archive));
+        assertEquals(temporaryDirectory.resolve("huge.z02").toString(), discoveryFailure.getFile());
+        assertThrows(NoSuchFileException.class, () -> {
+            try (var fs = ZipArkivoFileSystem.open(archive);
+                 var entries = Files.newDirectoryStream(fs.getPath("/"))) {
+                entries.iterator().hasNext();
+            }
+        });
     }
 
     /// Creates a classic ZIP end of central directory record with the supplied disk metadata and comment.

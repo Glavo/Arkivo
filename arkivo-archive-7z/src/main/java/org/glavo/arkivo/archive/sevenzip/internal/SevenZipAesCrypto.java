@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.PasswordRequest;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -19,6 +20,7 @@ import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /// Implements shared 7z AES-256/SHA-256 key derivation and decryption.
 @NotNullByDefault
@@ -63,7 +65,7 @@ final class SevenZipAesCrypto {
                         new SecretKeySpec(key, "AES"),
                         new IvParameterSpec(parsedProperties.initializationVector())
                 );
-                return new CipherInputStream(input, cipher);
+                return new DecryptingInputStream(input, cipher);
             } catch (GeneralSecurityException exception) {
                 throw new IOException("Failed to initialize 7z AES decryption", exception);
             } finally {
@@ -71,6 +73,90 @@ final class SevenZipAesCrypto {
             }
         } finally {
             Arrays.fill(password, (byte) 0);
+        }
+    }
+
+    /// Retains explicit source ownership across the JDK cipher stream's non-retryable close operation.
+    @NotNullByDefault
+    private static final class DecryptingInputStream extends InputStream implements ForceCloseable {
+        /// The packed input whose cleanup may need to be retried.
+        private final InputStream input;
+
+        /// The cipher stream used only for data operations.
+        private final CipherInputStream cipher;
+
+        /// Serializes cipher reads independently of cancellation.
+        private final ReentrantLock operationLock = new ReentrantLock();
+
+        /// Serializes abortive source cleanup without waiting for graceful closure.
+        private final Object forceCloseLock = new Object();
+
+        /// Whether further reads are forbidden.
+        private volatile boolean closed;
+
+        /// Whether future source cleanup must remain abortive.
+        private volatile boolean aborted;
+
+        /// Whether the packed input has been closed successfully.
+        private volatile boolean inputClosed;
+
+        /// Wraps an initialized cipher and its owned packed input.
+        private DecryptingInputStream(InputStream input, Cipher cipher) {
+            this.input = input;
+            this.cipher = new CipherInputStream(input, cipher);
+        }
+
+        /// Reads one decoded byte.
+        @Override
+        public int read() throws IOException {
+            byte[] singleByte = new byte[1];
+            int count = read(singleByte, 0, 1);
+            return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
+        }
+
+        /// Reads decrypted bytes while keeping cipher state exclusive to this operation.
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            operationLock.lock();
+            try {
+                if (closed) throw new IOException("7z AES input stream is closed");
+                return length == 0 ? 0 : cipher.read(bytes, offset, length);
+            } finally {
+                operationLock.unlock();
+            }
+        }
+
+        /// Closes the packed input; AES/CBC without padding has no close-time authentication trailer.
+        @Override
+        public synchronized void close() throws IOException {
+            closed = true;
+            if (inputClosed) return;
+            if (aborted || operationLock.isHeldByCurrentThread() || !operationLock.tryLock()) {
+                forceClose();
+                return;
+            }
+            try {
+                input.close();
+                synchronized (forceCloseLock) {
+                    if (!aborted) inputClosed = true;
+                }
+            } finally {
+                operationLock.unlock();
+            }
+        }
+
+        /// Cancels packed input without finalizing a concurrently active cipher operation.
+        @Override
+        public void forceClose() throws IOException {
+            aborted = true;
+            closed = true;
+            synchronized (forceCloseLock) {
+                if (!inputClosed) {
+                    ForceCloseable.forceClose(input);
+                    inputClosed = true;
+                }
+            }
         }
     }
 

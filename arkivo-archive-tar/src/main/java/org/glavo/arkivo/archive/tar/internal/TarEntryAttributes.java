@@ -35,6 +35,12 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     /// The TAR type flag for symbolic links.
     static final byte SYMBOLIC_LINK_TYPE = '2';
 
+    /// The TAR type flag for character devices.
+    static final byte CHARACTER_DEVICE_TYPE = '3';
+
+    /// The TAR type flag for block devices.
+    static final byte BLOCK_DEVICE_TYPE = '4';
+
     /// The TAR type flag for directories.
     static final byte DIRECTORY_TYPE = '5';
 
@@ -77,6 +83,12 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     /// The numeric group identifier.
     private final long groupId;
 
+    /// The major device number, or NO_DEVICE_NUMBER for non-device entries.
+    private final long deviceMajor;
+
+    /// The minor device number, or NO_DEVICE_NUMBER for non-device entries.
+    private final long deviceMinor;
+
     /// The stored user name.
     private final @Nullable String userName;
 
@@ -109,6 +121,8 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
             int mode,
             long userId,
             long groupId,
+            long deviceMajor,
+            long deviceMinor,
             @Nullable String userName,
             @Nullable String groupName,
             @Nullable String linkName,
@@ -128,6 +142,8 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
         this.mode = mode;
         this.userId = userId;
         this.groupId = groupId;
+        this.deviceMajor = deviceMajor;
+        this.deviceMinor = deviceMinor;
         this.userName = userName;
         this.groupName = groupName;
         this.linkName = linkName;
@@ -147,6 +163,8 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
         this.mode = attributes.mode();
         this.userId = attributes.userId();
         this.groupId = attributes.groupId();
+        this.deviceMajor = attributes.deviceMajor();
+        this.deviceMinor = attributes.deviceMinor();
         this.userName = attributes.userName();
         this.groupName = attributes.groupName();
         this.linkName = attributes.linkName();
@@ -185,6 +203,16 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     @Override
     public long groupId() {
         return groupId;
+    }
+
+    @Override
+    public long deviceMajor() {
+        return deviceMajor;
+    }
+
+    @Override
+    public long deviceMinor() {
+        return deviceMinor;
     }
 
     /// Returns the stored user name.
@@ -301,7 +329,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
         return PosixModes.permissions(mode);
     }
 
-    /// Returns the stored body size, ignoring the unused size field of directory records.
+    /// Returns the logical body size, including sparse holes, or zero for directory records.
     long bodySize() {
         return isDirectory() ? 0L : size;
     }

@@ -173,13 +173,13 @@ final class SevenZipEntryAttributes implements SevenZipArkivoEntryAttributes, Po
     /// Returns the synthesized owner principal for this entry.
     @Override
     public UserPrincipal owner() {
-        return SevenZipPosixSupport.owner();
+        return SevenZipPosixSupport.DEFAULT_OWNER;
     }
 
     /// Returns the synthesized group principal for this entry.
     @Override
     public GroupPrincipal group() {
-        return SevenZipPosixSupport.group();
+        return SevenZipPosixSupport.DEFAULT_GROUP;
     }
 
     /// Returns synthesized POSIX permissions for this entry.

@@ -109,7 +109,7 @@ public abstract sealed class SevenZipArkivoStreamingWriter extends ArkivoStreami
         Objects.requireNonNull(options, "options");
         return SevenZipArkivoStreamingWriterImpl.open(
                 output,
-                directOutputConfig(options)
+                SevenZipArkivoFileSystemConfig.fromCreateOptions(options)
         );
     }
 
@@ -142,13 +142,8 @@ public abstract sealed class SevenZipArkivoStreamingWriter extends ArkivoStreami
         if (splitSize <= 0L) {
             throw new IllegalArgumentException("splitSize must be positive");
         }
-        SevenZipArkivoFileSystemConfig config = directOutputConfig(options);
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromCreateOptions(options);
         return SevenZipArkivoStreamingWriterImpl.open(target, splitSize, config);
-    }
-
-    /// Parses output options whose storage behavior is determined by the factory.
-    private static SevenZipArkivoFileSystemConfig directOutputConfig(SevenZipArchiveOptions.Create options) {
-        return SevenZipArkivoFileSystemConfig.fromCreateOptions(options);
     }
 
 }

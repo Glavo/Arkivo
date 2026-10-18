@@ -8,6 +8,8 @@ import org.glavo.arkivo.archive.dmg.internal.DMGArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.IOException;
 import java.net.URI;
@@ -17,6 +19,8 @@ import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.FileSystems;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardOpenOption;
@@ -39,6 +43,29 @@ public final class DMGArkivoFileSystemProviderTest {
     /// The isolated directory used for generated image fixtures.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Rejects missing parents and traversal through regular files, including symbolic-link targets.
+    @ParameterizedTest
+    @CsvSource({
+            "missing/../hello.txt,false", "missing/../hello.txt,true",
+            "hello.txt/../hello.txt,false", "hello.txt/../hello.txt,true",
+            "link/../hello.txt,false", "link/../hello.txt,true"
+    })
+    public void validatesComponentsForMetadataQueries(String name, boolean fileStore) throws IOException {
+        Path source = writeRawImage(temporaryDirectory.resolve("components.dmg"), createHFSPlusDisk());
+        try (var fileSystem = DMGArkivoFileSystem.open(source)) {
+            Path path = fileSystem.getPath(name);
+            Class<? extends IOException> expected = name.startsWith("missing/")
+                    ? NoSuchFileException.class : NotDirectoryException.class;
+            assertThrows(expected, () -> {
+                if (fileStore) {
+                    Files.getFileStore(path);
+                } else {
+                    Files.isHidden(path);
+                }
+            });
+        }
+    }
 
     /// Preserves source dot components and registers equivalent percent-escaped spellings under one key.
     @Test

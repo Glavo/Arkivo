@@ -10,6 +10,11 @@ dependencies {
 
 tasks.named<Test>("tier2Test") {
     inputs.property("gnuTarExecutable", providers.environmentVariable("ARKIVO_GNU_TAR_EXECUTABLE").orElse(""))
+    // Track replacements and newly installed tools without requiring optional executables to exist.
+    inputs.files(providers.provider {
+        providers.environmentVariable("ARKIVO_GNU_TAR_EXECUTABLE").orNull
+            ?.takeIf { it.isNotBlank() }?.let { listOf(file(it)) }?.filter { it.isFile } ?: emptyList<File>()
+    }).withPropertyName("gnuTarExecutableFile").withPathSensitivity(PathSensitivity.NONE)
     inputs.property("requireGnuTar", providers.environmentVariable("ARKIVO_REQUIRE_GNU_TAR").orElse("false"))
 }
 

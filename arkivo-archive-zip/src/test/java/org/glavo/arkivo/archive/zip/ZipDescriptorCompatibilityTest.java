@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -146,6 +147,85 @@ final class ZipDescriptorCompatibilityTest {
                 output.truncate(end);
             }
             assertArrayEquals(SIGNATURE_CRC_CONTENT, Files.readAllBytes(entry));
+        }
+    }
+
+    /// Renaming retains descriptors declared only by the local header, including their original width and signature.
+    @ParameterizedTest
+    @MethodSource("layouts")
+    void preservesLocalDescriptorOnRename(boolean[] layout, @TempDir Path directory) throws IOException {
+        Fixture fixture = fixture(layout[0], layout[1], 0);
+        byte[] bytes = fixture.archive().clone();
+        int central = ByteArrayAccess.readIntLittleEndian(bytes, bytes.length - 6);
+        int flags = Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(bytes, central + 8));
+        ByteArrayAccess.writeShortLittleEndian(bytes, central + 8, (short) (flags & ~8));
+        Path archive = directory.resolve("rename-descriptor.zip");
+        Files.write(archive, bytes);
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("payload")));
+        }
+        try (var fileSystem = ZipArkivoFileSystem.update(archive)) {
+            Files.move(fileSystem.getPath("payload"), fileSystem.getPath("renamed"));
+            assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("renamed")));
+        }
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("renamed")));
+            assertArrayEquals(FOLLOWING, Files.readAllBytes(fileSystem.getPath("following")));
+        }
+        assertEquals(ByteArrayAccess.readShortLittleEndian(bytes, 6),
+                ByteArrayAccess.readShortLittleEndian(Files.readAllBytes(archive), 6));
+        try (var reference = new java.util.zip.ZipFile(archive.toFile());
+             var input = reference.getInputStream(reference.getEntry("renamed"))) {
+            assertArrayEquals(CONTENT, input.readAllBytes());
+        }
+        try (var reader = ZipArkivoStreamingReader.open(archive)) {
+            assertTrue(reader.next());
+            assertEquals("renamed", reader.readAttributes().path());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(CONTENT, input.readAllBytes());
+            }
+            assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(FOLLOWING, input.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// A central-only descriptor bit must not add a descriptor requirement to a copied local record.
+    @Test
+    void preservesAbsentLocalDescriptorOnRename(@TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("central-descriptor.zip");
+        var crc = new java.util.zip.CRC32();
+        crc.update(CONTENT);
+        try (var output = new ZipOutputStream(Files.newOutputStream(archive))) {
+            var entry = new ZipEntry("payload");
+            entry.setMethod(ZipEntry.STORED);
+            entry.setSize(CONTENT.length);
+            entry.setCrc(crc.getValue());
+            output.putNextEntry(entry);
+            output.write(CONTENT);
+        }
+        byte[] bytes = Files.readAllBytes(archive);
+        assertEquals(0, ByteArrayAccess.readShortLittleEndian(bytes, 6) & 8);
+        int central = ByteArrayAccess.readIntLittleEndian(bytes, bytes.length - 6);
+        int flags = Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(bytes, central + 8));
+        ByteArrayAccess.writeShortLittleEndian(bytes, central + 8, (short) (flags | 8));
+        Files.write(archive, bytes);
+        try (var fileSystem = ZipArkivoFileSystem.update(archive)) {
+            assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("payload")));
+            Files.move(fileSystem.getPath("payload"), fileSystem.getPath("renamed"));
+        }
+        assertEquals(0, ByteArrayAccess.readShortLittleEndian(Files.readAllBytes(archive), 6) & 8);
+        try (var fileSystem = ZipArkivoFileSystem.open(archive)) {
+            assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("renamed")));
+        }
+        try (var reader = ZipArkivoStreamingReader.open(archive)) {
+            assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(CONTENT, input.readAllBytes());
+            }
+            assertFalse(reader.next());
         }
     }
 

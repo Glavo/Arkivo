@@ -18,7 +18,7 @@ import java.util.Objects;
 @NotNullByDefault
 public final class ArchiveOptions {
     /// The reusable empty option set.
-    public static final ArchiveOptions EMPTY = new ArchiveOptions(Map.of());
+    private static final ArchiveOptions EMPTY = new ArchiveOptions(Map.of());
 
     /// Option values indexed by their stable environment keys.
     private final @Unmodifiable Map<String, Object> values;
@@ -34,7 +34,7 @@ public final class ArchiveOptions {
     /// occur when an option is read. Unknown keys are retained.
     ///
     /// @param environment the environment whose entries are copied
-    /// @return options containing all non-null entries, or [#EMPTY] when none remain
+    /// @return options containing all non-null entries
     /// @throws IllegalArgumentException if an environment key is blank
     public static ArchiveOptions fromEnvironment(Map<String, ?> environment) {
         Objects.requireNonNull(environment, "environment");
@@ -92,23 +92,4 @@ public final class ArchiveOptions {
     public boolean isEmpty() {
         return values.isEmpty();
     }
-
-    /// Returns whether another option set contains the same raw values.
-    @Override
-    public boolean equals(@Nullable Object other) {
-        return this == other || other instanceof ArchiveOptions options && values.equals(options.values);
-    }
-
-    /// Returns the hash code of the configured raw values.
-    @Override
-    public int hashCode() {
-        return values.hashCode();
-    }
-
-    /// Returns a diagnostic string containing the configured raw values.
-    @Override
-    public String toString() {
-        return values.toString();
-    }
-
 }

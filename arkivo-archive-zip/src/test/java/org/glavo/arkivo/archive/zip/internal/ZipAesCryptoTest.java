@@ -160,7 +160,7 @@ public final class ZipAesCryptoTest {
         byte[] encrypted = encrypt(aes, "runtime drain failure".getBytes(StandardCharsets.UTF_8));
         ReadFailingCloseTrackingInputStream delegate = new ReadFailingCloseTrackingInputStream(
                 encrypted,
-                aes.saltSize() + aes.passwordVerifierSize()
+                aes.saltSize() + ZipAesExtraField.PASSWORD_VERIFIER_SIZE
         );
 
         InputStream input = ZipAesCrypto.openDecryptingStream(

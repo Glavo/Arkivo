@@ -14,8 +14,11 @@ import java.util.Objects;
 /// Implements the Huffman/LZ and adaptive audio modes used by RAR 2.x archives.
 @NotNullByDefault
 final class Rar4Lz20Decoder {
-    /// The fixed legacy RAR dictionary size.
-    private static final int DICTIONARY_SIZE = 1 << 22;
+    /// The session budget for retained arrays and active entry buffers.
+    private final RarDecoderMemoryBudget memory;
+
+    /// Whether the retained workspace has been released.
+    private boolean released;
 
     /// The normal-mode main alphabet size.
     private static final int MAIN_ALPHABET_SIZE = 298;
@@ -34,6 +37,9 @@ final class Rar4Lz20Decoder {
 
     /// The largest persisted table, covering four audio channels.
     private static final int PERSISTED_TABLE_SIZE = AUDIO_ALPHABET_SIZE * 4;
+
+    /// Payload of the four audio predictors, persisted lengths, and recent distances, excluding Huffman tables.
+    static final int FIXED_MEMORY_SIZE = 4 * (5 + 4 + 11) * Integer.BYTES + PERSISTED_TABLE_SIZE + 4 * Integer.BYTES;
 
     /// Base match lengths shared with later RAR generations.
     private static final int[] LENGTH_BASES = {
@@ -70,38 +76,28 @@ final class Rar4Lz20Decoder {
     private static final byte[] SHORT_DISTANCE_EXTRA_BITS = {2, 2, 3, 4, 5, 6, 6, 6};
 
     /// The normal-mode main decoder.
-    private final Rar4HuffmanDecoder mainDecoder = new Rar4HuffmanDecoder();
+    private final Rar4HuffmanDecoder mainDecoder;
 
     /// The normal-mode distance decoder.
-    private final Rar4HuffmanDecoder distanceDecoder = new Rar4HuffmanDecoder();
+    private final Rar4HuffmanDecoder distanceDecoder;
 
     /// The normal-mode repeated-distance length decoder.
-    private final Rar4HuffmanDecoder repeatLengthDecoder = new Rar4HuffmanDecoder();
+    private final Rar4HuffmanDecoder repeatLengthDecoder;
 
     /// The four optional per-channel audio decoders.
-    private final Rar4HuffmanDecoder[] audioDecoders = {
-            new Rar4HuffmanDecoder(),
-            new Rar4HuffmanDecoder(),
-            new Rar4HuffmanDecoder(),
-            new Rar4HuffmanDecoder()
-    };
+    private final Rar4HuffmanDecoder[] audioDecoders;
 
     /// The four adaptive audio predictor states.
-    private final AudioState[] audioStates = {
-            new AudioState(),
-            new AudioState(),
-            new AudioState(),
-            new AudioState()
-    };
+    private final AudioState[] audioStates;
 
     /// Persisted delta table lengths for solid streams.
-    private final byte[] previousTable = new byte[PERSISTED_TABLE_SIZE];
+    private final byte[] previousTable;
 
     /// The four most recent distances, newest first.
-    private final int[] recentDistances = new int[4];
+    private final int[] recentDistances;
 
-    /// The fixed 4 MiB dictionary.
-    private byte[] dictionary = new byte[DICTIONARY_SIZE];
+    /// The history window allocated for this decoder's entry sequence.
+    private byte[] dictionary;
 
     /// The next dictionary position to overwrite.
     private int dictionaryPosition;
@@ -131,13 +127,36 @@ final class Rar4Lz20Decoder {
     private boolean tablesAvailable;
 
     /// Creates an empty RAR 2.x decoder.
-    Rar4Lz20Decoder() {
+    Rar4Lz20Decoder(int dictionarySize, RarDecoderMemoryBudget memory) throws IOException {
+        this.memory = memory;
+        long previousMemory = memory.used();
+        memory.reserve((long) FIXED_MEMORY_SIZE + dictionarySize);
+        try {
+            dictionary = new byte[dictionarySize];
+            previousTable = new byte[PERSISTED_TABLE_SIZE];
+            recentDistances = new int[4];
+            audioStates = new AudioState[]{new AudioState(), new AudioState(), new AudioState(), new AudioState()};
+            mainDecoder = new Rar4HuffmanDecoder(memory);
+            distanceDecoder = new Rar4HuffmanDecoder(memory);
+            repeatLengthDecoder = new Rar4HuffmanDecoder(memory);
+            audioDecoders = new Rar4HuffmanDecoder[]{
+                    new Rar4HuffmanDecoder(memory), new Rar4HuffmanDecoder(memory),
+                    new Rar4HuffmanDecoder(memory), new Rar4HuffmanDecoder(memory)
+            };
+        } catch (IOException | RuntimeException | Error failure) {
+            // No part of this decoder escapes a failed construction.
+            memory.release(memory.used() - previousMemory);
+            throw failure;
+        }
     }
 
     /// Decodes one RAR 2.x entry.
     void decode(InputStream input, OutputStream output, long unpackedSize, boolean solid) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(output, "output");
+        if (released) {
+            throw new IOException("RAR2 decoder has been released");
+        }
         if (unpackedSize < 0L) {
             throw new IOException("Compressed RAR2 entry has an unknown unpacked size");
         }
@@ -145,46 +164,56 @@ final class Rar4Lz20Decoder {
             reset();
         }
 
-        Rar4BitInput bits = new Rar4BitInput(input);
-        if (!solid || !tablesAvailable) {
-            readTables(bits);
-        }
-        EntryOutput entryOutput = new EntryOutput(output, unpackedSize);
-        while (!entryOutput.isComplete()) {
-            if (audioMode) {
-                int delta = audioDecoders[currentAudioChannel].decode(bits);
-                if (delta == 256) {
-                    readTables(bits);
-                    continue;
-                }
-                int value = decodeAudio(delta);
-                emit(value, entryOutput);
-                currentAudioChannel++;
-                if (currentAudioChannel == audioChannels) {
-                    currentAudioChannel = 0;
-                }
-                continue;
-            }
-
-            int symbol = mainDecoder.decode(bits);
-            if (symbol < 256) {
-                emit(symbol, entryOutput);
-            } else if (symbol > 269) {
-                decodeNewMatch(bits, symbol - 270, entryOutput);
-            } else if (symbol == 269) {
+        memory.reserve(Rar4BitInput.BUFFER_SIZE);
+        try {
+            Rar4BitInput bits = new Rar4BitInput(input);
+            if (!solid || !tablesAvailable) {
                 readTables(bits);
-            } else if (symbol == 256) {
-                if (lastLength == 0 || lastDistance == 0) {
-                    throw new IOException("RAR2 stream repeats an unavailable match");
-                }
-                copyAndRemember(lastDistance, lastLength, entryOutput);
-            } else if (symbol < 261) {
-                decodeRecentMatch(bits, symbol - 257, entryOutput);
-            } else {
-                decodeShortMatch(bits, symbol - 261, entryOutput);
             }
+            memory.reserve(EntryOutput.BUFFER_SIZE);
+            try {
+                EntryOutput entryOutput = new EntryOutput(output, unpackedSize);
+                while (!entryOutput.isComplete()) {
+                    if (audioMode) {
+                        int delta = audioDecoders[currentAudioChannel].decode(bits);
+                        if (delta == 256) {
+                            readTables(bits);
+                            continue;
+                        }
+                        int value = decodeAudio(delta);
+                        emit(value, entryOutput);
+                        currentAudioChannel++;
+                        if (currentAudioChannel == audioChannels) {
+                            currentAudioChannel = 0;
+                        }
+                        continue;
+                    }
+
+                    int symbol = mainDecoder.decode(bits);
+                    if (symbol < 256) {
+                        emit(symbol, entryOutput);
+                    } else if (symbol > 269) {
+                        decodeNewMatch(bits, symbol - 270, entryOutput);
+                    } else if (symbol == 269) {
+                        readTables(bits);
+                    } else if (symbol == 256) {
+                        if (lastLength == 0 || lastDistance == 0) {
+                            throw new IOException("RAR2 stream repeats an unavailable match");
+                        }
+                        copyAndRemember(lastDistance, lastLength, entryOutput);
+                    } else if (symbol < 261) {
+                        decodeRecentMatch(bits, symbol - 257, entryOutput);
+                    } else {
+                        decodeShortMatch(bits, symbol - 261, entryOutput);
+                    }
+                }
+                entryOutput.finish();
+            } finally {
+                memory.release(EntryOutput.BUFFER_SIZE);
+            }
+        } finally {
+            memory.release(Rar4BitInput.BUFFER_SIZE);
         }
-        entryOutput.finish();
     }
 
     /// Invalidates all retained state.
@@ -192,22 +221,25 @@ final class Rar4Lz20Decoder {
         reset();
     }
 
-    /// Releases the fixed dictionary immediately.
+    /// Discards the workspace and returns all reservations; repeated release has no effect.
     void release() {
-        invalidate();
-        dictionary = new byte[0];
-    }
-
-    /// Restores a released dictionary before reuse.
-    private void ensureDictionary() {
-        if (dictionary.length != DICTIONARY_SIZE) {
-            dictionary = new byte[DICTIONARY_SIZE];
+        if (released) {
+            return;
         }
+        invalidate();
+        mainDecoder.close();
+        distanceDecoder.close();
+        repeatLengthDecoder.close();
+        for (Rar4HuffmanDecoder decoder : audioDecoders) {
+            decoder.close();
+        }
+        memory.release((long) FIXED_MEMORY_SIZE + dictionary.length);
+        dictionary = new byte[0];
+        released = true;
     }
 
     /// Resets dictionary, predictor, and entropy state.
     private void reset() {
-        ensureDictionary();
         dictionaryPosition = 0;
         totalRawSize = 0L;
         Arrays.fill(recentDistances, 0);
@@ -244,57 +276,68 @@ final class Rar4Lz20Decoder {
             }
         }
 
-        byte[] levelLengths = new byte[LEVEL_ALPHABET_SIZE];
-        for (int index = 0; index < levelLengths.length; index++) {
-            levelLengths[index] = (byte) bits.readBits(4);
-        }
-        Rar4HuffmanDecoder levelDecoder = new Rar4HuffmanDecoder();
-        levelDecoder.build(levelLengths, 0, levelLengths.length);
-
-        int tableSize = audioMode
-                ? AUDIO_ALPHABET_SIZE * audioChannels
-                : MAIN_ALPHABET_SIZE + DISTANCE_ALPHABET_SIZE + REPEAT_LENGTH_ALPHABET_SIZE;
-        byte[] table = new byte[PERSISTED_TABLE_SIZE];
-        for (int index = 0; index < tableSize;) {
-            int symbol = levelDecoder.decode(bits);
-            if (symbol < 16) {
-                table[index] = (byte) ((symbol + previousTable[index]) & 0x0f);
-                index++;
-                continue;
+        memory.reserve(LEVEL_ALPHABET_SIZE);
+        try {
+            byte[] levelLengths = new byte[LEVEL_ALPHABET_SIZE];
+            for (int index = 0; index < levelLengths.length; index++) {
+                levelLengths[index] = (byte) bits.readBits(4);
             }
+            try (Rar4HuffmanDecoder levelDecoder = new Rar4HuffmanDecoder(memory)) {
+                levelDecoder.build(levelLengths, 0, levelLengths.length);
 
-            int count;
-            byte value;
-            if (symbol == 16) {
-                if (index == 0) {
-                    throw new IOException("RAR2 Huffman table starts with a repeat symbol");
+                int tableSize = audioMode
+                        ? AUDIO_ALPHABET_SIZE * audioChannels
+                        : MAIN_ALPHABET_SIZE + DISTANCE_ALPHABET_SIZE + REPEAT_LENGTH_ALPHABET_SIZE;
+                memory.reserve(PERSISTED_TABLE_SIZE);
+                try {
+                    byte[] table = new byte[PERSISTED_TABLE_SIZE];
+                    for (int index = 0; index < tableSize;) {
+                        int symbol = levelDecoder.decode(bits);
+                        if (symbol < 16) {
+                            table[index] = (byte) ((symbol + previousTable[index]) & 0x0f);
+                            index++;
+                            continue;
+                        }
+
+                        int count;
+                        byte value;
+                        if (symbol == 16) {
+                            if (index == 0) {
+                                throw new IOException("RAR2 Huffman table starts with a repeat symbol");
+                            }
+                            count = 3 + bits.readBits(2);
+                            value = table[index - 1];
+                        } else {
+                            int extraBits = symbol == 17 ? 3 : 7;
+                            count = (symbol == 17 ? 3 : 11) + bits.readBits(extraBits);
+                            value = 0;
+                        }
+                        int end = Math.min(tableSize, index + count);
+                        Arrays.fill(table, index, end, value);
+                        index = end;
+                    }
+
+                    if (audioMode) {
+                        for (int channel = 0; channel < audioChannels; channel++) {
+                            audioDecoders[channel].build(table, channel * AUDIO_ALPHABET_SIZE, AUDIO_ALPHABET_SIZE);
+                        }
+                    } else {
+                        int mainOffset = 0;
+                        int distanceOffset = mainOffset + MAIN_ALPHABET_SIZE;
+                        int repeatLengthOffset = distanceOffset + DISTANCE_ALPHABET_SIZE;
+                        mainDecoder.build(table, mainOffset, MAIN_ALPHABET_SIZE);
+                        distanceDecoder.build(table, distanceOffset, DISTANCE_ALPHABET_SIZE);
+                        repeatLengthDecoder.build(table, repeatLengthOffset, REPEAT_LENGTH_ALPHABET_SIZE);
+                    }
+                    System.arraycopy(table, 0, previousTable, 0, table.length);
+                    tablesAvailable = true;
+                } finally {
+                    memory.release(PERSISTED_TABLE_SIZE);
                 }
-                count = 3 + bits.readBits(2);
-                value = table[index - 1];
-            } else {
-                int extraBits = symbol == 17 ? 3 : 7;
-                count = (symbol == 17 ? 3 : 11) + bits.readBits(extraBits);
-                value = 0;
             }
-            int end = Math.min(tableSize, index + count);
-            Arrays.fill(table, index, end, value);
-            index = end;
+        } finally {
+            memory.release(LEVEL_ALPHABET_SIZE);
         }
-
-        if (audioMode) {
-            for (int channel = 0; channel < audioChannels; channel++) {
-                audioDecoders[channel].build(table, channel * AUDIO_ALPHABET_SIZE, AUDIO_ALPHABET_SIZE);
-            }
-        } else {
-            int mainOffset = 0;
-            int distanceOffset = mainOffset + MAIN_ALPHABET_SIZE;
-            int repeatLengthOffset = distanceOffset + DISTANCE_ALPHABET_SIZE;
-            mainDecoder.build(table, mainOffset, MAIN_ALPHABET_SIZE);
-            distanceDecoder.build(table, distanceOffset, DISTANCE_ALPHABET_SIZE);
-            repeatLengthDecoder.build(table, repeatLengthOffset, REPEAT_LENGTH_ALPHABET_SIZE);
-        }
-        System.arraycopy(table, 0, previousTable, 0, table.length);
-        tablesAvailable = true;
     }
 
     /// Decodes one new long-distance match.
@@ -369,17 +412,17 @@ final class Rar4Lz20Decoder {
 
     /// Copies one match from the retained dictionary.
     private void copyMatch(int distance, int length, EntryOutput output) throws IOException {
-        long available = Math.min(totalRawSize, DICTIONARY_SIZE);
+        long available = Math.min(totalRawSize, dictionary.length);
         if (distance <= 0 || distance > available) {
             throw new IOException("RAR2 match distance exceeds available dictionary history");
         }
         int source = dictionaryPosition - distance;
         if (source < 0) {
-            source += DICTIONARY_SIZE;
+            source += dictionary.length;
         }
         for (int index = 0; index < length; index++) {
             int value = dictionary[source] & 0xff;
-            source = source + 1 & DICTIONARY_SIZE - 1;
+            source = source + 1 & dictionary.length - 1;
             emit(value, output);
         }
     }
@@ -446,7 +489,7 @@ final class Rar4Lz20Decoder {
     private void emit(int value, EntryOutput output) throws IOException {
         output.accept(value);
         dictionary[dictionaryPosition] = (byte) value;
-        dictionaryPosition = dictionaryPosition + 1 & DICTIONARY_SIZE - 1;
+        dictionaryPosition = dictionaryPosition + 1 & dictionary.length - 1;
         totalRawSize++;
     }
 
@@ -489,6 +532,9 @@ final class Rar4Lz20Decoder {
     /// Buffers one entry's output while enforcing its declared size.
     @NotNullByDefault
     private static final class EntryOutput {
+        /// The decoded-output staging capacity.
+        private static final int BUFFER_SIZE = 64 * 1024;
+
         /// The caller-owned decompressed output.
         private final OutputStream output;
 
@@ -496,7 +542,7 @@ final class Rar4Lz20Decoder {
         private final long expectedSize;
 
         /// The reusable bulk-write buffer.
-        private final byte[] buffer = new byte[64 * 1024];
+        private final byte[] buffer = new byte[BUFFER_SIZE];
 
         /// The number of staged bytes.
         private int bufferSize;

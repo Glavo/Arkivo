@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
@@ -14,6 +16,7 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
+import org.glavo.arkivo.archive.ArkivoPathVolumeTarget;
 import org.glavo.arkivo.archive.PasswordPurpose;
 import org.glavo.arkivo.archive.internal.ArchiveSliceChannel;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
@@ -29,6 +32,7 @@ import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCoderMethod;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
@@ -350,7 +354,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Creates a 7z file system implementation with one input or output backing.
-    private SevenZipArkivoFileSystemImpl(
+    SevenZipArkivoFileSystemImpl(
             SevenZipArkivoFileSystemProvider provider,
             @Nullable Path archivePath,
             @Nullable ArkivoVolumeSource volumes,
@@ -697,7 +701,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     failure = appendFailure(failure, exception);
                 }
             }
-            if (!closeActionCompleted) {
+            if (!closeActionCompleted && writerClosed && headerEncryptionClosed && splitOutputClosed) {
                 try {
                     if (closeAction != null) {
                         closeAction.run();
@@ -762,7 +766,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 failure = appendFailure(failure, exception);
             }
         }
-        if (!closeActionCompleted) {
+        if (!closeActionCompleted && pendingCommitOutput == null && pendingSplitOutput == null) {
             try {
                 if (closeAction != null) {
                     closeAction.run();
@@ -849,7 +853,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     public UserPrincipalLookupService getUserPrincipalLookupService() {
         try (Operation ignored = beginReadOperation()) {
             ensureOpen();
-            return SevenZipPosixSupport.userPrincipalLookupService();
+            return SevenZipPosixSupport.USER_PRINCIPAL_LOOKUP_SERVICE;
         }
     }
 
@@ -1366,7 +1370,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         } finally {
             if (!completed) {
                 try {
-                    decoded.close();
+                    ForceCloseable.forceClose(decoded);
                 } catch (IOException | RuntimeException | Error exception) {
                     if (failure != null) {
                         appendFailure(failure, exception);
@@ -1397,7 +1401,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                             "7z packed stream data does not match CRC-32"
                     );
                 }
-                inputs.add(Channels.newInputStream(channel));
+                inputs.add(StreamChannelAdapters.inputStream(channel));
             }
             return List.copyOf(inputs);
         } catch (IOException | RuntimeException | Error exception) {
@@ -1414,12 +1418,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Closes input streams in declaration order while preserving every close failure.
+    /// Cancels inputs from failed setup in declaration order while preserving every cleanup failure.
     private static void closeInputStreams(List<? extends InputStream> inputs) throws IOException {
         Throwable failure = null;
         for (InputStream input : inputs) {
             try {
-                input.close();
+                ForceCloseable.forceClose(input);
             } catch (IOException | RuntimeException | Error exception) {
                 failure = appendFailure(failure, exception);
             }
@@ -1504,7 +1508,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Reads a symbolic link target.
     ///
     /// The stored UTF-8 target text is converted to a path in this file system without resolving it against the link or
-    /// checking whether the target exists.
+    /// checking whether the target exists. Malformed UTF-8 is rejected without replacing bytes.
     ///
     /// @param link the existing symbolic-link entry
     /// @return a 7z path containing the stored target text
@@ -1517,7 +1521,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             if (metadata == null || !SevenZipPosixSupport.isSymbolicLink(metadata.windowsAttributes())) {
                 throw new NotLinkException(link.toString());
             }
-            return getPath(new String(readSymbolicLinkBytes(metadata), StandardCharsets.UTF_8));
+            return getPath(StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(readSymbolicLinkBytes(metadata))).toString());
         }
     }
 
@@ -1839,9 +1843,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         long splitSize = outputSplitSize;
         if (target == null && config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
             Path currentArchivePath = Objects.requireNonNull(archivePath, "archivePath");
-            SevenZipPathVolumeTarget pathTarget =
-                    new SevenZipPathVolumeTarget(currentArchivePath, config.openOptions());
-            pathTarget.validateTargetOptions();
+            ArkivoPathVolumeTarget pathTarget = new ArkivoPathVolumeTarget(
+                    new SevenZipVolumePathLayout(currentArchivePath), config.openOptions());
+            pathTarget.validate();
             target = pathTarget;
             splitSize = config.splitSize();
         }
@@ -1987,8 +1991,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (outputTarget != null) {
             target = outputTarget;
         } else {
-            target = new SevenZipPathVolumeTarget(
-                    Objects.requireNonNull(archivePath, "archivePath"),
+            target = new ArkivoPathVolumeTarget(
+                    new SevenZipVolumePathLayout(Objects.requireNonNull(archivePath, "archivePath")),
                     config.openOptions()
             );
         }
@@ -2265,7 +2269,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             Objects.requireNonNull(attribute, "attribute");
             String name = attribute.name();
             if ("posix:permissions".equals(name)) {
-                permissions = posixPermissions(attribute);
+                permissions = PosixPermissions.copyOf(attribute.value(), "posix:permissions");
             } else if ("basic:lastModifiedTime".equals(name)) {
                 if (!(attribute.value() instanceof FileTime time)) {
                     throw new IllegalArgumentException("basic:lastModifiedTime must be a FileTime");
@@ -2288,11 +2292,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             windowsAttributes = SevenZipPosixSupport.regularFileWindowsAttributes(permissions);
         }
         return new SevenZipEntryWriteMetadata(lastModifiedTime, null, null, windowsAttributes, null, null);
-    }
-
-    /// Returns POSIX permissions stored by a file attribute.
-    private static Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
-        return PosixPermissions.copyOf(attribute.value(), "posix:permissions");
     }
 
     /// Opens a seekable channel that stages one update-mode entry body.
@@ -2530,10 +2529,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE
             ))) {
-                ByteBuffer source = ByteBuffer.wrap(bytes);
-                while (source.hasRemaining()) {
-                    output.write(source);
-                }
+                StreamChannelAdapters.outputStream(output).write(bytes);
             }
             return content;
         } catch (IOException | RuntimeException | Error exception) {
@@ -2642,7 +2638,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 SevenZipEntryMetadata.NO_DATA_OFFSET,
                 0L,
                 0L,
-                SevenZipFolderDecoder.COPY_METHOD_ID,
+                SevenZipCoderMethod.COPY.methodId(),
                 new byte[0],
                 metadata.creationTime(),
                 metadata.lastAccessTime(),
@@ -3103,12 +3099,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Reads archive metadata from the archive storage.
     private SevenZipArchiveMetadata readArchiveMetadata() throws IOException {
         try (SeekableByteChannel channel = openArchiveChannel()) {
-            ArkivoReadLimitTracker readLimits = ArkivoReadLimitTracker.fromLimits(
-                    config.maximumEntryCount(),
-                    config.maximumEntrySize(),
-                    config.maximumTotalEntrySize(),
-                    config.maximumMetadataSize()
-            );
+            ArkivoReadLimitTracker readLimits = ArkivoReadLimitTracker.fromLimits(config.readLimits());
             SevenZipArchiveMetadata metadata = SevenZipHeaderReader.readArchiveMetadata(
                     channel,
                     config.passwordProvider(),
@@ -3200,6 +3191,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             if (!name.isEmpty() && !".".equals(name)) {
                 if ("..".equals(name)) {
                     throw new IOException("7z entry path must not contain ..");
+                }
+                if (names.isEmpty() && name.length() >= 2 && name.charAt(1) == ':') {
+                    throw new IOException("7z entry path must be relative");
                 }
                 names.add(name);
             }

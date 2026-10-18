@@ -15,8 +15,14 @@ import java.util.Objects;
 /// Implements the adaptive character and LZ model used by RAR 1.5 archives.
 @NotNullByDefault
 final class Rar4Lz15Decoder {
-    /// The fixed legacy RAR dictionary size.
-    private static final int DICTIONARY_SIZE = 1 << 22;
+    /// Payload of the adaptive symbol tables and recent distances.
+    static final int FIXED_MEMORY_SIZE = (7 * 256 + 4) * Integer.BYTES;
+
+    /// The session budget for retained arrays and active entry buffers.
+    private final RarDecoderMemoryBudget memory;
+
+    /// Whether the retained workspace has been released.
+    private boolean released;
 
     /// The initial width used by the first short-length table.
     private static final int LENGTH_START_1 = 2;
@@ -134,31 +140,31 @@ final class Rar4Lz15Decoder {
     };
 
     /// The adaptive literal ordering.
-    private final int[] characters = new int[256];
+    private final int[] characters;
 
     /// The adaptive short-distance ordering.
-    private final int[] shortDistances = new int[256];
+    private final int[] shortDistances;
 
     /// The adaptive long-distance ordering.
-    private final int[] longDistances = new int[256];
+    private final int[] longDistances;
 
     /// The adaptive flag-byte ordering.
-    private final int[] flags = new int[256];
+    private final int[] flags;
 
     /// Frequency-to-position mapping for literals.
-    private final int[] characterPositions = new int[256];
+    private final int[] characterPositions;
 
     /// Frequency-to-position mapping for long distances.
-    private final int[] longDistancePositions = new int[256];
+    private final int[] longDistancePositions;
 
     /// Frequency-to-position mapping for flag bytes.
-    private final int[] flagPositions = new int[256];
+    private final int[] flagPositions;
 
     /// The four recently used distances in circular insertion order.
-    private final int[] oldDistances = new int[4];
+    private final int[] oldDistances;
 
-    /// The fixed 4 MiB dictionary.
-    private byte[] dictionary = new byte[DICTIONARY_SIZE];
+    /// The history window allocated for this decoder's entry sequence.
+    private byte[] dictionary;
 
     /// The next dictionary position to overwrite.
     private int dictionaryPosition;
@@ -218,62 +224,88 @@ final class Rar4Lz15Decoder {
     private int lastLength;
 
     /// Creates an empty RAR 1.5 decoder.
-    Rar4Lz15Decoder() {
-        reset(false);
+    Rar4Lz15Decoder(int dictionarySize, RarDecoderMemoryBudget memory) throws IOException {
+        this.memory = memory;
+        long retainedBytes = (long) FIXED_MEMORY_SIZE + dictionarySize;
+        memory.reserve(retainedBytes);
+        try {
+            characters = new int[256];
+            shortDistances = new int[256];
+            longDistances = new int[256];
+            flags = new int[256];
+            characterPositions = new int[256];
+            longDistancePositions = new int[256];
+            flagPositions = new int[256];
+            oldDistances = new int[4];
+            dictionary = new byte[dictionarySize];
+            reset(false);
+        } catch (RuntimeException | Error failure) {
+            memory.release(retainedBytes);
+            throw failure;
+        }
     }
 
     /// Decodes one RAR 1.5 entry.
     void decode(InputStream input, OutputStream output, long unpackedSize, boolean solid) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(output, "output");
+        if (released) {
+            throw new IOException("RAR1.5 decoder has been released");
+        }
         if (unpackedSize < 0L) {
             throw new IOException("Compressed RAR1.5 entry has an unknown unpacked size");
         }
-        reset(solid);
-        Rar4BitInput bits = new Rar4BitInput(input);
-        EntryOutput entryOutput = new EntryOutput(output, unpackedSize);
-        if (!entryOutput.isComplete()) {
-            readFlagByte(bits);
-            flagCount = 8;
-        }
-
-        while (!entryOutput.isComplete()) {
-            if (staticMode != 0) {
-                decodeLiteral(bits, entryOutput);
-                continue;
-            }
-            if (--flagCount < 0) {
+        int stagingBytes = Rar4BitInput.BUFFER_SIZE + EntryOutput.BUFFER_SIZE;
+        memory.reserve(stagingBytes);
+        try {
+            reset(solid);
+            Rar4BitInput bits = new Rar4BitInput(input);
+            EntryOutput entryOutput = new EntryOutput(output, unpackedSize);
+            if (!entryOutput.isComplete()) {
                 readFlagByte(bits);
-                flagCount = 7;
-            }
-            if ((flagBuffer & 0x80) != 0) {
-                flagBuffer <<= 1;
-                if (lzActivity > huffmanActivity) {
-                    decodeLongMatch(bits, entryOutput);
-                } else {
-                    decodeLiteral(bits, entryOutput);
-                }
-                continue;
+                flagCount = 8;
             }
 
-            flagBuffer <<= 1;
-            if (--flagCount < 0) {
-                readFlagByte(bits);
-                flagCount = 7;
-            }
-            if ((flagBuffer & 0x80) != 0) {
-                flagBuffer <<= 1;
-                if (lzActivity > huffmanActivity) {
+            while (!entryOutput.isComplete()) {
+                if (staticMode != 0) {
                     decodeLiteral(bits, entryOutput);
-                } else {
-                    decodeLongMatch(bits, entryOutput);
+                    continue;
                 }
-            } else {
+                if (--flagCount < 0) {
+                    readFlagByte(bits);
+                    flagCount = 7;
+                }
+                if ((flagBuffer & 0x80) != 0) {
+                    flagBuffer <<= 1;
+                    if (lzActivity > huffmanActivity) {
+                        decodeLongMatch(bits, entryOutput);
+                    } else {
+                        decodeLiteral(bits, entryOutput);
+                    }
+                    continue;
+                }
+
                 flagBuffer <<= 1;
-                decodeShortMatch(bits, entryOutput);
+                if (--flagCount < 0) {
+                    readFlagByte(bits);
+                    flagCount = 7;
+                }
+                if ((flagBuffer & 0x80) != 0) {
+                    flagBuffer <<= 1;
+                    if (lzActivity > huffmanActivity) {
+                        decodeLiteral(bits, entryOutput);
+                    } else {
+                        decodeLongMatch(bits, entryOutput);
+                    }
+                } else {
+                    flagBuffer <<= 1;
+                    decodeShortMatch(bits, entryOutput);
+                }
             }
+            entryOutput.finish();
+        } finally {
+            memory.release(stagingBytes);
         }
-        entryOutput.finish();
     }
 
     /// Invalidates all retained solid state.
@@ -281,15 +313,19 @@ final class Rar4Lz15Decoder {
         reset(false);
     }
 
-    /// Releases the fixed dictionary immediately.
+    /// Discards the workspace and returns its reservation; repeated release has no effect.
     void release() {
+        if (released) {
+            return;
+        }
         invalidate();
+        memory.release((long) FIXED_MEMORY_SIZE + dictionary.length);
         dictionary = new byte[0];
+        released = true;
     }
 
     /// Resets per-entry state and, when required, the complete adaptive model.
     private void reset(boolean solid) {
-        ensureDictionary();
         if (!solid) {
             dictionaryPosition = 0;
             totalRawSize = 0L;
@@ -313,13 +349,6 @@ final class Rar4Lz15Decoder {
         flagBuffer = 0;
         staticMode = 0;
         shortRepeatCount = 0;
-    }
-
-    /// Restores a released dictionary before reuse.
-    private void ensureDictionary() {
-        if (dictionary.length != DICTIONARY_SIZE) {
-            dictionary = new byte[DICTIONARY_SIZE];
-        }
     }
 
     /// Initializes all adaptive symbol orderings for a new non-solid stream.
@@ -619,14 +648,14 @@ final class Rar4Lz15Decoder {
 
     /// Copies one potentially overlapping dictionary match.
     private void copyMatch(int distance, int length, EntryOutput output) throws IOException {
-        long available = Math.min(totalRawSize, DICTIONARY_SIZE);
+        long available = Math.min(totalRawSize, dictionary.length);
         if (distance <= 0 || distance > available) {
             throw new IOException("RAR1.5 match distance exceeds available dictionary history");
         }
-        int source = dictionaryPosition - distance & DICTIONARY_SIZE - 1;
+        int source = dictionaryPosition - distance & dictionary.length - 1;
         for (int index = 0; index < length; index++) {
             int value = dictionary[source] & 0xff;
-            source = source + 1 & DICTIONARY_SIZE - 1;
+            source = source + 1 & dictionary.length - 1;
             emit(value, output);
         }
     }
@@ -635,7 +664,7 @@ final class Rar4Lz15Decoder {
     private void emit(int value, EntryOutput output) throws IOException {
         output.accept(value);
         dictionary[dictionaryPosition] = (byte) value;
-        dictionaryPosition = dictionaryPosition + 1 & DICTIONARY_SIZE - 1;
+        dictionaryPosition = dictionaryPosition + 1 & dictionary.length - 1;
         totalRawSize++;
     }
 
@@ -688,6 +717,9 @@ final class Rar4Lz15Decoder {
     /// Buffers one entry's output while enforcing its declared size.
     @NotNullByDefault
     private static final class EntryOutput {
+        /// The decoded-output staging capacity.
+        private static final int BUFFER_SIZE = 64 * 1024;
+
         /// The caller-owned decompressed output.
         private final OutputStream output;
 
@@ -695,7 +727,7 @@ final class Rar4Lz15Decoder {
         private final long expectedSize;
 
         /// The reusable bulk-write buffer.
-        private final byte[] buffer = new byte[64 * 1024];
+        private final byte[] buffer = new byte[BUFFER_SIZE];
 
         /// The number of staged bytes.
         private int bufferSize;

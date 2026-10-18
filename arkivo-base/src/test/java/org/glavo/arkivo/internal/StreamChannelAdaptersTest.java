@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channel;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
@@ -27,13 +28,17 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -47,6 +52,232 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies progress-safe and close-retryable stream/channel adaptation.
 @NotNullByDefault
 final class StreamChannelAdaptersTest {
+    /// Serializes concurrent close attempts, retaining retry behavior when the first attempt fails.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesConcurrentChannelClosure(boolean readable) throws Exception {
+        for (boolean failFirstClose : new boolean[]{false, true}) {
+            var gate = new TransferGate();
+            IOException closeFailure = new IOException("First close failed");
+            Closeable endpoint = () -> {
+                int call = gate.calls.incrementAndGet();
+                gate.awaitFirstTransfer(call);
+                if (failFirstClose && call == 1) throw closeFailure;
+            };
+            Channel channel = readable
+                    ? StreamChannelAdapters.readableChannel(new InputStream() {
+                        @Override
+                        public int read() {
+                            return -1;
+                        }
+
+                        @Override
+                        public void close() throws IOException {
+                            endpoint.close();
+                        }
+                    })
+                    : StreamChannelAdapters.writableChannel(new OutputStream() {
+                        @Override
+                        public void write(int value) {
+                        }
+
+                        @Override
+                        public void close() throws IOException {
+                            endpoint.close();
+                        }
+                    });
+            var first = new FutureTask<@Nullable Void>(() -> {
+                channel.close();
+                return null;
+            });
+            var second = new FutureTask<@Nullable Void>(() -> {
+                channel.close();
+                return null;
+            });
+            startDaemon(first);
+            try {
+                assertTrue(gate.entered.await(5, TimeUnit.SECONDS));
+                Thread secondThread = startDaemon(second);
+                awaitBlocked(secondThread);
+                assertEquals(1, gate.calls.get());
+                gate.release.countDown();
+                if (failFirstClose) {
+                    ExecutionException failure = assertThrows(ExecutionException.class,
+                            () -> first.get(5, TimeUnit.SECONDS));
+                    assertSame(closeFailure, failure.getCause());
+                } else {
+                    first.get(5, TimeUnit.SECONDS);
+                }
+                second.get(5, TimeUnit.SECONDS);
+                assertFalse(channel.isOpen());
+                channel.close();
+                assertEquals(failFirstClose ? 2 : 1, gate.calls.get());
+            } finally {
+                gate.release.countDown();
+                channel.close();
+            }
+        }
+    }
+
+    /// Serializes complete reads, including the copy out of shared transfer storage, without blocking closure.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesConcurrentReads(boolean direct) throws Exception {
+        for (boolean closeWhileBlocked : new boolean[]{false, true}) {
+            var gate = new TransferGate();
+            InputStream input = new InputStream() {
+                @Override
+                public int read() {
+                    throw new AssertionError("Unexpected scalar read");
+                }
+
+                @Override
+                public int read(byte[] bytes, int offset, int length) throws IOException {
+                    int call = gate.calls.incrementAndGet();
+                    bytes[offset] = (byte) ('A' + call - 1);
+                    gate.awaitFirstTransfer(call);
+                    return 1;
+                }
+            };
+            try (ReadableByteChannel channel = StreamChannelAdapters.readableChannel(input)) {
+                ByteBuffer firstBuffer = direct ? ByteBuffer.allocateDirect(1) : ByteBuffer.allocate(1);
+                ByteBuffer secondBuffer = direct ? ByteBuffer.allocateDirect(1) : ByteBuffer.allocate(1);
+                var first = new FutureTask<>(() -> channel.read(firstBuffer));
+                var second = new FutureTask<>(() -> channel.read(secondBuffer));
+                startDaemon(first);
+                try {
+                    assertTrue(gate.entered.await(5, TimeUnit.SECONDS));
+                    Thread secondThread = startDaemon(second);
+                    awaitBlocked(secondThread);
+                    assertEquals(1, gate.calls.get());
+                    if (closeWhileBlocked) {
+                        channel.close();
+                        assertFalse(channel.isOpen());
+                    }
+                    gate.release.countDown();
+                    assertEquals(1, first.get(5, TimeUnit.SECONDS));
+                    assertEquals('A', firstBuffer.get(0));
+                    if (closeWhileBlocked) {
+                        ExecutionException failure = assertThrows(ExecutionException.class,
+                                () -> second.get(5, TimeUnit.SECONDS));
+                        assertEquals(ClosedChannelException.class, failure.getCause().getClass());
+                        assertEquals(0, secondBuffer.position());
+                        assertEquals(1, gate.calls.get());
+                    } else {
+                        assertEquals(1, second.get(5, TimeUnit.SECONDS));
+                        assertEquals('B', secondBuffer.get(0));
+                    }
+                } finally {
+                    gate.release.countDown();
+                }
+            }
+        }
+    }
+
+    /// Keeps complete multi-chunk writes contiguous and rejects queued writes after concurrent closure.
+    @ParameterizedTest
+    @ValueSource(strings = {"heap", "direct", "read-only"})
+    void serializesConcurrentWrites(String kind) throws Exception {
+        for (boolean closeWhileBlocked : new boolean[]{false, true}) {
+            var gate = new TransferGate();
+            var bytes = new ByteArrayOutputStream();
+            OutputStream output = new OutputStream() {
+                @Override
+                public void write(int value) {
+                    throw new AssertionError("Unexpected scalar write");
+                }
+
+                @Override
+                public void write(byte[] source, int offset, int length) throws IOException {
+                    gate.awaitFirstTransfer(gate.calls.incrementAndGet());
+                    bytes.write(source, offset, length);
+                }
+            };
+            try (WritableByteChannel channel = StreamChannelAdapters.writableChannel(output)) {
+                int size = 16_385;
+                ByteBuffer firstBuffer = transferSource(kind, size, (byte) 'A');
+                ByteBuffer secondBuffer = transferSource(kind, size, (byte) 'B');
+                var first = new FutureTask<>(() -> channel.write(firstBuffer));
+                var second = new FutureTask<>(() -> channel.write(secondBuffer));
+                startDaemon(first);
+                try {
+                    assertTrue(gate.entered.await(5, TimeUnit.SECONDS));
+                    Thread secondThread = startDaemon(second);
+                    awaitBlocked(secondThread);
+                    assertEquals(1, gate.calls.get());
+                    if (closeWhileBlocked) {
+                        channel.close();
+                        assertFalse(channel.isOpen());
+                    }
+                    gate.release.countDown();
+                    assertEquals(size, first.get(5, TimeUnit.SECONDS));
+                    if (closeWhileBlocked) {
+                        ExecutionException failure = assertThrows(ExecutionException.class,
+                                () -> second.get(5, TimeUnit.SECONDS));
+                        assertEquals(ClosedChannelException.class, failure.getCause().getClass());
+                        assertEquals(0, secondBuffer.position());
+                    } else {
+                        assertEquals(size, second.get(5, TimeUnit.SECONDS));
+                    }
+                    byte[] expected = new byte[closeWhileBlocked ? size : size * 2];
+                    Arrays.fill(expected, 0, size, (byte) 'A');
+                    Arrays.fill(expected, size, expected.length, (byte) 'B');
+                    assertArrayEquals(expected, bytes.toByteArray());
+                } finally {
+                    gate.release.countDown();
+                }
+            }
+        }
+    }
+
+    /// Creates a source that selects one of the adapter's transfer paths.
+    private static ByteBuffer transferSource(String kind, int size, byte value) {
+        ByteBuffer buffer = kind.equals("direct") ? ByteBuffer.allocateDirect(size) : ByteBuffer.allocate(size);
+        while (buffer.hasRemaining()) buffer.put(value);
+        buffer.flip();
+        return kind.equals("read-only") ? buffer.asReadOnlyBuffer() : buffer;
+    }
+
+    /// Starts a test worker without allowing a failed synchronization assertion to retain the test process.
+    private static Thread startDaemon(Runnable operation) {
+        Thread thread = new Thread(operation, "adapter-transfer");
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
+    }
+
+    /// Waits until a competing operation reaches the adapter monitor; the deadline detects a stuck test.
+    private static void awaitBlocked(Thread thread) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (thread.isAlive() && thread.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(Thread.State.BLOCKED, thread.getState());
+    }
+
+    /// Holds the first stream operation so that another channel operation can contend with it.
+    @NotNullByDefault
+    private static final class TransferGate {
+        /// Signals that the first operation has reached the backing stream.
+        private final CountDownLatch entered = new CountDownLatch(1);
+        /// Releases the first operation independently from the channel's transfer lock.
+        private final CountDownLatch release = new CountDownLatch(1);
+        /// Counts accesses to the stream, including later chunks of the same channel write.
+        private final AtomicInteger calls = new AtomicInteger();
+
+        /// Blocks only the first invocation, with a timeout to prevent a broken test from hanging the suite.
+        private void awaitFirstTransfer(int call) throws IOException {
+            if (call != 1) return;
+            entered.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) throw new IOException("Transfer was not released");
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Transfer interrupted", failure);
+            }
+        }
+    }
+
     /// Keeps a previously delivered endpoint failure primary when automatic closure reports the same object.
     @ParameterizedTest
     @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
@@ -267,6 +498,205 @@ final class StreamChannelAdaptersTest {
             endpoint.releaseOperation.countDown();
             executor.shutdownNow();
             assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    /// Serializes output-stream closure and its failure bookkeeping before a concurrent retry can succeed.
+    @Test
+    void serializesConcurrentOutputStreamClosure() throws Exception {
+        var gate = new TransferGate();
+        IOException failure = new IOException("First close failed");
+        WritableByteChannel endpoint = new WritableByteChannel() {
+            /// Whether cleanup has completed.
+            private volatile boolean open = true;
+
+            /// Rejects data operations not used by this test.
+            @Override
+            public int write(ByteBuffer source) { throw new AssertionError("Unexpected write"); }
+
+            /// Reports successful physical cleanup.
+            @Override
+            public boolean isOpen() { return open; }
+
+            /// Counts calls before serializing physical cleanup, failing the first attempt.
+            @Override
+            public void close() throws IOException {
+                int call = gate.calls.incrementAndGet();
+                synchronized (this) {
+                    gate.awaitFirstTransfer(call);
+                    if (call == 1) throw failure;
+                    open = false;
+                }
+            }
+        };
+        OutputStream output = StreamChannelAdapters.outputStream(endpoint);
+        var first = new FutureTask<IOException>(() -> assertThrows(IOException.class, output::close));
+        var second = new FutureTask<@Nullable Void>(() -> { output.close(); return null; });
+        startDaemon(first);
+        try {
+            assertTrue(gate.entered.await(5, TimeUnit.SECONDS));
+            Thread secondThread = startDaemon(second);
+            awaitBlocked(secondThread);
+            assertEquals(1, gate.calls.get());
+            gate.release.countDown();
+            assertSame(failure, first.get(5, TimeUnit.SECONDS));
+            second.get(5, TimeUnit.SECONDS);
+            output.close();
+            assertEquals(2, gate.calls.get());
+            assertFalse(endpoint.isOpen());
+        } finally {
+            gate.release.countDown();
+            output.close();
+        }
+    }
+
+    /// Retains input failures until an in-flight graceful close completes after successful cancellation.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesFailureWhenForceCloseOvertakesGracefulClose(boolean channelAdapter) throws Exception {
+        var endpoint = new CancellableFailureInput();
+        endpoint.blockClose = true;
+        Closeable adapter = channelAdapter
+                ? StreamChannelAdapters.readableChannel(endpoint)
+                : StreamChannelAdapters.inputStream(endpoint);
+        var pending = new FutureTask<IOException>(() -> assertThrows(IOException.class, () -> {
+            try (adapter) {
+                if (adapter instanceof ReadableByteChannel channel) channel.read(ByteBuffer.allocate(1));
+                else ((InputStream) adapter).read();
+            }
+        }));
+        startDaemon(pending);
+        try {
+            assertTrue(endpoint.closeEntered.await(5, TimeUnit.SECONDS));
+            ForceCloseable.forceClose(adapter);
+            endpoint.releaseClose.countDown();
+            IOException failure = pending.get(5, TimeUnit.SECONDS);
+            assertSame(endpoint.failure, failure);
+            assertEquals(1, failure.getSuppressed().length);
+            assertSame(failure, failure.getSuppressed()[0].getCause());
+            adapter.close();
+        } finally {
+            endpoint.releaseClose.countDown();
+            ForceCloseable.forceClose(adapter);
+        }
+    }
+
+    /// Records a read failure arriving after cancellation before a pending graceful close repeats it.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesLateReadFailureAfterCancellation(boolean channelAdapter) throws Exception {
+        var endpoint = new CancellableFailureInput();
+        endpoint.blockRead = true;
+        endpoint.blockClose = true;
+        Closeable adapter = channelAdapter
+                ? StreamChannelAdapters.readableChannel(endpoint)
+                : StreamChannelAdapters.inputStream(endpoint);
+        var read = new FutureTask<IOException>(() -> assertThrows(IOException.class, () -> {
+            if (adapter instanceof ReadableByteChannel channel) channel.read(ByteBuffer.allocate(1));
+            else ((InputStream) adapter).read();
+        }));
+        var close = new FutureTask<IOException>(() -> assertThrows(IOException.class, adapter::close));
+        startDaemon(read);
+        try {
+            assertTrue(endpoint.readEntered.await(5, TimeUnit.SECONDS));
+            startDaemon(close);
+            assertTrue(endpoint.closeEntered.await(5, TimeUnit.SECONDS));
+            ForceCloseable.forceClose(adapter);
+            endpoint.releaseRead.countDown();
+            assertSame(endpoint.failure, read.get(5, TimeUnit.SECONDS));
+            endpoint.releaseClose.countDown();
+            assertSame(endpoint.failure, close.get(5, TimeUnit.SECONDS).getCause());
+        } finally {
+            endpoint.releaseRead.countDown();
+            endpoint.releaseClose.countDown();
+            ForceCloseable.forceClose(adapter);
+        }
+    }
+
+    /// Does not wrap a new cancellation failure a second time when ordinary close retries cancellation.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesDistinctAbortRetryFailure(boolean channelAdapter) throws IOException {
+        var endpoint = new CancellableFailureInput();
+        Closeable adapter = channelAdapter
+                ? StreamChannelAdapters.readableChannel(endpoint)
+                : StreamChannelAdapters.inputStream(endpoint);
+        endpoint.abortFailure = endpoint.failure;
+        assertSame(endpoint.failure, assertThrows(IOException.class, () -> ForceCloseable.forceClose(adapter)));
+        IOException next = new IOException("Different abort failure");
+        endpoint.abortFailure = next;
+        assertSame(next, assertThrows(IOException.class, adapter::close));
+        assertSame(next, assertThrows(IOException.class, adapter::close).getCause());
+        endpoint.abortFailure = null;
+        adapter.close();
+        assertFalse(endpoint.isOpen());
+    }
+
+    /// Supplies both input shapes with independent graceful and abortive cleanup.
+    @NotNullByDefault
+    private static final class CancellableFailureInput extends InputStream implements ReadableByteChannel, ForceCloseable {
+        /// Exception reused by reads and graceful cleanup.
+        private final IOException failure = new IOException("Input failure");
+        /// Signals entry into graceful cleanup.
+        private final CountDownLatch closeEntered = new CountDownLatch(1);
+        /// Releases the graceful cleanup attempt.
+        private final CountDownLatch releaseClose = new CountDownLatch(1);
+        /// Whether graceful cleanup waits for explicit release.
+        private boolean blockClose;
+        /// Signals entry into a read operation.
+        private final CountDownLatch readEntered = new CountDownLatch(1);
+        /// Releases a read operation after cancellation.
+        private final CountDownLatch releaseRead = new CountDownLatch(1);
+        /// Whether reads wait for explicit release.
+        private boolean blockRead;
+        /// Failure currently reported by cancellation, or null for success.
+        private @Nullable IOException abortFailure;
+        /// Whether cancellation has yet to finish.
+        private volatile boolean open = true;
+
+        /// Fails without producing a byte.
+        @Override
+        public int read() throws IOException {
+            readEntered.countDown();
+            if (blockRead) {
+                try {
+                    assertTrue(releaseRead.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(exception);
+                }
+            }
+            throw failure;
+        }
+
+        /// Fails without modifying the destination.
+        @Override
+        public int read(ByteBuffer target) throws IOException { return read(); }
+
+        /// Reports whether cancellation has completed.
+        @Override
+        public boolean isOpen() { return open; }
+
+        /// Waits if requested, then repeats the read failure.
+        @Override
+        public void close() throws IOException {
+            closeEntered.countDown();
+            if (blockClose) {
+                try {
+                    assertTrue(releaseClose.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(exception);
+                }
+            }
+            throw failure;
+        }
+
+        /// Cancels without waiting for graceful cleanup.
+        @Override
+        public void forceClose() throws IOException {
+            if (abortFailure != null) throw abortFailure;
+            open = false;
         }
     }
 

@@ -51,7 +51,7 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
     private byte[] cachedFrame = new byte[0];
 
     /// Whether this logical channel remains open.
-    private boolean open = true;
+    private volatile boolean open = true;
 
     /// Whether source ownership has been discharged successfully.
     private boolean closeComplete;
@@ -111,7 +111,7 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
 
     /// Reads logical bytes, decoding and caching only frames crossed by this request.
     @Override
-    public int read(ByteBuffer target) throws IOException {
+    public synchronized int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
         if (target.isReadOnly()) {
@@ -154,14 +154,14 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
 
     /// Returns the current logical decoded position.
     @Override
-    public long position() throws IOException {
+    public synchronized long position() throws IOException {
         ensureOpen();
         return position;
     }
 
     /// Changes the current logical decoded position without decoding intervening frames.
     @Override
-    public SeekableByteChannel position(long newPosition) throws IOException {
+    public synchronized SeekableByteChannel position(long newPosition) throws IOException {
         if (newPosition < 0L) {
             throw new IllegalArgumentException("newPosition must not be negative");
         }
@@ -200,7 +200,7 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
     /// Failed source closure may be retried. An exception already delivered by this channel is wrapped in a new
     /// `IOException` when it recurs during cleanup, preventing self-suppression by try-with-resources.
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         if (open) {
             open = false;
             cachedFrame = new byte[0];
@@ -222,7 +222,7 @@ final class ZstdSeekableByteChannel implements SeekableByteChannel {
         }
     }
 
-    /// Records a delivered exception without holding the monitor during source I/O or closure.
+    /// Records a delivered exception until source cleanup completes.
     private synchronized boolean recordFailure(Throwable failure) {
         if (closeComplete) {
             return true;

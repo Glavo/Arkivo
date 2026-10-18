@@ -23,10 +23,11 @@ import java.util.Set;
 ///
 /// Endpoint failures retain their original type and identity when first reported. If cleanup rethrows an exception
 /// already reported by this adapter, it is wrapped in a new `IOException` so automatic cleanup cannot suppress an
-/// exception on itself. Distinct cleanup failures retain their original type and identity. Successful cleanup remains
-/// idempotent and releases the recorded failure identities; failed cleanup may be retried.
+/// exception on itself. Distinct cleanup failures retain their original type and identity. Successful cleanup is
+/// idempotent; failed cleanup may be retried.
 ///
-/// @implNote Endpoint I/O and closure run outside the monitor protecting failure identities.
+/// @implNote Channel reads and writes are serialized independently of closure. Endpoint I/O and closure run outside
+/// the monitor protecting failure identities.
 @NotNullByDefault
 public final class StreamChannelAdapters {
     /// The largest temporary transfer used for a direct buffer.
@@ -37,6 +38,8 @@ public final class StreamChannelAdapters {
     }
 
     /// Returns a channel that owns and reads directly from the input stream.
+    /// Concurrent reads are serialized. Closure invokes the stream's close method without acquiring the read lock;
+    /// the stream determines whether closure unblocks an outstanding read.
     ///
     /// @param source the input stream whose ownership is transferred to the channel
     /// @return a readable channel that preserves close-retry behavior
@@ -50,6 +53,8 @@ public final class StreamChannelAdapters {
     /// If a later chunk fails, earlier completed chunks remain consumed. A failing stream write may have emitted an
     /// unknown number of bytes, which cannot be reflected in the source position. Empty writes do not access the stream.
     /// The channel does not retain source buffers or flush the stream after writing.
+    /// Concurrent writes are serialized. Closure invokes the stream's close method without acquiring the write lock;
+    /// the stream determines whether closure unblocks an outstanding write.
     ///
     /// @param target the output stream whose ownership is transferred to the channel
     /// @return a writable channel that preserves close-retry behavior
@@ -75,7 +80,19 @@ public final class StreamChannelAdapters {
 
     /// Adapts one input stream to a readable channel.
     @NotNullByDefault
-    private static final class InputStreamChannel implements ReadableByteChannel {
+    private static final class InputStreamChannel implements ReadableByteChannel, ForceCloseable {
+        /// Serializes transfers without preventing concurrent endpoint closure.
+        private final Object ioLock = new Object();
+
+        /// Serializes close attempts independently of transfers and failure bookkeeping.
+        private final Object closeLock = new Object();
+
+        /// Serializes abort attempts without waiting for graceful source closure.
+        private final Object forceCloseLock = new Object();
+
+        /// Whether source cleanup must bypass draining and final validation.
+        private volatile boolean abortRequested;
+
         /// Previously reported endpoint failures, allocated only after an operation fails.
         private @Nullable Set<Throwable> reportedFailures;
 
@@ -86,7 +103,7 @@ public final class StreamChannelAdapters {
         private byte @Nullable [] transferBuffer;
 
         /// Whether this adapter remains open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// Creates an input-stream channel.
         private InputStreamChannel(InputStream source) {
@@ -96,37 +113,39 @@ public final class StreamChannelAdapters {
         /// Performs one stream read and preserves zero-progress results for the channel caller.
         @Override
         public int read(ByteBuffer target) throws IOException {
-            Objects.requireNonNull(target, "target");
-            ensureOpen();
-            if (target.isReadOnly()) {
-                throw new IllegalArgumentException("target must be writable");
-            }
-            if (!target.hasRemaining()) {
-                return 0;
-            }
-            if (target.hasArray()) {
-                int position = target.position();
-                int read = readSource(
-                        target.array(),
-                        target.arrayOffset() + position,
-                        target.remaining()
-                );
+            synchronized (ioLock) {
+                Objects.requireNonNull(target, "target");
+                ensureOpen();
+                if (target.isReadOnly()) {
+                    throw new IllegalArgumentException("target must be writable");
+                }
+                if (!target.hasRemaining()) {
+                    return 0;
+                }
+                if (target.hasArray()) {
+                    int position = target.position();
+                    int read = readSource(
+                            target.array(),
+                            target.arrayOffset() + position,
+                            target.remaining()
+                    );
+                    if (read > 0) {
+                        target.position(position + read);
+                    }
+                    return read;
+                }
+
+                byte @Nullable [] buffer = transferBuffer;
+                if (buffer == null) {
+                    buffer = new byte[TRANSFER_SIZE];
+                    transferBuffer = buffer;
+                }
+                int read = readSource(buffer, 0, Math.min(target.remaining(), buffer.length));
                 if (read > 0) {
-                    target.position(position + read);
+                    target.put(buffer, 0, read);
                 }
                 return read;
             }
-
-            byte @Nullable [] buffer = transferBuffer;
-            if (buffer == null) {
-                buffer = new byte[TRANSFER_SIZE];
-                transferBuffer = buffer;
-            }
-            int read = readSource(buffer, 0, Math.min(target.remaining(), buffer.length));
-            if (read > 0) {
-                target.put(buffer, 0, read);
-            }
-            return read;
         }
 
         /// Reads the source and records failures that must remain primary during automatic cleanup.
@@ -142,34 +161,68 @@ public final class StreamChannelAdapters {
         /// Returns whether this adapter remains open.
         @Override
         public boolean isOpen() {
-            return open;
+            return open && !abortRequested;
         }
 
         /// Closes the stream and commits closure only after success.
         @Override
         public void close() throws IOException {
-            if (!open) {
-                return;
-            }
-            try {
-                source.close();
-                synchronized (this) {
-                    open = false;
-                    reportedFailures = null;
+            synchronized (closeLock) {
+                if (!open) {
+                    return;
                 }
-            } catch (IOException | RuntimeException | Error failure) {
-                if (!recordFailure(failure)) {
-                    IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
-                    recordFailure(cleanupFailure);
-                    throw cleanupFailure;
+                if (abortRequested) {
+                    forceClose();
+                    return;
                 }
-                throw failure;
+                try {
+                    source.close();
+                    synchronized (forceCloseLock) {
+                        if (!abortRequested) {
+                            synchronized (this) {
+                                open = false;
+                                reportedFailures = null;
+                            }
+                        }
+                    }
+                } catch (IOException | RuntimeException | Error failure) {
+                    if (!recordFailure(failure)) {
+                        IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                        recordFailure(cleanupFailure);
+                        throw cleanupFailure;
+                    }
+                    throw failure;
+                }
             }
         }
 
-        /// Records a failure while open and reports whether it needs no repeated-cleanup wrapper.
+        /// Cancels source operations without acquiring the ordinary close or transfer lock.
+        @Override
+        public void forceClose() throws IOException {
+            abortRequested = true;
+            synchronized (forceCloseLock) {
+                if (!open) {
+                    return;
+                }
+                try {
+                    ForceCloseable.forceClose(source);
+                    synchronized (this) {
+                        open = false;
+                    }
+                } catch (IOException | RuntimeException | Error failure) {
+                    if (!recordFailure(failure)) {
+                        IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                        recordFailure(cleanupFailure);
+                        throw cleanupFailure;
+                    }
+                    throw failure;
+                }
+            }
+        }
+
+        /// Retains failures after cancellation because a concurrent graceful close may still report them.
         private synchronized boolean recordFailure(Throwable failure) {
-            if (!open) {
+            if (!open && !abortRequested) {
                 return true;
             }
             if (reportedFailures == null) {
@@ -180,7 +233,7 @@ public final class StreamChannelAdapters {
 
         /// Requires this adapter to remain open.
         private void ensureOpen() throws ClosedChannelException {
-            if (!open) {
+            if (!open || abortRequested) {
                 throw new ClosedChannelException();
             }
         }
@@ -189,6 +242,12 @@ public final class StreamChannelAdapters {
     /// Adapts one output stream to a writable channel.
     @NotNullByDefault
     private static final class OutputStreamChannel implements WritableByteChannel {
+        /// Serializes transfers without preventing concurrent endpoint closure.
+        private final Object ioLock = new Object();
+
+        /// Serializes close attempts independently of transfers and failure bookkeeping.
+        private final Object closeLock = new Object();
+
         /// Previously reported endpoint failures, allocated only after an operation fails.
         private @Nullable Set<Throwable> reportedFailures;
 
@@ -199,7 +258,7 @@ public final class StreamChannelAdapters {
         private byte @Nullable [] transferBuffer;
 
         /// Whether this adapter remains open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// Creates an output-stream channel.
         private OutputStreamChannel(OutputStream target) {
@@ -209,35 +268,37 @@ public final class StreamChannelAdapters {
         /// Writes all remaining source bytes and advances only successfully written chunks.
         @Override
         public int write(ByteBuffer source) throws IOException {
-            Objects.requireNonNull(source, "source");
-            ensureOpen();
-            if (!source.hasRemaining()) {
-                return 0;
-            }
-            int start = source.position();
-            if (source.hasArray()) {
-                int count = source.remaining();
-                writeTarget(
-                        source.array(),
-                        source.arrayOffset() + source.position(),
-                        count
-                );
-                source.position(source.limit());
-                return count;
-            }
+            synchronized (ioLock) {
+                Objects.requireNonNull(source, "source");
+                ensureOpen();
+                if (!source.hasRemaining()) {
+                    return 0;
+                }
+                int start = source.position();
+                if (source.hasArray()) {
+                    int count = source.remaining();
+                    writeTarget(
+                            source.array(),
+                            source.arrayOffset() + source.position(),
+                            count
+                    );
+                    source.position(source.limit());
+                    return count;
+                }
 
-            byte[] buffer = transferBuffer;
-            if (buffer == null) {
-                buffer = new byte[TRANSFER_SIZE];
-                transferBuffer = buffer;
+                byte[] buffer = transferBuffer;
+                if (buffer == null) {
+                    buffer = new byte[TRANSFER_SIZE];
+                    transferBuffer = buffer;
+                }
+                while (source.hasRemaining()) {
+                    int count = Math.min(source.remaining(), buffer.length);
+                    source.get(source.position(), buffer, 0, count);
+                    writeTarget(buffer, 0, count);
+                    source.position(source.position() + count);
+                }
+                return source.position() - start;
             }
-            while (source.hasRemaining()) {
-                int count = Math.min(source.remaining(), buffer.length);
-                source.get(source.position(), buffer, 0, count);
-                writeTarget(buffer, 0, count);
-                source.position(source.position() + count);
-            }
-            return source.position() - start;
         }
 
         /// Writes the target and records failures that must remain primary during automatic cleanup.
@@ -259,22 +320,24 @@ public final class StreamChannelAdapters {
         /// Closes the stream and commits closure only after success.
         @Override
         public void close() throws IOException {
-            if (!open) {
-                return;
-            }
-            try {
-                target.close();
-                synchronized (this) {
-                    open = false;
-                    reportedFailures = null;
+            synchronized (closeLock) {
+                if (!open) {
+                    return;
                 }
-            } catch (IOException | RuntimeException | Error failure) {
-                if (!recordFailure(failure)) {
-                    IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
-                    recordFailure(cleanupFailure);
-                    throw cleanupFailure;
+                try {
+                    target.close();
+                    synchronized (this) {
+                        open = false;
+                        reportedFailures = null;
+                    }
+                } catch (IOException | RuntimeException | Error failure) {
+                    if (!recordFailure(failure)) {
+                        IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                        recordFailure(cleanupFailure);
+                        throw cleanupFailure;
+                    }
+                    throw failure;
                 }
-                throw failure;
             }
         }
 
@@ -299,7 +362,16 @@ public final class StreamChannelAdapters {
 
     /// Adapts one readable channel to an input stream.
     @NotNullByDefault
-    private static final class ChannelInputStream extends InputStream {
+    private static final class ChannelInputStream extends InputStream implements ForceCloseable {
+        /// Serializes graceful cleanup without preventing concurrent cancellation.
+        private final Object closeLock = new Object();
+
+        /// Serializes abort attempts without waiting for graceful source closure.
+        private final Object forceCloseLock = new Object();
+
+        /// Whether source cleanup must bypass draining and final validation.
+        private volatile boolean abortRequested;
+
         /// Previously reported endpoint failures, allocated only after an operation fails.
         private @Nullable Set<Throwable> reportedFailures;
 
@@ -313,7 +385,7 @@ public final class StreamChannelAdapters {
         private byte @Nullable [] skipBuffer;
 
         /// Whether this adapter remains open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// Creates a readable-channel input stream.
         private ChannelInputStream(ReadableByteChannel source) {
@@ -377,28 +449,62 @@ public final class StreamChannelAdapters {
         /// Closes the channel and commits closure only after success.
         @Override
         public void close() throws IOException {
-            if (!open) {
-                return;
-            }
-            try {
-                source.close();
-                synchronized (this) {
-                    open = false;
-                    reportedFailures = null;
+            synchronized (closeLock) {
+                if (!open) {
+                    return;
                 }
-            } catch (IOException | RuntimeException | Error failure) {
-                if (!recordFailure(failure)) {
-                    IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
-                    recordFailure(cleanupFailure);
-                    throw cleanupFailure;
+                if (abortRequested) {
+                    forceClose();
+                    return;
                 }
-                throw failure;
+                try {
+                    source.close();
+                    synchronized (forceCloseLock) {
+                        if (!abortRequested) {
+                            synchronized (this) {
+                                open = false;
+                                reportedFailures = null;
+                            }
+                        }
+                    }
+                } catch (IOException | RuntimeException | Error failure) {
+                    if (!recordFailure(failure)) {
+                        IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                        recordFailure(cleanupFailure);
+                        throw cleanupFailure;
+                    }
+                    throw failure;
+                }
             }
         }
 
-        /// Records a failure while open and reports whether it needs no repeated-cleanup wrapper.
+        /// Cancels source operations without acquiring the ordinary close or transfer lock.
+        @Override
+        public void forceClose() throws IOException {
+            abortRequested = true;
+            synchronized (forceCloseLock) {
+                if (!open) {
+                    return;
+                }
+                try {
+                    ForceCloseable.forceClose(source);
+                    synchronized (this) {
+                        open = false;
+                    }
+                } catch (IOException | RuntimeException | Error failure) {
+                    if (!recordFailure(failure)) {
+                        IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                        recordFailure(cleanupFailure);
+                        throw cleanupFailure;
+                    }
+                    throw failure;
+                }
+            }
+        }
+
+        /// Retains failures after cancellation because a concurrent graceful close may still report them.
         private synchronized boolean recordFailure(Throwable failure) {
-            if (!open) {
+            if (!open && !abortRequested) {
                 return true;
             }
             if (reportedFailures == null) {
@@ -409,7 +515,7 @@ public final class StreamChannelAdapters {
 
         /// Requires this adapter to remain open.
         private void ensureOpen() throws IOException {
-            if (!open) {
+            if (!open || abortRequested) {
                 throw new IOException("Stream closed");
             }
         }
@@ -418,6 +524,9 @@ public final class StreamChannelAdapters {
     /// Adapts one writable channel to an output stream.
     @NotNullByDefault
     private static final class ChannelOutputStream extends OutputStream {
+        /// Serializes endpoint closure and failure bookkeeping independently of writes.
+        private final Object closeLock = new Object();
+
         /// Previously reported endpoint failures, allocated only after an operation fails.
         private @Nullable Set<Throwable> reportedFailures;
 
@@ -428,7 +537,7 @@ public final class StreamChannelAdapters {
         private @Nullable ByteBuffer singleByte;
 
         /// Whether this adapter remains open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// Creates a writable-channel output stream.
         private ChannelOutputStream(WritableByteChannel target) {
@@ -470,22 +579,24 @@ public final class StreamChannelAdapters {
         /// Closes the channel and commits closure only after success.
         @Override
         public void close() throws IOException {
-            if (!open) {
-                return;
-            }
-            try {
-                target.close();
-                synchronized (this) {
-                    open = false;
-                    reportedFailures = null;
+            synchronized (closeLock) {
+                if (!open) {
+                    return;
                 }
-            } catch (IOException | RuntimeException | Error failure) {
-                if (!recordFailure(failure)) {
-                    IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
-                    recordFailure(cleanupFailure);
-                    throw cleanupFailure;
+                try {
+                    target.close();
+                    synchronized (this) {
+                        open = false;
+                        reportedFailures = null;
+                    }
+                } catch (IOException | RuntimeException | Error failure) {
+                    if (!recordFailure(failure)) {
+                        IOException cleanupFailure = new IOException("Endpoint cleanup repeated an earlier failure", failure);
+                        recordFailure(cleanupFailure);
+                        throw cleanupFailure;
+                    }
+                    throw failure;
                 }
-                throw failure;
             }
         }
 

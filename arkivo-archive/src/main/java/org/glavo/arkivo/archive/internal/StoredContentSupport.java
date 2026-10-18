@@ -7,13 +7,13 @@ import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoEditStorageFactory;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
@@ -138,7 +138,8 @@ public final class StoredContentSupport {
     ///
     /// @param source the content copied from its beginning, or {@code null} to leave an empty destination
     /// @param destination the content truncated and populated by this operation
-    /// @throws IOException if either content handle cannot be opened, transferred, or closed
+    /// @throws IOException if either content handle cannot be opened, transferred, or closed,
+    ///                     or a nonempty channel read or write makes no progress
     public static void copyContent(
             @Nullable ArkivoStoredContent source,
             ArkivoStoredContent destination
@@ -155,7 +156,7 @@ public final class StoredContentSupport {
             }
             SeekableByteChannel input = source.openChannel(Set.of(StandardOpenOption.READ));
             try {
-                copyInput(Channels.newInputStream(input), output);
+                copyInput(StreamChannelAdapters.inputStream(input), output);
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
                 throw exception;
@@ -178,7 +179,8 @@ public final class StoredContentSupport {
     ///
     /// @param content the borrowed assembled content, read from its beginning through end of input
     /// @param output the borrowed commit output, whose channel is opened for writing and truncated
-    /// @throws IOException if opening, copying, or closing a transfer channel fails
+    /// @throws IOException if opening, copying, or closing a transfer channel fails,
+    ///                     or a nonempty channel read or write makes no progress
     public static void copyToCommitOutput(ArkivoStoredContent content, ArkivoCommitOutput output) throws IOException {
         Objects.requireNonNull(content, "content");
         Objects.requireNonNull(output, "output");
@@ -188,7 +190,7 @@ public final class StoredContentSupport {
             SeekableByteChannel destination = output.openChannel(Set.of(
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE));
             try {
-                copyInput(Channels.newInputStream(source), destination);
+                copyInput(StreamChannelAdapters.inputStream(source), destination);
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
                 throw exception;
@@ -220,13 +222,14 @@ public final class StoredContentSupport {
     }
 
     /// Opens an input stream over content, or an empty stream when no body is present.
+    /// Nonempty reads fail with `IOException` if the content channel makes no progress.
     ///
     /// @param content the stored content to open, or {@code null} for an empty body
     /// @return a new caller-owned input stream
     /// @throws IOException if the content cannot be opened for reading
     public static InputStream openInputStream(@Nullable ArkivoStoredContent content) throws IOException {
         return content != null
-                ? Channels.newInputStream(content.openChannel(Set.of(StandardOpenOption.READ)))
+                ? StreamChannelAdapters.inputStream(content.openChannel(Set.of(StandardOpenOption.READ)))
                 : InputStream.nullInputStream();
     }
 

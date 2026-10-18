@@ -47,17 +47,12 @@ public final class ArkivoReadLimitTracker {
     /// The first rejected limit, or `null` while the archive remains within every configured limit.
     private @Nullable ArkivoReadLimitException failure;
 
-    /// Creates a tracker from primitive limits.
-    private ArkivoReadLimitTracker(
-            long maximumEntryCount,
-            long maximumEntrySize,
-            long maximumTotalEntrySize,
-            long maximumMetadataSize
-    ) {
-        this.maximumEntryCount = maximumEntryCount;
-        this.maximumEntrySize = maximumEntrySize;
-        this.maximumTotalEntrySize = maximumTotalEntrySize;
-        this.maximumMetadataSize = maximumMetadataSize;
+    /// Creates independent counters for the supplied immutable limits.
+    private ArkivoReadLimitTracker(ArchiveReadLimits limits) {
+        this.maximumEntryCount = limits.maximumEntryCount();
+        this.maximumEntrySize = limits.maximumEntrySize();
+        this.maximumTotalEntrySize = limits.maximumTotalEntrySize();
+        this.maximumMetadataSize = limits.maximumMetadataSize();
     }
 
     /// Creates a fresh tracker from immutable archive read limits.
@@ -66,53 +61,7 @@ public final class ArkivoReadLimitTracker {
     /// @return a new tracker with independent counters
     public static ArkivoReadLimitTracker fromLimits(ArchiveReadLimits limits) {
         Objects.requireNonNull(limits, "limits");
-        return new ArkivoReadLimitTracker(
-                limits.maximumEntryCount(),
-                limits.maximumEntrySize(),
-                limits.maximumTotalEntrySize(),
-                limits.maximumMetadataSize()
-        );
-    }
-
-    /// Creates a fresh tracker from primitive limits using `-1` for an unconfigured limit.
-    ///
-    /// @param maximumEntryCount the non-negative entry-count limit, or {@code -1}
-    /// @param maximumEntrySize the non-negative per-entry byte limit, or {@code -1}
-    /// @param maximumTotalEntrySize the non-negative total-entry byte limit, or {@code -1}
-    /// @return a new tracker with no metadata-size limit
-    /// @throws IllegalArgumentException if a limit is less than {@code -1}
-    public static ArkivoReadLimitTracker fromLimits(
-            long maximumEntryCount,
-            long maximumEntrySize,
-            long maximumTotalEntrySize
-    ) {
-        return fromLimits(maximumEntryCount, maximumEntrySize, maximumTotalEntrySize, UNLIMITED);
-    }
-
-    /// Creates a fresh tracker from primitive limits using `-1` for an unconfigured limit.
-    ///
-    /// @param maximumEntryCount the non-negative entry-count limit, or {@code -1}
-    /// @param maximumEntrySize the non-negative per-entry byte limit, or {@code -1}
-    /// @param maximumTotalEntrySize the non-negative total-entry byte limit, or {@code -1}
-    /// @param maximumMetadataSize the non-negative cumulative metadata byte limit, or {@code -1}
-    /// @return a new tracker with independent counters
-    /// @throws IllegalArgumentException if a limit is less than {@code -1}
-    public static ArkivoReadLimitTracker fromLimits(
-            long maximumEntryCount,
-            long maximumEntrySize,
-            long maximumTotalEntrySize,
-            long maximumMetadataSize
-    ) {
-        requireLimit(maximumEntryCount, "maximumEntryCount");
-        requireLimit(maximumEntrySize, "maximumEntrySize");
-        requireLimit(maximumTotalEntrySize, "maximumTotalEntrySize");
-        requireLimit(maximumMetadataSize, "maximumMetadataSize");
-        return new ArkivoReadLimitTracker(
-                maximumEntryCount,
-                maximumEntrySize,
-                maximumTotalEntrySize,
-                maximumMetadataSize
-        );
+        return new ArkivoReadLimitTracker(limits);
     }
 
     /// Accounts for archive metadata before it is buffered or expanded.
@@ -230,13 +179,6 @@ public final class ArkivoReadLimitTracker {
         ArkivoReadLimitException exception = new ArkivoReadLimitException(kind, maximum, actual, entryPath);
         failure = exception;
         return exception;
-    }
-
-    /// Requires a primitive limit to use the unlimited sentinel or a non-negative value.
-    private static void requireLimit(long value, String name) {
-        if (value < UNLIMITED) {
-            throw new IllegalArgumentException(name + " must be -1 or non-negative");
-        }
     }
 
     /// Adds two non-negative counters and saturates on overflow.

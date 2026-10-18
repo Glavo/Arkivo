@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -78,6 +79,9 @@ public final class InterruptibleChannelSupport {
     /// Backing endpoint closed to interrupt an active operation, regardless of ordinary ownership.
     private final Channel endpoint;
 
+    /// Serializes data operations without preventing concurrent endpoint closure.
+    private final Object operationLock = new Object();
+
     /// Monitor protecting operation and terminal state.
     private final Object lock = new Object();
 
@@ -112,7 +116,10 @@ public final class InterruptibleChannelSupport {
         }
     }
 
-    /// Executes a non-null-returning operation with terminal interruption handling.
+    /// Serializes a non-null-returning operation with terminal interruption handling.
+    ///
+    /// Waiting for another operation preserves the thread's interrupt status. Once admitted, an interrupted
+    /// operation aborts before invoking its action. Closing does not wait to acquire the operation lock.
     ///
     /// @param operation   the operation to execute
     /// @param abortAction the codec cleanup performed after terminal cancellation
@@ -122,11 +129,18 @@ public final class InterruptibleChannelSupport {
     public <T> T execute(IOOperation<T> operation, IOAction abortAction) throws IOException {
         Objects.requireNonNull(operation, "operation");
         Objects.requireNonNull(abortAction, "abortAction");
+        synchronized (operationLock) {
+            return executeLocked(operation, abortAction);
+        }
+    }
+
+    /// Runs an operation after acquiring exclusive access to the codec.
+    private <T> T executeLocked(IOOperation<T> operation, IOAction abortAction) throws IOException {
         boolean preInterrupted;
         synchronized (lock) {
             ensureOpen();
             if (activeThread != null) {
-                throw new IllegalStateException("Concurrent codec channel operations are not supported");
+                throw new IllegalStateException("Reentrant codec channel operations are not supported");
             }
             activeThread = Thread.currentThread();
             closeActionActive = false;
@@ -356,7 +370,7 @@ public final class InterruptibleChannelSupport {
     /// Closes the endpoint and captures any checked or unchecked failure.
     private @Nullable Throwable closeEndpoint() {
         try {
-            ForceCloseableChannel.forceClose(endpoint);
+            ForceCloseable.forceClose(endpoint);
             return null;
         } catch (IOException | RuntimeException | Error exception) {
             return exception;

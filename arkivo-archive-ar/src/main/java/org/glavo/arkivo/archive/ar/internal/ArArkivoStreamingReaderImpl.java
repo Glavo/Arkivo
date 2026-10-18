@@ -379,9 +379,16 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             throw new IOException("AR member path must be relative");
         }
         String[] parts = path.split("[/\\\\]+");
+        boolean hasName = false;
         for (String part : parts) {
             if ("..".equals(part)) {
                 throw new IOException("AR member path must not contain ..");
+            }
+            if (!part.isEmpty() && !".".equals(part)) {
+                if (!hasName && part.length() >= 2 && part.charAt(1) == ':') {
+                    throw new IOException("AR member path must be relative");
+                }
+                hasName = true;
             }
         }
         return path;

@@ -18,6 +18,7 @@ import org.glavo.arkivo.codec.xz.XZFilter;
 import org.glavo.arkivo.codec.xz.XZFilterChain;
 import org.glavo.arkivo.codec.xz.internal.filter.BCJTransforms;
 import org.glavo.arkivo.codec.xz.internal.filter.DeltaTransform;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -203,7 +204,7 @@ final class XZStreamEncoder {
         System.arraycopy(XZSupport.HEADER_MAGIC, 0, header, 0, XZSupport.HEADER_MAGIC.length);
         header[6] = 0;
         header[7] = (byte) checkType;
-        XZSupport.putLittleEndian(header, 8, XZSupport.crc32(header, 6, 2), Integer.BYTES);
+        ByteArrayAccess.writeIntLittleEndian(header, 8, (int) XZSupport.crc32(header, 6, 2));
         output.write(header);
     }
 
@@ -287,11 +288,10 @@ final class XZStreamEncoder {
         byte[] bodyBytes = body.toByteArray();
         byte[] header = Arrays.copyOf(bodyBytes, bodyBytes.length + Integer.BYTES);
         header[0] = (byte) (header.length / 4 - 1);
-        XZSupport.putLittleEndian(
+        ByteArrayAccess.writeIntLittleEndian(
                 header,
                 bodyBytes.length,
-                XZSupport.crc32(header, 0, bodyBytes.length),
-                Integer.BYTES
+                (int) XZSupport.crc32(header, 0, bodyBytes.length)
         );
         return header;
     }
@@ -313,7 +313,7 @@ final class XZStreamEncoder {
                 properties = new byte[0];
             } else {
                 properties = new byte[Integer.BYTES];
-                XZSupport.putLittleEndian(properties, 0, bcj.startOffset(), Integer.BYTES);
+                ByteArrayAccess.writeIntLittleEndian(properties, 0, (int) bcj.startOffset());
             }
             writeFilterDescriptor(output, bcj.architecture().identifier(), properties);
             return;
@@ -384,19 +384,20 @@ final class XZStreamEncoder {
             index.write(0);
         }
         byte[] body = index.toByteArray();
-        XZSupport.writeCrc32(index, XZSupport.crc32(body, 0, body.length));
-        return index.toByteArray();
+        byte[] result = Arrays.copyOf(body, body.length + Integer.BYTES);
+        ByteArrayAccess.writeIntLittleEndian(result, body.length, (int) XZSupport.crc32(body, 0, body.length));
+        return result;
     }
 
     /// Writes the Stream Footer matching the Index and header flags.
     private void writeStreamFooter(int indexSize) throws IOException {
         byte[] footer = new byte[12];
-        XZSupport.putLittleEndian(footer, 4, indexSize / 4L - 1L, Integer.BYTES);
+        ByteArrayAccess.writeIntLittleEndian(footer, 4, indexSize / 4 - 1);
         footer[8] = 0;
         footer[9] = (byte) checkType;
         footer[10] = XZSupport.FOOTER_MAGIC[0];
         footer[11] = XZSupport.FOOTER_MAGIC[1];
-        XZSupport.putLittleEndian(footer, 0, XZSupport.crc32(footer, 4, 6), Integer.BYTES);
+        ByteArrayAccess.writeIntLittleEndian(footer, 0, (int) XZSupport.crc32(footer, 4, 6));
         output.write(footer);
     }
 

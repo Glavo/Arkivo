@@ -24,6 +24,7 @@ import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 import org.glavo.arkivo.archive.internal.StoredContentPool;
@@ -129,7 +130,6 @@ import static org.glavo.arkivo.archive.zip.internal.ZipConstants.isZstandardMeth
 import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.requireUInt16;
 import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.requireUInt32;
 import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.requireUInt64;
-import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.readInt;
 import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.readUnsignedShort;
 import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.writeInt;
 import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.writeLong;
@@ -279,6 +279,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// The action to run after this file system is closed, or `null` when no action is needed.
     private final @Nullable Runnable closeAction;
+
+    /// Whether the provider reservation has been released after output cleanup.
+    private boolean closeActionCompleted;
 
     /// Creates a writable ZIP archive file system.
     ///
@@ -666,10 +669,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
         ZipArkivoReadOnlyFileSystemImpl.CentralDirectorySnapshot snapshot =
                 ZipArkivoReadOnlyFileSystemImpl.readCentralDirectorySnapshot(source, config);
-        @Nullable ArkivoEditStorageFactory storageFactory = config.editStorageFactory();
-        StoredContentPool openedEditStorage = new StoredContentPool(storageFactory != null
-                ? storageFactory.open()
-                : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory()));
+        StoredContentPool openedEditStorage = new StoredContentPool(
+                StoredContentSupport.selectStorage(config.editStorageFactory()));
         @Nullable ArkivoStoredContent openedStagedRecords = null;
         @Nullable SeekableByteChannel outputChannel = null;
         @Nullable OutputStream outputStream = null;
@@ -733,11 +734,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         this.existingEntryNames = new HashSet<>(snapshot.entryNames());
         this.existingArchiveReader = ZipArkivoReadOnlyFileSystemImpl.openUpdateReader(provider, source, config);
         this.rootPath = ZipArkivoPath.root(this);
-    }
-
-    /// Returns the system temporary directory used for non-path update staging.
-    private static Path defaultEditStorageDirectory() {
-        return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
     }
 
     /// Creates a writable ZIP archive file system over a writable channel.
@@ -898,6 +894,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     failure = closeRewriteStorage(failure);
                     failure = closeExistingArchiveReader(failure);
                     failure = closeArchiveSource(failure);
+                    failure = finishCloseAction(failure);
                     throwFailure(failure);
                     return;
                 }
@@ -944,14 +941,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 } catch (RuntimeException | Error exception) {
                     failure = appendFailure(failure, exception);
                 }
-                Runnable action = closeAction;
-                try {
-                    if (action != null) {
-                        action.run();
-                    }
-                } catch (RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
-                }
+                failure = finishCloseAction(failure);
                 throwFailure(failure);
             } finally {
                 unlock();
@@ -961,6 +951,21 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         } finally {
             operation.close();
         }
+    }
+
+    /// Releases the URI only when a later close cannot retry output publication or rollback.
+    private @Nullable Throwable finishCloseAction(@Nullable Throwable failure) {
+        if (!closeActionCompleted && outputClosed && commitOutput == null) {
+            try {
+                if (closeAction != null) {
+                    closeAction.run();
+                }
+                closeActionCompleted = true;
+            } catch (RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        return failure;
     }
 
     /// Reassembles an existing archive from surviving local records and publishes the complete result.
@@ -1170,7 +1175,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                 throw new IOException("Unexpected end of ZIP storage while copying a local record");
             }
             if (count == 0) {
-                continue;
+                throw new IOException("ZIP storage made no read progress while copying a local record");
             }
             destination.write(buffer.array(), 0, count);
             remaining -= count;
@@ -1219,7 +1224,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         requireUInt16(rawName.length, "entry name length");
         requireUInt16(localExtraData.length, "local extra data length");
         if (renamedRawName != null) {
-            header.putShort(6, (short) flags);
+            // The local descriptor flag may differ from the central one; the copied body keeps its layout.
+            int localFlags = Short.toUnsignedInt(header.getShort(6));
+            header.putShort(6, (short) ((localFlags & ~UTF8_FLAG) | (flags & UTF8_FLAG)));
         }
         if (timestampChanged) {
             header.putShort(10, (short) dosTime(replacementTime));
@@ -1262,6 +1269,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             int count = source.read(buffer);
             if (count < 0) {
                 throw new IOException("Unexpected end of ZIP storage while reading a local record header");
+            }
+            if (count == 0) {
+                throw new IOException("ZIP storage made no read progress while reading a local record header");
             }
         }
         return bytes;
@@ -1455,7 +1465,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
         try (Operation ignored = beginReadOperation()) {
             checkOpen();
-            return ArkivoPathMatchers.create(syntaxAndPattern, '/');
+            return ArkivoPathMatchers.create(syntaxAndPattern);
         }
     }
 
@@ -1648,7 +1658,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             if (target == null) {
                 // The current metadata may describe a link even when the source archive stored a regular file.
                 try (InputStream input = Channels.newInputStream(openVisibleEntryContent(entryName))) {
-                    target = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                    target = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(input.readAllBytes())).toString();
                 }
             }
             return getPath(target);
@@ -1901,7 +1911,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
         try (Operation ignored = beginReadOperation()) {
-            return ZipPosixSupport.userPrincipalLookupService();
+            return ZipPosixSupport.USER_PRINCIPAL_LOOKUP_SERVICE;
         }
     }
 
@@ -2229,10 +2239,16 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                      StandardOpenOption.WRITE
              ))) {
             ByteBuffer buffer = ByteBuffer.allocate(COPY_BUFFER_SIZE);
-            while (source.read(buffer) >= 0) {
+            int count;
+            while ((count = source.read(buffer)) >= 0) {
+                if (count == 0) {
+                    throw new IOException("ZIP entry storage made no read progress");
+                }
                 buffer.flip();
                 while (buffer.hasRemaining()) {
-                    target.write(buffer);
+                    if (target.write(buffer) == 0) {
+                        throw new IOException("ZIP entry storage made no write progress");
+                    }
                 }
                 buffer.clear();
             }
@@ -3007,13 +3023,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Validates a synthesized owner assignment and the target entry.
     private void setOwner(Path path, UserPrincipal owner) throws IOException {
-        ZipPosixSupport.requireDefaultOwner(Objects.requireNonNull(owner, "owner"));
+        ZipPosixSupport.USER_PRINCIPAL_LOOKUP_SERVICE.requireUser(Objects.requireNonNull(owner, "owner"));
         mutateEntryMetadata(path, entry -> entry, entry -> entry);
     }
 
     /// Validates a synthesized group assignment and the target entry.
     private void setGroup(Path path, GroupPrincipal group) throws IOException {
-        ZipPosixSupport.requireDefaultGroup(Objects.requireNonNull(group, "group"));
+        ZipPosixSupport.USER_PRINCIPAL_LOOKUP_SERVICE.requireGroup(Objects.requireNonNull(group, "group"));
         mutateEntryMetadata(path, entry -> entry, entry -> entry);
     }
 
@@ -3364,7 +3380,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             Objects.requireNonNull(attribute, "attribute");
             String name = attribute.name();
             if ("posix:permissions".equals(name)) {
-                permissions = posixPermissions(attribute);
+                permissions = PosixPermissions.copyOf(attribute.value(), "posix:permissions");
             } else if (!"basic:lastModifiedTime".equals(name)) {
                 throw new UnsupportedOperationException("Unsupported ZIP streaming file attribute: " + name);
             }
@@ -3386,11 +3402,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             }
         }
         return lastModifiedTime;
-    }
-
-    /// Returns POSIX permissions stored by a file attribute.
-    private static Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
-        return PosixPermissions.copyOf(attribute.value(), "posix:permissions");
     }
 
     /// Returns a normalized symbolic link target path text.
@@ -5256,7 +5267,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         ) throws IOException {
             byte[] bytes = snapshot.bytes();
             if (bytes.length < ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE
-                    || readInt(bytes, 0) != CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
+                    || ByteArrayAccess.readIntLittleEndian(bytes, 0) != CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
                 throw new IOException("Invalid ZIP central directory header");
             }
 
@@ -5266,15 +5277,15 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             int method = readUnsignedShort(bytes, 10);
             int lastModifiedTime = readUnsignedShort(bytes, 12);
             int lastModifiedDate = readUnsignedShort(bytes, 14);
-            long crc32 = Integer.toUnsignedLong(readInt(bytes, 16));
-            long compressedSize = Integer.toUnsignedLong(readInt(bytes, 20));
-            long uncompressedSize = Integer.toUnsignedLong(readInt(bytes, 24));
+            long crc32 = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(bytes, 16));
+            long compressedSize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(bytes, 20));
+            long uncompressedSize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(bytes, 24));
             int nameLength = readUnsignedShort(bytes, 28);
             int extraLength = readUnsignedShort(bytes, 30);
             int commentLength = readUnsignedShort(bytes, 32);
             int internalAttributes = readUnsignedShort(bytes, 36);
-            long externalAttributes = Integer.toUnsignedLong(readInt(bytes, 38));
-            long localHeaderOffset = Integer.toUnsignedLong(readInt(bytes, 42));
+            long externalAttributes = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(bytes, 38));
+            long localHeaderOffset = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(bytes, 42));
             int variableOffset = ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE;
             int nextOffset = variableOffset + nameLength + extraLength + commentLength;
             if (nextOffset > bytes.length) {

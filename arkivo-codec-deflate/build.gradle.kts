@@ -272,6 +272,11 @@ tasks.named<Test>("tier2Test") {
     dependsOn(prepareFflateReference)
     inputs.dir(fflateTestDataDirectory)
     inputs.property("nodeExecutable", providers.environmentVariable("ARKIVO_NODE_EXECUTABLE").orElse(""))
+    // Track replacements and newly installed tools without requiring optional executables to exist.
+    inputs.files(providers.provider {
+        providers.environmentVariable("ARKIVO_NODE_EXECUTABLE").orNull
+            ?.takeIf { it.isNotBlank() }?.let { listOf(file(it)) }?.filter { it.isFile } ?: emptyList<File>()
+    }).withPropertyName("nodeExecutableFile").withPathSensitivity(PathSensitivity.NONE)
     inputs.property("requireNode", providers.environmentVariable("ARKIVO_REQUIRE_NODE").orElse("false"))
     systemProperty("arkivo.fflate.testDataDirectory", fflateTestDataDirectory.get().asFile.absolutePath)
 }
@@ -318,6 +323,11 @@ tasks.named<Test>("tier2Test") {
     dependsOn(prepareZopfliReference)
     inputs.dir(zopfliTestDataDirectory)
     inputs.property("zopfliExecutable", providers.environmentVariable("ARKIVO_ZOPFLI_EXECUTABLE").orElse(""))
+    // Track replacements and newly installed tools without requiring optional executables to exist.
+    inputs.files(providers.provider {
+        providers.environmentVariable("ARKIVO_ZOPFLI_EXECUTABLE").orNull
+            ?.takeIf { it.isNotBlank() }?.let { listOf(file(it)) }?.filter { it.isFile } ?: emptyList<File>()
+    }).withPropertyName("zopfliExecutableFile").withPathSensitivity(PathSensitivity.NONE)
     inputs.property("requireZopfli", providers.environmentVariable("ARKIVO_REQUIRE_ZOPFLI").orElse("false"))
     systemProperty("arkivo.zopfli.testDataDirectory", zopfliTestDataDirectory.get().asFile.absolutePath)
 }

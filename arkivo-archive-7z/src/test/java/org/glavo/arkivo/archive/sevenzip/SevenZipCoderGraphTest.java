@@ -5,7 +5,10 @@ package org.glavo.arkivo.archive.sevenzip;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
+import java.util.HexFormat;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -16,6 +19,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests public immutable 7z coder metadata.
 @NotNullByDefault
 public final class SevenZipCoderGraphTest {
+    /// Checks method identifiers against their fixed wire values.
+    @ParameterizedTest
+    @CsvSource({
+            "COPY, 00",
+            "LZMA, 030101",
+            "LZMA2, 21",
+            "BZIP2, 040202",
+            "DEFLATE, 040108",
+            "DEFLATE64, 040109",
+            "ZSTANDARD, 04f71101",
+            "PPMD, 030401",
+            "AES, 06f10701",
+            "DELTA, 03",
+            "BCJ_X86, 03030103",
+            "BCJ2, 0303011b",
+            "BCJ_POWERPC, 03030205",
+            "BCJ_IA64, 03030401",
+            "BCJ_ARM, 03030501",
+            "BCJ_ARM_THUMB, 03030701",
+            "BCJ_SPARC, 03030805",
+            "BCJ_ARM64, 0a",
+            "BCJ_RISCV, 0b"
+    })
+    void methodIdentifiersMatchWireValues(SevenZipCoderMethod method, String hex) {
+        byte[] expected = HexFormat.of().parseHex(hex);
+        assertArrayEquals(expected, method.methodId());
+        assertEquals(method, SevenZipCoderMethod.fromMethodId(expected));
+    }
+
     /// Verifies method identifiers and coder properties cannot mutate their metadata owners.
     @Test
     public void methodAndCoderBytesAreDefensivelyCopied() {

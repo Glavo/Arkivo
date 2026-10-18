@@ -35,19 +35,19 @@ public final class TransformingInputStream extends InputStream {
     private final byte[] singleByte = new byte[1];
 
     /// A deferred source or filter failure.
-    private @Nullable Throwable failure;
+    private volatile @Nullable Throwable failure;
 
     /// Whether an earlier source-close attempt failed.
-    private boolean closeFailed;
+    private volatile boolean closeFailed;
 
     /// Whether the upstream stream reached end-of-input.
     private boolean endReached;
 
     /// Whether this stream has stopped accepting reads.
-    private boolean closed;
+    private volatile boolean closed;
 
     /// Whether the upstream stream has closed successfully.
-    private boolean inputClosed;
+    private volatile boolean inputClosed;
 
     /// Creates a filtering input stream that owns the upstream coder stream.
     ///
@@ -133,7 +133,7 @@ public final class TransformingInputStream extends InputStream {
     /// A close failure identical to the reported read failure, or any failure from a close retry, is wrapped in an
     /// `IOException` so try-with-resources can preserve the original failure without self-suppression.
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         closed = true;
         if (inputClosed) {
             return;

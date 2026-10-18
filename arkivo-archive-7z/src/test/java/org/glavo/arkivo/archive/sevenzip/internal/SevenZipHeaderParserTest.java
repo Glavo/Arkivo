@@ -3,7 +3,10 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -13,6 +16,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
@@ -23,11 +27,49 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests 7z metadata header parsing behavior.
 @NotNullByDefault
 public final class SevenZipHeaderParserTest {
+    /// Parses a standalone test header without archive stream access or resource limits.
+    private static @Unmodifiable List<SevenZipEntryMetadata> parseEntries(byte[] header) throws IOException {
+        return parseEntries(header, null);
+    }
+
+    /// Parses a test header with optional packed streams and a fresh unrestricted budget.
+    private static @Unmodifiable List<SevenZipEntryMetadata> parseEntries(
+            byte[] header,
+            SevenZipHeaderParser.@Nullable PackedStreamOpener packedStreamOpener
+    ) throws IOException {
+        return SevenZipHeaderParser.parseEntries(
+                header, packedStreamOpener, null,
+                ArkivoReadLimitTracker.fromLimits(ArchiveReadLimits.UNLIMITED),
+                ArchiveReadLimits.UNLIMITED);
+    }
+
     /// Rejects metadata counts whose required payload is absent before allocating count-sized arrays.
     @ParameterizedTest
     @MethodSource("impossibleCounts")
     public void rejectsImpossibleCounts(byte[] header) {
-        assertThrows(IOException.class, () -> SevenZipHeaderParser.parseEntries(header));
+        assertThrows(IOException.class, () -> parseEntries(header));
+    }
+
+    /// Retains an immutable entry snapshot rather than the caller's mutable list.
+    @Test
+    void archiveMetadataSnapshotsParsedEntries() throws IOException {
+        List<SevenZipEntryMetadata> entries = new ArrayList<>(parseEntries(new byte[]{
+                0x01, 0x05, 0x01,
+                0x0e, 0x01, (byte) 0x80,
+                0x11, 0x05, 0x00, 'a', 0x00, 0x00, 0x00,
+                0x00, 0x00
+        }));
+        assertEquals(1, entries.size());
+        SevenZipSignatureHeader signature = new SevenZipSignatureHeader(0, 4, 0, 0, 0);
+        SevenZipArchiveMetadata metadata = new SevenZipArchiveMetadata(signature, entries);
+
+        entries.clear();
+        assertEquals(signature, metadata.signatureHeader());
+        assertEquals(1, metadata.entries().size());
+        assertEquals("a", metadata.entries().get(0).path());
+        assertThrows(UnsupportedOperationException.class, () -> metadata.entries().clear());
+        assertThrows(NullPointerException.class, () -> new SevenZipArchiveMetadata(null, List.of()));
+        assertThrows(NullPointerException.class, () -> new SevenZipArchiveMetadata(signature, null));
     }
 
     /// Supplies compact headers with impossible file, stream, folder, coder, and substream counts.
@@ -61,7 +103,7 @@ public final class SevenZipHeaderParserTest {
     public void encodedHeaderMustDecodeToPlainHeader() {
         byte[] header = {0x17, 6, 0, 1, 9, 18, 0, 7, 0x0b, 1, 0, 1, 1, 0, 0x0c, 18, 0, 0};
         AtomicInteger opens = new AtomicInteger();
-        IOException failure = assertThrows(IOException.class, () -> SevenZipHeaderParser.parseEntries(
+        IOException failure = assertThrows(IOException.class, () -> parseEntries(
                 header, (offset, size) -> {
                     if (opens.incrementAndGet() > 1) {
                         throw new IOException("Unexpected recursive stream open");
@@ -77,7 +119,7 @@ public final class SevenZipHeaderParserTest {
     public void emptyStreamsAllowSubStreamsInfoWithoutUnpackInfo() throws IOException {
         assertEquals(
                 List.of(),
-                SevenZipHeaderParser.parseEntries(new byte[]{0x01, 0x04, 0x08, 0x00, 0x00, 0x00})
+                parseEntries(new byte[]{0x01, 0x04, 0x08, 0x00, 0x00, 0x00})
         );
     }
 
@@ -86,7 +128,7 @@ public final class SevenZipHeaderParserTest {
     public void emptyArchiveAllowsTrailingEndMarkerPadding() throws IOException {
         assertEquals(
                 List.of(),
-                SevenZipHeaderParser.parseEntries(new byte[]{0x01, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00})
+                parseEntries(new byte[]{0x01, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00})
         );
     }
 
@@ -95,7 +137,7 @@ public final class SevenZipHeaderParserTest {
     public void emptyArchiveRejectsNonEndTrailingData() {
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(
+                () -> parseEntries(
                         new byte[]{0x01, 0x04, 0x08, 0x00, 0x00, 0x00, 0x01}
                 )
         );
@@ -108,7 +150,7 @@ public final class SevenZipHeaderParserTest {
     public void subStreamsInfoBeforeUnpackInfoIsRejected() {
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(new byte[]{
+                () -> parseEntries(new byte[]{
                         0x01,
                         0x04,
                         0x06, 0x00, 0x01, 0x09, 0x01, 0x00,
@@ -126,7 +168,7 @@ public final class SevenZipHeaderParserTest {
     public void unpackInfoAfterSubStreamsInfoIsRejected() {
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(new byte[]{
+                () -> parseEntries(new byte[]{
                         0x01,
                         0x04,
                         0x08, 0x00,
@@ -144,7 +186,7 @@ public final class SevenZipHeaderParserTest {
     public void unknownHeaderPropertyIsCheckedFailure() {
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(new byte[]{0x01, 0x7f})
+                () -> parseEntries(new byte[]{0x01, 0x7f})
         );
 
         assertEquals("Unsupported 7z header property: 0x7f", exception.getMessage());
@@ -155,7 +197,7 @@ public final class SevenZipHeaderParserTest {
     public void encodedHeaderWithoutArchiveAccessIsCheckedFailure() {
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(new byte[]{0x17})
+                () -> parseEntries(new byte[]{0x17})
         );
 
         assertEquals("7z encoded headers require archive stream access", exception.getMessage());
@@ -166,7 +208,7 @@ public final class SevenZipHeaderParserTest {
     public void unsupportedCoderMetadataIsCheckedFailure() {
         IOException flagsFailure = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(
+                () -> parseEntries(
                         encodedHeaderWithCoder(0xc1, 0x00),
                         (offset, size) -> new ByteArrayInputStream(new byte[0])
                 )
@@ -175,7 +217,7 @@ public final class SevenZipHeaderParserTest {
 
         IOException methodFailure = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(
+                () -> parseEntries(
                         encodedHeaderWithCoder(0x01, 0x7e),
                         (offset, size) -> new ByteArrayInputStream(new byte[0])
                 )
@@ -197,7 +239,7 @@ public final class SevenZipHeaderParserTest {
     ) {
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(headerWithFolder(folder))
+                () -> parseEntries(headerWithFolder(folder))
         );
         assertEquals(expectedMessage, exception.getMessage(), description);
     }
@@ -295,7 +337,7 @@ public final class SevenZipHeaderParserTest {
     public void cyclicFolderGraphIsCheckedFailure() {
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(new byte[]{
+                () -> parseEntries(new byte[]{
                         0x01,
                         0x04,
                         0x06, 0x00, 0x01, 0x09, 0x00, 0x00,
@@ -327,7 +369,7 @@ public final class SevenZipHeaderParserTest {
     public void encodedHeaderReadFailureSuppressesRuntimeCloseFailure() {
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(
+                () -> parseEntries(
                         truncatedEncodedCopyHeader(),
                         (offset, size) -> new RuntimeCloseFailingInputStream()
                 )
@@ -348,7 +390,7 @@ public final class SevenZipHeaderParserTest {
 
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipHeaderParser.parseEntries(
+                () -> parseEntries(
                         encodedHeaderWithFourPackedStreams(),
                         (offset, size) -> switch (openCount.getAndIncrement()) {
                             case 0 -> first;

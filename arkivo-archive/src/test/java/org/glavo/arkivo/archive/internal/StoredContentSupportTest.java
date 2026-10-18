@@ -4,12 +4,15 @@
 package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -245,6 +248,38 @@ final class StoredContentSupportTest {
         assertFalse(output.isOpen());
     }
 
+    /// Verifies channel stalls cannot become successful EOF through a stream adapter.
+    @ParameterizedTest
+    @ValueSource(strings = {"copy", "commit", "single-byte", "bulk"})
+    void rejectsStalledContentReads(String operation, @TempDir Path directory) throws IOException {
+        StalledContentChannel channel = new StalledContentChannel();
+        try (ArkivoStoredContent source = new ChannelContent(channel);
+             ArkivoEditStorage storage = ArkivoEditStorage.memory();
+             ArkivoStoredContent destination = storage.createContent("destination", 0L);
+             var output = ArkivoCommitTarget.writeTo(directory.resolve("archive")).openOutput(null)) {
+            IOException failure = assertThrows(IOException.class, () -> {
+                switch (operation) {
+                    case "copy" -> StoredContentSupport.copyContent(source, destination);
+                    case "commit" -> StoredContentSupport.copyToCommitOutput(source, output);
+                    default -> {
+                        try (InputStream input = StoredContentSupport.openInputStream(source)) {
+                            if (operation.equals("single-byte")) {
+                                input.read();
+                            } else {
+                                input.readAllBytes();
+                            }
+                        }
+                    }
+                }
+            });
+            assertEquals("Readable channel made no progress", failure.getMessage());
+            assertEquals(1, channel.readAttempts);
+            assertEquals(0L, channel.position());
+            assertFalse(channel.isOpen());
+            assertEquals(0L, destination.size());
+        }
+    }
+
     /// Verifies a transient zero-length stream read falls back to one byte and physical EOF remains empty.
     @Test
     void handlesZeroProgressInputStreams() throws IOException {
@@ -347,6 +382,94 @@ final class StoredContentSupportTest {
             assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(null, output));
             assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(input, null));
             assertThrows(NullPointerException.class, () -> StoredContentSupport.copyContent(null, null));
+        }
+    }
+
+    /// Supplies one channel for a single stored-content transfer.
+    ///
+    /// @param channel the test-owned source channel
+    @NotNullByDefault
+    private record ChannelContent(SeekableByteChannel channel) implements ArkivoStoredContent {
+        /// Returns the source channel for the tested read operation.
+        @Override
+        public SeekableByteChannel openChannel(Set<? extends OpenOption> options) {
+            assertEquals(Set.of(StandardOpenOption.READ), options);
+            return channel;
+        }
+
+        /// Returns the source channel's declared size.
+        @Override
+        public long size() throws IOException {
+            return channel.size();
+        }
+
+        /// Releases the test-owned source channel.
+        @Override
+        public void close() throws IOException {
+            channel.close();
+        }
+    }
+
+    /// Models a nonempty source whose reads cannot make progress.
+    @NotNullByDefault
+    private static final class StalledContentChannel implements SeekableByteChannel {
+        /// Whether the channel is still open.
+        private boolean open = true;
+
+        /// Number of attempted reads.
+        private int readAttempts;
+
+        /// Creates a stalled source at its beginning.
+        private StalledContentChannel() {
+        }
+
+        /// Reports no progress without consuming bytes.
+        @Override
+        public int read(ByteBuffer target) {
+            readAttempts++;
+            return 0;
+        }
+
+        /// Rejects writes to the read-only source.
+        @Override
+        public int write(ByteBuffer source) {
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the unchanged offset, including after closure for test assertions.
+        @Override
+        public long position() {
+            return 0;
+        }
+
+        /// Rejects positioning, which these transfer paths do not require.
+        @Override
+        public SeekableByteChannel position(long position) {
+            throw new UnsupportedOperationException();
+        }
+
+        /// Reports a nonempty body even though no bytes can be read.
+        @Override
+        public long size() {
+            return 3;
+        }
+
+        /// Rejects truncation of the read-only source.
+        @Override
+        public SeekableByteChannel truncate(long size) {
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether transfer cleanup has closed the channel.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Records successful transfer cleanup.
+        @Override
+        public void close() {
+            open = false;
         }
     }
 

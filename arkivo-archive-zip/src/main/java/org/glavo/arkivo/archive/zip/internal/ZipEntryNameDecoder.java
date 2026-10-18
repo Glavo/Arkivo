@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.zip.internal;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipLegacyMetadataDecoder;
 import org.glavo.arkivo.archive.zip.ZipEntryNameErrorAction;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -19,8 +20,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.zip.CRC32;
-
-import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.readInt;
 
 /// Decodes raw ZIP entry name bytes.
 @NotNullByDefault
@@ -182,7 +181,7 @@ public final class ZipEntryNameDecoder {
             return null;
         }
 
-        int expectedCrc32 = readInt(extraData, dataOffset + 1);
+        int expectedCrc32 = ByteArrayAccess.readIntLittleEndian(extraData, dataOffset + 1);
         CRC32 crc32 = new CRC32();
         crc32.update(rawValue);
         if ((int) crc32.getValue() != expectedCrc32) {

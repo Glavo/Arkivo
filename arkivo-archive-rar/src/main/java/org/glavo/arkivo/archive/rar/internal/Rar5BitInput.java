@@ -16,7 +16,7 @@ final class Rar5BitInput {
     private static final long NO_BLOCK_END = -1L;
 
     /// The size of the buffered packed-input window.
-    private static final int BUFFER_SIZE = 64 * 1024;
+    static final int BUFFER_SIZE = 64 * 1024;
 
     /// The caller-owned packed input.
     private final InputStream input;

@@ -9,14 +9,11 @@ import org.glavo.arkivo.archive.internal.NamedUserPrincipal;
 import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
-import java.nio.file.attribute.UserPrincipalLookupService;
-import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.util.Objects;
 import java.util.Set;
 
@@ -24,13 +21,13 @@ import java.util.Set;
 @NotNullByDefault
 final class SevenZipPosixSupport {
     /// The default synthesized owner principal.
-    private static final UserPrincipal DEFAULT_OWNER = new NamedUserPrincipal("owner");
+    static final UserPrincipal DEFAULT_OWNER = new NamedUserPrincipal("owner");
 
     /// The default synthesized group principal.
-    private static final GroupPrincipal DEFAULT_GROUP = new NamedGroupPrincipal("group");
+    static final GroupPrincipal DEFAULT_GROUP = new NamedGroupPrincipal("group");
 
     /// The lookup service for synthesized 7z principals.
-    private static final FixedUserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
+    static final FixedUserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
             new FixedUserPrincipalLookupService(DEFAULT_OWNER, DEFAULT_GROUP);
 
     /// The default synthesized permissions for writable regular files.
@@ -73,31 +70,6 @@ final class SevenZipPosixSupport {
     private SevenZipPosixSupport() {
     }
 
-    /// Returns the default synthesized owner principal.
-    static UserPrincipal owner() {
-        return DEFAULT_OWNER;
-    }
-
-    /// Returns the default synthesized group principal.
-    static GroupPrincipal group() {
-        return DEFAULT_GROUP;
-    }
-
-    /// Returns the lookup service for synthesized 7z owner and group principals.
-    static UserPrincipalLookupService userPrincipalLookupService() {
-        return USER_PRINCIPAL_LOOKUP_SERVICE;
-    }
-
-    /// Requires a principal name to match the synthesized owner.
-    static void requireDefaultOwner(UserPrincipal owner) throws UserPrincipalNotFoundException {
-        USER_PRINCIPAL_LOOKUP_SERVICE.requireUser(owner);
-    }
-
-    /// Requires a principal name to match the synthesized group.
-    static void requireDefaultGroup(GroupPrincipal group) throws UserPrincipalNotFoundException {
-        USER_PRINCIPAL_LOOKUP_SERVICE.requireGroup(group);
-    }
-
     /// Returns the Unix mode stored in the high 16 bits of 7z attributes, or `UNKNOWN_UNIX_MODE`.
     static int unixMode(int windowsAttributes) {
         if (windowsAttributes == SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES) {
@@ -137,8 +109,10 @@ final class SevenZipPosixSupport {
             boolean readOnly,
             int windowsAttributes
     ) {
-        Set<PosixFilePermission> permissions = permissionsFromUnixMode(unixMode(windowsAttributes));
-        return permissions != null ? permissions : permissions(directory, readOnly);
+        int mode = unixMode(windowsAttributes);
+        return mode == SevenZipArkivoEntryAttributes.UNKNOWN_UNIX_MODE
+                ? permissions(directory, readOnly)
+                : PosixModes.permissions(mode);
     }
 
     /// Returns Windows attributes containing POSIX mode bits for a regular file.
@@ -179,14 +153,5 @@ final class SevenZipPosixSupport {
     /// Returns Windows attributes containing the given Unix file type and POSIX permissions.
     private static int unixModeWindowsAttributes(int fileType, Set<PosixFilePermission> permissions) {
         return (fileType | PosixModes.permissionBits(permissions)) << 16;
-    }
-
-    /// Decodes POSIX permissions from stored Unix mode bits.
-    private static @Nullable @Unmodifiable Set<PosixFilePermission> permissionsFromUnixMode(int mode) {
-        if (mode == SevenZipArkivoEntryAttributes.UNKNOWN_UNIX_MODE) {
-            return null;
-        }
-
-        return PosixModes.permissions(mode);
     }
 }

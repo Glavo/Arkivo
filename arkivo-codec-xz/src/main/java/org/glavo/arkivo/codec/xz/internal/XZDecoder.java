@@ -12,6 +12,7 @@ import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.glavo.arkivo.codec.xz.internal.filter.BCJTransforms;
 import org.glavo.arkivo.codec.xz.internal.filter.DeltaTransform;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -263,7 +264,8 @@ public final class XZDecoder implements CompressionDecoder.Framed {
                     if (!collectMetadata(source)) {
                         return inputOutcome(endOfInput);
                     }
-                    if (XZSupport.getLittleEndian(metadata, 0, Integer.BYTES) != indexCrc.getValue()) {
+                    if (Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(metadata, 0))
+                            != indexCrc.getValue()) {
                         throw new IOException("XZ Index CRC-32 mismatch");
                     }
                     indexEncodedSize = Math.addExact(indexByteCount, Integer.BYTES);
@@ -466,7 +468,7 @@ public final class XZDecoder implements CompressionDecoder.Framed {
             if (properties.length == 0) {
                 startOffset = 0;
             } else if (properties.length == Integer.BYTES) {
-                startOffset = XZSupport.getLittleEndian(properties, 0, Integer.BYTES);
+                startOffset = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(properties, 0));
             } else {
                 throw new IOException("XZ BCJ filter properties must contain zero or four bytes");
             }
@@ -557,7 +559,7 @@ public final class XZDecoder implements CompressionDecoder.Framed {
         if (metadata[8] != 0 || Byte.toUnsignedInt(metadata[9]) != checkType) {
             throw new IOException("XZ Stream Header and Footer flags differ");
         }
-        long storedBackwardSize = XZSupport.getLittleEndian(metadata, 4, Integer.BYTES);
+        long storedBackwardSize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(metadata, 4));
         long backwardSize;
         try {
             backwardSize = Math.multiplyExact(Math.addExact(storedBackwardSize, 1L), 4L);

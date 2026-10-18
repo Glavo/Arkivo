@@ -45,6 +45,11 @@ tasks.named<Test>("tier2Test") {
     dependsOn(prepareLlvmArTestCorpus)
     inputs.dir(llvmArDirectory)
     inputs.property("llvmArExecutable", providers.environmentVariable("ARKIVO_LLVM_AR_EXECUTABLE").orElse(""))
+    // Track replacements and newly installed tools without requiring optional executables to exist.
+    inputs.files(providers.provider {
+        providers.environmentVariable("ARKIVO_LLVM_AR_EXECUTABLE").orNull
+            ?.takeIf { it.isNotBlank() }?.let { listOf(file(it)) }?.filter { it.isFile } ?: emptyList<File>()
+    }).withPropertyName("llvmArExecutableFile").withPathSensitivity(PathSensitivity.NONE)
     inputs.property("requireLlvmAr", providers.environmentVariable("ARKIVO_REQUIRE_LLVM_AR").orElse("false"))
     systemProperty("arkivo.llvmAr.testDataDirectory", llvmArDirectory.get().asFile.absolutePath)
 }

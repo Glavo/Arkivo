@@ -14,6 +14,7 @@ import org.glavo.arkivo.codec.deflate.DeflateCodec;
 import org.glavo.arkivo.codec.internal.CodecChannelAdapters;
 import org.glavo.arkivo.codec.internal.CompressionDecoderSupport;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -61,7 +62,7 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
                             configured.maximumWindowSize(), configured.maximumMemorySize()), 32768);
         } catch (IOException failure) {
             try {
-                source.close();
+                ForceCloseable.forceClose(source);
             } catch (IOException | RuntimeException | Error cleanup) {
                 if (cleanup != failure) {
                     failure.addSuppressed(cleanup);
@@ -113,7 +114,7 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         for (Lease lease : leases) {
             lease.failed = true;
             try {
-                lease.close();
+                lease.forceClose();
             } catch (IOException | RuntimeException | Error exception) {
                 if (failure == null) {
                     failure = exception;
@@ -160,7 +161,7 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
 
     /// Keeps an entry's adapter and verification state separate from its reusable engine.
     @NotNullByDefault
-    final class Lease implements DecompressingReadableByteChannel {
+    final class Lease implements DecompressingReadableByteChannel, ForceCloseable {
         /// The exclusive algorithm workspace.
         private final Workspace workspace;
 
@@ -178,6 +179,9 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
 
         /// Whether closure would abort a decoding operation rather than close an idle adapter.
         private volatile boolean reading;
+
+        /// Whether cleanup must continue cancelling an incompletely closed source.
+        private volatile boolean aborted;
 
         /// Whether this workspace has been returned or disposed.
         private boolean released;
@@ -258,6 +262,10 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         /// Releases the engine only after owning-source cleanup succeeds; source closure remains retryable.
         @Override
         public void close() throws IOException {
+            if (aborted) {
+                forceClose();
+                return;
+            }
             if (released) {
                 return;
             }
@@ -268,9 +276,19 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
                 channel.close();
             } catch (IOException | RuntimeException | Error exception) {
                 failed = true;
-                workspace.close();
+                // Failed cancellation may leave a decoder operation active. Dispose only after cleanup succeeds.
                 throw exception;
             }
+            release(this);
+        }
+
+        /// Cancels the transport before releasing an engine that must not return to the idle pool.
+        @Override
+        public void forceClose() throws IOException {
+            if (released) return;
+            aborted = true;
+            failed = true;
+            ForceCloseable.forceClose(channel);
             release(this);
         }
     }
@@ -320,7 +338,7 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
 
     /// Prevents reuse of a workspace after a source operation fails, even if the adapter later recovers.
     @NotNullByDefault
-    private static final class Source implements ReadableByteChannel {
+    private static final class Source implements ReadableByteChannel, ForceCloseable {
         /// The source owned by this entry adapter.
         private final ReadableByteChannel source;
 
@@ -352,6 +370,13 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         @Override
         public boolean isOpen() {
             return source.isOpen();
+        }
+
+        /// Cancels source operations and permanently disqualifies the workspace from reuse.
+        @Override
+        public void forceClose() throws IOException {
+            owner.failed = true;
+            ForceCloseable.forceClose(source);
         }
 
         /// Closes the source while preserving failed closure for another attempt.

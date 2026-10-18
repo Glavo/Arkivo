@@ -24,6 +24,9 @@ import java.util.Objects;
 
 /// Opens ZIP archives as NIO file systems.
 ///
+/// Symbolic-link targets are decoded strictly as UTF-8, independently of the entry-name decoder and error policy.
+/// Reading or following a link with malformed target bytes throws [java.nio.charset.CharacterCodingException].
+///
 /// Read-only sessions index the central directory and open local record bytes lazily. The source path, seekable source,
 /// or volume source must therefore remain byte-for-byte stable until the file system closes. Paths and
 /// `ZipArkivoEntryAttributes` are snapshots and do not observe external source changes. The common option's
@@ -31,7 +34,15 @@ import java.util.Objects;
 /// Directory enumeration validates central-directory metadata without loading every local header. Accessing complete
 /// entry attributes or content validates that entry's local header and storage range; a malformed local record may
 /// therefore be reported only when the corresponding entry is accessed. Successfully loaded local metadata is cached.
+/// The metadata-size limit counts end records, the central directory, and local headers as they are loaded.
+/// Repeated access to the same local header does not charge the budget again; its reservation is retained if loading
+/// fails. Loading a local header may exceed the cumulative limit even when directory enumeration succeeded.
 /// Path-backed sessions may retain file handles until close, including while no entry stream is open.
+/// Closing an idle, sequentially read STORED entry channel reads its remaining bytes to validate the CRC and size.
+/// Input streams reading entry data directly from the archive also validate unread bytes during an idle close,
+/// unless an earlier read failed. Streams over staged content do not repeat archive-data validation.
+/// Closing an entry during an active data operation, or force-closing it in `STRICT` mode, cancels further validation.
+/// Successful closure alone therefore does not establish that all entry data has been verified.
 /// Entry-name decoding errors fail index construction by default. [ZipArchiveOptions.Read#entryNameErrorAction()]
 /// can instead hide undecodable entries or replace invalid characters; duplicate decoded paths remain errors.
 ///

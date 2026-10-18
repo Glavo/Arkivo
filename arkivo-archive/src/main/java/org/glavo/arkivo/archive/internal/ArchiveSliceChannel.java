@@ -9,6 +9,7 @@ import org.jetbrains.annotations.Nullable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.NonWritableChannelException;
@@ -85,7 +86,8 @@ public class ArchiveSliceChannel implements SeekableByteChannel {
     /// The destination limit and mark are unchanged. Bytes delivered before a failure advance both the destination
     /// and slice positions, so another read resumes after those bytes if the source remains usable. An empty writable
     /// destination returns zero, including at EOF; otherwise a position at or beyond the range end returns `-1`.
-    /// Source reads that make no progress return zero.
+    /// Source reads that make no progress return zero. An interruptible slice checks for an existing thread interrupt
+    /// before these empty or EOF returns, attempts to close its owned source, and throws [ClosedByInterruptException].
     ///
     /// @throws IllegalArgumentException if the destination is read-only
     /// @throws EOFException if the source ends before the declared range end
@@ -95,6 +97,15 @@ public class ArchiveSliceChannel implements SeekableByteChannel {
         ensureOpen();
         if (destination.isReadOnly()) {
             throw new IllegalArgumentException("Destination buffer is read-only");
+        }
+        if (this instanceof InterruptibleChannel && Thread.currentThread().isInterrupted()) {
+            ClosedByInterruptException failure = new ClosedByInterruptException();
+            try {
+                close();
+            } catch (IOException | RuntimeException | Error cleanup) {
+                if (cleanup != failure && cleanup.getCause() != failure) failure.addSuppressed(cleanup);
+            }
+            throw failure;
         }
         if (!destination.hasRemaining()) {
             return 0;

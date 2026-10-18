@@ -19,6 +19,11 @@ dependencies {
 
 tasks.named<Test>("tier2Test") {
     inputs.property("officialSevenZipExecutable", providers.environmentVariable("ARKIVO_7Z_EXECUTABLE").orElse(""))
+    // Track replacements and newly installed tools without requiring optional executables to exist.
+    inputs.files(providers.provider {
+        providers.environmentVariable("ARKIVO_7Z_EXECUTABLE").orNull
+            ?.takeIf { it.isNotBlank() }?.let { listOf(file(it)) }?.filter { it.isFile } ?: emptyList<File>()
+    }).withPropertyName("officialSevenZipExecutableFile").withPathSensitivity(PathSensitivity.NONE)
     inputs.property("requireOfficialSevenZip", providers.environmentVariable("ARKIVO_REQUIRE_7Z").orElse("false"))
 }
 

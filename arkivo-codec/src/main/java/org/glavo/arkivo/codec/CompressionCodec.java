@@ -333,7 +333,9 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// Compresses all remaining bytes from source into target.
     ///
     /// Both positions are advanced by the number of bytes consumed and produced, and both limits are unchanged. The
-    /// buffers must be distinct and the target must be writable and large enough for the complete encoding.
+    /// buffers must be distinct and the target must be writable and large enough for the complete encoding. Their
+    /// remaining regions must not overlap in the underlying storage; distinct views of the same storage are otherwise
+    /// permitted. Overlap is not required to be detected.
     ///
     /// @param source the buffer supplying all remaining uncompressed bytes
     /// @param target the distinct writable buffer receiving the complete encoding
@@ -348,8 +350,10 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// Decompresses a complete encoding from source into target using this codec's configured limits.
     ///
     /// Both positions report consumed and produced bytes; both limits are restored before this method returns or throws.
-    /// The buffers must be distinct and the target must be writable. A non-framed decoder stops at its first completed
-    /// encoding, while a framed decoder consumes concatenated frames until source exhaustion.
+    /// The buffers must be distinct and the target must be writable. Their remaining regions must not overlap in the
+    /// underlying storage; distinct views of the same storage are otherwise permitted. Overlap is not required to be
+    /// detected. A non-framed decoder stops at its first completed encoding, while a framed decoder consumes concatenated
+    /// frames until source exhaustion.
     ///
     /// @param source the buffer supplying the compressed encoding
     /// @param target the distinct writable buffer receiving decoded bytes
@@ -525,7 +529,9 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         /// Decompresses one frame into target using this codec's configured limits.
         ///
         /// The source position stops after the first complete frame. Both buffer limits are unchanged, and the target
-        /// must be distinct from the source, writable, and large enough for the complete decoded frame.
+        /// must be distinct from the source, writable, and large enough for the complete decoded frame. Their remaining
+        /// regions must not overlap in the underlying storage; distinct views of the same storage are otherwise
+        /// permitted. Overlap is not required to be detected.
         /// If `source` has no remaining bytes, neither buffer position changes and no decoder is created.
         ///
         /// @param source the buffer beginning with the compressed frame, or an empty buffer representing no frame

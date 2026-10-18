@@ -16,7 +16,8 @@ import java.util.Objects;
 
 /// Applies a stateful byte transform before writing to a channel.
 ///
-/// This channel is stateful and not safe for concurrent use. Successful writes consume every remaining source byte,
+/// Writes, finishing, and closing are serialized. Closing waits for an active write or finish operation to complete.
+/// Successful writes consume every remaining source byte,
 /// though an incomplete transform suffix may remain buffered. Transformed prefixes are written fully to the target; a
 /// zero-progress target or a transform that fills the bounded working buffer without committing a prefix causes
 /// `IOException`.
@@ -48,7 +49,7 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     private boolean finished;
 
     /// Whether this channel remains open.
-    private boolean open = true;
+    private volatile boolean open = true;
 
     /// Creates a transforming channel that borrows and therefore does not close its target.
     ///
@@ -78,7 +79,7 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     /// On success the source position reaches its original limit and the limit is unchanged. On failure the position
     /// identifies bytes already accepted into this transform pipeline.
     @Override
-    public int write(ByteBuffer source) throws IOException {
+    public synchronized int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
         ensureWritable();
         int start = source.position();
@@ -103,7 +104,7 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     /// This method is idempotent after success and does not close the target. Later writes fail with `IOException`.
     ///
     /// @throws IOException if this channel is closed, a prior failure is pending, or the tail cannot be written
-    public void finish() throws IOException {
+    public synchronized void finish() throws IOException {
         ensureOpen();
         if (finished) {
             return;
@@ -133,7 +134,7 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     /// as its cause is reported. The distinct exception permits suppression by try-with-resources.
     /// Failures from target-close retries are wrapped in the same way.
     @Override
-    public void close() throws IOException {
+    public synchronized void close() throws IOException {
         @Nullable Throwable closeFailure = null;
         if (open) {
             if (failure != null) {

@@ -13,24 +13,24 @@ import java.util.Objects;
 /// Reads bounded most-significant-bit-first fields from an in-memory RAR3 descriptor.
 @NotNullByDefault
 final class Rar3BitReader {
-    /// The immutable descriptor bytes.
+    /// The descriptor bytes borrowed for the duration of parsing.
     private final byte @Unmodifiable [] data;
 
     /// The next unread absolute bit position.
     private int bitPosition;
 
-    /// Creates a reader over all supplied bytes.
+    /// Borrows all supplied bytes; the caller must not modify them while this reader is in use.
     Rar3BitReader(byte[] data) {
         this(data, 0);
     }
 
-    /// Creates a reader beginning at one byte offset.
+    /// Borrows bytes beginning at the given offset; the caller must not modify them while this reader is in use.
     Rar3BitReader(byte[] data, int byteOffset) {
         Objects.requireNonNull(data, "data");
         if (byteOffset < 0 || byteOffset > data.length) {
             throw new IllegalArgumentException("Invalid RAR3 descriptor offset");
         }
-        this.data = data.clone();
+        this.data = data;
         bitPosition = byteOffset * 8;
     }
 

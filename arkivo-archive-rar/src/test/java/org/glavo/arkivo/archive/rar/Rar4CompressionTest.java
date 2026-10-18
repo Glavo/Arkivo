@@ -4,6 +4,11 @@
 package org.glavo.arkivo.archive.rar;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -30,6 +35,41 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies RAR4 compressed-body interoperability through Arkivo APIs.
 @NotNullByDefault
 public final class Rar4CompressionTest {
+    /// Applies the configured decoder budget while skipping solid predecessors and replaying indexed entries.
+    @Test
+    void enforcesSolidDecoderMemoryLimit() throws IOException {
+        for (long maximum : new long[]{1L << 20, 2L << 20}) {
+            var limits = ArchiveReadLimits.builder().maximumDecoderMemorySize(maximum).build();
+            var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
+            ByteArrayInputStream source = new ByteArrayInputStream(SOLID_ARCHIVE);
+            try (var reader = RarArkivoStreamingReader.open(source, options)) {
+                assertTrue(reader.next());
+                if (maximum == 1L << 20) {
+                    int remaining = source.available();
+                    assertThrows(DecompressionMemoryLimitException.class, reader::next);
+                    assertThrows(DecompressionMemoryLimitException.class, reader::next);
+                    assertEquals(remaining, source.available());
+                } else {
+                    for (int index = 2; index <= 9; index++) assertTrue(reader.next());
+                    try (InputStream input = reader.openInputStream()) {
+                        assertArrayEquals("file9\n".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
+                    }
+                }
+            }
+            if (maximum == 1L << 20) {
+                assertThrows(DecompressionMemoryLimitException.class, () -> {
+                    try (var fs = RarArkivoFileSystem.open(new ReadOnlyByteArrayChannel(SOLID_ARCHIVE), options)) {
+                        Files.readAllBytes(fs.getPath("/file9.txt"));
+                    }
+                });
+            } else {
+                try (var fs = RarArkivoFileSystem.open(new ReadOnlyByteArrayChannel(SOLID_ARCHIVE), options)) {
+                    assertArrayEquals("file9\n".getBytes(StandardCharsets.UTF_8),
+                            Files.readAllBytes(fs.getPath("/file9.txt")));
+                }
+            }
+        }
+    }
     /// The system property containing the published RAR module JAR path.
     private static final String RAR_JAR_PROPERTY = "arkivo.rar.jar";
 
@@ -74,6 +114,58 @@ public final class Rar4CompressionTest {
 
     /// The UTF-16LE password used by the encrypted fixtures.
     private static final byte @Unmodifiable [] PASSWORD = "junrar".getBytes(StandardCharsets.UTF_16LE);
+
+    /// Enforces the real solid archive's 1 MiB window while skipping predecessors and replaying indexed content.
+    @Test
+    void enforcesSolidWindowLimit() throws IOException {
+        for (int maximum : new int[]{(1 << 20) - 1, 1 << 20}) {
+            var limits = ArchiveReadLimits.builder().maximumCompressionWindowSize(maximum).build();
+            var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
+            ByteArrayInputStream source = new ByteArrayInputStream(SOLID_ARCHIVE);
+            try (var reader = RarArkivoStreamingReader.open(source, options)) {
+                assertTrue(reader.next());
+                int remaining = source.available();
+                if (maximum < 1 << 20) {
+                    assertThrows(DecompressionWindowLimitException.class, reader::next);
+                    assertThrows(DecompressionWindowLimitException.class, reader::next);
+                    assertEquals(remaining, source.available());
+                } else {
+                    for (int entry = 2; entry <= 9; entry++) {
+                        assertTrue(reader.next());
+                    }
+                    try (InputStream body = reader.openInputStream()) {
+                        assertArrayEquals("file9\n".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
+                    }
+                }
+            }
+            if (maximum < 1 << 20) {
+                assertThrows(DecompressionWindowLimitException.class, () -> {
+                    try (var fs = RarArkivoFileSystem.open(new ReadOnlyByteArrayChannel(SOLID_ARCHIVE), options)) {
+                        Files.readAllBytes(fs.getPath("/file9.txt"));
+                    }
+                });
+            } else {
+                try (var fs = RarArkivoFileSystem.open(new ReadOnlyByteArrayChannel(SOLID_ARCHIVE), options)) {
+                    assertArrayEquals("file9\n".getBytes(StandardCharsets.UTF_8),
+                            Files.readAllBytes(fs.getPath("/file9.txt")));
+                }
+            }
+        }
+    }
+
+    /// Accepts an encrypted compressed body with its actual 128 KiB window, not an implementation-sized minimum.
+    @Test
+    void acceptsEncryptedBodyAtDeclaredWindowLimit() throws IOException {
+        var limits = ArchiveReadLimits.builder().maximumCompressionWindowSize(1 << 17).build();
+        var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits))
+                .withPasswordProvider(ArkivoPasswordProvider.fixed(PASSWORD));
+        try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(ENCRYPTED_BODY_ARCHIVE), options)) {
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals("file1\n".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
+            }
+        }
+    }
 
     /// Reads every solid entry and verifies skipped predecessors preserve decompression history.
     @Test

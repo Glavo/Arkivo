@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -24,7 +25,13 @@ public final class OwnedChannelCloser {
     private final ResourceOwnership ownership;
 
     /// Whether the ownership obligation has completed.
-    private boolean complete;
+    private volatile boolean complete;
+
+    /// Serializes aborts without waiting for a graceful endpoint close.
+    private final Object forceCloseLock = new Object();
+
+    /// Whether incomplete cleanup must cancel rather than finish the endpoint.
+    private volatile boolean abortRequested;
 
     /// Creates a close tracker for a backing channel and ownership policy.
     ///
@@ -55,8 +62,14 @@ public final class OwnedChannelCloser {
                 complete = true;
             } else {
                 try {
-                    channel.close();
-                    complete = true;
+                    if (abortRequested) {
+                        forceClose();
+                    } else {
+                        channel.close();
+                        synchronized (forceCloseLock) {
+                            if (!abortRequested) complete = true;
+                        }
+                    }
                 } catch (IOException | RuntimeException | Error exception) {
                     if (primaryFailure == null) {
                         rethrow(exception);
@@ -76,6 +89,21 @@ public final class OwnedChannelCloser {
     /// @return whether the channel was borrowed or an owned channel was closed successfully
     public synchronized boolean isComplete() {
         return complete;
+    }
+
+    /// Cancels an owned endpoint without waiting for a concurrent graceful close.
+    ///
+    /// Borrowed endpoints are not closed. A failed cancellation remains pending for a later close attempt.
+    ///
+    /// @throws IOException if cancelling an owned endpoint fails
+    public void forceClose() throws IOException {
+        abortRequested = true;
+        synchronized (forceCloseLock) {
+            if (!complete) {
+                if (ownership == ResourceOwnership.OWNED) ForceCloseable.forceClose(channel);
+                complete = true;
+            }
+        }
     }
 
     /// Rethrows a close failure with its original checked or unchecked type.

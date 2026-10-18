@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive;
 
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
 import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -60,6 +61,262 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests the shared archive file system concurrency and lifecycle contract.
 @NotNullByDefault
 public final class ArkivoFileSystemConcurrencyTest {
+    /// Same-channel reads and position changes are serialized without blocking another channel's reads.
+    @ParameterizedTest
+    @EnumSource(value = ArkivoFileSystemThreadSafety.class, names = {"CONCURRENT_READ", "STRICT"})
+    void serializesManagedChannelOperations(ArkivoFileSystemThreadSafety mode) throws Exception {
+        for (int operation = 0; operation < 4; operation++) {
+            try (var fs = new TestFileSystem(mode)) {
+                var delegate = new GatedSeekableChannel();
+                var seekable = fs.managedReadChannel(delegate);
+                ReadableByteChannel channel = operation == 3 ? fs.managedReadableChannel(delegate) : seekable;
+                ByteBuffer first = ByteBuffer.allocate(1);
+                ByteBuffer second = ByteBuffer.allocateDirect(1);
+                var read = new FutureTask<>(() -> channel.read(first));
+                startChannelTask(read);
+                try {
+                    assertTrue(delegate.entered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    int selected = operation;
+                    var next = new FutureTask<>(() -> switch (selected) {
+                        case 0, 3 -> (long) channel.read(second);
+                        case 1 -> seekable.position();
+                        case 2 -> seekable.position(10).position();
+                        default -> throw new AssertionError(selected);
+                    });
+                    Thread waiter = startChannelTask(next);
+                    awaitChannelWait(waiter);
+                    assertFalse(next.isDone());
+                    assertEquals(1, delegate.readCalls.get());
+                    try (var other = fs.managedReadChannel(new TrackingSeekableByteChannel())) {
+                        assertEquals(-1, other.read(ByteBuffer.allocate(1)));
+                    }
+                    delegate.release.countDown();
+                    assertEquals(1, read.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    assertEquals(operation == 2 ? 10L : 1L,
+                            next.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    assertEquals(1, first.get(0));
+                    if (operation == 0 || operation == 3) assertEquals(2, second.get(0));
+                } finally {
+                    delegate.release.countDown();
+                    channel.close();
+                    seekable.close();
+                }
+            }
+        }
+    }
+
+    /// Explicit and strict closure release an active read and reject a read already queued on the same channel.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void cancelsManagedChannelWithQueuedRead(boolean strictClose) throws Exception {
+        for (boolean forwardOnly : new boolean[]{false, true}) {
+            try (var fs = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT)) {
+                var delegate = new GatedSeekableChannel();
+                ReadableByteChannel channel = forwardOnly ? fs.managedReadableChannel(delegate)
+                        : fs.managedReadChannel(delegate);
+                var first = new FutureTask<>(() -> channel.read(ByteBuffer.allocate(1)));
+                startChannelTask(first);
+                try {
+                    assertTrue(delegate.entered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    var second = new FutureTask<>(() -> channel.read(ByteBuffer.allocate(1)));
+                    awaitChannelWait(startChannelTask(second));
+                    var close = new FutureTask<>(() -> {
+                        if (strictClose) fs.close();
+                        else channel.close();
+                        return true;
+                    });
+                    startChannelTask(close);
+                    assertTrue(close.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    assertInstanceOf(AsynchronousCloseException.class,
+                            assertThrows(ExecutionException.class,
+                                    () -> first.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)).getCause());
+                    assertEquals(ClosedChannelException.class,
+                            assertThrows(ExecutionException.class,
+                                    () -> second.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)).getCause().getClass());
+                    assertEquals(1, delegate.readCalls.get());
+                } finally {
+                    delegate.release.countDown();
+                    channel.close();
+                }
+            }
+        }
+    }
+
+    /// Strict cancellation bypasses graceful-close monitors through nested lifecycle wrappers.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void forceCloseBypassesNestedGracefulClose(boolean forwardOnly) throws Exception {
+        try (var fs = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT)) {
+            var delegate = new DrainingSeekableChannel();
+            ReadableByteChannel channel = forwardOnly
+                    ? fs.managedReadableChannel(fs.managedReadableChannel(delegate))
+                    : fs.managedReadChannel(fs.managedReadChannel(delegate));
+            var close = new FutureTask<>(() -> { channel.close(); return true; });
+            startChannelTask(close);
+            try {
+                assertTrue(delegate.entered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                var force = new FutureTask<>(() -> { fs.close(); return true; });
+                startChannelTask(force);
+                assertTrue(force.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                assertInstanceOf(AsynchronousCloseException.class,
+                        assertInstanceOf(java.io.UncheckedIOException.class,
+                                assertThrows(ExecutionException.class,
+                                        () -> close.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)).getCause()).getCause());
+                assertFalse(channel.isOpen());
+            } finally {
+                delegate.release.countDown();
+            }
+        }
+    }
+
+    /// Starts a daemon worker so a lock regression cannot keep the test process alive indefinitely.
+    private static Thread startChannelTask(FutureTask<?> task) {
+        var thread = new Thread(task, "managed-channel-test");
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
+    }
+
+    /// A failed cancellation cannot wait for the blocked operation it failed to release; later close retries it.
+    @Test
+    void retriesStrictCancellationWithoutWaitingForBlockedRead() throws Exception {
+        for (Throwable failure : new Throwable[]{new IOException("close failed"),
+                new IllegalStateException("close failed"), new AssertionError("close failed")}) {
+            try (var fs = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT)) {
+                var physical = new FailingCancellationChannel(failure);
+                var channel = fs.managedReadableChannel(physical);
+                var read = new FutureTask<>(() -> channel.read(ByteBuffer.allocate(1)));
+                startChannelTask(read);
+                try {
+                    assertTrue(physical.delegate.entered.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+                    for (int attempt = 0; attempt < 2; attempt++) {
+                        var close = new FutureTask<>(() -> assertThrows(Throwable.class, fs::close));
+                        startChannelTask(close);
+                        Throwable actual = close.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                        if (attempt == 0) assertSame(failure, actual);
+                        else assertSame(failure, assertInstanceOf(IOException.class, actual).getCause());
+                        assertTrue(fs.isOpen());
+                        assertFalse(read.isDone());
+                    }
+                    fs.close();
+                    assertInstanceOf(AsynchronousCloseException.class,
+                            assertThrows(ExecutionException.class,
+                                    () -> read.get(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)).getCause());
+                    assertEquals(3, physical.attempts);
+                    assertFalse(fs.isOpen());
+                } finally {
+                    physical.delegate.release.countDown();
+                    physical.delegate.close();
+                }
+            }
+        }
+    }
+
+    /// Fails two physical close attempts without releasing its pending read.
+    @NotNullByDefault
+    private static final class FailingCancellationChannel implements ReadableByteChannel {
+        /// The blocked source left open by failed closure.
+        private final GatedSeekableChannel delegate = new GatedSeekableChannel();
+        /// The repeated cleanup exception.
+        private final Throwable failure;
+        /// Number of attempted closures.
+        private int attempts;
+
+        /// Creates a channel with a repeated checked or unchecked cleanup failure.
+        private FailingCancellationChannel(Throwable failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public int read(ByteBuffer target) throws IOException { return delegate.read(target); }
+
+        @Override
+        public boolean isOpen() { return delegate.isOpen(); }
+
+        @Override
+        public void close() throws IOException {
+            if (++attempts <= 2) {
+                if (failure instanceof IOException exception) throw exception;
+                if (failure instanceof RuntimeException exception) throw exception;
+                if (failure instanceof Error error) throw error;
+            }
+            delegate.close();
+        }
+    }
+
+    /// Waits until a worker is blocked on synchronization rather than relying on a scheduling delay.
+    private static void awaitChannelWait(Thread thread) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(OPERATION_TIMEOUT_SECONDS);
+        while (thread.isAlive() && System.nanoTime() < deadline) {
+            if (thread.getState() == Thread.State.BLOCKED || thread.getState() == Thread.State.WAITING) return;
+            Thread.sleep(1);
+        }
+        throw new AssertionError("Channel operation did not wait");
+    }
+
+    /// Pauses the first read before publishing its new cursor; physical close releases the blocked read.
+    @NotNullByDefault
+    private static class GatedSeekableChannel extends TrackingSeekableByteChannel {
+        /// Signals that the first read is active.
+        final CountDownLatch entered = new CountDownLatch(1);
+        /// Permits the first read to publish progress.
+        final CountDownLatch release = new CountDownLatch(1);
+        /// Counts physical read invocations.
+        final AtomicInteger readCalls = new AtomicInteger();
+
+        /// Creates an open channel at position zero.
+        GatedSeekableChannel() {
+        }
+
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            long position = super.position();
+            target.put((byte) (position + 1));
+            if (readCalls.incrementAndGet() == 1) {
+                entered.countDown();
+                try {
+                    if (!release.await(OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                        throw new IOException("Timed out waiting for read release");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(exception);
+                }
+            }
+            if (!isOpen()) throw new AsynchronousCloseException();
+            super.position(position + 1);
+            return 1;
+        }
+
+        @Override
+        public void close() {
+            super.close();
+            release.countDown();
+        }
+    }
+
+    /// Models a validator whose graceful close reads input but whose forced close only releases its source.
+    @NotNullByDefault
+    private static final class DrainingSeekableChannel extends GatedSeekableChannel implements ForceCloseable {
+        /// Creates a channel whose first read is performed by graceful close.
+        private DrainingSeekableChannel() {
+        }
+
+        @Override
+        public void close() {
+            try {
+                read(ByteBuffer.allocate(1));
+            } catch (IOException exception) {
+                throw new java.io.UncheckedIOException(exception);
+            }
+        }
+
+        @Override
+        public void forceClose() {
+            super.close();
+        }
+    }
+
     /// Maximum time allowed for a cooperating test thread to enter or complete an operation.
     private static final long OPERATION_TIMEOUT_SECONDS = 10L;
 
@@ -450,13 +707,87 @@ public final class ArkivoFileSystemConcurrencyTest {
             }
         }));
         assertEquals(4, delegate.closeCalls());
-        assertEquals(1, delegate.closeFailure.getSuppressed().length);
-        assertSame(delegate.closeFailure, delegate.closeFailure.getSuppressed()[0].getCause());
+        assertEquals(2, delegate.closeFailure.getSuppressed().length);
+        for (Throwable suppressed : delegate.closeFailure.getSuppressed()) {
+            assertSame(delegate.closeFailure, suppressed.getCause());
+        }
         assertFalse(fileSystem.isOpen());
         fileSystem.close();
         fileSystem.close();
         assertEquals(5, delegate.closeCalls());
         assertFalse(delegate.isOpen());
+    }
+
+    /// Keeps operation failures primary when stream cleanup throws the same exception instance.
+    @ParameterizedTest
+    @EnumSource(value = ArkivoFileSystemThreadSafety.class, names = {"CONCURRENT_READ", "STRICT"})
+    void preservesInputOperationFailureDuringCleanup(ArkivoFileSystemThreadSafety mode) throws IOException {
+        for (int operation = 0; operation < 5; operation++) {
+            TestFileSystem fileSystem = new TestFileSystem(mode);
+            RepeatedInputFailure delegate = new RepeatedInputFailure();
+            InputStream input = fileSystem.managedInputStream(delegate);
+            int selectedOperation = operation;
+            IOException failure = assertThrows(IOException.class, () -> {
+                try (input) {
+                    switch (selectedOperation) {
+                        case 0 -> input.read();
+                        case 1 -> input.read(new byte[1]);
+                        case 2 -> input.skip(1L);
+                        case 3 -> input.available();
+                        case 4 -> input.reset();
+                        default -> throw new AssertionError(selectedOperation);
+                    }
+                }
+            });
+            assertSame(delegate.failure, failure);
+            assertEquals(1, failure.getSuppressed().length);
+            assertSame(failure, failure.getSuppressed()[0].getCause());
+            input.close();
+            fileSystem.close();
+        }
+    }
+
+    /// Preserves unchecked delegate failures from mark operations during automatic stream cleanup.
+    @Test
+    void preservesUncheckedMarkFailureDuringCleanup() throws IOException {
+        for (boolean query : new boolean[]{false, true}) {
+            for (Throwable failure : new Throwable[]{new IllegalStateException("Mark failed"), new AssertionError("Mark failed")}) {
+                TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
+                UncheckedCloseInputStream delegate = new UncheckedCloseInputStream(failure);
+                InputStream input = fileSystem.managedInputStream(delegate);
+                assertSame(failure, assertThrows(failure.getClass(), () -> {
+                    try (input) {
+                        if (query) input.markSupported();
+                        else input.mark(1);
+                    }
+                }));
+                assertEquals(1, failure.getSuppressed().length);
+                assertSame(failure, failure.getSuppressed()[0].getCause());
+                assertEquals(1, delegate.closeCalls());
+                fileSystem.close();
+            }
+        }
+    }
+
+    /// Keeps a strict file-system close failure primary when the stream's automatic close retries it.
+    @Test
+    void preservesInputFailureAcrossOwnerCleanup() throws IOException {
+        TestFileSystem fileSystem = new TestFileSystem(ArkivoFileSystemThreadSafety.STRICT);
+        TrackingInputStream delegate = new TrackingInputStream("Repeated owner cleanup failure", 3);
+        InputStream input = fileSystem.managedInputStream(delegate);
+        assertSame(delegate.closeFailure, assertThrows(IOException.class, () -> {
+            try (input) {
+                fileSystem.close();
+            }
+        }));
+        assertEquals(3, delegate.closeCalls());
+        assertEquals(2, delegate.closeFailure.getSuppressed().length);
+        for (Throwable suppressed : delegate.closeFailure.getSuppressed()) {
+            assertSame(delegate.closeFailure, suppressed.getCause());
+        }
+        input.close();
+        fileSystem.close();
+        assertEquals(4, delegate.closeCalls());
     }
 
     /// Keeps subclass cleanup primary while attaching a different strict-resource failure exactly once.
@@ -776,7 +1107,8 @@ public final class ArkivoFileSystemConcurrencyTest {
         Throwable thrown = assertThrows(failure.getClass(), fileSystem::close);
 
         assertSame(failure, thrown);
-        assertEquals(0, thrown.getSuppressed().length);
+        assertEquals(1, thrown.getSuppressed().length);
+        assertSame(failure, thrown.getSuppressed()[0].getCause());
         assertEquals(2, delegate.closeCalls());
         assertFalse(fileSystem.isOpen());
     }
@@ -1311,6 +1643,41 @@ public final class ArkivoFileSystemConcurrencyTest {
         }
     }
 
+    /// Reuses a checked exception for every input operation and the first close attempt.
+    @NotNullByDefault
+    private static final class RepeatedInputFailure extends InputStream {
+        /// Failure shared by operations and cleanup.
+        private final IOException failure = new IOException("Repeated input failure");
+
+        /// Whether the first close still needs to report its failure.
+        private boolean failClose = true;
+
+        /// Fails without producing a byte.
+        @Override
+        public int read() throws IOException { throw failure; }
+
+        /// Fails without skipping data.
+        @Override
+        public long skip(long count) throws IOException { throw failure; }
+
+        /// Fails without reporting a buffered count.
+        @Override
+        public int available() throws IOException { throw failure; }
+
+        /// Fails without changing stream position.
+        @Override
+        public void reset() throws IOException { throw failure; }
+
+        /// Fails once, then permits cleanup to complete.
+        @Override
+        public void close() throws IOException {
+            if (failClose) {
+                failClose = false;
+                throw failure;
+            }
+        }
+    }
+
     /// Provides an input stream that reports the same unchecked failure from every close attempt.
     @NotNullByDefault
     private static final class UncheckedCloseInputStream extends InputStream {
@@ -1338,8 +1705,25 @@ public final class ArkivoFileSystemConcurrencyTest {
         @Override
         public void close() {
             closeCalls++;
+            throw uncheckedFailure();
+        }
+
+        /// Reports the configured unchecked failure without changing a mark.
+        @Override
+        public void mark(int readLimit) {
+            throw uncheckedFailure();
+        }
+
+        /// Reports the configured unchecked failure without reporting mark support.
+        @Override
+        public boolean markSupported() {
+            throw uncheckedFailure();
+        }
+
+        /// Returns the configured runtime exception or throws the configured error.
+        private RuntimeException uncheckedFailure() {
             if (failure instanceof RuntimeException exception) {
-                throw exception;
+                return exception;
             }
             throw (Error) failure;
         }

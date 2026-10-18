@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -21,6 +22,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /// Implements WinZip AES encryption and decryption for ZIP entries.
 @NotNullByDefault
@@ -61,8 +63,7 @@ final class ZipAesCrypto {
         return new DecryptingInputStream(
                 input,
                 decryptor,
-                compressedSize - aes.overheadSize(),
-                aes.authenticationCodeSize()
+                compressedSize - aes.overheadSize()
         );
     }
 
@@ -79,7 +80,7 @@ final class ZipAesCrypto {
         byte[] salt = readBytes(input, aes.saltSize(), "Unexpected end of WinZip AES salt");
         byte[] passwordVerifier = readBytes(
                 input,
-                aes.passwordVerifierSize(),
+                ZipAesExtraField.PASSWORD_VERIFIER_SIZE,
                 "Unexpected end of WinZip AES password verifier"
         );
         return new Decryptor(createDecryptingState(aes, password, salt, passwordVerifier), aes);
@@ -121,7 +122,7 @@ final class ZipAesCrypto {
 
         byte[] salt = new byte[aes.saltSize()];
         RANDOM.nextBytes(salt);
-        byte[] passwordVerifier = new byte[aes.passwordVerifierSize()];
+        byte[] passwordVerifier = new byte[ZipAesExtraField.PASSWORD_VERIFIER_SIZE];
         State state = createEncryptingState(aes, password, salt, passwordVerifier);
         output.write(salt);
         output.write(passwordVerifier);
@@ -441,36 +442,43 @@ final class ZipAesCrypto {
 
     /// Decrypts WinZip AES entry content and verifies the trailing authentication code.
     @NotNullByDefault
-    private static final class DecryptingInputStream extends FilterInputStream {
+    private static final class DecryptingInputStream extends FilterInputStream implements ForceCloseable {
+        /// Serializes cipher operations separately from endpoint cancellation.
+        private final ReentrantLock operationLock = new ReentrantLock();
+
+        /// Serializes forced cleanup without waiting for authentication draining.
+        private final Object forceCloseLock = new Object();
+
+        /// Whether unread ciphertext must not be consumed for authentication.
+        private volatile boolean aborted;
+
+        /// Whether an earlier data operation failed.
+        private volatile boolean readFailed;
+
         /// The decryptor used for this entry data.
         private final Decryptor decryptor;
 
         /// The remaining encrypted content bytes before the authentication code.
         private long remainingEncryptedSize;
 
-        /// The authentication code size in bytes.
-        private final int authenticationCodeSize;
-
         /// Whether the authentication code has already been verified.
         private boolean verified;
 
         /// Whether this stream has been closed.
-        private boolean closed;
+        private volatile boolean closed;
 
         /// Whether the wrapped input stream has been closed.
-        private boolean inputClosed;
+        private volatile boolean inputClosed;
 
         /// Creates a decrypting stream over encrypted content bytes.
         private DecryptingInputStream(
                 InputStream input,
                 Decryptor decryptor,
-                long encryptedSize,
-                int authenticationCodeSize
+                long encryptedSize
         ) {
             super(Objects.requireNonNull(input, "input"));
             this.decryptor = Objects.requireNonNull(decryptor, "decryptor");
             this.remainingEncryptedSize = encryptedSize;
-            this.authenticationCodeSize = authenticationCodeSize;
         }
 
         /// Reads one decrypted byte.
@@ -485,8 +493,16 @@ final class ZipAesCrypto {
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
-            ensureOpen();
-            return readUnchecked(bytes, offset, length);
+            operationLock.lock();
+            try {
+                ensureOpen();
+                return readUnchecked(bytes, offset, length);
+            } catch (IOException | RuntimeException | Error exception) {
+                readFailed = true;
+                throw exception;
+            } finally {
+                operationLock.unlock();
+            }
         }
 
         /// Reads decrypted bytes without checking the wrapper open state for close-time draining.
@@ -509,30 +525,39 @@ final class ZipAesCrypto {
             return read;
         }
 
-        /// Closes the stream after draining content and verifying authentication.
+        /// Closes the stream, authenticating unread content only when closure remains graceful.
         @Override
-        public void close() throws IOException {
-            if (closed && inputClosed) {
-                return;
-            }
-
-            Throwable failure = null;
+        public synchronized void close() throws IOException {
+            if (closed && inputClosed) return;
+            @Nullable Throwable failure = null;
             if (!closed) {
                 closed = true;
-                try {
-                    byte[] discard = new byte[8192];
-                    while (readUnchecked(discard, 0, discard.length) >= 0) {
-                        // Drain remaining encrypted content so the authentication code can be verified.
+                if (!readFailed && !operationLock.isHeldByCurrentThread() && operationLock.tryLock()) {
+                    try {
+                        byte[] discard = new byte[8192];
+                        while (!aborted && readUnchecked(discard, 0, discard.length) >= 0) {
+                            // Authenticate only while closure remains graceful.
+                        }
+                    } catch (IOException | RuntimeException | Error exception) {
+                        aborted = true;
+                        failure = exception;
+                    } finally {
+                        operationLock.unlock();
                     }
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
+                } else {
+                    aborted = true;
                 }
             }
-
             if (!inputClosed) {
                 try {
-                    in.close();
-                    inputClosed = true;
+                    if (aborted) {
+                        forceClose();
+                    } else {
+                        in.close();
+                        synchronized (forceCloseLock) {
+                            if (!aborted) inputClosed = true;
+                        }
+                    }
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = mergeFailure(failure, exception);
                 }
@@ -540,15 +565,28 @@ final class ZipAesCrypto {
             throwFailure(failure);
         }
 
+        /// Cancels ciphertext input without reading or verifying the authentication trailer.
+        @Override
+        public void forceClose() throws IOException {
+            aborted = true;
+            closed = true;
+            synchronized (forceCloseLock) {
+                if (!inputClosed) {
+                    ForceCloseable.forceClose(in);
+                    inputClosed = true;
+                }
+            }
+        }
+
         /// Reads and verifies the trailing authentication code.
         private void verifyAuthenticationCode() throws IOException {
-            if (verified) {
+            if (verified || aborted) {
                 return;
             }
             verified = true;
             byte[] expectedAuthentication = readBytes(
                     in,
-                    authenticationCodeSize,
+                    ZipAesExtraField.AUTHENTICATION_CODE_SIZE,
                     "Unexpected end of WinZip AES authentication code"
             );
             if (!decryptor.verify(expectedAuthentication)) {

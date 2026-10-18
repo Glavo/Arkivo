@@ -16,10 +16,13 @@ import java.util.Objects;
 
 /// Reads compressed bytes from a backing channel and exposes decoded bytes.
 ///
-/// Contexts are stateful and not safe for concurrent data operations. A read may block while obtaining compressed input
+/// A read may block while obtaining compressed input
 /// and advances the target position by the positive count it returns; an empty writable target returns zero without
 /// reading the source. Arkivo-provided contexts fail with `IOException` when a nonempty operation cannot make codec or
 /// transport progress.
+/// Channels created by the default [CompressionCodec] factories serialize read and decode operations, including their
+/// per-call progress counts. Callers must coordinate sequences of separate operations and must not access a supplied
+/// buffer until its operation returns.
 ///
 /// Closing always releases decoder state. A borrowed backing source remains open; an owned source is closed. Closing does
 /// not drain compressed input or verify that the current encoding is complete.

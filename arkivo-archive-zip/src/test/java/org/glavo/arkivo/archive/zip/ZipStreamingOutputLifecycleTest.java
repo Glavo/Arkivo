@@ -84,16 +84,19 @@ final class ZipStreamingOutputLifecycleTest {
         assertTrue(archiveFailure.getSuppressed()[0].getMessage().contains("close failed"));
     }
 
-    /// Verifies that a close-action failure does not mask an output close failure.
+    /// Defers the close action until checked output failure is resolved, then retries the action independently.
     @Test
-    void closeActionFailureIsSuppressedWhenOutputCloseFails() {
+    void defersCloseActionUntilOutputCloseSucceeds() throws IOException {
         CloseTrackingOutputStream archiveOutput = new CloseTrackingOutputStream(true);
+        int[] actionCalls = {0};
         ZipArkivoWritableFileSystemImpl fileSystem = new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 archiveOutput,
                 ZipArkivoFileSystemConfig.DEFAULTS,
                 () -> {
-                    throw new IllegalStateException("close action failed");
+                    if (++actionCalls[0] == 1) {
+                        throw new IllegalStateException("close action failed");
+                    }
                 }
         );
 
@@ -101,24 +104,30 @@ final class ZipStreamingOutputLifecycleTest {
 
         assertEquals("close failed", exception.getMessage());
         assertTrue(archiveOutput.closed());
-        assertEquals(1, exception.getSuppressed().length);
-        assertEquals("close action failed", exception.getSuppressed()[0].getMessage());
+        assertEquals(0, exception.getSuppressed().length);
+        assertEquals(0, actionCalls[0]);
+        archiveOutput.failClose = false;
+        assertEquals("close action failed", assertThrows(IllegalStateException.class, fileSystem::close).getMessage());
+        fileSystem.close();
+        fileSystem.close();
+        assertEquals(2, actionCalls[0]);
     }
 
-    /// Verifies that close-action failure is preserved after a runtime output close failure.
+    /// Retains runtime output failures across retries without running the close action prematurely.
     @Test
-    void closeActionFailureIsSuppressedAfterRuntimeOutputCloseFailure() {
+    void defersCloseActionAfterRuntimeOutputCloseFailure() throws IOException {
         RuntimeCloseFailingOutputStream archiveOutput = new RuntimeCloseFailingOutputStream(
                 new IllegalStateException("close failed")
         );
-        boolean[] closeActionRan = new boolean[1];
+        int[] actionCalls = {0};
         ZipArkivoWritableFileSystemImpl fileSystem = new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 archiveOutput,
                 ZipArkivoFileSystemConfig.DEFAULTS,
                 () -> {
-                    closeActionRan[0] = true;
-                    throw new IllegalStateException("close action failed");
+                    if (++actionCalls[0] == 1) {
+                        throw new IllegalStateException("close action failed");
+                    }
                 }
         );
 
@@ -126,26 +135,32 @@ final class ZipStreamingOutputLifecycleTest {
 
         assertEquals("close failed", exception.getMessage());
         assertTrue(archiveOutput.closed());
-        assertTrue(closeActionRan[0]);
-        assertEquals(1, exception.getSuppressed().length);
-        assertEquals("close action failed", exception.getSuppressed()[0].getMessage());
+        assertEquals(0, actionCalls[0]);
+        assertEquals(0, exception.getSuppressed().length);
         IOException retryFailure = assertThrows(IOException.class, fileSystem::close);
         assertSame(exception, retryFailure.getCause());
+        assertEquals(0, actionCalls[0]);
+        archiveOutput.failClose = false;
+        assertEquals("close action failed", assertThrows(IllegalStateException.class, fileSystem::close).getMessage());
+        fileSystem.close();
+        fileSystem.close();
+        assertEquals(2, actionCalls[0]);
     }
 
-    /// Verifies one shared output-close and close-action failure remains primary without self-suppression.
+    /// Wraps an already delivered output failure when the delayed close action throws the same instance.
     @Test
-    void preservesSharedOutputAndCloseActionFailure() {
+    void preservesSharedOutputAndCloseActionFailure() throws IOException {
         IllegalStateException sharedFailure = new IllegalStateException("shared close failure");
         RuntimeCloseFailingOutputStream archiveOutput = new RuntimeCloseFailingOutputStream(sharedFailure);
-        boolean[] closeActionRan = new boolean[1];
+        int[] actionCalls = {0};
         ZipArkivoWritableFileSystemImpl fileSystem = new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 archiveOutput,
                 ZipArkivoFileSystemConfig.DEFAULTS,
                 () -> {
-                    closeActionRan[0] = true;
-                    throw sharedFailure;
+                    if (++actionCalls[0] == 1) {
+                        throw sharedFailure;
+                    }
                 }
         );
 
@@ -154,21 +169,29 @@ final class ZipStreamingOutputLifecycleTest {
         assertSame(sharedFailure, exception);
         assertEquals(0, exception.getSuppressed().length);
         assertTrue(archiveOutput.closed());
-        assertTrue(closeActionRan[0]);
+        assertEquals(0, actionCalls[0]);
+        archiveOutput.failClose = false;
+        IOException retryFailure = assertThrows(IOException.class, fileSystem::close);
+        assertSame(sharedFailure, retryFailure.getCause());
+        assertEquals(0, sharedFailure.getSuppressed().length);
+        fileSystem.close();
+        fileSystem.close();
+        assertEquals(2, actionCalls[0]);
     }
 
     /// Verifies that close-action failure is preserved after a runtime entry finalization failure.
     @Test
     void closeActionFailureIsSuppressedAfterRuntimeEntryCloseFailure() throws IOException {
         RuntimeWriteFailingOutputStream archiveOutput = new RuntimeWriteFailingOutputStream();
-        boolean[] closeActionRan = new boolean[1];
+        int[] actionCalls = {0};
         ZipArkivoWritableFileSystemImpl fileSystem = new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 archiveOutput,
                 ZipArkivoFileSystemConfig.DEFAULTS,
                 () -> {
-                    closeActionRan[0] = true;
-                    throw new IllegalStateException("close action failed");
+                    if (++actionCalls[0] == 1) {
+                        throw new IllegalStateException("close action failed");
+                    }
                 }
         );
 
@@ -179,11 +202,13 @@ final class ZipStreamingOutputLifecycleTest {
 
         assertEquals("write failed", exception.getMessage());
         assertTrue(archiveOutput.closed());
-        assertTrue(closeActionRan[0]);
+        assertEquals(1, actionCalls[0]);
         assertEquals(1, exception.getSuppressed().length);
         assertEquals("close action failed", exception.getSuppressed()[0].getMessage());
         assertThrows(IOException.class, () -> entryOutput.write(1));
         fileSystem.close();
+        fileSystem.close();
+        assertEquals(2, actionCalls[0]);
     }
 
     /// Returns the unsigned CRC-32 value of the given content.
@@ -200,7 +225,7 @@ final class ZipStreamingOutputLifecycleTest {
     @NotNullByDefault
     private static final class CloseTrackingOutputStream extends ByteArrayOutputStream {
         /// Whether closure reports an I/O failure.
-        private final boolean failClose;
+        private boolean failClose;
 
         /// Whether close has been attempted.
         private boolean closed;
@@ -290,8 +315,11 @@ final class ZipStreamingOutputLifecycleTest {
     /// Output stream that records closure and then fails at runtime.
     @NotNullByDefault
     private static final class RuntimeCloseFailingOutputStream extends ByteArrayOutputStream {
-        /// Failure reported by every close attempt.
+        /// Failure reported while close failures are enabled.
         private final RuntimeException failure;
+
+        /// Whether closure must report the configured failure.
+        private boolean failClose = true;
 
         /// Whether close has been attempted.
         private boolean closed;
@@ -301,11 +329,13 @@ final class ZipStreamingOutputLifecycleTest {
             this.failure = failure;
         }
 
-        /// Records closure and throws the configured failure.
+        /// Records closure and throws the configured failure while failures are enabled.
         @Override
         public void close() {
             closed = true;
-            throw failure;
+            if (failClose) {
+                throw failure;
+            }
         }
 
         /// Returns whether close has been attempted.

@@ -10,13 +10,16 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// A value equal to [#UNLIMITED_SIZE] disables the corresponding limit. Limits are propagated through outer
 /// compression layers and nested archive readers so that decoded-output limits do not leave decoder allocation
 /// unbounded.
+/// The decoder-memory limit applies separately to the working memory accounted for by each decoder. It is not a
+/// limit on JVM heap usage or on all memory retained by an archive operation. Formats and codecs specify which
+/// structures they account for; metadata, content caches, and transport buffers are not part of this limit.
 ///
 /// @param maximumEntryCount            the maximum number of logical entries, or [#UNLIMITED_SIZE]
 /// @param maximumEntrySize             the maximum logical size of one entry, or [#UNLIMITED_SIZE]
 /// @param maximumTotalEntrySize        the maximum sum of logical entry sizes, or [#UNLIMITED_SIZE]
 /// @param maximumMetadataSize          the maximum cumulative metadata size, or [#UNLIMITED_SIZE]
 /// @param maximumCompressionWindowSize the maximum compression history-window size, or [#UNLIMITED_SIZE]
-/// @param maximumDecoderMemorySize     the maximum decoder working-memory size, or [#UNLIMITED_SIZE]
+/// @param maximumDecoderMemorySize     the maximum accounted working-memory size per decoder, or [#UNLIMITED_SIZE]
 /// @param maximumDecodedArchiveSize    the maximum decoded byte size of an outer-compressed archive, or
 ///                                     [#UNLIMITED_SIZE]
 /// @param maximumOuterCompressionLayers the maximum number of decoded outer compression layers, or
@@ -193,7 +196,7 @@ public record ArchiveReadLimits(
             return this;
         }
 
-        /// Sets the maximum decoder working-memory size.
+        /// Sets the maximum accounted working-memory size per decoder.
         ///
         /// @param value the non-negative byte limit, or {@link #UNLIMITED_SIZE}
         /// @return this builder

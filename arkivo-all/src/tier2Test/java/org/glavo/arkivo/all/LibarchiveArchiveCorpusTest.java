@@ -7,6 +7,8 @@ import org.glavo.arkivo.all.commonscompress.ArchiveCorpusAssertions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
@@ -40,6 +42,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -1183,9 +1186,11 @@ public final class LibarchiveArchiveCorpusTest {
     }
 
     /// Verifies every solid and split-solid RAR5 body against CRC values in libarchive's extraction tests.
-    @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"solid", "multiarchive_solid"})
-    void readsCompleteRar5SolidCorpus(String variant, @TempDir Path directory) throws IOException {
+    @ParameterizedTest(name = "{0}, memory={1}")
+    @CsvSource({"solid,-1", "solid,67108864", "multiarchive_solid,-1", "multiarchive_solid,67108864"})
+    void readsCompleteRar5SolidCorpus(String variant, long maximumMemory, @TempDir Path directory) throws IOException {
+        var limits = ArchiveReadLimits.builder().maximumDecoderMemorySize(maximumMemory).build();
+        var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
         List<Path> volumes = new ArrayList<>();
         if (variant.equals("solid")) {
             volumes.add(decodeFixture("test_read_format_rar5_solid.rar.uu", "solid.rar", directory));
@@ -1201,7 +1206,7 @@ public final class LibarchiveArchiveCorpusTest {
                 0x9fb123d9L, 0x10c43ed4L, 0xb9d155f2L, 0x36a448ffL, 0x886f91ebL};
         int start = variant.equals("solid") ? 1 : 0;
         int end = variant.equals("solid") ? 8 : 9;
-        try (var reader = RarArkivoStreamingReader.open(ArkivoVolumeSource.of(volumes))) {
+        try (var reader = RarArkivoStreamingReader.open(ArkivoVolumeSource.of(volumes), options)) {
             for (int index = start; index < end; index++) {
                 assertTrue(reader.next());
                 assertEquals(names.get(index), reader.readAttributes().path());
@@ -1211,7 +1216,7 @@ public final class LibarchiveArchiveCorpusTest {
             }
             assertFalse(reader.next());
         }
-        try (var fileSystem = RarArkivoFileSystem.open(ArkivoVolumeSource.of(volumes))) {
+        try (var fileSystem = RarArkivoFileSystem.open(ArkivoVolumeSource.of(volumes), options)) {
             @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> entries = ArchiveCorpusAssertions.readFileSystem(fileSystem);
             assertEquals(Set.copyOf(names.subList(start, end)),
                     entries.stream().map(ArchiveCorpusAssertions.EntryDigest::path)
@@ -1236,13 +1241,16 @@ public final class LibarchiveArchiveCorpusTest {
     }
 
     /// Verifies the RAR5 ARM executable filter through the streaming reader.
-    @Test
-    public void readsRar5ArmExecutableFilter() throws IOException {
+    @ParameterizedTest(name = "memory={0}")
+    @ValueSource(longs = {-1, 67108864})
+    public void readsRar5ArmExecutableFilter(long maximumMemory) throws IOException {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(
                 decodeFixtureBytes("test_read_format_rar5_arm.rar.uu")
         ));
 
-        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source)) {
+        var limits = ArchiveReadLimits.builder().maximumDecoderMemorySize(maximumMemory).build();
+        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
+                source, ArchiveReadOptions.DEFAULT.withLimits(limits))) {
             assertTrue(reader.next());
             BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
             assertEquals(90808L, attributes.size());

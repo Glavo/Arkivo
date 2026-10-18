@@ -4,19 +4,125 @@
 package org.glavo.arkivo.archive.rar.internal;
 
 import org.glavo.arkivo.internal.ByteArrayAccess;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /// Verifies RAR5 post-processing filters, scheduling, buffering, and range validation.
 @NotNullByDefault
 final class Rar5OutputPipelineTest {
+    /// Charges queued data cumulatively and releases both originals and transformed copies.
+    @Test
+    void accountsForQueuedFiltersAndTransformation() throws IOException {
+        int bufferSize = Rar5OutputPipeline.OUTPUT_BUFFER_SIZE;
+        RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(bufferSize + 12);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Rar5OutputPipeline pipeline = new Rar5OutputPipeline(output, 0, 8, memory)) {
+            assertEquals(bufferSize, memory.used());
+            pipeline.registerFilter(0, 4, Rar5OutputPipeline.FILTER_DELTA, 1);
+            pipeline.registerFilter(4, 4, Rar5OutputPipeline.FILTER_ARM, 0);
+            assertEquals(bufferSize + 8, memory.used());
+            for (int value = 1; value <= 4; value++) {
+                pipeline.accept(value);
+            }
+            assertEquals(bufferSize + 4, memory.used());
+            for (int value = 5; value <= 8; value++) {
+                pipeline.accept(value);
+            }
+            assertEquals(bufferSize, memory.used());
+            pipeline.finish();
+            assertArrayEquals(new byte[]{-1, -3, -6, -10, 5, 6, 7, 8}, output.toByteArray());
+        }
+        assertEquals(0, memory.used());
+    }
+
+    /// Rejects filter-copy allocation before emitting filtered bytes and releases queued originals on close.
+    @Test
+    void rejectsTransformationPeakAndDiscardsPendingFilters() throws IOException {
+        int bufferSize = Rar5OutputPipeline.OUTPUT_BUFFER_SIZE;
+        for (int type = Rar5OutputPipeline.FILTER_DELTA; type <= Rar5OutputPipeline.FILTER_ARM; type++) {
+            RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(bufferSize + 11);
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            Rar5OutputPipeline pipeline = new Rar5OutputPipeline(output, 0, 8, memory);
+            try (pipeline) {
+                pipeline.registerFilter(0, 4, type, 1);
+                pipeline.registerFilter(4, 4, type, 1);
+                for (int value = 1; value <= 3; value++) {
+                    pipeline.accept(value);
+                }
+                DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                        () -> pipeline.accept(4));
+                assertEquals(bufferSize + 11, failure.maximum());
+                assertEquals(bufferSize + 12, failure.actual());
+                assertEquals(bufferSize + 8, memory.used());
+                assertEquals(0, output.size());
+            }
+            assertEquals(0, memory.used());
+            pipeline.close();
+            assertEquals(0, memory.used());
+        }
+    }
+
+    /// Failed registration leaves queue ordering unchanged; zero-size filters allocate no data.
+    @Test
+    void rejectsFilterAllocationWithoutChangingSchedule() throws IOException {
+        int bufferSize = Rar5OutputPipeline.OUTPUT_BUFFER_SIZE;
+        RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(bufferSize + 4);
+        try (Rar5OutputPipeline pipeline = new Rar5OutputPipeline(OutputStream.nullOutputStream(), 0, 8, memory)) {
+            assertThrows(DecompressionMemoryLimitException.class,
+                    () -> pipeline.registerFilter(0, 8, Rar5OutputPipeline.FILTER_ARM, 0));
+            assertEquals(bufferSize, memory.used());
+            pipeline.registerFilter(0, 0, Rar5OutputPipeline.FILTER_ARM, 0);
+            assertEquals(bufferSize, memory.used());
+            pipeline.registerFilter(0, 4, Rar5OutputPipeline.FILTER_ARM, 0);
+            assertEquals(bufferSize + 4, memory.used());
+        }
+        assertEquals(0, memory.used());
+        RarDecoderMemoryBudget tooSmall = new RarDecoderMemoryBudget(bufferSize - 1);
+        assertThrows(DecompressionMemoryLimitException.class,
+                () -> new Rar5OutputPipeline(OutputStream.nullOutputStream(), 0, 0, tooSmall));
+        assertEquals(0, tooSmall.used());
+    }
+
+    /// Releases transient and queued arrays after a target failure without flushing or closing the target.
+    @Test
+    void releasesFilterMemoryAfterWriteFailure() throws IOException {
+        int bufferSize = Rar5OutputPipeline.OUTPUT_BUFFER_SIZE;
+        RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(bufferSize + 8);
+        IOException failure = new IOException("target write failed");
+        OutputStream output = new OutputStream() {
+            /// Fails every attempted write.
+            @Override
+            public void write(int value) throws IOException {
+                throw failure;
+            }
+
+            /// Rejects propagation of pipeline closure to the borrowed output.
+            @Override
+            public void close() {
+                throw new AssertionError("Borrowed output must not be closed");
+            }
+        };
+        try (Rar5OutputPipeline pipeline = new Rar5OutputPipeline(output, 0, 4, memory)) {
+            pipeline.registerFilter(0, 4, Rar5OutputPipeline.FILTER_ARM, 0);
+            for (int value = 0; value < 3; value++) {
+                pipeline.accept(value);
+            }
+            assertSame(failure, assertThrows(IOException.class, () -> pipeline.accept(3)));
+            assertEquals(bufferSize + 4, memory.used());
+        }
+        assertEquals(0, memory.used());
+    }
+
     /// Verifies the delta filter reconstructs interleaved channels without modifying its source.
     @Test
     void appliesDeltaFilter() throws IOException {
@@ -104,7 +210,7 @@ final class Rar5OutputPipelineTest {
     @Test
     void schedulesAndAppliesFutureFilter() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Rar5OutputPipeline pipeline = new Rar5OutputPipeline(output, 100L, 5L);
+        Rar5OutputPipeline pipeline = new Rar5OutputPipeline(output, 100L, 5L, new RarDecoderMemoryBudget(-1));
         assertEquals(100L, pipeline.rawPosition());
         pipeline.registerFilter(2L, 3L, Rar5OutputPipeline.FILTER_DELTA, 1);
 
@@ -127,7 +233,7 @@ final class Rar5OutputPipelineTest {
         int size = 64 * 1024 + 1;
         byte[] expected = new byte[size];
         ByteArrayOutputStream output = new ByteArrayOutputStream(size);
-        Rar5OutputPipeline pipeline = new Rar5OutputPipeline(output, 0L, size);
+        Rar5OutputPipeline pipeline = new Rar5OutputPipeline(output, 0L, size, new RarDecoderMemoryBudget(-1));
         pipeline.registerFilter(0L, 0L, Rar5OutputPipeline.FILTER_ARM, 0);
         for (int index = 0; index < size; index++) {
             int value = index * 17;
@@ -142,7 +248,7 @@ final class Rar5OutputPipelineTest {
     /// Verifies filter field bounds, ordering, entry bounds, and position overflow checks.
     @Test
     void validatesFilterRegistration() throws IOException {
-        Rar5OutputPipeline pipeline = new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, 10L);
+        Rar5OutputPipeline pipeline = new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, 10L, new RarDecoderMemoryBudget(-1));
         assertThrows(
                 IOException.class,
                 () -> pipeline.registerFilter(-1L, 1L, Rar5OutputPipeline.FILTER_ARM, 0)
@@ -186,13 +292,13 @@ final class Rar5OutputPipelineTest {
         );
 
         Rar5OutputPipeline startOverflow =
-                new Rar5OutputPipeline(new ByteArrayOutputStream(), Long.MAX_VALUE, 0L);
+                new Rar5OutputPipeline(new ByteArrayOutputStream(), Long.MAX_VALUE, 0L, new RarDecoderMemoryBudget(-1));
         assertThrows(
                 IOException.class,
                 () -> startOverflow.registerFilter(1L, 0L, Rar5OutputPipeline.FILTER_ARM, 0)
         );
         Rar5OutputPipeline endOverflow =
-                new Rar5OutputPipeline(new ByteArrayOutputStream(), Long.MAX_VALUE, 1L);
+                new Rar5OutputPipeline(new ByteArrayOutputStream(), Long.MAX_VALUE, 1L, new RarDecoderMemoryBudget(-1));
         assertThrows(
                 IOException.class,
                 () -> endOverflow.registerFilter(0L, 0L, Rar5OutputPipeline.FILTER_ARM, 0)
@@ -202,7 +308,7 @@ final class Rar5OutputPipelineTest {
     /// Verifies the per-entry filter-count bound includes zero-size descriptors.
     @Test
     void limitsFilterCount() throws IOException {
-        Rar5OutputPipeline pipeline = new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, 0L);
+        Rar5OutputPipeline pipeline = new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, 0L, new RarDecoderMemoryBudget(-1));
         for (int index = 0; index < 8192; index++) {
             pipeline.registerFilter(0L, 0L, Rar5OutputPipeline.FILTER_ARM, 0);
         }
@@ -216,14 +322,14 @@ final class Rar5OutputPipelineTest {
     /// Verifies constructor, filter application, accepted-size, and final-size validation.
     @Test
     void validatesPipelineBoundaries() throws IOException {
-        assertThrows(NullPointerException.class, () -> new Rar5OutputPipeline(null, 0L, 0L));
+        assertThrows(NullPointerException.class, () -> new Rar5OutputPipeline(null, 0L, 0L, new RarDecoderMemoryBudget(-1)));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new Rar5OutputPipeline(new ByteArrayOutputStream(), -1L, 0L)
+                () -> new Rar5OutputPipeline(new ByteArrayOutputStream(), -1L, 0L, new RarDecoderMemoryBudget(-1))
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, -1L)
+                () -> new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, -1L, new RarDecoderMemoryBudget(-1))
         );
         assertThrows(
                 NullPointerException.class,
@@ -242,11 +348,11 @@ final class Rar5OutputPipelineTest {
                 () -> Rar5OutputPipeline.applyFilter(4, 0, 0L, new byte[0])
         );
 
-        Rar5OutputPipeline empty = new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, 0L);
+        Rar5OutputPipeline empty = new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, 0L, new RarDecoderMemoryBudget(-1));
         assertThrows(IOException.class, () -> empty.accept(1));
         empty.finish();
 
-        Rar5OutputPipeline shortOutput = new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, 2L);
+        Rar5OutputPipeline shortOutput = new Rar5OutputPipeline(new ByteArrayOutputStream(), 0L, 2L, new RarDecoderMemoryBudget(-1));
         shortOutput.accept(1);
         assertThrows(IOException.class, shortOutput::finish);
     }

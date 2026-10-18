@@ -14,6 +14,7 @@ import java.util.regex.PatternSyntaxException;
 @NotNullByDefault
 public final class ArkivoPathMatchers {
     /// Creates a path matcher that treats `/` as the path separator.
+    /// Syntax names are compared without regard to case; the pattern is passed unchanged to its parser.
     ///
     /// @param syntaxAndPattern a {@code glob:pattern} or {@code regex:pattern} specification
     /// @return a matcher applied to each path's string representation
@@ -21,19 +22,6 @@ public final class ArkivoPathMatchers {
     /// @throws PatternSyntaxException if the glob or regular-expression pattern is invalid
     /// @throws UnsupportedOperationException if the named syntax is not supported
     public static PathMatcher create(String syntaxAndPattern) {
-        return create(syntaxAndPattern, '/');
-    }
-
-    /// Creates a path matcher with the given path separator.
-    /// Syntax names are compared without regard to case; the pattern is passed unchanged to its parser.
-    ///
-    /// @param syntaxAndPattern a {@code glob:pattern} or {@code regex:pattern} specification
-    /// @param separator the path separator excluded by single-segment glob wildcards
-    /// @return a matcher applied to each path's string representation
-    /// @throws IllegalArgumentException if the specification does not contain a nonempty syntax name
-    /// @throws PatternSyntaxException if the glob or regular-expression pattern is invalid
-    /// @throws UnsupportedOperationException if the named syntax is not supported
-    public static PathMatcher create(String syntaxAndPattern, char separator) {
         Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
         int syntaxSeparator = syntaxAndPattern.indexOf(':');
         if (syntaxSeparator <= 0) {
@@ -44,7 +32,7 @@ public final class ArkivoPathMatchers {
         String pattern = syntaxAndPattern.substring(syntaxSeparator + 1);
         Pattern compiledPattern;
         if (syntax.equalsIgnoreCase("glob")) {
-            compiledPattern = Pattern.compile(globToRegex(pattern, separator));
+            compiledPattern = Pattern.compile(globToRegex(pattern));
         } else if (syntax.equalsIgnoreCase("regex")) {
             compiledPattern = Pattern.compile(pattern);
         } else {
@@ -57,8 +45,8 @@ public final class ArkivoPathMatchers {
     private ArkivoPathMatchers() {
     }
 
-    /// Converts a glob pattern to a regular expression that treats `separator` as the only path separator.
-    private static String globToRegex(String glob, char separator) {
+    /// Converts a glob pattern to a regular expression that treats `/` as the only path separator.
+    private static String globToRegex(String glob) {
         StringBuilder regex = new StringBuilder(glob.length() * 2);
         boolean inGroup = false;
         for (int index = 0; index < glob.length(); index++) {
@@ -70,12 +58,11 @@ public final class ArkivoPathMatchers {
                         regex.append("(?s:.*)");
                         index++;
                     } else {
-                        appendNotSeparator(regex, separator);
-                        regex.append('*');
+                        regex.append("[^/]*");
                     }
                 }
-                case '?' -> appendNotSeparator(regex, separator);
-                case '[' -> index = appendGlobCharacterClass(glob, index, regex, separator);
+                case '?' -> regex.append("[^/]");
+                case '[' -> index = appendGlobCharacterClass(glob, index, regex);
                 case '{' -> {
                     if (inGroup) {
                         throw new PatternSyntaxException("Cannot nest glob groups", glob, index);
@@ -114,28 +101,18 @@ public final class ArkivoPathMatchers {
         return regex.toString();
     }
 
-    /// Appends a character class that excludes the path separator.
-    private static void appendNotSeparator(StringBuilder regex, char separator) {
-        regex.append("[^");
-        appendCharacterClassLiteral(regex, separator);
-        regex.append(']');
-    }
-
     /// Appends a separator-excluding glob character class and returns the final consumed index.
     private static int appendGlobCharacterClass(
             String glob,
             int startIndex,
-            StringBuilder regex,
-            char separator
+            StringBuilder regex
     ) {
         int index = startIndex + 1;
         if (index >= glob.length()) {
             throw new PatternSyntaxException("Unclosed glob character class", glob, startIndex);
         }
 
-        regex.append("[[^");
-        appendCharacterClassLiteral(regex, separator);
-        regex.append("]&&[");
+        regex.append("[[^/]&&[");
 
         boolean hasMember = false;
         boolean hasRangeStart = false;
@@ -166,7 +143,7 @@ public final class ArkivoPathMatchers {
                 regex.append("]]");
                 return index;
             }
-            if (ch == separator) {
+            if (ch == '/') {
                 throw new PatternSyntaxException("Path separator in glob character class", glob, index);
             }
             if (ch == '-') {
@@ -182,7 +159,7 @@ public final class ArkivoPathMatchers {
                     hasRangeStart = false;
                     continue;
                 }
-                if (rangeEnd == separator) {
+                if (rangeEnd == '/') {
                     throw new PatternSyntaxException(
                             "Path separator in glob character class",
                             glob,

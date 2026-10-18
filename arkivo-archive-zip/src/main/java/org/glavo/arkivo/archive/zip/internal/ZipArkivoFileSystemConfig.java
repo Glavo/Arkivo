@@ -41,13 +41,12 @@ public final class ZipArkivoFileSystemConfig {
     private static final ArchiveOption<ZipEncryption> DEFAULT_ENCRYPTION =
             ArchiveOption.of(
                     "arkivo.zip.defaultEncryption",
-                    ZipEncryption.class,
                     ZipArkivoFileSystemConfig::encryptionValue
             );
 
     /// The NIO environment key for split output size.
     private static final ArchiveOption<Long> SPLIT_SIZE =
-            ArchiveOption.of("arkivo.zip.splitSize", Long.class, ZipArkivoFileSystemConfig::longValue);
+            ArchiveOption.of("arkivo.zip.splitSize", ZipArkivoFileSystemConfig::longValue);
 
     /// The NIO environment key for legacy metadata decoding.
     private static final ArchiveOption<ArchiveMetadataDecoder> LEGACY_METADATA_DECODER =
@@ -57,9 +56,6 @@ public final class ZipArkivoFileSystemConfig {
 
     /// The split size value used when split output is disabled.
     public static final long NO_SPLIT_SIZE = -1L;
-
-    /// The primitive value used when a common archive read limit is not configured.
-    public static final long NO_READ_LIMIT = -1L;
 
     /// The default open options used by read-only ZIP file systems.
     private static final @Unmodifiable Set<OpenOption> DEFAULT_READ_OPEN_OPTIONS =
@@ -117,7 +113,7 @@ public final class ZipArkivoFileSystemConfig {
     /// The configured commit target override, or `null` when the file system should choose a default.
     private final @Nullable ArkivoCommitTarget commitTarget;
 
-    /// The maximum accepted logical entry count, or NO_READ_LIMIT.
+    /// The resource limits for the archive read portion of this operation.
     private final ArchiveReadLimits readLimits;
 
     /// Creates parsed ZIP file system configuration.
@@ -227,11 +223,11 @@ public final class ZipArkivoFileSystemConfig {
             return DEFAULTS;
         }
 
-        ArkivoPasswordProvider passwordProvider = passwordProvider(options);
+        @Nullable ArkivoPasswordProvider passwordProvider = options.get(PASSWORD_PROVIDER);
         Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, DEFAULT_READ_OPEN_OPTIONS);
         ZipEncryption defaultEncryption =
                 options.getOrDefault(DEFAULT_ENCRYPTION, ZipEncryption.NONE);
-        long splitSize = splitSize(options);
+        long splitSize = options.getOrDefault(SPLIT_SIZE, NO_SPLIT_SIZE);
         ArchiveMetadataDecoder legacyMetadataDecoder =
                 options.getOrDefault(
                         LEGACY_METADATA_DECODER,
@@ -244,7 +240,7 @@ public final class ZipArkivoFileSystemConfig {
                 );
         @Nullable ArkivoEditStorageFactory editStorageFactory =
                 options.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY);
-        ArkivoCommitTarget commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
+        @Nullable ArkivoCommitTarget commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
 
         ArchiveReadLimits readLimits =
                 options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
@@ -394,49 +390,11 @@ public final class ZipArkivoFileSystemConfig {
         return commitTarget;
     }
 
-    /// Returns the maximum accepted logical entry count, or `NO_READ_LIMIT`.
-    ///
-    /// @return the entry-count limit, or [#NO_READ_LIMIT]
-    public long maximumEntryCount() {
-        return readLimits.maximumEntryCount();
-    }
-
-    /// Returns the maximum accepted logical size of one entry, or `NO_READ_LIMIT`.
-    ///
-    /// @return the per-entry logical size limit, or [#NO_READ_LIMIT]
-    public long maximumEntrySize() {
-        return readLimits.maximumEntrySize();
-    }
-
-    /// Returns the maximum accepted sum of logical entry sizes, or `NO_READ_LIMIT`.
-    ///
-    /// @return the aggregate logical entry-size limit, or [#NO_READ_LIMIT]
-    public long maximumTotalEntrySize() {
-        return readLimits.maximumTotalEntrySize();
-    }
-
-    /// Returns the maximum cumulative archive metadata size, or `NO_READ_LIMIT`.
-    ///
-    /// @return the cumulative metadata-size limit, or [#NO_READ_LIMIT]
-    public long maximumMetadataSize() {
-        return readLimits.maximumMetadataSize();
-    }
-
     /// Returns all resource limits for the archive read portion of this operation.
     ///
     /// @return the immutable archive read limits
     public ArchiveReadLimits readLimits() {
         return readLimits;
-    }
-
-    /// Parses the password provider from an archive options.
-    private static @Nullable ArkivoPasswordProvider passwordProvider(ArchiveOptions options) {
-        return options.get(PASSWORD_PROVIDER);
-    }
-
-    /// Parses the split size from an archive options.
-    private static long splitSize(ArchiveOptions options) {
-        return options.getOrDefault(SPLIT_SIZE, NO_SPLIT_SIZE);
     }
 
     /// Converts a raw NIO encryption value.

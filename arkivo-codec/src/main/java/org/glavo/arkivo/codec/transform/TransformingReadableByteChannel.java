@@ -16,7 +16,7 @@ import java.util.Objects;
 
 /// Applies a stateful byte transform while reading from a channel.
 ///
-/// This channel is stateful and not safe for concurrent use. A nonempty read may block while obtaining lookahead and
+/// Reads are serialized. A nonempty read may block while obtaining lookahead and
 /// advances only the target position; its limit is unchanged. When the source reaches end-of-input, an incomplete suffix
 /// retained by the transform is returned unchanged before this channel reports `-1`.
 ///
@@ -26,6 +26,8 @@ import java.util.Objects;
 /// Rejected arguments do not put this channel into a failed state. Closing
 /// does not drain input. It leaves a borrowed source open and closes an owned source; a failed owned-source close can be
 /// retried by calling [#close()] again.
+/// Closing does not wait for an active read before closing an owned source. Whether source closure unblocks a read
+/// depends on the source channel.
 @NotNullByDefault
 public final class TransformingReadableByteChannel implements ReadableByteChannel {
     /// The upstream channel.
@@ -37,8 +39,11 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     /// The committed-prefix and lookahead state shared by all transform adapters.
     private final TransformBuffer buffer;
 
+    /// Serializes closure and cleanup retry state independently of reads.
+    private final Object closeLock = new Object();
+
     /// A deferred source or transform failure.
-    private @Nullable Throwable failure;
+    private volatile @Nullable Throwable failure;
 
     /// Whether an earlier source-close attempt failed.
     private boolean closeFailed;
@@ -47,7 +52,7 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     private boolean endReached;
 
     /// Whether this channel remains open.
-    private boolean open = true;
+    private volatile boolean open = true;
 
     /// Creates a transforming channel that borrows and therefore does not close its source.
     ///
@@ -83,7 +88,7 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     ///
     /// @throws IllegalArgumentException if this channel is open and the target is read-only
     @Override
-    public int read(ByteBuffer target) throws IOException {
+    public synchronized int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
         if (target.isReadOnly()) {
@@ -136,6 +141,13 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     /// `IOException` so try-with-resources can preserve the original failure without self-suppression.
     @Override
     public void close() throws IOException {
+        synchronized (closeLock) {
+            closeSource();
+        }
+    }
+
+    /// Closes the source and records cleanup failures while holding the close lock.
+    private void closeSource() throws IOException {
         open = false;
         try {
             sourceCloser.close();

@@ -3,10 +3,13 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.PasswordPurpose;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCoderMethod;
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
+import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.glavo.arkivo.codec.xz.internal.filter.BCJTransforms;
 import org.glavo.arkivo.codec.xz.internal.filter.DeltaTransform;
@@ -28,62 +31,8 @@ import java.util.Set;
 /// Opens supported coder streams stored in 7z folders.
 @NotNullByDefault
 final class SevenZipFolderDecoder {
-    /// The 7z Copy method ID.
-    static final byte[] COPY_METHOD_ID = new byte[]{0x00};
-
-    /// The 7z LZMA method ID.
-    static final byte[] LZMA_METHOD_ID = new byte[]{0x03, 0x01, 0x01};
-
-    /// The 7z LZMA2 method ID.
-    static final byte[] LZMA2_METHOD_ID = new byte[]{0x21};
-
-    /// The 7z Deflate method ID.
-    static final byte[] DEFLATE_METHOD_ID = new byte[]{0x04, 0x01, 0x08};
-
-    /// The 7z Deflate64 method ID.
-    static final byte[] DEFLATE64_METHOD_ID = new byte[]{0x04, 0x01, 0x09};
-
-    /// The 7z BZip2 method ID.
-    static final byte[] BZIP2_METHOD_ID = new byte[]{0x04, 0x02, 0x02};
-
-    /// The 7z Zstandard method ID.
-    static final byte[] ZSTANDARD_METHOD_ID = new byte[]{0x04, (byte) 0xf7, 0x11, 0x01};
-
-    /// The 7z PPMd7 method ID.
-    static final byte[] PPMD_METHOD_ID = new byte[]{0x03, 0x04, 0x01};
-
-    /// The 7z AES-256/SHA-256 encryption method ID.
-    static final byte[] AES_METHOD_ID = new byte[]{0x06, (byte) 0xf1, 0x07, 0x01};
-
-    /// The 7z Delta filter method ID.
-    static final byte[] DELTA_METHOD_ID = new byte[]{0x03};
-
-    /// The 7z x86 BCJ filter method ID.
-    static final byte[] X86_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x01, 0x03};
-
-    /// The 7z x86 BCJ2 four-input filter method ID.
-    static final byte[] BCJ2_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x01, 0x1b};
-
-    /// The 7z PowerPC BCJ filter method ID.
-    static final byte[] POWERPC_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x02, 0x05};
-
-    /// The 7z IA-64 BCJ filter method ID.
-    static final byte[] IA64_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x04, 0x01};
-
-    /// The 7z ARM BCJ filter method ID.
-    static final byte[] ARM_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x05, 0x01};
-
-    /// The 7z ARM-Thumb BCJ filter method ID.
-    static final byte[] ARM_THUMB_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x07, 0x01};
-
-    /// The 7z SPARC BCJ filter method ID.
-    static final byte[] SPARC_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x08, 0x05};
-
-    /// The 7z ARM64 BCJ filter method ID.
-    private static final byte @Unmodifiable [] ARM64_FILTER_METHOD_ID = new byte[]{0x0a};
-
-    /// The 7z RISC-V BCJ filter method ID.
-    private static final byte @Unmodifiable [] RISCV_FILTER_METHOD_ID = new byte[]{0x0b};
+    /// The Copy identifier used to recognize folders that need no decoding.
+    private static final byte @Unmodifiable [] COPY_METHOD_ID = SevenZipCoderMethod.COPY.methodId();
 
     /// Creates no instances.
     private SevenZipFolderDecoder() {
@@ -94,122 +43,13 @@ final class SevenZipFolderDecoder {
         return Arrays.equals(methodId, COPY_METHOD_ID);
     }
 
-    /// Returns whether the method ID identifies the LZMA method.
-    static boolean isLZMA(byte[] methodId) {
-        return Arrays.equals(methodId, LZMA_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the LZMA2 method.
-    static boolean isLZMA2(byte[] methodId) {
-        return Arrays.equals(methodId, LZMA2_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the Deflate method.
-    static boolean isDeflate(byte[] methodId) {
-        return Arrays.equals(methodId, DEFLATE_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the Deflate64 method.
-    static boolean isDeflate64(byte[] methodId) {
-        return Arrays.equals(methodId, DEFLATE64_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the BZip2 method.
-    static boolean isBZip2(byte[] methodId) {
-        return Arrays.equals(methodId, BZIP2_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the Zstandard method.
-    static boolean isZstandard(byte[] methodId) {
-        return Arrays.equals(methodId, ZSTANDARD_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the PPMd7 method.
-    static boolean isPpmd(byte[] methodId) {
-        return Arrays.equals(methodId, PPMD_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the AES-256/SHA-256 encryption filter.
-    static boolean isAes(byte[] methodId) {
-        return Arrays.equals(methodId, AES_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the Delta filter.
-    static boolean isDelta(byte[] methodId) {
-        return Arrays.equals(methodId, DELTA_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the x86 BCJ filter.
-    static boolean isX86Filter(byte[] methodId) {
-        return Arrays.equals(methodId, X86_FILTER_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the x86 BCJ2 multi-stream filter.
-    static boolean isBcj2Filter(byte[] methodId) {
-        return Arrays.equals(methodId, BCJ2_FILTER_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the PowerPC BCJ filter.
-    static boolean isPowerPCFilter(byte[] methodId) {
-        return Arrays.equals(methodId, POWERPC_FILTER_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the IA-64 BCJ filter.
-    static boolean isIA64Filter(byte[] methodId) {
-        return Arrays.equals(methodId, IA64_FILTER_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the ARM BCJ filter.
-    static boolean isARMFilter(byte[] methodId) {
-        return Arrays.equals(methodId, ARM_FILTER_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the ARM-Thumb BCJ filter.
-    static boolean isARMThumbFilter(byte[] methodId) {
-        return Arrays.equals(methodId, ARM_THUMB_FILTER_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the SPARC BCJ filter.
-    static boolean isSPARCFilter(byte[] methodId) {
-        return Arrays.equals(methodId, SPARC_FILTER_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the ARM64 BCJ filter.
-    static boolean isARM64Filter(byte[] methodId) {
-        return Arrays.equals(methodId, ARM64_FILTER_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies the RISC-V BCJ filter.
-    static boolean isRiscVFilter(byte[] methodId) {
-        return Arrays.equals(methodId, RISCV_FILTER_METHOD_ID);
-    }
-
-    /// Returns whether the method ID identifies a supported BCJ filter.
-    static boolean isBcjFilter(byte[] methodId) {
-        return isX86Filter(methodId)
-                || isPowerPCFilter(methodId)
-                || isIA64Filter(methodId)
-                || isARMFilter(methodId)
-                || isARMThumbFilter(methodId)
-                || isSPARCFilter(methodId)
-                || isARM64Filter(methodId)
-                || isRiscVFilter(methodId);
-    }
-
-    /// Returns whether the method ID identifies a supported decoder.
-    static boolean isSupported(byte[] methodId) {
-        return isCopy(methodId)
-                || isLZMA(methodId)
-                || isLZMA2(methodId)
-                || isDeflate(methodId)
-                || isDeflate64(methodId)
-                || isBZip2(methodId)
-                || isZstandard(methodId)
-                || isPpmd(methodId)
-                || isAes(methodId)
-                || isDelta(methodId)
-                || isBcj2Filter(methodId)
-                || isBcjFilter(methodId);
+    /// Resolves a coder ID, reporting unsupported methods as I/O errors.
+    static SevenZipCoderMethod parseMethod(byte[] methodId) throws IOException {
+        try {
+            return SevenZipCoderMethod.fromMethodId(methodId);
+        } catch (IllegalArgumentException exception) {
+            throw new IOException("Unsupported 7z coder method: " + Arrays.toString(methodId), exception);
+        }
     }
 
     /// Opens the decoder graph with password and resource-limit context for a 7z folder.
@@ -284,7 +124,7 @@ final class SevenZipFolderDecoder {
     /// Opens one supported single-input coder.
     private static InputStream openSingleInputCoder(
             InputStream input,
-            byte[] methodId,
+            SevenZipCoderMethod method,
             byte[] properties,
             long outputLimit,
             @Nullable ArkivoPasswordProvider passwordProvider,
@@ -292,43 +132,28 @@ final class SevenZipFolderDecoder {
             @Nullable String entryPath,
             ArchiveReadLimits readLimits
     ) throws IOException {
-        if (isCopy(methodId)) {
-            return input;
-        }
-        if (isLZMA(methodId)) {
-            return openLZMA(input, outputLimit, properties, readLimits);
-        }
-        if (isLZMA2(methodId)) {
-            return openLZMA2(input, properties, outputLimit, readLimits);
-        }
-        if (isDeflate(methodId)) {
-            return openDeflate(input, properties, outputLimit, readLimits);
-        }
-        if (isDeflate64(methodId)) {
-            return openDeflate64(input, properties, outputLimit, readLimits);
-        }
-        if (isBZip2(methodId)) {
-            return openBZip2(input, properties, outputLimit, readLimits);
-        }
-        if (isZstandard(methodId)) {
-            return openZstandard(input, properties, outputLimit, readLimits);
-        }
-        if (isPpmd(methodId)) {
-            return openPpmd(input, properties, outputLimit, readLimits);
-        }
-        if (isAes(methodId)) {
-            return new SevenZipBoundedInputStream(
-                    openAes(input, properties, passwordProvider, passwordPurpose, entryPath),
-                    outputLimit
-            );
-        }
-        if (isDelta(methodId)) {
-            return openDelta(input, properties);
-        }
-        if (isBcjFilter(methodId)) {
-            return openBcjFilter(input, methodId, properties);
-        }
-        throw new IOException("Unsupported 7z coder method: " + Arrays.toString(methodId));
+        return switch (method) {
+            case COPY -> input;
+            case LZMA -> openLZMA(input, outputLimit, properties, readLimits);
+            case LZMA2 -> openLZMA2(input, properties, outputLimit, readLimits);
+            case DEFLATE -> openDeflate(input, properties, outputLimit, readLimits);
+            case DEFLATE64 -> openDeflate64(input, properties, outputLimit, readLimits);
+            case BZIP2 -> openBZip2(input, properties, outputLimit, readLimits);
+            case ZSTANDARD -> openZstandard(input, properties, outputLimit, readLimits);
+            case PPMD -> openPpmd(input, properties, outputLimit, readLimits);
+            case AES -> new SevenZipBoundedInputStream(
+                    openAes(input, properties, passwordProvider, passwordPurpose, entryPath), outputLimit);
+            case DELTA -> openDelta(input, properties);
+            case BCJ_X86 -> openX86Filter(input, properties);
+            case BCJ_POWERPC -> openPowerPCFilter(input, properties);
+            case BCJ_IA64 -> openIA64Filter(input, properties);
+            case BCJ_ARM -> openARMFilter(input, properties);
+            case BCJ_ARM_THUMB -> openARMThumbFilter(input, properties);
+            case BCJ_SPARC -> openSPARCFilter(input, properties);
+            case BCJ_ARM64 -> openARM64Filter(input, properties);
+            case BCJ_RISCV -> openRiscVFilter(input, properties);
+            case BCJ2 -> throw new IOException("7z BCJ2 coder must consume four input streams");
+        };
     }
 
     /// Builds decoder streams by resolving coder graph dependencies from the final output.
@@ -416,10 +241,10 @@ final class SevenZipFolderDecoder {
                 }
             }
 
-            byte[] methodId = method.methodId(coderIndex);
+            SevenZipCoderMethod coderMethod = parseMethod(method.methodId(coderIndex));
             byte[] properties = method.properties(coderIndex);
             InputStream output;
-            if (isBcj2Filter(methodId)) {
+            if (coderMethod == SevenZipCoderMethod.BCJ2) {
                 if (inputCount != 4) {
                     throw new IOException("7z BCJ2 coder must consume four input streams");
                 }
@@ -448,7 +273,7 @@ final class SevenZipFolderDecoder {
                 }
                 output = openSingleInputCoder(
                         coderInputs.get(0),
-                        methodId,
+                        coderMethod,
                         properties,
                         outputLimit,
                         passwordProvider,
@@ -471,7 +296,7 @@ final class SevenZipFolderDecoder {
             Error errorFailure = null;
             for (InputStream root : roots) {
                 try {
-                    root.close();
+                    ForceCloseable.forceClose(root);
                 } catch (IOException exception) {
                     if (failure == null) {
                         failure = exception;
@@ -682,94 +507,129 @@ final class SevenZipFolderDecoder {
             throw new IOException("7z Delta coder properties must contain one byte");
         }
         int distance = Byte.toUnsignedInt(properties[0]) + 1;
-        return new TransformingInputStream(input, new DeltaTransform(Direction.DECODE, distance));
-    }
-
-    /// Opens a raw BCJ filter decoder for 7z coder properties.
-    static InputStream openBcjFilter(InputStream input, byte[] methodId, byte[] properties) throws IOException {
-        Objects.requireNonNull(input, "input");
-        Objects.requireNonNull(methodId, "methodId");
-        if (isX86Filter(methodId)) {
-            return openX86Filter(input, properties);
-        }
-        if (isPowerPCFilter(methodId)) {
-            return openPowerPCFilter(input, properties);
-        }
-        if (isIA64Filter(methodId)) {
-            return openIA64Filter(input, properties);
-        }
-        if (isARMFilter(methodId)) {
-            return openARMFilter(input, properties);
-        }
-        if (isARMThumbFilter(methodId)) {
-            return openARMThumbFilter(input, properties);
-        }
-        if (isSPARCFilter(methodId)) {
-            return openSPARCFilter(input, properties);
-        }
-        if (isARM64Filter(methodId)) {
-            return openARM64Filter(input, properties);
-        }
-        if (isRiscVFilter(methodId)) {
-            return openRiscVFilter(input, properties);
-        }
-        throw new IOException("Unsupported 7z coder method: " + Arrays.toString(methodId));
+        return new FilteredInputStream(input, new DeltaTransform(Direction.DECODE, distance));
     }
 
     /// Opens a raw x86 BCJ filter decoder for 7z coder properties.
     static InputStream openX86Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
         long startOffset = bcjStartOffset(properties, "7z x86 BCJ coder", 1);
-        return new TransformingInputStream(input, BCJTransforms.x86(Direction.DECODE, startOffset));
+        return new FilteredInputStream(input, BCJTransforms.x86(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw PowerPC BCJ filter decoder for 7z coder properties.
     static InputStream openPowerPCFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
         long startOffset = bcjStartOffset(properties, "7z PowerPC BCJ coder", 4);
-        return new TransformingInputStream(input, BCJTransforms.powerPC(Direction.DECODE, startOffset));
+        return new FilteredInputStream(input, BCJTransforms.powerPC(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw IA-64 BCJ filter decoder for 7z coder properties.
     static InputStream openIA64Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
         long startOffset = bcjStartOffset(properties, "7z IA-64 BCJ coder", 16);
-        return new TransformingInputStream(input, BCJTransforms.ia64(Direction.DECODE, startOffset));
+        return new FilteredInputStream(input, BCJTransforms.ia64(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw ARM BCJ filter decoder for 7z coder properties.
     static InputStream openARMFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
         long startOffset = bcjStartOffset(properties, "7z ARM BCJ coder", 4);
-        return new TransformingInputStream(input, BCJTransforms.arm(Direction.DECODE, startOffset));
+        return new FilteredInputStream(input, BCJTransforms.arm(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw ARM-Thumb BCJ filter decoder for 7z coder properties.
     static InputStream openARMThumbFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
         long startOffset = bcjStartOffset(properties, "7z ARM-Thumb BCJ coder", 2);
-        return new TransformingInputStream(input, BCJTransforms.armThumb(Direction.DECODE, startOffset));
+        return new FilteredInputStream(input, BCJTransforms.armThumb(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw SPARC BCJ filter decoder for 7z coder properties.
     static InputStream openSPARCFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
         long startOffset = bcjStartOffset(properties, "7z SPARC BCJ coder", 4);
-        return new TransformingInputStream(input, BCJTransforms.sparc(Direction.DECODE, startOffset));
+        return new FilteredInputStream(input, BCJTransforms.sparc(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw ARM64 BCJ filter decoder for 7z coder properties.
     static InputStream openARM64Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
         long startOffset = bcjStartOffset(properties, "7z ARM64 BCJ coder", 4);
-        return new TransformingInputStream(input, BCJTransforms.arm64(Direction.DECODE, startOffset));
+        return new FilteredInputStream(input, BCJTransforms.arm64(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw RISC-V BCJ filter decoder for 7z coder properties.
     static InputStream openRiscVFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
         long startOffset = bcjStartOffset(properties, "7z RISC-V BCJ coder", 2);
-        return new TransformingInputStream(input, BCJTransforms.riscV(Direction.DECODE, startOffset));
+        return new FilteredInputStream(input, BCJTransforms.riscV(Direction.DECODE, startOffset));
+    }
+
+    /// Applies a folder filter and cancels its owned input before waiting for graceful closure.
+    @NotNullByDefault
+    private static final class FilteredInputStream extends InputStream implements ForceCloseable {
+        /// The owned input to cancel before waiting for ordinary filter closure.
+        private final InputStream input;
+
+        /// The stateful filter and its ordinary input lifecycle.
+        private final TransformingInputStream filtered;
+
+        /// Whether reads are forbidden and cleanup must cancel the input.
+        private volatile boolean aborted;
+
+        /// Creates one filter over its owned folder input.
+        private FilteredInputStream(InputStream input, ByteTransform transform) {
+            this.input = input;
+            filtered = new TransformingInputStream(input, transform);
+        }
+
+        /// Reads one filtered byte unless cancellation has started.
+        @Override
+        public int read() throws IOException {
+            requireNotAborted();
+            return filtered.read();
+        }
+
+        /// Reads filtered bytes unless cancellation has started.
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            requireNotAborted();
+            return filtered.read(bytes, offset, length);
+        }
+
+        /// Returns already filtered bytes unless cancellation has started.
+        @Override
+        public int available() throws IOException {
+            requireNotAborted();
+            return filtered.available();
+        }
+
+        /// Closes normally, or retries cancellation after an earlier abort request.
+        @Override
+        public void close() throws IOException {
+            if (aborted) {
+                forceClose();
+            } else {
+                filtered.close();
+            }
+        }
+
+        /// Cancels the input before waiting for a concurrent graceful filter close.
+        @Override
+        public void forceClose() throws IOException {
+            aborted = true;
+            ForceCloseable.forceClose(input);
+            filtered.close();
+        }
+
+        /// Rejects new input operations once cancellation has started, even if source cleanup failed.
+        private void requireNotAborted() throws IOException {
+            if (aborted) {
+                throw new IOException("7z filter input is closed");
+            }
+        }
     }
 
     /// Reads BCJ filter properties as an optional little-endian start offset.

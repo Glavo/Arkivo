@@ -379,6 +379,18 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             paxRecords.put("gid", Long.toString(headerGroupId));
             headerGroupId = 0L;
         }
+        long headerDeviceMajor = attributes.deviceMajor();
+        long headerDeviceMinor = attributes.deviceMinor();
+        if (typeFlag == TarEntryAttributes.CHARACTER_DEVICE_TYPE || typeFlag == TarEntryAttributes.BLOCK_DEVICE_TYPE) {
+            if (headerDeviceMajor > maxOctalValue(8)) {
+                paxRecords.put("SCHILY.devmajor", Long.toString(headerDeviceMajor));
+                headerDeviceMajor = 0L;
+            }
+            if (headerDeviceMinor > maxOctalValue(8)) {
+                paxRecords.put("SCHILY.devminor", Long.toString(headerDeviceMinor));
+                headerDeviceMinor = 0L;
+            }
+        }
 
         @Nullable String configuredUserName = attributes.userName();
         String userName = configuredUserName != null ? configuredUserName : "";
@@ -401,6 +413,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 attributes.mode(),
                 headerUserId,
                 headerGroupId,
+                headerDeviceMajor,
+                headerDeviceMinor,
                 size,
                 headerEpochSecond(attributes.lastModifiedTime()),
                 typeFlag,
@@ -418,7 +432,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         }
         byte @Unmodifiable [] bodyBytes = body.toByteArray();
         byte @Unmodifiable [] paxHeader = createHeader(
-                "PaxHeaders/arkivo", "", DEFAULT_FILE_MODE, 0L, 0L, bodyBytes.length, 0L,
+                "PaxHeaders/arkivo", "", DEFAULT_FILE_MODE, 0L, 0L,
+                TarArkivoEntryAttributes.NO_DEVICE_NUMBER, TarArkivoEntryAttributes.NO_DEVICE_NUMBER, bodyBytes.length, 0L,
                 TarEntryAttributes.PAX_EXTENDED_HEADER_TYPE, "", "", "");
         ByteArrayOutputStream prefix = new ByteArrayOutputStream();
         prefix.writeBytes(paxHeader);
@@ -478,6 +493,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             int mode,
             long userId,
             long groupId,
+            long deviceMajor,
+            long deviceMinor,
             long size,
             long modificationTime,
             byte typeFlag,
@@ -501,6 +518,10 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         writeRawString(header, 263, 2, "00");
         writeString(header, 265, 32, userName, "user name");
         writeString(header, 297, 32, groupName, "group name");
+        if (typeFlag == TarEntryAttributes.CHARACTER_DEVICE_TYPE || typeFlag == TarEntryAttributes.BLOCK_DEVICE_TYPE) {
+            writeOctal(header, 329, 8, deviceMajor, "major device number");
+            writeOctal(header, 337, 8, deviceMinor, "minor device number");
+        }
         writeString(header, 345, 155, prefix, "entry prefix");
 
         long checksum = 0L;
@@ -1110,6 +1131,16 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         @Override
         public long groupId() {
             return attributes.groupId();
+        }
+
+        @Override
+        public long deviceMajor() {
+            return NO_DEVICE_NUMBER;
+        }
+
+        @Override
+        public long deviceMinor() {
+            return NO_DEVICE_NUMBER;
         }
 
         /// Returns the user name stored by the TAR header.

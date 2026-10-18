@@ -18,6 +18,11 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /// Opens RAR archives as read-only NIO file systems.
+///
+/// RAR4 Unix symbolic-link targets must be decodable as UTF-8; other native target encodings are not supported.
+/// Undecodable targets cause [java.nio.charset.CharacterCodingException] while indexing, rather than replacement
+/// with another path. The legacy entry-name decoder does not apply to link bodies.
+///
 /// Opening a file system indexes entry metadata without retaining decoded bodies. On its first content access, a readable
 /// body is decoded and cached through storage created by
 /// [org.glavo.arkivo.archive.ArchiveReadOptions#editStorageFactory()]; later accesses share that cache. The file system

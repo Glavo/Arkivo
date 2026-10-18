@@ -583,7 +583,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                         failure = appendFailure(failure, exception);
                     }
                 }
-                if (!closeActionCompleted) {
+                if (!closeActionCompleted && (writer == null || writerClosed) && pendingCommitOutput == null) {
                     try {
                         closeAction.run();
                         closeActionCompleted = true;
@@ -669,13 +669,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
         try (Operation ignored = beginReadOperation()) {
-            return getPathMatcherLocked(syntaxAndPattern);
+            return ArkivoPathMatchers.create(syntaxAndPattern);
         }
-    }
-
-    /// Returns a path matcher while the caller holds the shared operation lock.
-    private PathMatcher getPathMatcherLocked(String syntaxAndPattern) {
-        return ArkivoPathMatchers.create(syntaxAndPattern, '/');
     }
 
     /// Returns the TAR user principal lookup service.
@@ -1462,6 +1457,12 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (all || requestedAttributes.contains("groupId")) {
             values.put("groupId", entryAttributes.groupId());
         }
+        if (all || requestedAttributes.contains("deviceMajor")) {
+            values.put("deviceMajor", entryAttributes.deviceMajor());
+        }
+        if (all || requestedAttributes.contains("deviceMinor")) {
+            values.put("deviceMinor", entryAttributes.deviceMinor());
+        }
         if (all || requestedAttributes.contains("userName")) {
             values.put("userName", entryAttributes.userName());
         }
@@ -1660,7 +1661,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             Objects.requireNonNull(attribute, "attribute");
             String name = attribute.name();
             if ("posix:permissions".equals(name)) {
-                permissions = posixPermissions(attribute);
+                permissions = PosixPermissions.copyOf(attribute.value(), "posix:permissions");
             } else if ("basic:lastModifiedTime".equals(name)) {
                 if (!(attribute.value() instanceof FileTime time)) {
                     throw new IllegalArgumentException("basic:lastModifiedTime must be a FileTime");
@@ -1682,11 +1683,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             @Nullable @Unmodifiable Set<PosixFilePermission> permissions,
             @Nullable FileTime lastModifiedTime
     ) {
-    }
-
-    /// Returns POSIX permissions stored by a file attribute.
-    private static @Unmodifiable Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
-        return PosixPermissions.copyOf(attribute.value(), "posix:permissions");
     }
 
     /// Requires this file system to be in read mode.
@@ -1758,6 +1754,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
         if (requested != null && requested.directory()) {
             throw new FileSystemException(path.toString(), null, "TAR entry is a directory");
+        }
+        if (requested != null && !requested.attributes().isRegularFile()) {
+            throw new FileSystemException(path.toString(), null, "TAR entry is not a regular file");
         }
         @Nullable Node existing = requested != null ? resolveHardLinkContentNode(requested) : null;
         String entryPath = existing != null ? existing.path() : requestedPath;
@@ -1912,6 +1911,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 mode,
                 base.userId(),
                 base.groupId(),
+                TarArkivoEntryAttributes.NO_DEVICE_NUMBER,
+                TarArkivoEntryAttributes.NO_DEVICE_NUMBER,
                 base.userName(),
                 base.groupName(),
                 null,
@@ -2004,6 +2005,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 mode,
                 0L,
                 0L,
+                TarArkivoEntryAttributes.NO_DEVICE_NUMBER,
+                TarArkivoEntryAttributes.NO_DEVICE_NUMBER,
                 null,
                 null,
                 linkName,
@@ -2032,6 +2035,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 attributes.mode(),
                 attributes.userId(),
                 attributes.groupId(),
+                attributes.deviceMajor(),
+                attributes.deviceMinor(),
                 attributes.userName(),
                 attributes.groupName(),
                 linkName,
@@ -2229,6 +2234,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 attributes.mode(),
                 attributes.userId(),
                 attributes.groupId(),
+                attributes.deviceMajor(),
+                attributes.deviceMinor(),
                 attributes.userName(),
                 attributes.groupName(),
                 attributes.linkName(),
@@ -2284,6 +2291,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 attributes.mode(),
                 attributes.userId(),
                 attributes.groupId(),
+                attributes.deviceMajor(),
+                attributes.deviceMinor(),
                 attributes.userName(),
                 attributes.groupName(),
                 attributes.linkName(),
@@ -2324,6 +2333,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), userId, attributes.groupId(),
+                attributes.deviceMajor(), attributes.deviceMinor(),
                 attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2337,6 +2347,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), attributes.userId(), groupId,
+                attributes.deviceMajor(), attributes.deviceMinor(),
                 attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2355,6 +2366,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private static TarEntryAttributes copyWithMode(TarArkivoEntryAttributes attributes, int mode) {
         return new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.isDirectory(), mode, attributes.userId(), attributes.groupId(),
+                attributes.deviceMajor(), attributes.deviceMinor(),
                 attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2366,6 +2378,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         TarPosixSupport.validateName(userName);
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), attributes.userId(), attributes.groupId(),
+                attributes.deviceMajor(), attributes.deviceMinor(),
                 userName, attributes.groupName(), attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2377,6 +2390,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         TarPosixSupport.validateName(groupName);
         mutateAttributes(path, attributes -> new TarEntryAttributes(
                 attributes.path(), attributes.typeFlag(), attributes.isDirectory(), attributes.mode(), attributes.userId(), attributes.groupId(),
+                attributes.deviceMajor(), attributes.deviceMinor(),
                 attributes.userName(), groupName, attributes.linkName(), attributes.size(),
                 attributes.lastModifiedTime(), attributes.recordedLastAccessTime(),
                 attributes.recordedStatusChangeTime(), attributes.recordedCreationTime()
@@ -2779,13 +2793,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
         ArchiveReadLimits limits = options.readOptions().limits();
         ArkivoReadLimitTracker resolvedSizes = ArkivoReadLimitTracker.fromLimits(
-                ArchiveReadLimits.UNLIMITED_SIZE, limits.maximumEntrySize(), limits.maximumTotalEntrySize());
+                ArchiveReadLimits.builder()
+                        .maximumEntrySize(limits.maximumEntrySize())
+                        .maximumTotalEntrySize(limits.maximumTotalEntrySize())
+                        .build());
         try (TarArkivoStreamingReaderImpl reader = new TarArkivoStreamingReaderImpl(input, options.readOptions())) {
             while (reader.next()) {
-                TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+                TarEntryAttributes attributes = reader.readAttributes(TarEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path(), attributes.isDirectory());
                 ensureParents(nodes, path);
-                TarArkivoEntryAttributes nodeAttributes = attributes;
+                TarEntryAttributes nodeAttributes = attributes;
                 @Nullable ArkivoStoredContent content = null;
                 if (attributes.isHardLink()) {
                     String targetPath = normalizeHardLinkTargetPath(attributes);
@@ -2797,20 +2814,19 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     nodeAttributes = attributesWithSize(attributes, target.contentSize());
                 }
                 // The stream accounts for declared sizes; the index also exposes each hard link's resolved content.
-                resolvedSizes.acceptEntry(path, nodeAttributes.size());
-                if (!attributes.isHardLink() && attributes instanceof TarEntryAttributes internalAttributes
-                        && internalAttributes.bodySize() > 0L) {
+                resolvedSizes.acceptEntry(path, nodeAttributes.bodySize());
+                if (!attributes.isHardLink() && attributes.bodySize() > 0L) {
                     if (seekableSource != null && reader.currentBodyIsContiguous()) {
                         content = seekableSource.newStoredContent(
                                 reader.currentBodyOffset(),
-                                internalAttributes.bodySize()
+                                attributes.bodySize()
                         );
                     } else {
                         try (InputStream entryInput = reader.openInputStream()) {
                             content = StoredContentSupport.storeInput(
                                     editStorage,
                                     path,
-                                    internalAttributes.bodySize(),
+                                    attributes.bodySize(),
                                     entryInput
                             );
                         }
@@ -2849,6 +2865,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 attributes.mode(),
                 attributes.userId(),
                 attributes.groupId(),
+                attributes.deviceMajor(),
+                attributes.deviceMinor(),
                 attributes.userName(),
                 attributes.groupName(),
                 attributes.linkName(),
@@ -2981,6 +2999,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 040755,
                 0L,
                 0L,
+                TarArkivoEntryAttributes.NO_DEVICE_NUMBER,
+                TarArkivoEntryAttributes.NO_DEVICE_NUMBER,
                 null,
                 null,
                 null,

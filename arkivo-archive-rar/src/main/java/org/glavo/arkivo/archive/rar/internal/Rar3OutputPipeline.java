@@ -14,7 +14,13 @@ import java.util.Objects;
 
 /// Buffers raw RAR3 output until scheduled virtual-machine filters can be applied in order.
 @NotNullByDefault
-final class Rar3OutputPipeline {
+final class Rar3OutputPipeline implements AutoCloseable {
+    /// Initial raw staging payload.
+    static final int BUFFER_SIZE = 64 * 1024;
+    /// The owning session's workspace budget.
+    private final RarDecoderMemoryBudget memory;
+    /// Whether pending invocations and staging have been released.
+    private boolean closed;
     /// The largest number of pending invocations accepted from one stream.
     private static final int MAX_PENDING_FILTERS = 8192;
     /// The caller-owned extracted output.
@@ -24,7 +30,7 @@ final class Rar3OutputPipeline {
     /// Pending filter invocations ordered by raw block start.
     private final Deque<Invocation> pending = new ArrayDeque<>();
     /// Raw bytes not yet written or consumed by a filter.
-    private byte[] rawBuffer = new byte[64 * 1024];
+    private byte[] rawBuffer;
     /// The number of bytes currently held in {@link #rawBuffer}.
     private int rawBufferSize;
     /// The total number of raw bytes accepted for this entry.
@@ -35,30 +41,66 @@ final class Rar3OutputPipeline {
     private long written;
 
     /// Creates one size-bounded output pipeline.
-    Rar3OutputPipeline(OutputStream output, long expectedSize) {
+    Rar3OutputPipeline(OutputStream output, long expectedSize, RarDecoderMemoryBudget memory) throws IOException {
         this.output = Objects.requireNonNull(output, "output");
         this.expectedSize = expectedSize;
+        this.memory = memory;
+        memory.reserve(BUFFER_SIZE);
+        try {
+            rawBuffer = new byte[BUFFER_SIZE];
+        } catch (RuntimeException | Error failure) {
+            memory.release(BUFFER_SIZE);
+            throw failure;
+        }
+    }
+
+    /// Discards queued descriptor arrays without invoking their borrowed programs.
+    void clearPending() {
+        while (!pending.isEmpty()) memory.release(pending.removeFirst().descriptor.memorySize());
+    }
+
+    /// Discards pending data without reading, writing, or closing the borrowed output.
+    @Override
+    public void close() {
+        if (closed) return;
+        closed = true;
+        clearPending();
+        memory.release(rawBuffer.length);
+        rawBuffer = new byte[0];
+        rawBufferSize = 0;
+    }
+
+    /// Rejects use after the staging workspace has been released.
+    private void ensureOpen() throws IOException {
+        if (closed) throw new IOException("RAR3 output pipeline is closed");
     }
 
     /// Appends one unfiltered byte produced by the LZ or PPM decoder.
     void accept(int value) throws IOException {
+        ensureOpen();
         ensureRawCapacity(rawBufferSize + 1);
         rawBuffer[rawBufferSize++] = (byte) value;
         rawAccepted++;
         processAvailable();
     }
 
-    /// Schedules one descriptor relative to the current raw write position.
+    /// Takes ownership of a parsed descriptor, including when scheduling fails.
     void schedule(Rar3FilterManager.Descriptor descriptor) throws IOException {
-        if (descriptor.resetQueuedFilters()) pending.clear();
-        if (pending.size() >= MAX_PENDING_FILTERS) throw new IOException("Too many queued RAR3 filters");
-        long start = rawAccepted + descriptor.relativeOffset();
-        Invocation previous = pending.peekLast();
-        if (previous != null && start < previous.rawStart) {
-            throw new IOException("RAR3 filter blocks are not ordered");
+        boolean queued = false;
+        try {
+            ensureOpen();
+            if (pending.size() >= MAX_PENDING_FILTERS) throw new IOException("Too many queued RAR3 filters");
+            long start = rawAccepted + descriptor.relativeOffset();
+            Invocation previous = pending.peekLast();
+            if (previous != null && start < previous.rawStart) {
+                throw new IOException("RAR3 filter blocks are not ordered");
+            }
+            pending.addLast(new Invocation(start, descriptor));
+            queued = true;
+            processAvailable();
+        } finally {
+            if (!queued) memory.release(descriptor.memorySize());
         }
-        pending.addLast(new Invocation(start, descriptor));
-        processAvailable();
     }
 
     /// Returns whether all declared final output has been produced with no pending raw data.
@@ -68,6 +110,7 @@ final class Rar3OutputPipeline {
 
     /// Finishes the entry and validates all raw, filtered, and final sizes.
     void finish() throws IOException {
+        ensureOpen();
         processAvailable();
         if (!pending.isEmpty()) throw new IOException("RAR3 stream ended before a filter block was available");
         flushRawPrefix(rawBufferSize);
@@ -95,25 +138,42 @@ final class Rar3OutputPipeline {
             int blockLength = invocation.descriptor.blockLength();
             if (rawBufferSize < blockLength) return;
 
-            byte[] filtered = Arrays.copyOf(rawBuffer, blockLength);
-            removeRawPrefix(blockLength);
-            long filterOffset = written;
-            long rawStart = invocation.rawStart;
-            do {
-                pending.removeFirst();
-                if (invocation.descriptor.blockLength() != filtered.length) {
-                    throw new IOException("RAR3 chained filter length does not match prior output");
-                }
-                filtered = invocation.descriptor.program().apply(
-                        filtered,
-                        invocation.descriptor.initialRegisters(),
-                        invocation.descriptor.initialRegisterMask(),
-                        invocation.descriptor.initialGlobal(),
-                        filterOffset
-                );
-                invocation = pending.peekFirst();
-            } while (invocation != null && invocation.rawStart == rawStart);
-            writeFinal(filtered, filtered.length);
+            memory.reserve(blockLength);
+            byte[] filtered;
+            try {
+                filtered = Arrays.copyOf(rawBuffer, blockLength);
+            } catch (RuntimeException | Error failure) {
+                memory.release(blockLength);
+                throw failure;
+            }
+            try {
+                removeRawPrefix(blockLength);
+                long filterOffset = written;
+                long rawStart = invocation.rawStart;
+                do {
+                    pending.removeFirst();
+                    try {
+                        if (invocation.descriptor.blockLength() != filtered.length) {
+                            throw new IOException("RAR3 chained filter length does not match prior output");
+                        }
+                        byte[] result = invocation.descriptor.program().apply(
+                                filtered,
+                                invocation.descriptor.initialRegisters(),
+                                invocation.descriptor.initialRegisterMask(),
+                                invocation.descriptor.initialGlobal(),
+                                filterOffset
+                        );
+                        memory.release(filtered.length);
+                        filtered = result;
+                    } finally {
+                        memory.release(invocation.descriptor.memorySize());
+                    }
+                    invocation = pending.peekFirst();
+                } while (invocation != null && invocation.rawStart == rawStart);
+                writeFinal(filtered, filtered.length);
+            } finally {
+                memory.release(filtered.length);
+            }
         }
     }
 
@@ -141,10 +201,19 @@ final class Rar3OutputPipeline {
     }
 
     /// Grows the raw staging buffer without losing pending bytes.
-    private void ensureRawCapacity(int required) {
+    private void ensureRawCapacity(int required) throws IOException {
         if (required <= rawBuffer.length) return;
         int capacity = Math.max(required, Math.min(Rar3Vm.MEMORY_SIZE, rawBuffer.length * 2));
-        rawBuffer = Arrays.copyOf(rawBuffer, capacity);
+        memory.reserve(capacity);
+        byte[] replacement;
+        try {
+            replacement = Arrays.copyOf(rawBuffer, capacity);
+        } catch (RuntimeException | Error failure) {
+            memory.release(capacity);
+            throw failure;
+        }
+        memory.release(rawBuffer.length);
+        rawBuffer = replacement;
     }
 
     /// Associates one parsed descriptor with its absolute raw block start.

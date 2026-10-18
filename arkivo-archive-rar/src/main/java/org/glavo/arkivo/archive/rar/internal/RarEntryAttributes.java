@@ -22,6 +22,9 @@ final class RarEntryAttributes implements RarArkivoEntryAttributes, PosixFileAtt
     /// The decoded entry path.
     private final String path;
 
+    /// The indexed file identity shared by hard links, or the entry path before index resolution.
+    private final Object fileKey;
+
     /// Whether this entry is a directory.
     private final boolean directory;
 
@@ -132,6 +135,7 @@ final class RarEntryAttributes implements RarArkivoEntryAttributes, PosixFileAtt
             throw new IllegalArgumentException("dataCrc32 is out of range");
         }
         this.path = Objects.requireNonNull(path, "path");
+        this.fileKey = path;
         this.directory = directory;
         this.symbolicLink = symbolicLink;
         this.other = other;
@@ -156,6 +160,36 @@ final class RarEntryAttributes implements RarArkivoEntryAttributes, PosixFileAtt
         this.lastModifiedTime = Objects.requireNonNull(lastModifiedTime, "lastModifiedTime");
         this.creationTime = Objects.requireNonNull(creationTime, "creationTime");
         this.lastAccessTime = Objects.requireNonNull(lastAccessTime, "lastAccessTime");
+    }
+
+    /// Copies metadata with an indexed logical size and file identity, sharing only immutable state.
+    RarEntryAttributes(RarEntryAttributes source, long unpackedSize, Object fileKey) {
+        this.path = source.path;
+        this.fileKey = Objects.requireNonNull(fileKey, "fileKey");
+        this.directory = source.directory;
+        this.symbolicLink = source.symbolicLink;
+        this.other = source.other;
+        this.linkName = source.linkName;
+        this.redirectionType = source.redirectionType;
+        this.redirectionFlags = source.redirectionFlags;
+        this.redirectionTarget = source.redirectionTarget;
+        this.userName = source.userName;
+        this.groupName = source.groupName;
+        this.userId = source.userId;
+        this.groupId = source.groupId;
+        this.hostOs = source.hostOs;
+        this.fileAttributes = source.fileAttributes;
+        this.compressionMethod = source.compressionMethod;
+        this.packedSize = source.packedSize;
+        this.unpackedSize = unpackedSize;
+        this.dataCrc32 = source.dataCrc32;
+        this.blake2spHash = source.blake2spHash;
+        this.encrypted = source.encrypted;
+        this.continuesFromPreviousVolume = source.continuesFromPreviousVolume;
+        this.continuesInNextVolume = source.continuesInNextVolume;
+        this.lastModifiedTime = source.lastModifiedTime;
+        this.creationTime = source.creationTime;
+        this.lastAccessTime = source.lastAccessTime;
     }
 
     /// Returns the decoded RAR entry path.
@@ -330,7 +364,7 @@ final class RarEntryAttributes implements RarArkivoEntryAttributes, PosixFileAtt
     /// Returns an implementation-specific file key.
     @Override
     public Object fileKey() {
-        return path;
+        return fileKey;
     }
 
     /// Returns the owner principal represented by the stored RAR Unix owner metadata.

@@ -39,7 +39,6 @@ public final class SevenZipArkivoFileSystemConfig {
     private static final ArchiveOption<SevenZipCompression> COMPRESSION =
             ArchiveOption.of(
                     "arkivo.7z.compression",
-                    SevenZipCompression.class,
                     SevenZipArkivoFileSystemConfig::compressionOptionValue
             );
 
@@ -47,7 +46,6 @@ public final class SevenZipArkivoFileSystemConfig {
     private static final ArchiveOption<SevenZipFilter> FILTER =
             ArchiveOption.of(
                     "arkivo.7z.filter",
-                    SevenZipFilter.class,
                     SevenZipArkivoFileSystemConfig::filterOptionValue
             );
 
@@ -55,7 +53,6 @@ public final class SevenZipArkivoFileSystemConfig {
     private static final ArchiveOption<SevenZipFilterChain> FILTERS =
             ArchiveOption.of(
                     "arkivo.7z.filters",
-                    SevenZipFilterChain.class,
                     SevenZipArkivoFileSystemConfig::filterChainOptionValue
             );
 
@@ -63,7 +60,6 @@ public final class SevenZipArkivoFileSystemConfig {
     private static final ArchiveOption<Integer> SOLID_FILE_COUNT =
             ArchiveOption.of(
                     "arkivo.7z.solidFileCount",
-                    Integer.class,
                     SevenZipArkivoFileSystemConfig::solidFileCountOptionValue
             );
 
@@ -71,7 +67,6 @@ public final class SevenZipArkivoFileSystemConfig {
     private static final ArchiveOption<Long> SPLIT_SIZE =
             ArchiveOption.of(
                     "arkivo.7z.splitSize",
-                    Long.class,
                     SevenZipArkivoFileSystemConfig::splitSizeOptionValue
             );
 
@@ -79,15 +74,11 @@ public final class SevenZipArkivoFileSystemConfig {
     private static final ArchiveOption<Boolean> ENCRYPT_HEADERS =
             ArchiveOption.of(
                     "arkivo.7z.encryptHeaders",
-                    Boolean.class,
                     SevenZipArkivoFileSystemConfig::booleanOptionValue
             );
 
     /// The split size value used when split output is disabled.
     public static final long NO_SPLIT_SIZE = -1L;
-
-    /// The primitive value used when a common archive read limit is not configured.
-    public static final long NO_READ_LIMIT = -1L;
 
     /// The default maximum number of non-empty files in one 7z folder.
     public static final int DEFAULT_SOLID_FILE_COUNT = 1;
@@ -150,7 +141,7 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The target used to publish a rewritten single-volume update, or `null` for default publication.
     private final @Nullable ArkivoCommitTarget commitTarget;
 
-    /// The maximum accepted logical entry count, or `NO_READ_LIMIT`.
+    /// The resource limits for the archive read portion of this operation.
     private final ArchiveReadLimits readLimits;
 
     /// Creates parsed 7z file system configuration with update staging and publication settings.
@@ -210,16 +201,14 @@ public final class SevenZipArkivoFileSystemConfig {
                 options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
         SevenZipArkivoFileSystemConfig config = new SevenZipArkivoFileSystemConfig(
                 options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, DEFAULT_READ_OPEN_OPTIONS),
-                passwordProvider(options),
+                options.get(PASSWORD_PROVIDER),
                 options.getOrDefault(COMPRESSION, SevenZipCompression.copy()),
                 filters(options),
-                options.getOrDefault(SOLID_FILE_COUNT, DEFAULT_SOLID_FILE_COUNT
-                ),
-                splitSize(options),
+                options.getOrDefault(SOLID_FILE_COUNT, DEFAULT_SOLID_FILE_COUNT),
+                options.getOrDefault(SPLIT_SIZE, NO_SPLIT_SIZE),
                 options.contains(SPLIT_SIZE),
                 options.getOrDefault(ENCRYPT_HEADERS, false),
-                options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
-                ),
+                options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ),
                 options.get(ArchiveEnvironmentOptions.EDIT_STORAGE_FACTORY),
                 options.get(ArchiveEnvironmentOptions.COMMIT_TARGET),
                 readLimits
@@ -468,36 +457,6 @@ public final class SevenZipArkivoFileSystemConfig {
     }
 
 
-    /// Returns the maximum accepted logical entry count, or `NO_READ_LIMIT`.
-    ///
-    /// @return the non-negative entry-count limit, or `NO_READ_LIMIT`
-    public long maximumEntryCount() {
-        return readLimits.maximumEntryCount();
-    }
-
-
-    /// Returns the maximum accepted logical size of one entry, or `NO_READ_LIMIT`.
-    ///
-    /// @return the non-negative per-entry decoded-size limit, or `NO_READ_LIMIT`
-    public long maximumEntrySize() {
-        return readLimits.maximumEntrySize();
-    }
-
-
-    /// Returns the maximum accepted sum of logical entry sizes, or `NO_READ_LIMIT`.
-    ///
-    /// @return the non-negative aggregate decoded-size limit, or `NO_READ_LIMIT`
-    public long maximumTotalEntrySize() {
-        return readLimits.maximumTotalEntrySize();
-    }
-
-    /// Returns the maximum cumulative archive metadata size, or `NO_READ_LIMIT`.
-    ///
-    /// @return the non-negative metadata-size limit, or `NO_READ_LIMIT`
-    public long maximumMetadataSize() {
-        return readLimits.maximumMetadataSize();
-    }
-
     /// Returns all resource limits for the archive read portion of this operation.
     ///
     /// @return the complete immutable read-limit policy
@@ -607,13 +566,6 @@ public final class SevenZipArkivoFileSystemConfig {
         throw new IllegalArgumentException("Expected Boolean or String for key: " + ENCRYPT_HEADERS.key());
     }
 
-    /// Parses the password provider from archive options.
-    private static @Nullable ArkivoPasswordProvider passwordProvider(ArchiveOptions options) {
-        return options.get(PASSWORD_PROVIDER);
-    }
-
-
-
     /// Parses the configured default filter chain.
     private static SevenZipFilterChain filters(ArchiveOptions options) {
         SevenZipFilterChain chain = options.get(FILTERS);
@@ -622,12 +574,6 @@ public final class SevenZipArkivoFileSystemConfig {
         }
         SevenZipFilter filter = options.get(FILTER);
         return filter != null ? SevenZipFilterChain.of(filter) : SevenZipFilterChain.EMPTY;
-    }
-
-
-    /// Parses the split size from archive options.
-    private static long splitSize(ArchiveOptions options) {
-        return options.getOrDefault(SPLIT_SIZE, NO_SPLIT_SIZE);
     }
 
 

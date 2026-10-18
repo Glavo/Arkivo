@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.stream.Stream;
@@ -41,6 +43,104 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class PrefixReplayReadableByteChannelTest {
     /// Maximum time allowed for a blocking test operation.
     private static final long TIMEOUT_SECONDS = 5L;
+
+    /// Supplies failures shared by a completed read and a still-pending graceful close.
+    private static Stream<Arguments> concurrentCleanupFailures() {
+        return Stream.of(false, true).flatMap(interruptible -> Stream.of(
+                new IOException("source failure"), new IllegalStateException("source failure"),
+                new AssertionError("source failure")
+        ).map(failure -> Arguments.of(interruptible, failure)));
+    }
+
+    /// Retains the read failure when successful cancellation overtakes automatic graceful cleanup.
+    @ParameterizedTest
+    @MethodSource("concurrentCleanupFailures")
+    void preservesFailureWhenForceCloseOvertakesGracefulClose(boolean interruptible, Throwable failure)
+            throws Exception {
+        var source = interruptible ? new InterruptiblePendingCloseChannel(failure) : new PendingCloseChannel(failure);
+        var replay = PrefixReplayReadableByteChannel.create(ByteBuffer.allocate(0), source, ResourceOwnership.OWNED);
+        var pending = new FutureTask<Throwable>(() -> assertThrows(failure.getClass(), () -> {
+            try (replay) {
+                replay.read(ByteBuffer.allocate(1));
+            }
+        }));
+        Thread worker = new Thread(pending, "prefix-replay-pending-close");
+        worker.setDaemon(true);
+        worker.start();
+        try {
+            assertTrue(source.closeEntered.await(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            replay.forceClose();
+            source.releaseClose.countDown();
+            assertSame(failure, pending.get(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertEquals(1, failure.getSuppressed().length);
+            assertInstanceOf(IOException.class, failure.getSuppressed()[0]);
+            assertSame(failure, failure.getSuppressed()[0].getCause());
+            assertFalse(replay.isOpen());
+            assertFalse(source.isOpen());
+            replay.close();
+        } finally {
+            source.releaseClose.countDown();
+            replay.forceClose();
+            worker.join(TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS));
+            assertFalse(worker.isAlive(), "cleanup worker leaked");
+        }
+    }
+
+    /// Allows cancellation to succeed while a graceful close is waiting to repeat a read failure.
+    @NotNullByDefault
+    private static class PendingCloseChannel implements ReadableByteChannel, ForceCloseable {
+        /// The exception delivered by both the read and graceful cleanup.
+        private final Throwable failure;
+        /// Signals that graceful cleanup has started.
+        private final CountDownLatch closeEntered = new CountDownLatch(1);
+        /// Allows graceful cleanup to report its failure after cancellation completes.
+        private final CountDownLatch releaseClose = new CountDownLatch(1);
+        /// Whether cancellation has not yet completed.
+        private volatile boolean open = true;
+
+        /// Creates a channel with one shared failure identity.
+        private PendingCloseChannel(Throwable failure) { this.failure = failure; }
+
+        /// Fails without delivering bytes.
+        @Override
+        public int read(ByteBuffer target) throws IOException { throwFailure(); return -1; }
+
+        /// Returns whether cancellation has completed.
+        @Override
+        public boolean isOpen() { return open; }
+
+        /// Waits for cancellation, then repeats the original read failure.
+        @Override
+        public void close() throws IOException {
+            closeEntered.countDown();
+            try {
+                assertTrue(releaseClose.await(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException(exception);
+            }
+            throwFailure();
+        }
+
+        /// Completes cancellation without waiting for graceful cleanup.
+        @Override
+        public void forceClose() { open = false; }
+
+        /// Throws the configured checked exception, runtime exception, or error.
+        private void throwFailure() throws IOException {
+            if (failure instanceof IOException exception) throw exception;
+            if (failure instanceof RuntimeException exception) throw exception;
+            throw (Error) failure;
+        }
+    }
+
+    /// Exercises the interruptible replay wrapper with the same deterministic close schedule.
+    @NotNullByDefault
+    private static final class InterruptiblePendingCloseChannel extends PendingCloseChannel
+            implements InterruptibleChannel {
+        /// Creates an interruptible source with one shared failure identity.
+        private InterruptiblePendingCloseChannel(Throwable failure) { super(failure); }
+    }
 
     /// Supplies fresh failure identities for read, close, and forced-close cleanup paths.
     private static Stream<Arguments> repeatedFailures() {

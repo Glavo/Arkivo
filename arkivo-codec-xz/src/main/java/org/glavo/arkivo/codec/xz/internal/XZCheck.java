@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -95,10 +96,10 @@ final class XZCheck {
         }
         byte[] result = new byte[size];
         if (checksum != null) {
-            XZSupport.putLittleEndian(result, 0, checksum.getValue(), size);
+            ByteArrayAccess.writeIntLittleEndian(result, 0, (int) checksum.getValue());
             checksum.reset();
         } else if (crc64 != null) {
-            XZSupport.putLittleEndian(result, 0, crc64.finishLong(), size);
+            ByteArrayAccess.writeLongLittleEndian(result, 0, crc64.finishLong());
             crc64.reset();
         }
         return result;

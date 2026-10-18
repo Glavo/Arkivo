@@ -12,6 +12,7 @@ import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DictionaryRequiredException;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -276,8 +277,12 @@ public final class CodecChannelAdapters {
         try {
             return Objects.requireNonNull(factory.create(), "factory.create()");
         } catch (IOException | RuntimeException | Error exception) {
-            sourceCloser.closeAfter(exception);
-            throw new AssertionError("unreachable");
+            try {
+                sourceCloser.forceClose();
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                if (cleanupFailure != exception) exception.addSuppressed(cleanupFailure);
+            }
+            throw exception;
         }
     }
 
@@ -297,10 +302,10 @@ public final class CodecChannelAdapters {
         private final ByteBuffer output;
 
         /// Number of uncompressed bytes accepted from callers.
-        private long inputBytes;
+        private volatile long inputBytes;
 
         /// Number of compressed bytes written to the target.
-        private long outputBytes;
+        private volatile long outputBytes;
 
         /// Whether engine finalization has been attempted.
         private boolean finished;
@@ -336,7 +341,7 @@ public final class CodecChannelAdapters {
 
         /// Drives source bytes through the encoder and writes all immediately produced output.
         @Override
-        public int write(ByteBuffer source) throws IOException {
+        public synchronized int write(ByteBuffer source) throws IOException {
             Objects.requireNonNull(source, "source");
             ensureOpen();
             if (!source.hasRemaining()) {
@@ -372,9 +377,15 @@ public final class CodecChannelAdapters {
             }
         }
 
+        /// Encodes all input and records its progress without interleaving another operation.
+        @Override
+        public synchronized CodecResult encode(ByteBuffer source) throws IOException {
+            return CompressingWritableByteChannel.super.encode(source);
+        }
+
         /// Finishes encoded output, releases the engine, and applies target ownership exactly once.
         @Override
-        public void finish() throws IOException {
+        public synchronized void finish() throws IOException {
             if (finished) {
                 closeTarget();
                 return;
@@ -433,7 +444,7 @@ public final class CodecChannelAdapters {
         }
 
         /// Aborts encoding without emitting any remaining frame or stream trailer.
-        private void abort() throws IOException {
+        private synchronized void abort() throws IOException {
             if (finished) {
                 if (abortFailure != null) {
                     targetCloser.closeAfter(abortFailure);
@@ -615,9 +626,15 @@ public final class CodecChannelAdapters {
 
         /// Flushes pending output without ending the active encoding.
         @Override
-        public void flush() throws IOException {
+        public synchronized void flush() throws IOException {
             ensureOpen();
             flushEngine(flushableEncoder);
+        }
+
+        /// Encodes and flushes input without interleaving another operation.
+        @Override
+        public synchronized CodecResult flush(ByteBuffer source) throws IOException {
+            return CompressingWritableByteChannel.Flushable.super.flush(source);
         }
     }
 
@@ -642,7 +659,7 @@ public final class CodecChannelAdapters {
 
         /// Explicitly starts another frame with frame-scoped options.
         @Override
-        public void startFrame(EncodingOptions options) throws IOException {
+        public synchronized void startFrame(EncodingOptions options) throws IOException {
             Objects.requireNonNull(options, "options");
             ensureOpen();
             if (frameActive()) {
@@ -659,13 +676,19 @@ public final class CodecChannelAdapters {
 
         /// Finishes the current frame and retains the channel for following source bytes.
         @Override
-        public void finishFrame() throws IOException {
+        public synchronized void finishFrame() throws IOException {
             ensureOpen();
             if (!frameActive()) {
                 return;
             }
             finishEngineFrame(framedEncoder);
             markFrameFinished();
+        }
+
+        /// Encodes input and ends its frame without interleaving another operation.
+        @Override
+        public synchronized CodecResult finishFrame(ByteBuffer source) throws IOException {
+            return CompressingWritableByteChannel.Framed.super.finishFrame(source);
         }
     }
 
@@ -690,12 +713,18 @@ public final class CodecChannelAdapters {
 
         /// Flushes pending output when a frame is active.
         @Override
-        public void flush() throws IOException {
+        public synchronized void flush() throws IOException {
             ensureOpen();
             if (!frameActive()) {
                 return;
             }
             flushEngine(flushableEncoder);
+        }
+
+        /// Encodes and flushes input without interleaving another operation.
+        @Override
+        public synchronized CodecResult flush(ByteBuffer source) throws IOException {
+            return CompressingWritableByteChannel.FlushableFramed.super.flush(source);
         }
     }
 
@@ -719,6 +748,13 @@ public final class CodecChannelAdapters {
         @Override
         public int write(ByteBuffer source) throws IOException {
             return state.execute(() -> delegate.write(source), delegate::abort);
+        }
+
+        /// Encodes input and records progress as one interruptible operation.
+        @Override
+        public CodecResult encode(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            return execute(() -> delegate.encode(source));
         }
 
         /// Gracefully finishes an idle encoder or aborts an active operation.
@@ -755,6 +791,11 @@ public final class CodecChannelAdapters {
         protected final void execute(InterruptibleChannelSupport.IOAction operation) throws IOException {
             state.execute(operation, delegate::abort);
         }
+
+        /// Executes a result-bearing capability operation under the interruptible lifecycle.
+        protected final <T> T execute(InterruptibleChannelSupport.IOOperation<T> operation) throws IOException {
+            return state.execute(operation, delegate::abort);
+        }
     }
 
     /// Adds interruptible-channel semantics to a flush-capable encoding adapter.
@@ -777,7 +818,14 @@ public final class CodecChannelAdapters {
         /// Flushes the active encoding as one interruptible operation.
         @Override
         public void flush() throws IOException {
-            execute(flushableDelegate::flush);
+            execute((InterruptibleChannelSupport.IOAction) flushableDelegate::flush);
+        }
+
+        /// Encodes and flushes input as one interruptible operation.
+        @Override
+        public CodecResult flush(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            return execute(() -> flushableDelegate.flush(source));
         }
     }
 
@@ -807,7 +855,14 @@ public final class CodecChannelAdapters {
         /// Finishes the current frame as one interruptible operation.
         @Override
         public void finishFrame() throws IOException {
-            execute(framedDelegate::finishFrame);
+            execute((InterruptibleChannelSupport.IOAction) framedDelegate::finishFrame);
+        }
+
+        /// Encodes input and ends its frame as one interruptible operation.
+        @Override
+        public CodecResult finishFrame(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            return execute(() -> framedDelegate.finishFrame(source));
         }
     }
 
@@ -831,13 +886,23 @@ public final class CodecChannelAdapters {
         /// Flushes the active frame as one interruptible operation.
         @Override
         public void flush() throws IOException {
-            execute(flushableFramedDelegate::flush);
+            execute((InterruptibleChannelSupport.IOAction) flushableFramedDelegate::flush);
+        }
+
+        /// Encodes and flushes input as one interruptible operation.
+        @Override
+        public CodecResult flush(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            return execute(() -> flushableFramedDelegate.flush(source));
         }
     }
 
     /// Drives a decoder engine from a blocking readable channel.
     @NotNullByDefault
-    private static class DecodingChannel implements DecompressingReadableByteChannel {
+    private static class DecodingChannel implements DecompressingReadableByteChannel, ForceCloseable {
+        /// Whether cancellation has forbidden further decoding before engine cleanup obtains the operation monitor.
+        private volatile boolean cancelled;
+
         /// Compressed-data source.
         private final ReadableByteChannel source;
 
@@ -854,13 +919,13 @@ public final class CodecChannelAdapters {
         private ByteBuffer input;
 
         /// Number of compressed bytes logically consumed by the engine.
-        private long inputBytes;
+        private volatile long inputBytes;
 
         /// Number of compressed bytes obtained from the source.
-        private long sourceBytes;
+        private volatile long sourceBytes;
 
         /// Number of decoded bytes returned to callers.
-        private long outputBytes;
+        private volatile long outputBytes;
 
         /// Whether physical source EOF was observed.
         private boolean endOfInput;
@@ -875,12 +940,15 @@ public final class CodecChannelAdapters {
         private boolean streamFinished;
 
         /// Whether this decoding channel remains open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// Whether a decoder or source failure has already been delivered to the caller.
-        private boolean readFailed;
+        private volatile boolean readFailed;
 
-        /// Whether a previous close attempt reported a failure.
+        /// Serializes cleanup failure bookkeeping without waiting for the decoder operation monitor.
+        private final Object closeFailureLock = new Object();
+
+        /// Whether a previous close attempt reported a failure, guarded by the cleanup failure lock.
         private boolean closeFailed;
 
         /// Creates a decoding channel around a fresh engine.
@@ -912,7 +980,7 @@ public final class CodecChannelAdapters {
 
         /// Reads decoded bytes and continues across frame boundaries when supported.
         @Override
-        public int read(ByteBuffer target) throws IOException {
+        public synchronized int read(ByteBuffer target) throws IOException {
             Objects.requireNonNull(target, "target");
             ensureOpen();
             if (target.isReadOnly()) {
@@ -937,7 +1005,7 @@ public final class CodecChannelAdapters {
         }
 
         /// Decodes bytes with optional frame-boundary reporting.
-        protected final CodecResult decodeInternal(
+        protected final synchronized CodecResult decodeInternal(
                 ByteBuffer target,
                 boolean stopAtFrame
         ) throws IOException {
@@ -968,6 +1036,7 @@ public final class CodecChannelAdapters {
                 if (!input.hasRemaining() && !endOfInput) {
                     readInput();
                 }
+                ensureOpen();
                 if (concatenatedFrames && endOfInput && !input.hasRemaining() && inputBytes == 0L) {
                     streamFinished = true;
                     return new CodecResult(0L, 0L, CodecResult.Status.END_OF_INPUT);
@@ -1066,7 +1135,7 @@ public final class CodecChannelAdapters {
 
         /// Returns a read-only view of source bytes fetched but not consumed.
         @Override
-        public @UnmodifiableView ByteBuffer unconsumedInput() {
+        public synchronized @UnmodifiableView ByteBuffer unconsumedInput() {
             return input.asReadOnlyBuffer();
         }
 
@@ -1079,12 +1148,18 @@ public final class CodecChannelAdapters {
         /// Returns whether this decoder remains open.
         @Override
         public boolean isOpen() {
-            return open;
+            return open && !cancelled;
         }
 
         /// Releases the engine once and retries incomplete source cleanup without repeating a delivered exception.
         @Override
         public void close() throws IOException {
+            if (cancelled) cancelSource();
+            closeDecoder();
+        }
+
+        /// Releases engine state after any active data operation has exited.
+        private synchronized void closeDecoder() throws IOException {
             try {
                 if (!open) {
                     sourceCloser.close();
@@ -1099,13 +1174,38 @@ public final class CodecChannelAdapters {
                 }
                 sourceCloser.closeAfter(failure);
             } catch (IOException | RuntimeException | Error exception) {
+                rethrowCleanupFailure(exception);
+            }
+        }
+
+        /// Cancels the owned source before waiting to release the decoder's operation state.
+        @Override
+        public void forceClose() throws IOException {
+            cancelled = true;
+            close();
+        }
+
+        /// Cancels the source without waiting for an active decode and records failure before exposing it.
+        private void cancelSource() throws IOException {
+            try {
+                sourceCloser.forceClose();
+            } catch (IOException | RuntimeException | Error exception) {
+                rethrowCleanupFailure(exception);
+            }
+        }
+
+        /// Preserves the first cleanup failure and wraps later failures to prevent automatic self-suppression.
+        private void rethrowCleanupFailure(Throwable failure) throws IOException {
+            synchronized (closeFailureLock) {
                 boolean retry = closeFailed;
                 closeFailed = true;
                 if (readFailed || retry) {
-                    throw new IOException("Compression source cleanup failed after an earlier failure", exception);
+                    throw new IOException("Compression source cleanup failed after an earlier failure", failure);
                 }
-                throw exception;
             }
+            if (failure instanceof IOException exception) throw exception;
+            if (failure instanceof RuntimeException exception) throw exception;
+            throw (Error) failure;
         }
 
         /// Obtains input for the next frame before resetting the engine at a verified boundary.
@@ -1130,6 +1230,7 @@ public final class CodecChannelAdapters {
 
         /// Appends compressed input after an unconsumed prefix, preserving it across EOF or source failure.
         private void readInput() throws IOException {
+            ensureOpen();
             if (input.remaining() == input.capacity()) {
                 if (input.capacity() >= BUFFER_SIZE) {
                     throw new IOException("Compression decoder requires a larger input buffer");
@@ -1162,7 +1263,7 @@ public final class CodecChannelAdapters {
 
         /// Requires this decoding channel to remain open.
         private void ensureOpen() throws ClosedChannelException {
-            if (!open) {
+            if (!open || cancelled) {
                 throw new ClosedChannelException();
             }
         }
@@ -1202,7 +1303,7 @@ public final class CodecChannelAdapters {
     /// Adds interruptible-channel lifecycle semantics to a decoding adapter.
     @NotNullByDefault
     private static class InterruptibleDecodingChannel
-            implements DecompressingReadableByteChannel, InterruptibleChannel {
+            implements DecompressingReadableByteChannel, InterruptibleChannel, ForceCloseable {
         /// Transport-independent decoding adapter.
         private final DecodingChannel delegate;
 
@@ -1261,6 +1362,12 @@ public final class CodecChannelAdapters {
         @Override
         public void close() throws IOException {
             state.close(delegate::close, delegate::close);
+        }
+
+        /// Cancels source cleanup even when no interruptible data operation is active.
+        @Override
+        public void forceClose() throws IOException {
+            state.close(delegate::forceClose, delegate::forceClose);
         }
 
         /// Executes a capability-specific operation under the interruptible lifecycle.

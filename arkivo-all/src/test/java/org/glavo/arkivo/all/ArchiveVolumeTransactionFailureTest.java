@@ -32,15 +32,19 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.FileSystemAlreadyExistsException;
+import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.spi.FileSystemProvider;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -197,18 +201,22 @@ final class ArchiveVolumeTransactionFailureTest {
         }
     }
 
-    /// A failed update retains cleanup state across closes without retrying publication.
+    /// A failed update retains cleanup state and its URI reservation without retrying publication.
     @ParameterizedTest
     @ValueSource(strings = {"ar", "tar", "zip", "7z"})
     void retriesFailedUpdateCleanup(String formatName) throws IOException {
         Path path = temporaryDirectory.resolve("source." + formatName);
+        FileSystemProvider provider;
         try (ArkivoFileSystem archive = ArkivoFormats.createFileSystem(formatName, path)) {
+            provider = archive.provider();
             Files.writeString(archive.getPath("entry"), "original");
         }
         byte[] original = Files.readAllBytes(path);
         RetryCommitOutput output = new RetryCommitOutput(temporaryDirectory.resolve("staged"));
-        ArchiveUpdateOptions options = ArchiveUpdateOptions.DEFAULT.withCommitTarget(ignored -> output);
-        ArkivoFileSystem archive = ArkivoFormats.updateFileSystem(formatName, path, options);
+        URI uri = URI.create(provider.getScheme() + ":" + path.toUri());
+        var archive = provider.newFileSystem(uri, Map.of(
+                "arkivo.openOptions", Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                "arkivo.commitTarget", (ArkivoCommitTarget) ignored -> output));
         Files.writeString(archive.getPath("entry"), "replacement");
         try {
             IOException failure = assertThrows(IOException.class, archive::close);
@@ -216,10 +224,21 @@ final class ArchiveVolumeTransactionFailureTest {
             assertEquals(1, failure.getSuppressed().length);
             assertEquals("Cleanup failed", failure.getSuppressed()[0].getMessage());
             assertFalse(archive.isOpen());
+            assertThrows(FileSystemNotFoundException.class, () -> provider.getFileSystem(uri));
+            assertThrows(FileSystemAlreadyExistsException.class, () -> {
+                try (var unexpected = provider.newFileSystem(uri, Map.of())) {
+                    assertTrue(unexpected.isOpen());
+                }
+            });
             assertEquals(1, output.closeCalls);
             assertTrue(Files.exists(output.path()));
             assertThrows(IOException.class, archive::close);
             assertEquals(2, output.closeCalls);
+            assertThrows(FileSystemAlreadyExistsException.class, () -> {
+                try (var unexpected = provider.newFileSystem(uri, Map.of())) {
+                    assertTrue(unexpected.isOpen());
+                }
+            });
             archive.close();
             assertEquals(3, output.closeCalls);
             assertFalse(Files.exists(output.path()));
@@ -227,6 +246,11 @@ final class ArchiveVolumeTransactionFailureTest {
             assertEquals(3, output.closeCalls);
             assertEquals(1, output.commitCalls);
             assertArrayEquals(original, Files.readAllBytes(path));
+            try (var reopened = provider.newFileSystem(uri, Map.of())) {
+                archive.close();
+                assertSame(reopened, provider.getFileSystem(uri));
+                assertEquals("original", Files.readString(reopened.getPath("entry")));
+            }
         } finally {
             output.close();
             archive.close();

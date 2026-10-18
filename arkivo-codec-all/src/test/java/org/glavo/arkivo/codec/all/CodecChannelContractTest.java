@@ -758,6 +758,67 @@ final class CodecChannelContractTest {
         }
     }
 
+    /// Verifies all codecs accept nonoverlapping source and target views of one backing storage region.
+    @ParameterizedTest
+    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+    void roundTripsDisjointViewsOfSharedStorage(boolean direct, boolean readOnlySources) throws IOException {
+        byte[] input = new byte[521];
+        for (int index = 0; index < input.length; index++) {
+            input[index] = (byte) (index * 31 ^ index >>> 1);
+        }
+        int sourceOffset = 3;
+        int compressedOffset = sourceOffset + input.length + 5;
+        int compressedCapacity = input.length * 4 + 8_192;
+        int decodedOffset = compressedOffset + compressedCapacity + 7;
+
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec<?> codec = format.defaultCodec();
+            String context = format.name();
+            ByteBuffer storage = allocateBuffer(direct, decodedOffset + input.length + 3);
+            fillBuffer(storage, BUFFER_GUARD);
+            storage.put(sourceOffset, input);
+            ByteBuffer source = storage.slice(sourceOffset, input.length);
+            if (readOnlySources) source = source.asReadOnlyBuffer();
+            source.order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer compressed = storage.slice(compressedOffset, compressedCapacity).order(ByteOrder.LITTLE_ENDIAN);
+            codec.compress(source, compressed);
+            assertEquals(input.length, source.position(), context);
+            assertEquals(input.length, source.limit(), context);
+            assertEquals(ByteOrder.LITTLE_ENDIAN, source.order(), context);
+            assertEquals(compressedCapacity, compressed.limit(), context);
+            assertEquals(ByteOrder.LITTLE_ENDIAN, compressed.order(), context);
+            assertArrayEquals(input, bufferBytes(storage.slice(sourceOffset, input.length)), context);
+
+            int compressedSize = compressed.position();
+            byte[] encoded = bufferBytes(compressed.flip());
+            for (boolean singleFrame : codec instanceof CompressionCodec.Framed<?>
+                    ? new boolean[]{false, true} : new boolean[]{false}) {
+                ByteBuffer compressedSource = storage.slice(compressedOffset, compressedSize);
+                if (readOnlySources) compressedSource = compressedSource.asReadOnlyBuffer();
+                compressedSource.order(ByteOrder.LITTLE_ENDIAN);
+                ByteBuffer decoded = storage.slice(decodedOffset, input.length).order(ByteOrder.LITTLE_ENDIAN);
+                if (singleFrame) {
+                    ((CompressionCodec.Framed<?>) codec).decompressFrame(compressedSource, decoded);
+                } else {
+                    decompressFixed(codec, compressedSource, decoded, input.length);
+                }
+                assertEquals(compressedSize, compressedSource.position(), context);
+                assertEquals(compressedSize, compressedSource.limit(), context);
+                assertEquals(ByteOrder.LITTLE_ENDIAN, compressedSource.order(), context);
+                assertEquals(input.length, decoded.position(), context);
+                assertEquals(input.length, decoded.limit(), context);
+                assertEquals(ByteOrder.LITTLE_ENDIAN, decoded.order(), context);
+                assertArrayEquals(input, bufferBytes(decoded.flip()), context);
+                assertArrayEquals(encoded, bufferBytes(storage.slice(compressedOffset, compressedSize)), context);
+            }
+            assertArrayEquals(input, bufferBytes(storage.slice(sourceOffset, input.length)), context);
+            assertGuardRange(storage, 0, sourceOffset, context);
+            assertGuardRange(storage, sourceOffset + input.length, compressedOffset, context);
+            assertGuardRange(storage, compressedOffset + compressedSize, decodedOffset, context);
+            assertGuardRange(storage, decodedOffset + input.length, storage.capacity(), context);
+        }
+    }
+
     /// Verifies one fixed-buffer layout while preserving nonzero source and target range offsets.
     private static void assertFixedBufferRoundTrip(
             CompressionCodec<?> codec,

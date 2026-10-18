@@ -32,6 +32,8 @@ final class PPMd7Allocator {
     /// The total number of free-list indexes.
     private static final int INDEX_COUNT =
             INDEX_GROUP_0 + INDEX_GROUP_1 + INDEX_GROUP_2 + INDEX_GROUP_3 + INDEX_GROUP_4;
+    /// The primitive-array payload retained before an arena is allocated.
+    static final long FIXED_MEMORY_SIZE = (long) INDEX_COUNT * Integer.BYTES;
     /// Maps a requested unit count to the smallest matching free-list index.
     private static final byte @Unmodifiable [] UNITS_TO_INDEX = new byte[MAX_UNITS + 1];
     /// Maps each free-list index to its represented unit count.
@@ -79,26 +81,51 @@ final class PPMd7Allocator {
     PPMd7Allocator() {
     }
 
-    /// Allocates an arena with the requested byte size.
-    void initialize(long byteCount) throws IOException {
+    /// Returns the primitive-array payload required by an arena, excluding the fixed free-list heads.
+    static long arenaMemorySize(long byteCount) throws IOException {
+        return (long) requiredStateCount(byteCount) * (2 + Integer.BYTES);
+    }
+
+    /// Returns the primitive-array payload retained by the arena, including unused capacity.
+    long retainedArenaMemorySize() {
+        return (long) symbols.length + frequencies.length + (long) successors.length * Integer.BYTES;
+    }
+
+    /// Returns the number of packed states, including alignment and the reserved first allocation unit.
+    private static int requiredStateCount(long byteCount) throws IOException {
+        int lowerBytes = lowerHeapSize(byteCount);
+        long upperUnits = (byteCount - lowerBytes) / UNIT_SIZE;
+        long lowerUnits = lowerBytes / UNIT_SIZE + 1L;
+        return Math.toIntExact((1L + lowerUnits + upperUnits) * 2L);
+    }
+
+    /// Returns the lower byte-heap size for a valid arena request.
+    private static int lowerHeapSize(long byteCount) throws IOException {
         if (byteCount < 1L << 11 || byteCount > 256L << 20) {
             throw new IOException("PPMd memory size must be between 2 KiB and 256 MiB");
         }
         long upperUnits = byteCount / 8L / UNIT_SIZE * 7L;
-        lowerHeapMaximumBytes = Math.toIntExact(byteCount - upperUnits * UNIT_SIZE);
-        long lowerUnits = lowerHeapMaximumBytes / UNIT_SIZE + 1L;
-        long stateCount = (1L + lowerUnits + upperUnits) * 2L;
+        return Math.toIntExact(byteCount - upperUnits * UNIT_SIZE);
+    }
+
+    /// Allocates or reuses an arena; failed allocation leaves the previous arrays and layout intact.
+    void initialize(long byteCount) throws IOException {
+        int required = requiredStateCount(byteCount);
         try {
-            int required = (int) stateCount;
-            arenaStateCount = required;
             if (symbols.length < required) {
-                symbols = new byte[required];
-                frequencies = new byte[required];
-                successors = new int[required];
+                byte[] newSymbols = new byte[required];
+                byte[] newFrequencies = new byte[required];
+                int[] newSuccessors = new int[required];
+                // Publish only after every allocation succeeds, so a failed growth can be retried.
+                symbols = newSymbols;
+                frequencies = newFrequencies;
+                successors = newSuccessors;
             }
         } catch (OutOfMemoryError error) {
             throw new IOException("Unable to allocate the PPMd memory arena", error);
         }
+        lowerHeapMaximumBytes = lowerHeapSize(byteCount);
+        arenaStateCount = required;
     }
 
     /// Restarts allocations at the initial split-heap boundaries.

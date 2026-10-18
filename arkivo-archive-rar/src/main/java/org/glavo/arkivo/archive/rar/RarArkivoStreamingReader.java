@@ -22,6 +22,10 @@ import java.util.Objects;
 /// advancing may decode and discard an unopened or incomplete body to retain the dictionary needed by later entries.
 /// After `next()` returns `false`, no current entry exists.
 ///
+/// RAR4 Unix symbolic-link targets are decoded strictly as UTF-8; targets using another native encoding are not
+/// supported. A target that cannot be decoded causes [java.nio.charset.CharacterCodingException] during `next()`.
+/// The legacy entry-name decoder does not apply to link bodies. RAR5 redirection targets use the format's UTF-8 encoding.
+///
 /// RAR4 compression methods 0 through 5 with extraction versions 15, 20, 26, 29, and 36 are readable, including legacy LZ
 /// modes, RAR 2.x adaptive audio, RAR3 PPMd blocks, and RAR3 virtual-machine filters. RAR5 compression methods 0 through
 /// 5 with algorithm versions 0 and 1 and dictionaries up to 768 MiB are also readable.
@@ -32,6 +36,10 @@ import java.util.Objects;
 /// password terminated by the first zero byte; RAR 3.x AES treats them as UTF-16LE, and RAR5 treats them as UTF-8.
 /// Advancing past a compressed entry in a solid archive decodes and discards its body when possible to preserve the
 /// dictionary required by later entries.
+/// The configured compression-window limit is checked before allocating an entry's history window. RAR5 also checks
+/// the decoder-memory limit before allocating the working arrays described in [RarArchiveOptions]. Exceeding either limit
+/// terminates decoding: subsequent reads and cursor advancement fail without consuming more archive data. Closing
+/// the reader still releases its resources. Stored entries do not require a history window.
 /// Readable bodies validate available CRC32 values and RAR5 BLAKE2sp hashes over unpacked plaintext before accepting
 /// logical end of input. Password-dependent RAR5 checksums are verified with the key derived from the supplied archive
 /// password.

@@ -463,21 +463,45 @@ final class ArkivoFileSystemProviderSupportTest {
         ));
     }
 
+    /// Preserves the source provider's case sensitivity without requiring the archive to exist.
+    @Test
+    void comparesRegistryKeysUsingSourcePaths() throws IOException {
+        Path first = temporaryDirectory.resolve("MixedCase.bin");
+        Path second = temporaryDirectory.resolve("mixedcase.bin");
+        var registry = new ArkivoFileSystemProviderSupport.Registry<TestFileSystem>();
+        try (var fileSystem = registry.open(first, TestFileSystem::new)) {
+            if (first.equals(second)) {
+                assertSame(fileSystem, registry.require(second));
+                assertThrows(FileSystemAlreadyExistsException.class,
+                        () -> registry.open(second, action -> {
+                            throw new AssertionError("Equivalent source paths must share a reservation");
+                        }));
+            } else {
+                try (var other = registry.open(second, TestFileSystem::new)) {
+                    assertSame(other, registry.require(second));
+                    assertSame(fileSystem, registry.require(first));
+                }
+            }
+        }
+        assertThrows(FileSystemNotFoundException.class, () -> registry.require(first));
+        assertThrows(FileSystemNotFoundException.class, () -> registry.require(second));
+    }
+
     /// Verifies registration, duplicate rejection, close-driven removal, and reopening.
     @Test
     @SuppressWarnings("resource")
     void managesRegisteredFileSystemLifecycle() throws IOException {
-        URI archiveUri = temporaryDirectory.resolve("archive.bin").toUri().normalize();
+        Path archivePath = temporaryDirectory.resolve("archive.bin");
         ArkivoFileSystemProviderSupport.Registry<TestFileSystem> registry =
                 new ArkivoFileSystemProviderSupport.Registry<>();
         AtomicInteger openCount = new AtomicInteger();
 
-        TestFileSystem first = registry.open(archiveUri, closeAction -> {
+        TestFileSystem first = registry.open(archivePath, closeAction -> {
             openCount.incrementAndGet();
             return new TestFileSystem(closeAction);
         });
-        assertSame(first, registry.require(archiveUri));
-        assertThrows(FileSystemAlreadyExistsException.class, () -> registry.open(archiveUri, closeAction -> {
+        assertSame(first, registry.require(archivePath));
+        assertThrows(FileSystemAlreadyExistsException.class, () -> registry.open(archivePath, closeAction -> {
             openCount.incrementAndGet();
             return new TestFileSystem(closeAction);
         }));
@@ -485,9 +509,9 @@ final class ArkivoFileSystemProviderSupportTest {
 
         first.close();
         assertFalse(first.isOpen());
-        assertThrows(FileSystemNotFoundException.class, () -> registry.require(archiveUri));
+        assertThrows(FileSystemNotFoundException.class, () -> registry.require(archivePath));
 
-        TestFileSystem second = registry.open(archiveUri, closeAction -> {
+        TestFileSystem second = registry.open(archivePath, closeAction -> {
             openCount.incrementAndGet();
             return new TestFileSystem(closeAction);
         });
@@ -496,26 +520,31 @@ final class ArkivoFileSystemProviderSupportTest {
         second.close();
     }
 
-    /// Verifies stale closed registrations are removed by both lookup and subsequent open operations.
+    /// Retains a closing instance's reservation until its close action runs, including after a failed lookup.
     @Test
     @SuppressWarnings("resource")
-    void removesStaleClosedRegistrations() throws IOException {
-        URI firstUri = temporaryDirectory.resolve("stale-require.bin").toUri().normalize();
-        URI secondUri = temporaryDirectory.resolve("stale-open.bin").toUri().normalize();
+    void reservesClosedFileSystemUntilUnregistered() throws IOException {
+        Path firstPath = temporaryDirectory.resolve("stale-require.bin");
+        Path secondPath = temporaryDirectory.resolve("stale-open.bin");
         ArkivoFileSystemProviderSupport.Registry<TestFileSystem> registry =
                 new ArkivoFileSystemProviderSupport.Registry<>();
 
-        TestFileSystem staleLookup = registry.open(firstUri, TestFileSystem::new);
+        TestFileSystem staleLookup = registry.open(firstPath, TestFileSystem::new);
         staleLookup.closeWithoutUnregistering();
-        assertThrows(FileSystemNotFoundException.class, () -> registry.require(firstUri));
-        TestFileSystem lookupReplacement = registry.open(firstUri, TestFileSystem::new);
-        assertSame(lookupReplacement, registry.require(firstUri));
+        assertThrows(FileSystemNotFoundException.class, () -> registry.require(firstPath));
+        assertThrows(FileSystemAlreadyExistsException.class, () -> registry.open(firstPath, TestFileSystem::new));
+        staleLookup.closeAction.run();
+        TestFileSystem lookupReplacement = registry.open(firstPath, TestFileSystem::new);
+        staleLookup.closeAction.run();
+        assertSame(lookupReplacement, registry.require(firstPath));
         lookupReplacement.close();
 
-        TestFileSystem staleOpen = registry.open(secondUri, TestFileSystem::new);
+        TestFileSystem staleOpen = registry.open(secondPath, TestFileSystem::new);
         staleOpen.closeWithoutUnregistering();
-        TestFileSystem openReplacement = registry.open(secondUri, TestFileSystem::new);
-        assertSame(openReplacement, registry.require(secondUri));
+        assertThrows(FileSystemAlreadyExistsException.class, () -> registry.open(secondPath, TestFileSystem::new));
+        staleOpen.closeAction.run();
+        TestFileSystem openReplacement = registry.open(secondPath, TestFileSystem::new);
+        assertSame(openReplacement, registry.require(secondPath));
         openReplacement.close();
     }
 
@@ -523,78 +552,119 @@ final class ArkivoFileSystemProviderSupportTest {
     @Test
     @SuppressWarnings("resource")
     void leavesRegistryEmptyAfterFactoryFailure() throws IOException {
-        URI archiveUri = temporaryDirectory.resolve("factory-failure.bin").toUri().normalize();
+        Path archivePath = temporaryDirectory.resolve("factory-failure.bin");
         ArkivoFileSystemProviderSupport.Registry<TestFileSystem> registry =
                 new ArkivoFileSystemProviderSupport.Registry<>();
         IOException failure = new IOException("factory failure");
 
-        IOException thrown = assertThrows(IOException.class, () -> registry.open(archiveUri, closeAction -> {
+        IOException thrown = assertThrows(IOException.class, () -> registry.open(archivePath, closeAction -> {
             throw failure;
         }));
         assertSame(failure, thrown);
-        assertThrows(FileSystemNotFoundException.class, () -> registry.require(archiveUri));
+        assertThrows(FileSystemNotFoundException.class, () -> registry.require(archivePath));
 
-        TestFileSystem fileSystem = registry.open(archiveUri, TestFileSystem::new);
-        assertSame(fileSystem, registry.require(archiveUri));
+        TestFileSystem fileSystem = registry.open(archivePath, TestFileSystem::new);
+        assertSame(fileSystem, registry.require(archivePath));
         fileSystem.close();
     }
 
-    /// Verifies a losing concurrent candidate propagates its close failure without replacing the winner.
+    /// Releases failed factories' reservations without swallowing unchecked failures or accepting null results.
+    @Test
+    @SuppressWarnings("DataFlowIssue")
+    void releasesReservationAfterUncheckedFactoryFailure() throws IOException {
+        Path path = temporaryDirectory.resolve("unchecked.bin");
+        var registry = new ArkivoFileSystemProviderSupport.Registry<TestFileSystem>();
+        IllegalStateException runtimeFailure = new IllegalStateException("factory failure");
+        AssertionError error = new AssertionError("factory error");
+        assertSame(runtimeFailure, assertThrows(IllegalStateException.class,
+                () -> registry.open(path, closeAction -> { throw runtimeFailure; })));
+        assertSame(error, assertThrows(AssertionError.class,
+                () -> registry.open(path, closeAction -> { throw error; })));
+        assertThrows(NullPointerException.class, () -> registry.open(path, closeAction -> null));
+        try (var opened = registry.open(path, TestFileSystem::new)) {
+            assertSame(opened, registry.require(path));
+        }
+    }
+
+    /// A failed factory cannot remove a later reservation after invoking its unregister action.
+    @Test
+    void preservesReplacementAfterEarlyUnregisterAndFailure() throws IOException {
+        Path path = temporaryDirectory.resolve("replaced.bin");
+        var registry = new ArkivoFileSystemProviderSupport.Registry<TestFileSystem>();
+        IOException failure = new IOException("factory failure after unregister");
+        assertSame(failure, assertThrows(IOException.class, () -> registry.open(path, closeAction -> {
+            assertThrows(FileSystemAlreadyExistsException.class, () -> registry.open(path, TestFileSystem::new));
+            closeAction.run();
+            registry.open(path, TestFileSystem::new);
+            closeAction.run();
+            throw failure;
+        })));
+        try (var replacement = registry.require(path)) {
+            assertTrue(replacement.isOpen());
+        }
+    }
+
+    /// Rejects same-path factories before they run while allowing a different path to open.
     @Test
     @SuppressWarnings("resource")
-    void propagatesLosingCandidateCloseFailure() throws Exception {
-        URI archiveUri = temporaryDirectory.resolve("close-failure.bin").toUri().normalize();
+    void reservesPathWhileFactoryRuns() throws Exception {
+        Path archivePath = temporaryDirectory.resolve("opening.bin");
         ArkivoFileSystemProviderSupport.Registry<TestFileSystem> registry =
                 new ArkivoFileSystemProviderSupport.Registry<>();
         CountDownLatch delayedFactoryEntered = new CountDownLatch(1);
         CountDownLatch releaseDelayedFactory = new CountDownLatch(1);
-        IOException closeFailure = new IOException("candidate close failure");
+        AtomicInteger rejectedFactoryCalls = new AtomicInteger();
         ExecutorService executor = Executors.newSingleThreadExecutor();
 
         try {
-            Future<IOException> losingResult = executor.submit(() -> assertThrows(
-                    IOException.class,
-                    () -> registry.open(archiveUri, closeAction -> {
-                        delayedFactoryEntered.countDown();
-                        try {
-                            if (!releaseDelayedFactory.await(
-                                    CONCURRENCY_TIMEOUT_SECONDS,
-                                    TimeUnit.SECONDS
-                            )) {
-                                throw new IOException("Timed out while delaying a registry candidate");
-                            }
-                        } catch (InterruptedException exception) {
-                            Thread.currentThread().interrupt();
-                            throw new IOException("Interrupted while delaying a registry candidate", exception);
-                        }
-                        return new TestFileSystem(closeAction, closeFailure);
-                    })
-            ));
+            Future<TestFileSystem> opening = executor.submit(() -> registry.open(archivePath, closeAction -> {
+                delayedFactoryEntered.countDown();
+                try {
+                    if (!releaseDelayedFactory.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                        throw new IOException("Timed out while delaying a registry factory");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Interrupted while delaying a registry factory", exception);
+                }
+                return new TestFileSystem(closeAction);
+            }));
 
             assertTrue(delayedFactoryEntered.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS));
-            TestFileSystem winner = registry.open(archiveUri, TestFileSystem::new);
-            releaseDelayedFactory.countDown();
-
-            assertSame(closeFailure, losingResult.get(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS));
-            assertSame(winner, registry.require(archiveUri));
-            winner.close();
+            try {
+                assertThrows(FileSystemNotFoundException.class, () -> registry.require(archivePath));
+                assertThrows(FileSystemAlreadyExistsException.class, () -> registry.open(archivePath, closeAction -> {
+                    rejectedFactoryCalls.incrementAndGet();
+                    return new TestFileSystem(closeAction);
+                }));
+                assertEquals(0, rejectedFactoryCalls.get());
+                Path otherPath = temporaryDirectory.resolve("independent.bin");
+                try (TestFileSystem other = registry.open(otherPath, TestFileSystem::new)) {
+                    assertSame(other, registry.require(otherPath));
+                }
+            } finally {
+                releaseDelayedFactory.countDown();
+                try (TestFileSystem opened = opening.get(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    assertSame(opened, registry.require(archivePath));
+                }
+            }
         } finally {
             releaseDelayedFactory.countDown();
             executor.shutdownNow();
         }
     }
 
-    /// Verifies concurrent candidates publish exactly one open file system and close every losing candidate.
+    /// Verifies concurrent open attempts invoke exactly one factory and publish its file system.
     @Test
     @SuppressWarnings("resource")
     void publishesOneConcurrentFileSystem() throws Exception {
         int taskCount = 12;
-        URI archiveUri = temporaryDirectory.resolve("concurrent.bin").toUri().normalize();
+        Path archivePath = temporaryDirectory.resolve("concurrent.bin");
         ArkivoFileSystemProviderSupport.Registry<TestFileSystem> registry =
                 new ArkivoFileSystemProviderSupport.Registry<>();
         List<TestFileSystem> created = new CopyOnWriteArrayList<>();
         List<TestFileSystem> opened = new CopyOnWriteArrayList<>();
-        CountDownLatch factoriesReady = new CountDownLatch(taskCount);
+        CountDownLatch tasksReady = new CountDownLatch(taskCount);
         CountDownLatch releaseFactories = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(taskCount);
 
@@ -602,17 +672,12 @@ final class ArkivoFileSystemProviderSupportTest {
             List<Future<Boolean>> results = new ArrayList<>(taskCount);
             for (int index = 0; index < taskCount; index++) {
                 results.add(executor.submit(() -> {
+                    tasksReady.countDown();
+                    if (!releaseFactories.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                        throw new IOException("Timed out while synchronizing open attempts");
+                    }
                     try {
-                        TestFileSystem fileSystem = registry.open(archiveUri, closeAction -> {
-                            factoriesReady.countDown();
-                            try {
-                                if (!releaseFactories.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                                    throw new IOException("Timed out while synchronizing test candidates");
-                                }
-                            } catch (InterruptedException exception) {
-                                Thread.currentThread().interrupt();
-                                throw new IOException("Interrupted while synchronizing test candidates", exception);
-                            }
+                        TestFileSystem fileSystem = registry.open(archivePath, closeAction -> {
                             TestFileSystem candidate = new TestFileSystem(closeAction);
                             created.add(candidate);
                             return candidate;
@@ -625,7 +690,7 @@ final class ArkivoFileSystemProviderSupportTest {
                 }));
             }
 
-            assertTrue(factoriesReady.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertTrue(tasksReady.await(CONCURRENCY_TIMEOUT_SECONDS, TimeUnit.SECONDS));
             releaseFactories.countDown();
             int successCount = 0;
             for (Future<Boolean> result : results) {
@@ -635,13 +700,13 @@ final class ArkivoFileSystemProviderSupportTest {
             }
 
             assertEquals(1, successCount);
-            assertEquals(taskCount, created.size());
+            assertEquals(1, created.size());
             assertEquals(1, opened.size());
             TestFileSystem winner = opened.get(0);
-            assertSame(winner, registry.require(archiveUri));
-            assertEquals(taskCount - 1, created.stream().filter(fileSystem -> !fileSystem.isOpen()).count());
+            assertSame(winner, registry.require(archivePath));
+            assertSame(winner, created.get(0));
             winner.close();
-            assertThrows(FileSystemNotFoundException.class, () -> registry.require(archiveUri));
+            assertThrows(FileSystemNotFoundException.class, () -> registry.require(archivePath));
         } finally {
             releaseFactories.countDown();
             executor.shutdownNow();
@@ -654,21 +719,12 @@ final class ArkivoFileSystemProviderSupportTest {
         /// Action that removes this file system from its registry.
         private final Runnable closeAction;
 
-        /// Exception thrown after this file system closes, or `null` for normal closure.
-        private final @Nullable IOException closeFailure;
-
         /// Whether this file system remains open.
         private boolean open = true;
 
         /// Creates one open test file system.
         private TestFileSystem(Runnable closeAction) {
-            this(closeAction, null);
-        }
-
-        /// Creates one open test file system with an optional close failure.
-        private TestFileSystem(Runnable closeAction, @Nullable IOException closeFailure) {
             this.closeAction = closeAction;
-            this.closeFailure = closeFailure;
         }
 
         /// Returns the default provider because this test file system does not perform path operations.
@@ -683,9 +739,6 @@ final class ArkivoFileSystemProviderSupportTest {
             if (open) {
                 open = false;
                 closeAction.run();
-                if (closeFailure != null) {
-                    throw closeFailure;
-                }
             }
         }
 

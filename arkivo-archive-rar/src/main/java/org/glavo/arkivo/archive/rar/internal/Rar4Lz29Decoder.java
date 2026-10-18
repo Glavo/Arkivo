@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.rar.internal;
 
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Model;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -15,9 +16,6 @@ import java.util.Objects;
 /// Implements the canonical-Huffman LZ mode used by RAR 3.x and 4.x archives.
 @NotNullByDefault
 final class Rar4Lz29Decoder {
-    /// The fixed RAR 3.x dictionary size.
-    private static final int DICTIONARY_SIZE = 1 << 22;
-
     /// The number of symbols in the main alphabet.
     private static final int MAIN_ALPHABET_SIZE = 299;
 
@@ -88,35 +86,44 @@ final class Rar4Lz29Decoder {
         }
     }
 
+    /// Retained lengths and recent distances, excluding dictionary, Huffman, and PPMd storage.
+    static final int FIXED_MEMORY_SIZE = TABLE_LENGTH_COUNT + 4 * Integer.BYTES;
+
+    /// The shared session budget for retained arrays and active entry workspace.
+    private final RarDecoderMemoryBudget memory;
+
+    /// Whether this decoder has released its workspace.
+    private boolean released;
+
     /// The main literal and control decoder.
-    private final Rar4HuffmanDecoder mainDecoder = new Rar4HuffmanDecoder();
+    private final Rar4HuffmanDecoder mainDecoder;
 
     /// The long-distance decoder.
-    private final Rar4HuffmanDecoder distanceDecoder = new Rar4HuffmanDecoder();
+    private final Rar4HuffmanDecoder distanceDecoder;
 
     /// The low-distance decoder.
-    private final Rar4HuffmanDecoder lowDistanceDecoder = new Rar4HuffmanDecoder();
+    private final Rar4HuffmanDecoder lowDistanceDecoder;
 
     /// The repeated-distance length decoder.
-    private final Rar4HuffmanDecoder repeatLengthDecoder = new Rar4HuffmanDecoder();
+    private final Rar4HuffmanDecoder repeatLengthDecoder;
 
     /// Filter definitions and state retained across solid entries.
-    private final Rar3FilterManager filterManager = new Rar3FilterManager();
+    private final Rar3FilterManager filterManager;
 
     /// The RAR-specific PPMd range decoder reset for each compressed block.
     private final Rar3PPMdRangeDecoder ppmRangeDecoder = new Rar3PPMdRangeDecoder();
 
     /// The PPMd context model retained across reset-free RAR3 blocks.
-    private final PPMd7Model ppmModel = new PPMd7Model(ppmRangeDecoder);
+    private @Nullable PPMd7Model ppmModel;
 
     /// Code lengths retained for delta table descriptions in solid streams.
-    private final byte[] previousTable = new byte[TABLE_LENGTH_COUNT];
+    private final byte[] previousTable;
 
     /// The four most recent match distances.
-    private final int[] recentDistances = new int[4];
+    private final int[] recentDistances;
 
-    /// The fixed 4 MiB solid dictionary.
-    private byte[] dictionary = new byte[DICTIONARY_SIZE];
+    /// The history window allocated for this decoder's entry sequence.
+    private byte[] dictionary;
 
     /// The next dictionary position to overwrite.
     private int dictionaryPosition;
@@ -146,13 +153,31 @@ final class Rar4Lz29Decoder {
     private int ppmEscape = 2;
 
     /// Creates a decoder with an empty solid dictionary.
-    Rar4Lz29Decoder() {
+    Rar4Lz29Decoder(int dictionarySize, RarDecoderMemoryBudget memory) throws IOException {
+        this.memory = memory;
+        long previousMemory = memory.used();
+        memory.reserve((long) FIXED_MEMORY_SIZE + dictionarySize + PPMd7Model.FIXED_MEMORY_SIZE);
+        try {
+            dictionary = new byte[dictionarySize];
+            previousTable = new byte[TABLE_LENGTH_COUNT];
+            recentDistances = new int[4];
+            ppmModel = new PPMd7Model(ppmRangeDecoder);
+            filterManager = new Rar3FilterManager(memory);
+            mainDecoder = new Rar4HuffmanDecoder(memory);
+            distanceDecoder = new Rar4HuffmanDecoder(memory);
+            lowDistanceDecoder = new Rar4HuffmanDecoder(memory);
+            repeatLengthDecoder = new Rar4HuffmanDecoder(memory);
+        } catch (IOException | RuntimeException | Error failure) {
+            memory.release(memory.used() - previousMemory);
+            throw failure;
+        }
     }
 
     /// Decodes one RAR 3.x/4.x entry.
     void decode(InputStream input, OutputStream output, long unpackedSize, boolean solid) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(output, "output");
+        if (released) throw new IOException("RAR3 decoder has been released");
         if (unpackedSize < 0L) {
             throw new IOException("Compressed RAR4 entry has an unknown unpacked size");
         }
@@ -160,65 +185,74 @@ final class Rar4Lz29Decoder {
             reset();
         }
 
-        Rar4BitInput bits = new Rar4BitInput(input);
-        if (!solid || !tablesAvailable) {
-            readTables(bits);
-        }
-        Rar3OutputPipeline entryOutput = new Rar3OutputPipeline(output, unpackedSize);
+        memory.reserve(Rar4BitInput.BUFFER_SIZE);
+        try {
+            Rar4BitInput bits = new Rar4BitInput(input);
+            if (!solid || !tablesAvailable) {
+                readTables(bits);
+            }
+            try (Rar3OutputPipeline entryOutput = new Rar3OutputPipeline(output, unpackedSize, memory)) {
 
-        // The end marker carries the table-reuse flag for the next solid entry.
-        while (!ppmMode || !entryOutput.isComplete()) {
-            if (ppmMode) {
-                if (!decodePpmOperation(bits, entryOutput)) break;
-                continue;
-            }
-            int symbol = mainDecoder.decode(bits);
-            if (symbol < 256) {
-                emit(symbol, entryOutput);
-            } else if (symbol >= 271) {
-                decodeNewMatch(bits, symbol - 271, entryOutput);
-            } else if (symbol == 256) {
-                if (!readEndOfBlock(bits)) {
-                    break;
+                // The end marker carries the table-reuse flag for the next solid entry.
+                while (!ppmMode || !entryOutput.isComplete()) {
+                    if (ppmMode) {
+                        if (!decodePpmOperation(bits, entryOutput)) break;
+                        continue;
+                    }
+                    int symbol = mainDecoder.decode(bits);
+                    if (symbol < 256) {
+                        emit(symbol, entryOutput);
+                    } else if (symbol >= 271) {
+                        decodeNewMatch(bits, symbol - 271, entryOutput);
+                    } else if (symbol == 256) {
+                        if (!readEndOfBlock(bits)) {
+                            break;
+                        }
+                    } else if (symbol == 257) {
+                        readFilterDescriptor(bits, entryOutput);
+                    } else if (symbol == 258) {
+                        if (lastLength == 0 || lastDistance == 0) {
+                            throw new IOException("RAR4 stream repeats an unavailable match");
+                        }
+                        copyMatch(lastDistance, lastLength, entryOutput);
+                    } else if (symbol < 263) {
+                        decodeRecentMatch(bits, symbol - 259, entryOutput);
+                    } else {
+                        decodeShortMatch(bits, symbol - 263, entryOutput);
+                    }
                 }
-            } else if (symbol == 257) {
-                entryOutput.schedule(filterManager.parse(readFilterDescriptor(bits)));
-            } else if (symbol == 258) {
-                if (lastLength == 0 || lastDistance == 0) {
-                    throw new IOException("RAR4 stream repeats an unavailable match");
-                }
-                copyMatch(lastDistance, lastLength, entryOutput);
-            } else if (symbol < 263) {
-                decodeRecentMatch(bits, symbol - 259, entryOutput);
-            } else {
-                decodeShortMatch(bits, symbol - 263, entryOutput);
+                entryOutput.finish();
             }
+        } finally {
+            ppmRangeDecoder.detach();
+            memory.release(Rar4BitInput.BUFFER_SIZE);
         }
-        entryOutput.finish();
     }
 
     /// Invalidates all solid history after a skipped or failed entry.
     void invalidate() {
+        if (released) return;
         reset();
         tablesAvailable = false;
     }
 
-    /// Releases the fixed dictionary immediately.
+    /// Releases retained workspace without decoding or writing; repeated calls have no effect.
     void release() {
+        if (released) return;
         invalidate();
+        released = true;
+        mainDecoder.close();
+        distanceDecoder.close();
+        lowDistanceDecoder.close();
+        repeatLengthDecoder.close();
+        assert ppmModel != null;
+        memory.release((long) dictionary.length + FIXED_MEMORY_SIZE + ppmModel.retainedMemorySize());
+        ppmModel = null;
         dictionary = new byte[0];
-    }
-
-    /// Restores a released dictionary before reuse.
-    private void ensureDictionary() {
-        if (dictionary.length != DICTIONARY_SIZE) {
-            dictionary = new byte[DICTIONARY_SIZE];
-        }
     }
 
     /// Resets dictionary, match, and entropy state for a non-solid sequence.
     private void reset() {
-        ensureDictionary();
         dictionaryPosition = 0;
         totalRawSize = 0L;
         Arrays.fill(recentDistances, 0);
@@ -233,6 +267,7 @@ final class Rar4Lz29Decoder {
         lowDistanceDecoder.reset();
         repeatLengthDecoder.reset();
         filterManager.reset();
+        assert ppmModel != null;
         ppmModel.reset();
         ppmMode = false;
         ppmEscape = 2;
@@ -253,61 +288,67 @@ final class Rar4Lz29Decoder {
         previousLowDistance = 0;
         lowDistanceRepeatCount = 0;
 
-        byte[] levelLengths = new byte[LEVEL_ALPHABET_SIZE];
-        for (int index = 0; index < levelLengths.length;) {
-            int length = bits.readBits(4);
-            if (length == 15) {
-                int zeroCount = bits.readBits(4);
-                if (zeroCount != 0) {
-                    int end = Math.min(levelLengths.length, index + zeroCount + 2);
-                    Arrays.fill(levelLengths, index, end, (byte) 0);
+        memory.reserve(LEVEL_ALPHABET_SIZE + TABLE_LENGTH_COUNT);
+        try {
+            byte[] levelLengths = new byte[LEVEL_ALPHABET_SIZE];
+            for (int index = 0; index < levelLengths.length;) {
+                int length = bits.readBits(4);
+                if (length == 15) {
+                    int zeroCount = bits.readBits(4);
+                    if (zeroCount != 0) {
+                        int end = Math.min(levelLengths.length, index + zeroCount + 2);
+                        Arrays.fill(levelLengths, index, end, (byte) 0);
+                        index = end;
+                        continue;
+                    }
+                }
+                levelLengths[index++] = (byte) length;
+            }
+
+            try (Rar4HuffmanDecoder levelDecoder = new Rar4HuffmanDecoder(memory)) {
+                levelDecoder.build(levelLengths, 0, levelLengths.length);
+                byte[] table = new byte[TABLE_LENGTH_COUNT];
+                for (int index = 0; index < table.length;) {
+                    int symbol = levelDecoder.decode(bits);
+                    if (symbol < 16) {
+                        table[index] = (byte) ((symbol + previousTable[index]) & 0x0f);
+                        index++;
+                        continue;
+                    }
+
+                    int count;
+                    byte value;
+                    if (symbol < 18) {
+                        if (index == 0) {
+                            throw new IOException("RAR4 Huffman table starts with a repeat symbol");
+                        }
+                        int extraBits = symbol == 16 ? 3 : 7;
+                        count = (symbol == 16 ? 3 : 11) + bits.readBits(extraBits);
+                        value = table[index - 1];
+                    } else {
+                        int extraBits = symbol == 18 ? 3 : 7;
+                        count = (symbol == 18 ? 3 : 11) + bits.readBits(extraBits);
+                        value = 0;
+                    }
+                    int end = Math.min(table.length, index + count);
+                    Arrays.fill(table, index, end, value);
                     index = end;
-                    continue;
                 }
+
+                int mainOffset = 0;
+                int distanceOffset = mainOffset + MAIN_ALPHABET_SIZE;
+                int lowDistanceOffset = distanceOffset + DISTANCE_ALPHABET_SIZE;
+                int repeatLengthOffset = lowDistanceOffset + LOW_DISTANCE_ALPHABET_SIZE;
+                mainDecoder.build(table, mainOffset, MAIN_ALPHABET_SIZE);
+                distanceDecoder.build(table, distanceOffset, DISTANCE_ALPHABET_SIZE);
+                lowDistanceDecoder.build(table, lowDistanceOffset, LOW_DISTANCE_ALPHABET_SIZE);
+                repeatLengthDecoder.build(table, repeatLengthOffset, REPEAT_LENGTH_ALPHABET_SIZE);
+                System.arraycopy(table, 0, previousTable, 0, table.length);
+                tablesAvailable = true;
             }
-            levelLengths[index++] = (byte) length;
+        } finally {
+            memory.release(LEVEL_ALPHABET_SIZE + TABLE_LENGTH_COUNT);
         }
-
-        Rar4HuffmanDecoder levelDecoder = new Rar4HuffmanDecoder();
-        levelDecoder.build(levelLengths, 0, levelLengths.length);
-        byte[] table = new byte[TABLE_LENGTH_COUNT];
-        for (int index = 0; index < table.length;) {
-            int symbol = levelDecoder.decode(bits);
-            if (symbol < 16) {
-                table[index] = (byte) ((symbol + previousTable[index]) & 0x0f);
-                index++;
-                continue;
-            }
-
-            int count;
-            byte value;
-            if (symbol < 18) {
-                if (index == 0) {
-                    throw new IOException("RAR4 Huffman table starts with a repeat symbol");
-                }
-                int extraBits = symbol == 16 ? 3 : 7;
-                count = (symbol == 16 ? 3 : 11) + bits.readBits(extraBits);
-                value = table[index - 1];
-            } else {
-                int extraBits = symbol == 18 ? 3 : 7;
-                count = (symbol == 18 ? 3 : 11) + bits.readBits(extraBits);
-                value = 0;
-            }
-            int end = Math.min(table.length, index + count);
-            Arrays.fill(table, index, end, value);
-            index = end;
-        }
-
-        int mainOffset = 0;
-        int distanceOffset = mainOffset + MAIN_ALPHABET_SIZE;
-        int lowDistanceOffset = distanceOffset + DISTANCE_ALPHABET_SIZE;
-        int repeatLengthOffset = lowDistanceOffset + LOW_DISTANCE_ALPHABET_SIZE;
-        mainDecoder.build(table, mainOffset, MAIN_ALPHABET_SIZE);
-        distanceDecoder.build(table, distanceOffset, DISTANCE_ALPHABET_SIZE);
-        lowDistanceDecoder.build(table, lowDistanceOffset, LOW_DISTANCE_ALPHABET_SIZE);
-        repeatLengthDecoder.build(table, repeatLengthOffset, REPEAT_LENGTH_ALPHABET_SIZE);
-        System.arraycopy(table, 0, previousTable, 0, table.length);
-        tablesAvailable = true;
     }
 
     /// Reads a PPMd block header and initializes or continues its context model.
@@ -319,13 +360,22 @@ final class Rar4Lz29Decoder {
         int maximumOrder = (orderFlags & 0x1f) + 1;
         if (maximumOrder > 16) maximumOrder = 16 + (maximumOrder - 16) * 3;
         ppmRangeDecoder.initialize(bits);
-        ppmModel.initialize(resetModel, maximumOrder, (long) maximumMebibytes << 20);
+        assert ppmModel != null;
+        long arenaSize = (long) maximumMebibytes << 20;
+        long peak = ppmModel.initializationPeakMemorySize(resetModel, maximumOrder, arenaSize);
+        memory.reserve(peak - ppmModel.retainedMemorySize());
+        try {
+            ppmModel.initialize(resetModel, maximumOrder, arenaSize);
+        } finally {
+            memory.release(peak - ppmModel.retainedMemorySize());
+        }
         ppmMode = true;
         tablesAvailable = false;
     }
 
     /// Decodes one PPMd symbol or escape control and returns whether the current file continues.
     private boolean decodePpmOperation(Rar4BitInput bits, Rar3OutputPipeline output) throws IOException {
+        assert ppmModel != null;
         int symbol = ppmModel.readByte();
         if (symbol != ppmEscape) {
             emit(symbol, output);
@@ -339,7 +389,7 @@ final class Rar4Lz29Decoder {
                 tablesAvailable = false;
                 return false;
             }
-            case 3 -> output.schedule(filterManager.parse(readPpmFilterDescriptor()));
+            case 3 -> readPpmFilterDescriptor(output);
             case 4 -> {
                 int distance = 0;
                 for (int index = 0; index < 3; index++) distance = distance << 8 | ppmModel.readByte();
@@ -353,7 +403,8 @@ final class Rar4Lz29Decoder {
     }
 
     /// Reads one complete PPM-mode filter descriptor including its flags byte.
-    private byte[] readPpmFilterDescriptor() throws IOException {
+    private void readPpmFilterDescriptor(Rar3OutputPipeline output) throws IOException {
+        assert ppmModel != null;
         int flags = ppmModel.readByte();
         int payloadSize = (flags & 7) + 1;
         if (payloadSize == 7) {
@@ -361,10 +412,15 @@ final class Rar4Lz29Decoder {
         } else if (payloadSize == 8) {
             payloadSize = ppmModel.readByte() << 8 | ppmModel.readByte();
         }
-        byte[] descriptor = new byte[payloadSize + 1];
-        descriptor[0] = (byte) flags;
-        for (int index = 0; index < payloadSize; index++) descriptor[index + 1] = (byte) ppmModel.readByte();
-        return descriptor;
+        memory.reserve(payloadSize + 1L);
+        try {
+            byte[] descriptor = new byte[payloadSize + 1];
+            descriptor[0] = (byte) flags;
+            for (int index = 0; index < payloadSize; index++) descriptor[index + 1] = (byte) ppmModel.readByte();
+            output.schedule(filterManager.parse(descriptor, output));
+        } finally {
+            memory.release(payloadSize + 1L);
+        }
     }
 
     /// Processes an end-of-block control and optionally reads replacement tables.
@@ -471,19 +527,19 @@ final class Rar4Lz29Decoder {
         recentDistances[0] = distance;
     }
 
-    /// Copies one potentially overlapping match from the 4 MiB dictionary.
+    /// Copies one potentially overlapping match from the retained dictionary.
     private void copyMatch(int distance, int length, Rar3OutputPipeline output) throws IOException {
-        long available = Math.min(totalRawSize, DICTIONARY_SIZE);
+        long available = Math.min(totalRawSize, dictionary.length);
         if (distance <= 0 || distance > available) {
             throw new IOException("RAR4 match distance exceeds available dictionary history");
         }
         int source = dictionaryPosition - distance;
         if (source < 0) {
-            source += DICTIONARY_SIZE;
+            source += dictionary.length;
         }
         for (int index = 0; index < length; index++) {
             int value = dictionary[source] & 0xff;
-            source = source + 1 & DICTIONARY_SIZE - 1;
+            source = source + 1 & dictionary.length - 1;
             emit(value, output);
         }
     }
@@ -492,12 +548,12 @@ final class Rar4Lz29Decoder {
     private void emit(int value, Rar3OutputPipeline output) throws IOException {
         output.accept(value);
         dictionary[dictionaryPosition] = (byte) value;
-        dictionaryPosition = dictionaryPosition + 1 & DICTIONARY_SIZE - 1;
+        dictionaryPosition = dictionaryPosition + 1 & dictionary.length - 1;
         totalRawSize++;
     }
 
     /// Reads one complete LZ-mode filter descriptor including its flags byte.
-    private static byte[] readFilterDescriptor(Rar4BitInput bits) throws IOException {
+    private void readFilterDescriptor(Rar4BitInput bits, Rar3OutputPipeline output) throws IOException {
         int flags = bits.readBits(8);
         int payloadSize = (flags & 7) + 1;
         if (payloadSize == 7) {
@@ -505,9 +561,14 @@ final class Rar4Lz29Decoder {
         } else if (payloadSize == 8) {
             payloadSize = bits.readBits(16);
         }
-        byte[] descriptor = new byte[payloadSize + 1];
-        descriptor[0] = (byte) flags;
-        for (int index = 0; index < payloadSize; index++) descriptor[index + 1] = (byte) bits.readBits(8);
-        return descriptor;
+        memory.reserve(payloadSize + 1L);
+        try {
+            byte[] descriptor = new byte[payloadSize + 1];
+            descriptor[0] = (byte) flags;
+            for (int index = 0; index < payloadSize; index++) descriptor[index + 1] = (byte) bits.readBits(8);
+            output.schedule(filterManager.parse(descriptor, output));
+        } finally {
+            memory.release(payloadSize + 1L);
+        }
     }
 }

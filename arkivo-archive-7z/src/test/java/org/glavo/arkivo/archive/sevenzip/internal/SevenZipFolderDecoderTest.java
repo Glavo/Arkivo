@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.PasswordPurpose;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCoderMethod;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.lzma.LZMA2Codec;
@@ -23,11 +24,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests 7z folder decoder setup, coder properties, and resource limits.
 @NotNullByDefault
 public final class SevenZipFolderDecoderTest {
-    /// Verifies the official modern BCJ method IDs are recognized as supported decoders.
+    /// Verifies that every public coder method is accepted by the archive parser.
     @Test
-    public void recognizesModernBcjMethodIds() {
-        assertTrue(SevenZipFolderDecoder.isSupported(new byte[]{0x0a}));
-        assertTrue(SevenZipFolderDecoder.isSupported(new byte[]{0x0b}));
+    public void recognizesSupportedMethodIds() throws IOException {
+        for (SevenZipCoderMethod method : SevenZipCoderMethod.values()) {
+            assertEquals(method, SevenZipFolderDecoder.parseMethod(method.methodId()));
+        }
+        for (byte[] unknown : new byte[][]{new byte[0], {0x7f}, {0, 0}, {0x03, 0x01}}) {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipFolderDecoder.parseMethod(unknown));
+            assertTrue(exception.getMessage().startsWith("Unsupported 7z coder method:"));
+        }
     }
 
     /// Verifies modern BCJ properties reject start offsets that violate instruction alignment.
@@ -112,12 +118,12 @@ public final class SevenZipFolderDecoderTest {
     public void folderGraphEnforcesPpmdMemoryLimit() {
         byte[] properties = {4, 0, 8, 0, 0};
         SevenZipFolderMethod method = SevenZipFolderMethod.single(
-                SevenZipFolderDecoder.PPMD_METHOD_ID,
+                SevenZipCoderMethod.PPMD.methodId(),
                 properties,
                 0L
         );
         ArchiveReadLimits readLimits = ArchiveReadLimits.builder()
-                .maximumDecoderMemorySize((1L << 11) - 1L)
+                .maximumDecoderMemorySize(37_291L)
                 .build();
 
         DecompressionMemoryLimitException exception = assertThrows(
@@ -134,15 +140,15 @@ public final class SevenZipFolderDecoderTest {
                 )
         );
 
-        assertEquals((1L << 11) - 1L, exception.maximumMemorySize());
-        assertEquals(1L << 11, exception.requiredMemorySize());
+        assertEquals(37_291L, exception.maximumMemorySize());
+        assertEquals(37_292L, exception.requiredMemorySize());
     }
 
     /// Verifies that decoder setup failures are not replaced by cleanup failures.
     @Test
     public void openFolderPreservesSetupFailureWhenInputCloseFails() {
         SevenZipFolderMethod method = SevenZipFolderMethod.single(
-                SevenZipFolderDecoder.LZMA_METHOD_ID,
+                SevenZipCoderMethod.LZMA.methodId(),
                 new byte[0],
                 0
         );
@@ -160,7 +166,7 @@ public final class SevenZipFolderDecoderTest {
     @Test
     public void openFolderPreservesSetupFailureWhenInputCloseFailsAtRuntime() {
         SevenZipFolderMethod method = SevenZipFolderMethod.single(
-                SevenZipFolderDecoder.LZMA_METHOD_ID,
+                SevenZipCoderMethod.LZMA.methodId(),
                 new byte[0],
                 0
         );

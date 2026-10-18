@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.checksum.xxhash.XXHash64;
+import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
@@ -78,13 +79,13 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
     private long activeFrameCompressedOffset;
 
     /// The cumulative accepted uncompressed byte count.
-    private long inputBytes;
+    private volatile long inputBytes;
 
     /// The cumulative emitted compressed byte count, including the seek table.
-    private long outputBytes;
+    private volatile long outputBytes;
 
     /// Whether this channel accepts more source bytes.
-    private boolean open = true;
+    private volatile boolean open = true;
 
     /// Whether a data frame is active and must be recorded when finalized.
     private boolean frameActive = true;
@@ -162,7 +163,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
 
     /// Encodes all remaining source bytes, ending frames at the configured uncompressed size.
     @Override
-    public int write(ByteBuffer source) throws IOException {
+    public synchronized int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
         ensureOpen();
         if (!source.hasRemaining()) {
@@ -204,9 +205,27 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         return source.position() - initialPosition;
     }
 
+    /// Encodes input and records its progress without interleaving another operation.
+    @Override
+    public synchronized CodecResult encode(ByteBuffer source) throws IOException {
+        return CompressingWritableByteChannel.FlushableFramed.super.encode(source);
+    }
+
+    /// Encodes and flushes input without interleaving another operation.
+    @Override
+    public synchronized CodecResult flush(ByteBuffer source) throws IOException {
+        return CompressingWritableByteChannel.FlushableFramed.super.flush(source);
+    }
+
+    /// Encodes input and ends its frame without interleaving another operation.
+    @Override
+    public synchronized CodecResult finishFrame(ByteBuffer source) throws IOException {
+        return CompressingWritableByteChannel.FlushableFramed.super.finishFrame(source);
+    }
+
     /// Flushes the active frame to a decodable block boundary without recording a frame boundary.
     @Override
-    public void flush() throws IOException {
+    public synchronized void flush() throws IOException {
         ensureOpen();
         try {
             encoder.flush();
@@ -217,7 +236,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
 
     /// Explicitly starts another seekable data frame with frame-scoped options.
     @Override
-    public void startFrame(EncodingOptions options) throws IOException {
+    public synchronized void startFrame(EncodingOptions options) throws IOException {
         Objects.requireNonNull(options, "options");
         ensureOpen();
         if (frameActive) {
@@ -229,14 +248,14 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
 
     /// Finishes and records the active frame before it reaches the automatic size boundary.
     @Override
-    public void finishFrame() throws IOException {
+    public synchronized void finishFrame() throws IOException {
         ensureOpen();
         finishActiveFrame(false);
     }
 
     /// Finishes the final data frame, validates the pledged size, writes the seek table, and applies target ownership.
     @Override
-    public void finish() throws IOException {
+    public synchronized void finish() throws IOException {
         if (finished) {
             closeTargetAfter(null);
             return;
@@ -291,7 +310,7 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
     }
 
     /// Releases codec state after terminal cancellation without writing a seek table.
-    private void abort() throws IOException {
+    private synchronized void abort() throws IOException {
         if (finished) {
             closeTargetAfter(null);
             return;
@@ -521,6 +540,27 @@ public final class ZstdSeekableWritableByteChannel implements CompressingWritabl
         @Override
         public int write(ByteBuffer source) throws IOException {
             return state.execute(() -> delegate.write(source), delegate::abort);
+        }
+
+        /// Encodes input and records progress as one interruptible operation.
+        @Override
+        public CodecResult encode(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            return state.execute(() -> delegate.encode(source), delegate::abort);
+        }
+
+        /// Encodes and flushes input as one interruptible operation.
+        @Override
+        public CodecResult flush(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            return state.execute(() -> delegate.flush(source), delegate::abort);
+        }
+
+        /// Encodes input and ends its frame as one interruptible operation.
+        @Override
+        public CodecResult finishFrame(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            return state.execute(() -> delegate.finishFrame(source), delegate::abort);
         }
 
         /// Flushes the active frame without ending it.

@@ -8,6 +8,8 @@ import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.IOException;
 import java.net.URI;
@@ -15,6 +17,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -28,6 +32,26 @@ public final class RarArkivoFileSystemProviderTest {
     /// The isolated directory used for archive fixtures.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Rejects nonexistent and nondirectory components before resolving a parent component.
+    @ParameterizedTest
+    @CsvSource({"missing/../entry,false", "missing/../entry,true", "entry/../entry,false", "entry/../entry,true"})
+    public void validatesComponentsForMetadataQueries(String name, boolean fileStore) throws IOException {
+        Path source = Files.write(temporaryDirectory.resolve("components.rar"),
+                RarTestArchiveFixtures.storedArchive("entry", new byte[]{1}));
+        try (var fileSystem = RarArkivoFileSystem.open(source)) {
+            Path path = fileSystem.getPath(name);
+            Class<? extends IOException> expected = name.startsWith("missing/")
+                    ? NoSuchFileException.class : NotDirectoryException.class;
+            assertThrows(expected, () -> {
+                if (fileStore) {
+                    Files.getFileStore(path);
+                } else {
+                    Files.isHidden(path);
+                }
+            });
+        }
+    }
 
     /// Preserves source dot components and registers equivalent percent-escaped spellings under one key.
     @Test

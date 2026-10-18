@@ -3,31 +3,45 @@
 
 package org.glavo.arkivo.codec.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DictionaryRequest;
 import org.glavo.arkivo.codec.DictionaryRequiredException;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.glavo.arkivo.codec.ResourceOwnership;
+import org.glavo.arkivo.codec.transform.TransformingReadableByteChannel;
+import org.glavo.arkivo.codec.transform.TransformingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.AsynchronousCloseException;
+import java.nio.channels.Channel;
+import java.nio.channels.InterruptibleChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.channels.spi.AbstractInterruptibleChannel;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -40,6 +54,493 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the blocking channel adapters independently from any concrete compression algorithm.
 @NotNullByDefault
 final class CodecChannelAdaptersTest {
+    /// Preserves read and cancellation failures when ordinary close retries an incomplete abort.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesFailureDuringCancellationRetry(boolean readFirst) throws IOException {
+        for (Throwable failure : new Throwable[]{new IOException("source failure"),
+                new IllegalStateException("source failure"), new AssertionError("source failure")}) {
+            var source = new FailingCancellationChannel(failure);
+            var decoder = new CopyDecoder();
+            var channel = CodecChannelAdapters.newReadableByteChannel(source, ResourceOwnership.OWNED, () -> decoder);
+            if (readFirst) {
+                assertSame(failure, assertThrows(failure.getClass(), () -> channel.read(ByteBuffer.allocate(1))));
+            }
+            Throwable cancellation = assertThrows(Throwable.class, () -> ForceCloseable.forceClose(channel));
+            if (readFirst) {
+                assertInstanceOf(IOException.class, cancellation);
+                assertSame(failure, cancellation.getCause());
+            } else {
+                assertSame(failure, cancellation);
+            }
+            assertFalse(channel.isOpen());
+            assertEquals(0, decoder.closeCalls());
+            assertSame(failure, assertThrows(failure.getClass(), () -> {
+                try (channel) {
+                    if (failure instanceof IOException exception) throw exception;
+                    if (failure instanceof RuntimeException exception) throw exception;
+                    throw (Error) failure;
+                }
+            }));
+            assertEquals(1, failure.getSuppressed().length);
+            assertSame(failure, failure.getSuppressed()[0].getCause());
+            assertEquals(0, decoder.closeCalls());
+            source.failure = null;
+            channel.close();
+            channel.close();
+            assertEquals(1, decoder.closeCalls());
+            assertEquals(3, source.abortCalls);
+            assertEquals(0, source.closeCalls);
+        }
+    }
+
+    /// Keeps source cancellation pending until the shared failure is explicitly cleared.
+    @NotNullByDefault
+    private static final class FailingCancellationChannel implements ReadableByteChannel, ForceCloseable {
+        /// The failure repeated by reads and cancellation, or null once cancellation may succeed.
+        private @Nullable Throwable failure;
+        /// Number of cancellation attempts.
+        private int abortCalls;
+        /// Number of ordinary close attempts, which must not replace a pending cancellation.
+        private int closeCalls;
+        /// Whether cancellation has not yet completed.
+        private boolean open = true;
+
+        /// Creates a channel with the requested shared failure.
+        private FailingCancellationChannel(Throwable failure) { this.failure = failure; }
+
+        /// Reports the shared failure without delivering bytes.
+        @Override
+        public int read(ByteBuffer target) throws IOException { throwFailure(); return -1; }
+
+        /// Returns whether cancellation has completed.
+        @Override
+        public boolean isOpen() { return open; }
+
+        /// Records an unexpected ordinary close without concealing it in the cancellation count.
+        @Override
+        public void close() { closeCalls++; open = false; }
+
+        /// Fails until allowed to complete, leaving the decoder's source cleanup retryable.
+        @Override
+        public void forceClose() throws IOException { abortCalls++; throwFailure(); open = false; }
+
+        /// Throws the configured failure without changing its type or identity.
+        private void throwFailure() throws IOException {
+            if (failure instanceof IOException exception) throw exception;
+            if (failure instanceof RuntimeException exception) throw exception;
+            if (failure instanceof Error error) throw error;
+        }
+    }
+
+    /// Forced replay closure bypasses a graceful source close that is blocked while draining input.
+    @Test
+    void forceClosesReplayDuringGracefulSourceClose() throws Exception {
+        var endpoint = new DrainingGateChannel();
+        var channel = PrefixReplayReadableByteChannel.create(ByteBuffer.allocate(0), endpoint, ResourceOwnership.OWNED);
+        var close = new FutureTask<>(() -> { channel.close(); return true; });
+        Thread closer = startWorker(close);
+        try {
+            assertTrue(endpoint.entered.await(5, TimeUnit.SECONDS));
+            var force = new FutureTask<>(() -> { channel.forceClose(); return true; });
+            Thread cancellation = startWorker(force);
+            assertTrue(force.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(AsynchronousCloseException.class,
+                    assertInstanceOf(java.io.UncheckedIOException.class,
+                            assertThrows(ExecutionException.class,
+                                    () -> close.get(5, TimeUnit.SECONDS)).getCause()).getCause());
+            assertFalse(channel.isOpen());
+            channel.close();
+            joinWorker(cancellation);
+        } finally {
+            endpoint.release.countDown();
+            endpoint.forceClose();
+            joinWorker(closer);
+        }
+    }
+
+    /// Models a channel whose graceful close reads input and whose forced close cancels that read.
+    @NotNullByDefault
+    private static final class DrainingGateChannel extends GateChannel implements ForceCloseable {
+        /// Creates an open source whose first transfer is gated.
+        private DrainingGateChannel() {
+        }
+
+        @Override
+        public void close() {
+            try {
+                read(ByteBuffer.allocate(1));
+            } catch (IOException exception) {
+                throw new java.io.UncheckedIOException(exception);
+            }
+        }
+
+        @Override
+        public void forceClose() {
+            super.close();
+        }
+    }
+
+    /// Concurrent writes and composite operations retain their own progress and boundary output.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesEncodingOperations(boolean interruptible) throws Exception {
+        for (int mode : new int[]{0, 1, 2, 3}) {
+            var target = interruptible ? new InterruptibleGateChannel() : new GateChannel();
+            var engine = new CapabilityEncoder();
+            var channel = CodecChannelAdapters.newFlushableFramedWritableByteChannel(
+                    target, ResourceOwnership.BORROWED, () -> engine);
+            var first = new FutureTask<>(() -> encodeOperation(channel, ByteBuffer.wrap(new byte[]{'a'}), mode));
+            var second = new FutureTask<>(() -> encodeOperation(channel,
+                    ByteBuffer.allocateDirect(2).put((byte) 'b').put((byte) 'c').flip().asReadOnlyBuffer(), mode));
+            Thread firstThread = startWorker(first);
+            Thread secondThread = new Thread(second, "queued-codec-write");
+            secondThread.setDaemon(true);
+            try {
+                assertTrue(target.entered.await(5, TimeUnit.SECONDS));
+                secondThread.start();
+                awaitBlocked(secondThread);
+                assertEquals(1, target.calls.get());
+                target.release.countDown();
+                CodecResult firstResult = first.get(5, TimeUnit.SECONDS);
+                CodecResult secondResult = second.get(5, TimeUnit.SECONDS);
+                assertEquals(1L, firstResult.inputBytes());
+                assertEquals(2L, secondResult.inputBytes());
+                if (mode != 0) {
+                    assertEquals(mode >= 2 ? 2L : 1L, firstResult.outputBytes());
+                    assertEquals(mode >= 2 ? 3L : 2L, secondResult.outputBytes());
+                }
+                channel.close();
+                String expected = mode == 2 ? "aFbcFT" : mode == 3 ? "aBbcB" : "abcT";
+                assertArrayEquals(expected.getBytes(java.nio.charset.StandardCharsets.US_ASCII), target.output.toByteArray());
+                assertEquals(1, engine.closeCalls());
+            } finally {
+                target.release.countDown();
+                joinWorker(firstThread);
+                joinWorker(secondThread);
+                channel.close();
+            }
+        }
+    }
+
+    /// Read, decode, and frame-decode share one allowance, including the excess-byte probe.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesDecodingAndOutputLimits(boolean interruptible) throws Exception {
+        for (int firstMode : new int[]{0, 1, 2}) {
+            for (int secondMode : new int[]{0, 1, 2}) {
+                for (long limit : new long[]{-1, 0, 1}) {
+                    var source = interruptible ? new InterruptibleGateChannel() : new GateChannel();
+                    var engine = new FrameByteDecoder();
+                    var channel = CompressionDecoderSupport.limitChannelOutput(
+                            CodecChannelAdapters.newFramedReadableByteChannel(source, ResourceOwnership.BORROWED, () -> engine), limit);
+                    ByteBuffer firstBuffer = ByteBuffer.allocate(1);
+                    ByteBuffer secondBuffer = ByteBuffer.allocateDirect(1);
+                    var first = new FutureTask<>(() -> decodeOperation(channel, firstBuffer, firstMode));
+                    var second = new FutureTask<>(() -> decodeOperation(channel, secondBuffer, secondMode));
+                    Thread firstThread = startWorker(first);
+                    Thread secondThread = new Thread(second, "queued-codec-read");
+                    secondThread.setDaemon(true);
+                    try {
+                        assertTrue(source.entered.await(5, TimeUnit.SECONDS));
+                        secondThread.start();
+                        awaitBlocked(secondThread);
+                        assertEquals(1, source.calls.get());
+                        source.release.countDown();
+                        if (limit == 0) {
+                            assertInstanceOf(DecompressionOutputLimitException.class,
+                                    assertThrows(ExecutionException.class, () -> first.get(5, TimeUnit.SECONDS)).getCause());
+                        } else {
+                            assertEquals(1L, first.get(5, TimeUnit.SECONDS));
+                            assertEquals('a', firstBuffer.get(0));
+                        }
+                        if (limit >= 0) {
+                            assertInstanceOf(DecompressionOutputLimitException.class,
+                                    assertThrows(ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS)).getCause());
+                            assertEquals(0, secondBuffer.position());
+                            assertEquals(limit, channel.outputBytes());
+                            assertEquals(limit + 1, channel.inputBytes());
+                        } else {
+                            assertEquals(1L, second.get(5, TimeUnit.SECONDS));
+                            assertEquals('b', secondBuffer.get(0));
+                            assertEquals(2L, channel.outputBytes());
+                        }
+                        assertEquals(1, firstBuffer.limit());
+                        assertEquals(1, secondBuffer.limit());
+                    } finally {
+                        source.release.countDown();
+                        joinWorker(firstThread);
+                        joinWorker(secondThread);
+                        channel.close();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cancellation reaches the endpoint while another data operation waits for serialization.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void closesInterruptibleChannelWithQueuedOperation(boolean writing) throws Exception {
+        var endpoint = new InterruptibleGateChannel();
+        var encoder = new CopyEncoder();
+        var decoder = new CopyDecoder();
+        Channel channel = writing
+                ? CodecChannelAdapters.newWritableByteChannel(endpoint, ResourceOwnership.BORROWED, () -> encoder)
+                : CompressionDecoderSupport.limitChannelOutput(CodecChannelAdapters.newReadableByteChannel(
+                        endpoint, ResourceOwnership.BORROWED, () -> decoder), 1);
+        var first = new FutureTask<>(() -> writing
+                ? ((WritableByteChannel) channel).write(ByteBuffer.wrap(new byte[]{1}))
+                : ((ReadableByteChannel) channel).read(ByteBuffer.allocate(1)));
+        var second = new FutureTask<>(() -> writing
+                ? ((WritableByteChannel) channel).write(ByteBuffer.wrap(new byte[]{2}))
+                : ((ReadableByteChannel) channel).read(ByteBuffer.allocate(1)));
+        Thread firstThread = startWorker(first);
+        Thread secondThread = new Thread(second, "queued-codec-cancellation");
+        secondThread.setDaemon(true);
+        try {
+            assertTrue(endpoint.entered.await(5, TimeUnit.SECONDS));
+            secondThread.start();
+            awaitBlocked(secondThread);
+            channel.close();
+            assertInstanceOf(AsynchronousCloseException.class,
+                    assertThrows(ExecutionException.class, () -> first.get(5, TimeUnit.SECONDS)).getCause());
+            assertEquals(ClosedChannelException.class,
+                    assertThrows(ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS)).getCause().getClass());
+            assertEquals(1, writing ? encoder.closeCalls() : decoder.closeCalls());
+        } finally {
+            endpoint.release.countDown();
+            joinWorker(firstThread);
+            joinWorker(secondThread);
+            channel.close();
+        }
+    }
+
+    /// Transformation shares its staging buffer across complete calls, including final tail output.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesTransformOperations(boolean writing) throws Exception {
+        var endpoint = new GateChannel();
+        var input = new TransformingReadableByteChannel(endpoint, (bytes, offset, length) -> length);
+        var output = new TransformingWritableByteChannel(endpoint, (bytes, offset, length) -> length - 1);
+        ByteBuffer firstBuffer = ByteBuffer.allocate(1);
+        ByteBuffer secondBuffer = ByteBuffer.allocateDirect(1);
+        var first = new FutureTask<>(() -> writing
+                ? output.write(ByteBuffer.wrap(new byte[]{'a', 'b'})) : input.read(firstBuffer));
+        var second = new FutureTask<>(() -> {
+            if (writing) {
+                output.finish();
+                return 0;
+            }
+            return input.read(secondBuffer);
+        });
+        Thread firstThread = startWorker(first);
+        Thread secondThread = new Thread(second, "queued-transform-operation");
+        secondThread.setDaemon(true);
+        try {
+            assertTrue(endpoint.entered.await(5, TimeUnit.SECONDS));
+            secondThread.start();
+            awaitBlocked(secondThread);
+            assertEquals(1, endpoint.calls.get());
+            endpoint.release.countDown();
+            assertEquals(writing ? 2 : 1, first.get(5, TimeUnit.SECONDS));
+            assertEquals(writing ? 0 : 1, second.get(5, TimeUnit.SECONDS));
+            if (writing) {
+                output.finish();
+                assertArrayEquals(new byte[]{'a', 'b'}, endpoint.output.toByteArray());
+            } else {
+                assertEquals('a', firstBuffer.get(0));
+                assertEquals('b', secondBuffer.get(0));
+            }
+        } finally {
+            endpoint.release.countDown();
+            joinWorker(firstThread);
+            joinWorker(secondThread);
+            output.close();
+            input.close();
+        }
+    }
+
+    /// Prefix replay serializes source access without preventing cancellation of an active read.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesPrefixReplay(boolean interruptible) throws Exception {
+        for (boolean cancel : new boolean[]{false, true}) {
+            if (cancel && !interruptible) continue;
+            var endpoint = interruptible ? new InterruptibleGateChannel() : new GateChannel();
+            var channel = PrefixReplayReadableByteChannel.create(
+                    ByteBuffer.wrap(new byte[]{'p'}), endpoint, ResourceOwnership.BORROWED);
+            ByteBuffer prefix = ByteBuffer.allocate(1);
+            assertEquals(1, channel.read(prefix));
+            assertEquals('p', prefix.get(0));
+            assertEquals(0, endpoint.calls.get());
+            ByteBuffer firstBuffer = ByteBuffer.allocate(1);
+            ByteBuffer secondBuffer = ByteBuffer.allocateDirect(1);
+            var first = new FutureTask<>(() -> channel.read(firstBuffer));
+            var second = new FutureTask<>(() -> channel.read(secondBuffer));
+            Thread firstThread = startWorker(first);
+            Thread secondThread = new Thread(second, "queued-prefix-read");
+            secondThread.setDaemon(true);
+            try {
+                assertTrue(endpoint.entered.await(5, TimeUnit.SECONDS));
+                secondThread.start();
+                awaitBlocked(secondThread);
+                assertEquals(1, endpoint.calls.get());
+                if (cancel) {
+                    channel.close();
+                    assertInstanceOf(AsynchronousCloseException.class,
+                            assertThrows(ExecutionException.class, () -> first.get(5, TimeUnit.SECONDS)).getCause());
+                    assertEquals(ClosedChannelException.class,
+                            assertThrows(ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS)).getCause().getClass());
+                } else {
+                    endpoint.release.countDown();
+                    assertEquals(1, first.get(5, TimeUnit.SECONDS));
+                    assertEquals(1, second.get(5, TimeUnit.SECONDS));
+                    assertEquals('a', firstBuffer.get(0));
+                    assertEquals('b', secondBuffer.get(0));
+                }
+            } finally {
+                endpoint.release.countDown();
+                joinWorker(firstThread);
+                joinWorker(secondThread);
+                channel.close();
+            }
+        }
+    }
+
+    /// Closing a transforming reader does not wait for its I/O monitor before closing an owned source.
+    @Test
+    void closesTransformDuringRead() throws Exception {
+        var source = new GateChannel();
+        var channel = new TransformingReadableByteChannel(source, (bytes, offset, length) -> length, ResourceOwnership.OWNED);
+        var read = new FutureTask<>(() -> channel.read(ByteBuffer.allocate(1)));
+        Thread worker = startWorker(read);
+        try {
+            assertTrue(source.entered.await(5, TimeUnit.SECONDS));
+            channel.close();
+            assertInstanceOf(AsynchronousCloseException.class,
+                    assertThrows(ExecutionException.class, () -> read.get(5, TimeUnit.SECONDS)).getCause());
+            assertFalse(channel.isOpen());
+        } finally {
+            source.release.countDown();
+            joinWorker(worker);
+            channel.close();
+        }
+    }
+
+    /// Invokes one encoding entry point for the concurrency matrix.
+    private static CodecResult encodeOperation(CompressingWritableByteChannel.FlushableFramed channel,
+                                               ByteBuffer source, int mode) throws IOException {
+        return switch (mode) {
+            case 0 -> new CodecResult(channel.write(source), 0, CodecResult.Status.ACTIVE);
+            case 1 -> channel.encode(source);
+            case 2 -> channel.flush(source);
+            case 3 -> channel.finishFrame(source);
+            default -> throw new AssertionError(mode);
+        };
+    }
+
+    /// Invokes one decoding entry point for the concurrency matrix.
+    private static long decodeOperation(DecompressingReadableByteChannel.Framed channel,
+                                        ByteBuffer target, int mode) throws IOException {
+        return switch (mode) {
+            case 0 -> channel.read(target);
+            case 1 -> channel.decode(target).outputBytes();
+            case 2 -> channel.decodeFrame(target).outputBytes();
+            default -> throw new AssertionError(mode);
+        };
+    }
+
+    /// Starts a bounded test operation on a daemon worker.
+    private static Thread startWorker(FutureTask<?> task) {
+        Thread thread = new Thread(task, "active-codec-operation");
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
+    }
+
+    /// Requires an operation to wait for a monitor rather than return or enter the endpoint.
+    private static void awaitBlocked(Thread thread) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (thread.getState() != Thread.State.BLOCKED) {
+            assertTrue(thread.isAlive(), "operation returned instead of waiting");
+            assertTrue(System.nanoTime() < deadline, "operation did not wait for serialization");
+            Thread.sleep(1L);
+        }
+    }
+
+    /// Joins a released worker and checks that the test leaves no active operation.
+    private static void joinWorker(Thread thread) throws InterruptedException {
+        thread.join(TimeUnit.SECONDS.toMillis(5));
+        assertFalse(thread.isAlive(), "codec worker leaked");
+    }
+
+    /// Pauses the first endpoint transfer so competing operations can be observed deterministically.
+    @NotNullByDefault
+    private static class GateChannel implements ReadableByteChannel, WritableByteChannel {
+        /// Signals entry into the first transfer.
+        final CountDownLatch entered = new CountDownLatch(1);
+        /// Releases the first transfer.
+        final CountDownLatch release = new CountDownLatch(1);
+        /// Counts endpoint transfers before they can block.
+        final AtomicInteger calls = new AtomicInteger();
+        /// Collected output, inspected after workers complete.
+        final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        /// Input returned to the decoder or transform.
+        private final ByteBuffer input = ByteBuffer.wrap(new byte[]{'a', 'b'});
+        /// Whether the endpoint accepts another transfer.
+        private volatile boolean open = true;
+
+        /// Gates the first transfer and rejects asynchronous closure.
+        private void enter() throws IOException {
+            if (calls.incrementAndGet() == 1) {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) throw new IOException("Transfer was not released");
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Transfer interrupted", exception);
+                }
+            }
+            if (!open) throw new AsynchronousCloseException();
+        }
+
+        /// Supplies all input that fits after the gate opens.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            enter();
+            return input.hasRemaining() ? copyBytes(input, target) : -1;
+        }
+
+        /// Collects all remaining output after the gate opens.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            enter();
+            byte[] bytes = new byte[source.remaining()];
+            source.get(bytes);
+            output.writeBytes(bytes);
+            return bytes.length;
+        }
+
+        /// Returns whether the endpoint remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Unblocks a pending transfer and closes the endpoint.
+        @Override
+        public void close() {
+            open = false;
+            release.countDown();
+        }
+    }
+
+    /// Selects interruptible adapter behavior for the gated endpoint.
+    @NotNullByDefault
+    private static final class InterruptibleGateChannel extends GateChannel implements InterruptibleChannel {
+    }
+
     /// Cleanup retries cannot rethrow a retained target failure already delivered by an earlier close.
     @Test
     void preservesTargetFailureAfterDistinctEncodingFailure() throws IOException {

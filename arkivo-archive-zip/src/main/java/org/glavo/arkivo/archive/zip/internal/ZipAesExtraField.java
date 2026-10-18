@@ -38,16 +38,13 @@ final class ZipAesExtraField {
     private static final int AES_256_STRENGTH = 3;
 
     /// The length of the WinZip AES password verifier.
-    private static final int PASSWORD_VERIFIER_SIZE = 2;
+    static final int PASSWORD_VERIFIER_SIZE = 2;
 
     /// The length of the WinZip AES authentication code.
     static final int AUTHENTICATION_CODE_SIZE = 10;
 
     /// The vendor version field.
     private final int vendorVersion;
-
-    /// The AES encryption method.
-    private final ZipEncryption encryption;
 
     /// The encryption strength code.
     private final int strength;
@@ -56,9 +53,8 @@ final class ZipAesExtraField {
     private final int compressionMethod;
 
     /// Creates parsed WinZip AES metadata.
-    private ZipAesExtraField(int vendorVersion, ZipEncryption encryption, int strength, int compressionMethod) {
+    private ZipAesExtraField(int vendorVersion, int strength, int compressionMethod) {
         this.vendorVersion = vendorVersion;
-        this.encryption = encryption;
         this.strength = strength;
         this.compressionMethod = compressionMethod;
     }
@@ -100,7 +96,7 @@ final class ZipAesExtraField {
             case WINZIP_AES_256 -> AES_256_STRENGTH;
             default -> throw new IllegalArgumentException("encryption is not a WinZip AES method: " + encryption);
         };
-        return new ZipAesExtraField(AE_1_VENDOR_VERSION, encryption, strength, compressionMethod);
+        return new ZipAesExtraField(AE_1_VENDOR_VERSION, strength, compressionMethod);
     }
 
     /// Returns whether the encryption method is a WinZip AES method.
@@ -133,7 +129,7 @@ final class ZipAesExtraField {
 
         ZipAesExtraField aes = read(extraData);
         if (aes != null) {
-            return aes.encryption;
+            return aes.encryption();
         }
         if (method == ZipConstants.WINZIP_AES_METHOD) {
             return null;
@@ -155,7 +151,12 @@ final class ZipAesExtraField {
 
     /// Returns the AES encryption method.
     ZipEncryption encryption() {
-        return encryption;
+        return switch (strength) {
+            case AES_128_STRENGTH -> ZipEncryption.WINZIP_AES_128;
+            case AES_192_STRENGTH -> ZipEncryption.WINZIP_AES_192;
+            case AES_256_STRENGTH -> ZipEncryption.WINZIP_AES_256;
+            default -> throw new AssertionError(strength);
+        };
     }
 
     /// Returns the AES encryption key length in bytes.
@@ -176,16 +177,6 @@ final class ZipAesExtraField {
             case AES_256_STRENGTH -> 16;
             default -> throw new AssertionError(strength);
         };
-    }
-
-    /// Returns the length of the password verifier in bytes.
-    int passwordVerifierSize() {
-        return PASSWORD_VERIFIER_SIZE;
-    }
-
-    /// Returns the length of the authentication code in bytes.
-    int authenticationCodeSize() {
-        return AUTHENTICATION_CODE_SIZE;
     }
 
     /// Returns the total WinZip AES overhead stored in the entry body.
@@ -214,18 +205,13 @@ final class ZipAesExtraField {
     /// Encodes this WinZip AES extra field.
     private byte[] encodedField() {
         byte[] field = new byte[4 + MIN_DATA_SIZE];
-        writeUnsignedShort(field, 0, ZipConstants.WINZIP_AES_EXTRA_FIELD_ID);
-        writeUnsignedShort(field, 2, MIN_DATA_SIZE);
-        writeUnsignedShort(field, 4, vendorVersion);
-        writeUnsignedShort(field, 6, AES_VENDOR_ID);
+        ByteArrayAccess.writeShortLittleEndian(field, 0, (short) ZipConstants.WINZIP_AES_EXTRA_FIELD_ID);
+        ByteArrayAccess.writeShortLittleEndian(field, 2, (short) MIN_DATA_SIZE);
+        ByteArrayAccess.writeShortLittleEndian(field, 4, (short) vendorVersion);
+        ByteArrayAccess.writeShortLittleEndian(field, 6, (short) AES_VENDOR_ID);
         field[8] = (byte) strength;
-        writeUnsignedShort(field, 9, compressionMethod);
+        ByteArrayAccess.writeShortLittleEndian(field, 9, (short) compressionMethod);
         return field;
-    }
-
-    /// Writes a little-endian unsigned 16-bit value to a byte array.
-    private static void writeUnsignedShort(byte[] bytes, int offset, int value) {
-        ByteArrayAccess.writeShortLittleEndian(bytes, offset, (short) value);
     }
 
     /// Reads WinZip AES extra field payload bytes.
@@ -247,16 +233,8 @@ final class ZipAesExtraField {
         if (strength != AES_128_STRENGTH && strength != AES_192_STRENGTH && strength != AES_256_STRENGTH) {
             return null;
         }
-        ZipEncryption encryption = switch (strength) {
-            case AES_128_STRENGTH -> ZipEncryption.WINZIP_AES_128;
-            case AES_192_STRENGTH -> ZipEncryption.WINZIP_AES_192;
-            case AES_256_STRENGTH -> ZipEncryption.WINZIP_AES_256;
-            default -> throw new AssertionError(strength);
-        };
-
         return new ZipAesExtraField(
                 vendorVersion,
-                encryption,
                 strength,
                 readUnsignedShort(extraData, dataOffset + 5)
         );

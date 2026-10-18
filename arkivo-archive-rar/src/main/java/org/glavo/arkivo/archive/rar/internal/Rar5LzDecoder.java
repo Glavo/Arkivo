@@ -62,6 +62,18 @@ final class Rar5LzDecoder {
     /// The block flag indicating the final compressed block in an entry.
     private static final int BLOCK_FLAG_LAST = 0x40;
 
+    /// The largest combined alphabet, including the RAR5 v7 distance alphabet.
+    private static final int MAX_LENGTH_COUNT = MAIN_ALPHABET_SIZE + DISTANCE_ALPHABET_SIZE_V7
+            + ALIGNMENT_ALPHABET_SIZE + LENGTH_ALPHABET_SIZE;
+
+    /// Payload bytes retained by the fixed entropy and repetition workspaces.
+    static final int FIXED_MEMORY_SIZE = 5 * Rar5HuffmanDecoder.FIXED_MEMORY_SIZE
+            + (MAX_LENGTH_COUNT + LEVEL_ALPHABET_SIZE) * Integer.BYTES
+            + REPETITION_COUNT * Long.BYTES + LEVEL_ALPHABET_SIZE + MAX_LENGTH_COUNT;
+
+    /// The session budget shared with entry input and filter workspaces.
+    private final RarDecoderMemoryBudget memory;
+
     /// Extra match length selected by large distance slots.
     private static final byte[] DISTANCE_LENGTH_BONUS = {
             0, 0, 0, 0, 0, 0, 0, 1, 1, 1,
@@ -71,19 +83,31 @@ final class Rar5LzDecoder {
     };
 
     /// The main literal, control, and length decoder.
-    private final Rar5HuffmanDecoder mainDecoder = new Rar5HuffmanDecoder();
+    private final Rar5HuffmanDecoder mainDecoder;
 
     /// The new-match distance decoder.
-    private final Rar5HuffmanDecoder distanceDecoder = new Rar5HuffmanDecoder();
+    private final Rar5HuffmanDecoder distanceDecoder;
 
     /// The repeated-distance length decoder.
-    private final Rar5HuffmanDecoder lengthDecoder = new Rar5HuffmanDecoder();
+    private final Rar5HuffmanDecoder lengthDecoder;
 
     /// The optional low-distance alignment decoder.
-    private final Rar5HuffmanDecoder alignmentDecoder = new Rar5HuffmanDecoder();
+    private final Rar5HuffmanDecoder alignmentDecoder;
+
+    /// The decoder used to reconstruct the other Huffman alphabets.
+    private final Rar5HuffmanDecoder levelDecoder;
+
+    /// Reusable code lengths for the level alphabet.
+    private final byte[] levelLengths;
+
+    /// Reusable code lengths for the four payload alphabets.
+    private final byte[] lengths;
 
     /// The four most recently used one-based match distances.
-    private final long[] repetitions = new long[REPETITION_COUNT];
+    private final long[] repetitions;
+
+    /// Whether this engine has returned its fixed workspace reservation.
+    private boolean released;
 
     /// The raw LZ dictionary retained across solid entries.
     private byte[] dictionary = new byte[0];
@@ -110,7 +134,22 @@ final class Rar5LzDecoder {
     private boolean initialized;
 
     /// Creates an empty RAR5 LZ decoder.
-    Rar5LzDecoder() {
+    Rar5LzDecoder(RarDecoderMemoryBudget memory) throws IOException {
+        this.memory = Objects.requireNonNull(memory, "memory");
+        memory.reserve(FIXED_MEMORY_SIZE);
+        try {
+            mainDecoder = new Rar5HuffmanDecoder(MAIN_ALPHABET_SIZE);
+            distanceDecoder = new Rar5HuffmanDecoder(DISTANCE_ALPHABET_SIZE_V7);
+            lengthDecoder = new Rar5HuffmanDecoder(LENGTH_ALPHABET_SIZE);
+            alignmentDecoder = new Rar5HuffmanDecoder(ALIGNMENT_ALPHABET_SIZE);
+            levelDecoder = new Rar5HuffmanDecoder(LEVEL_ALPHABET_SIZE);
+            levelLengths = new byte[LEVEL_ALPHABET_SIZE];
+            lengths = new byte[MAX_LENGTH_COUNT];
+            repetitions = new long[REPETITION_COUNT];
+        } catch (RuntimeException | Error failure) {
+            memory.release(FIXED_MEMORY_SIZE);
+            throw failure;
+        }
         resetModel();
     }
 
@@ -125,37 +164,43 @@ final class Rar5LzDecoder {
     ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(output, "output");
+        if (released) {
+            throw new IOException("RAR5 decoder has been released");
+        }
         if (requestedDictionarySize <= 0 || unpackedSize < 0L) {
             throw new IOException("Invalid RAR5 decompression properties");
         }
 
         prepareDictionary(requestedDictionarySize, solid);
-        Rar5OutputPipeline pipeline = new Rar5OutputPipeline(output, totalRawSize, unpackedSize);
-        Rar5BitInput bits = new Rar5BitInput(input);
+        memory.reserve(Rar5BitInput.BUFFER_SIZE);
+        try (Rar5OutputPipeline pipeline = new Rar5OutputPipeline(output, totalRawSize, unpackedSize, memory)) {
+            Rar5BitInput bits = new Rar5BitInput(input);
+            boolean lastBlock;
+            do {
+                bits.clearBlockEnd();
+                bits.alignToByte();
+                Block block = readBlockHeader(bits);
+                bits.setBlockEndBit(block.endBit());
 
-        boolean lastBlock;
-        do {
+                if (block.newTables()) {
+                    readTables(bits, version7);
+                } else if (!tablesAvailable && bits.remainingBlockBits() != 0L) {
+                    throw new IOException("RAR5 compressed block reuses unavailable Huffman tables");
+                }
+
+                while (!bits.atBlockEnd()) {
+                    decodeSymbol(bits, pipeline);
+                }
+                lastBlock = block.last();
+            } while (!lastBlock);
+
             bits.clearBlockEnd();
             bits.alignToByte();
-            Block block = readBlockHeader(bits);
-            bits.setBlockEndBit(block.endBit());
-
-            if (block.newTables()) {
-                readTables(bits, version7);
-            } else if (!tablesAvailable && bits.remainingBlockBits() != 0L) {
-                throw new IOException("RAR5 compressed block reuses unavailable Huffman tables");
-            }
-
-            while (!bits.atBlockEnd()) {
-                decodeSymbol(bits, pipeline);
-            }
-            lastBlock = block.last();
-        } while (!lastBlock);
-
-        bits.clearBlockEnd();
-        bits.alignToByte();
-        pipeline.finish();
-        initialized = true;
+            pipeline.finish();
+            initialized = true;
+        } finally {
+            memory.release(Rar5BitInput.BUFFER_SIZE);
+        }
     }
 
     /// Invalidates all dictionary and entropy state after a skipped or failed entry.
@@ -168,6 +213,11 @@ final class Rar5LzDecoder {
 
     /// Releases the potentially large dictionary immediately.
     void release() {
+        if (released) {
+            return;
+        }
+        released = true;
+        memory.release(dictionary.length + (long) FIXED_MEMORY_SIZE);
         dictionary = new byte[0];
         dictionarySize = 0;
         invalidate();
@@ -183,7 +233,16 @@ final class Rar5LzDecoder {
         }
 
         if (dictionary.length < requestedSize) {
-            dictionary = new byte[requestedSize];
+            int previousSize = dictionary.length;
+            dictionary = new byte[0];
+            memory.release(previousSize);
+            memory.reserve(requestedSize);
+            try {
+                dictionary = new byte[requestedSize];
+            } catch (RuntimeException | Error failure) {
+                memory.release(requestedSize);
+                throw failure;
+            }
         } else {
             Arrays.fill(dictionary, 0, requestedSize, (byte) 0);
         }
@@ -246,7 +305,6 @@ final class Rar5LzDecoder {
     /// Reads the canonical code lengths for all RAR5 entropy alphabets.
     private void readTables(Rar5BitInput bits, boolean version7) throws IOException {
         tablesAvailable = false;
-        byte[] levelLengths = new byte[LEVEL_ALPHABET_SIZE];
         for (int index = 0; index < levelLengths.length;) {
             int length = bits.readBits(4);
             if (length == 15) {
@@ -261,7 +319,6 @@ final class Rar5LzDecoder {
             levelLengths[index++] = (byte) length;
         }
 
-        Rar5HuffmanDecoder levelDecoder = new Rar5HuffmanDecoder();
         levelDecoder.build(levelLengths, 0, levelLengths.length);
 
         int distanceAlphabetSize = version7
@@ -271,8 +328,7 @@ final class Rar5LzDecoder {
                 + distanceAlphabetSize
                 + ALIGNMENT_ALPHABET_SIZE
                 + LENGTH_ALPHABET_SIZE;
-        byte[] lengths = new byte[totalLengthCount];
-        for (int index = 0; index < lengths.length;) {
+        for (int index = 0; index < totalLengthCount;) {
             int symbol = levelDecoder.decode(bits);
             if (symbol < 16) {
                 lengths[index++] = (byte) symbol;
@@ -281,7 +337,7 @@ final class Rar5LzDecoder {
 
             int extraBits = (symbol & 1) == 0 ? 3 : 7;
             int repeatCount = (extraBits == 3 ? 3 : 11) + bits.readBits(extraBits);
-            int end = Math.min(lengths.length, index + repeatCount);
+            int end = Math.min(totalLengthCount, index + repeatCount);
             byte repeatedLength = 0;
             if (symbol < 18) {
                 if (index == 0) {

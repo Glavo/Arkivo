@@ -14,6 +14,8 @@ import java.util.zip.CRC32;
 /// Implements the native replacements for the standard RAR3 virtual-machine filters.
 @NotNullByDefault
 final class Rar3StandardFilters {
+    /// Primitive-array scratch payload shared by the audio channels in one invocation.
+    static final int AUDIO_MEMORY_SIZE = 13 * Integer.BYTES;
     /// The effective address space used by the x86 filters.
     private static final int X86_ADDRESS_SPACE = 1 << 24;
     /// The instruction-slot masks indexed by an Itanium bundle template.
@@ -149,12 +151,15 @@ final class Rar3StandardFilters {
         validateChannels(channelCount);
         byte[] result = new byte[input.length];
         int source = 0;
+        int[] differences = new int[7];
+        int[] deltas = new int[3];
+        int[] coefficients = new int[3];
         for (int channel = 0; channel < channelCount; channel++) {
             int previous = 0;
             int byteCount = 0;
-            int[] differences = new int[7];
-            int[] deltas = new int[3];
-            int[] coefficients = new int[3];
+            Arrays.fill(differences, 0);
+            Arrays.fill(deltas, 0);
+            Arrays.fill(coefficients, 0);
             for (int target = channel; target < result.length; target += channelCount) {
                 int predicted = previous * 8 + coefficients[0] * deltas[0]
                         + coefficients[1] * deltas[1] + coefficients[2] * deltas[2];

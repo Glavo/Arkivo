@@ -170,5 +170,10 @@ tasks.named<Test>("tier2Test") {
     inputs.dir(lz4TestDataDirectory)
     systemProperty("arkivo.lz4.testDataDirectory", lz4TestDataDirectory.get().asFile.absolutePath)
     inputs.property("officialLz4Executable", providers.environmentVariable("ARKIVO_LZ4_EXECUTABLE").orElse(""))
+    // Track replacements and newly installed tools without requiring optional executables to exist.
+    inputs.files(providers.provider {
+        providers.environmentVariable("ARKIVO_LZ4_EXECUTABLE").orNull
+            ?.takeIf { it.isNotBlank() }?.let { listOf(file(it)) }?.filter { it.isFile } ?: emptyList<File>()
+    }).withPropertyName("officialLz4ExecutableFile").withPathSensitivity(PathSensitivity.NONE)
     inputs.property("requireOfficialLz4", providers.environmentVariable("ARKIVO_REQUIRE_LZ4").orElse("false"))
 }

@@ -64,5 +64,10 @@ tasks.named<Test>("tier2Test") {
     inputs.dir(ncompressTestDataDirectory)
     systemProperty("arkivo.ncompress.testDataDirectory", ncompressTestDataDirectory.get().asFile.absolutePath)
     inputs.property("ncompressExecutable", providers.environmentVariable("ARKIVO_NCOMPRESS_EXECUTABLE").orElse(""))
+    // Track replacements and newly installed tools without requiring optional executables to exist.
+    inputs.files(providers.provider {
+        providers.environmentVariable("ARKIVO_NCOMPRESS_EXECUTABLE").orNull
+            ?.takeIf { it.isNotBlank() }?.let { listOf(file(it)) }?.filter { it.isFile } ?: emptyList<File>()
+    }).withPropertyName("ncompressExecutableFile").withPathSensitivity(PathSensitivity.NONE)
     inputs.property("requireNcompress", providers.environmentVariable("ARKIVO_REQUIRE_NCOMPRESS").orElse("false"))
 }

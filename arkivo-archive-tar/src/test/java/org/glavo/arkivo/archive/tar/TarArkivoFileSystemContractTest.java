@@ -63,6 +63,46 @@ final class TarArkivoFileSystemContractTest {
     @TempDir
     private Path temporaryDirectory;
 
+    /// Content writes must not turn device nodes, FIFOs, or unknown entry types into regular files.
+    @ParameterizedTest
+    @ValueSource(strings = {"3", "4", "6", "Z"})
+    void rejectsContentWritesToSpecialEntries(String type) throws IOException {
+        Path archive = temporaryDirectory.resolve("special.tar");
+        byte[] bytes = new byte[1536];
+        byte[] name = "special".getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(name, 0, bytes, 0, name.length);
+        System.arraycopy("ustar\0".getBytes(StandardCharsets.US_ASCII), 0, bytes, 257, 6);
+        bytes[263] = '0';
+        bytes[264] = '0';
+        bytes[156] = (byte) type.charAt(0);
+        java.util.Arrays.fill(bytes, 148, 156, (byte) ' ');
+        int checksum = 0;
+        for (int i = 0; i < 512; i++) checksum += Byte.toUnsignedInt(bytes[i]);
+        byte[] checksumText = String.format(java.util.Locale.ROOT, "%06o\0 ", checksum)
+                .getBytes(StandardCharsets.US_ASCII);
+        System.arraycopy(checksumText, 0, bytes, 148, 8);
+        Files.write(archive, bytes);
+
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            Path entry = fs.getPath("special");
+            for (var options : List.of(Set.of(StandardOpenOption.WRITE), Set.of(StandardOpenOption.APPEND),
+                    Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING))) {
+                assertThrows(FileSystemException.class, () -> Files.newByteChannel(entry, options));
+            }
+            assertThrows(FileSystemException.class, () -> Files.writeString(entry, "new"));
+            assertThrows(FileAlreadyExistsException.class,
+                    () -> Files.writeString(entry, "new", StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE));
+            TarArkivoEntryAttributes attributes = Files.readAttributes(entry, TarArkivoEntryAttributes.class);
+            assertTrue(attributes.isOther());
+            assertEquals((byte) type.charAt(0), attributes.typeFlag());
+            assertFalse(Files.exists(fs.getPath("new")));
+        }
+        assertArrayEquals(bytes, Files.readAllBytes(archive));
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            assertTrue(Files.readAttributes(fs.getPath("special"), TarArkivoEntryAttributes.class).isOther());
+        }
+    }
+
     /// Replacing a file with a directory retains the replaced file's content through its other hard-link name.
     @Test
     void preservesHardLinkWhenMoveReplacesFileWithDirectory() throws IOException {

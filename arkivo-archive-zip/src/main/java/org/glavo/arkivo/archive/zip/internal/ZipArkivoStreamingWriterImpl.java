@@ -340,6 +340,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (segment.equals("..")) {
                 throw new IllegalArgumentException("ZIP streaming entry paths must not contain ..");
             }
+            if (builder.isEmpty() && segment.length() >= 2 && segment.charAt(1) == ':') {
+                throw new IllegalArgumentException("ZIP streaming entry paths must not contain drive roots");
+            }
             if (!builder.isEmpty()) {
                 builder.append('/');
             }
@@ -454,7 +457,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             lock();
             try {
                 entry.ensurePending();
-                ZipPosixSupport.requireDefaultOwner(owner);
+                ZipPosixSupport.USER_PRINCIPAL_LOOKUP_SERVICE.requireUser(owner);
             } finally {
                 unlock();
             }
@@ -467,7 +470,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             lock();
             try {
                 entry.ensurePending();
-                ZipPosixSupport.requireDefaultGroup(group);
+                ZipPosixSupport.USER_PRINCIPAL_LOOKUP_SERVICE.requireGroup(group);
             } finally {
                 unlock();
             }

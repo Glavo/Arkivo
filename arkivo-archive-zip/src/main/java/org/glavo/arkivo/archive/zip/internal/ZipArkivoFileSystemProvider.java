@@ -69,7 +69,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.fromEnvironment(environment));
-        return fileSystems.open(parsedUri.archiveUri(), closeAction -> config.archiveWritable()
+        return fileSystems.open(parsedUri.archivePath(), closeAction -> config.archiveWritable()
                 ? new ZipArkivoWritableFileSystemImpl(
                 this,
                 parsedUri.archivePath(),
@@ -126,14 +126,14 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns an open ZIP archive file system for a provider URI.
     @Override
     public FileSystem getFileSystem(URI uri) {
-        return fileSystems.require(parseUri(uri, false).archiveUri());
+        return fileSystems.require(parseUri(uri, false).archivePath());
     }
 
     /// Returns a path inside an open ZIP archive file system.
     @Override
     public Path getPath(URI uri) {
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, true);
-        return fileSystems.require(parsedUri.archiveUri()).getPath(
+        return fileSystems.require(parsedUri.archivePath()).getPath(
                 Objects.requireNonNull(parsedUri.entryPath(), "entryPath")
         );
     }

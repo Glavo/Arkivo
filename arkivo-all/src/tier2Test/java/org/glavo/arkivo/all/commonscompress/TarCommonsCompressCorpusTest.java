@@ -4,6 +4,8 @@
 package org.glavo.arkivo.all.commonscompress;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.tar.TarArchiveOptions;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
@@ -13,6 +15,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -40,6 +43,39 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies TAR dialect, sparse-file, metadata, and corruption compatibility with Commons Compress fixtures.
 @NotNullByDefault
 final class TarCommonsCompressCorpusTest {
+    /// Preserves independently generated device identifiers through a full rewrite readable by Commons Compress.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2097151, 2097152})
+    void preservesDeviceNumbersAcrossLibraries(int major, @TempDir Path directory) throws IOException {
+        for (byte type : new byte[]{'3', '4'}) {
+            Path archive = directory.resolve("device-" + type + ".tar");
+            try (var writer = new TarArchiveOutputStream(Files.newOutputStream(archive))) {
+                writer.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_POSIX);
+                var entry = new TarArchiveEntry("device", type);
+                entry.setDevMajor(major);
+                entry.setDevMinor(major + 1);
+                writer.putArchiveEntry(entry);
+                writer.closeArchiveEntry();
+            }
+            try (var fs = TarArkivoFileSystem.update(archive)) {
+                var attributes = Files.readAttributes(fs.getPath("device"), TarArkivoEntryAttributes.class);
+                assertEquals(major, attributes.deviceMajor());
+                assertEquals(major + 1, attributes.deviceMinor());
+                Files.writeString(fs.getPath("unrelated"), "content");
+            }
+            try (var reader = new TarArchiveInputStream(Files.newInputStream(archive))) {
+                var entry = java.util.Objects.requireNonNull(reader.getNextEntry());
+                assertEquals("device", entry.getName());
+                assertEquals(type == '3', entry.isCharacterDevice());
+                assertEquals(type == '4', entry.isBlockDevice());
+                assertEquals(major, entry.getDevMajor());
+                assertEquals(major + 1, entry.getDevMinor());
+                assertEquals("unrelated", java.util.Objects.requireNonNull(reader.getNextEntry()).getName());
+                assertNull(reader.getNextEntry());
+            }
+        }
+    }
+
     /// The caller-owned bytes following a complete upstream archive.
     private static final byte @Unmodifiable [] ARCHIVE_TRAILER =
             "Hello, world!\n".getBytes(StandardCharsets.US_ASCII);

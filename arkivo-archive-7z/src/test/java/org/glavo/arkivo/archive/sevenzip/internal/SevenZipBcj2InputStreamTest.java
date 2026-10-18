@@ -407,11 +407,13 @@ public final class SevenZipBcj2InputStreamTest {
         assertEquals(1, range.closeCount());
         assertThrows(IOException.class, input::read);
 
-        input.close();
-        assertEquals(1, main.closeCount());
-        assertEquals(1, call.closeCount());
-        assertEquals(1, jump.closeCount());
-        assertEquals(1, range.closeCount());
+        IOException retry = assertThrows(IOException.class, input::close);
+        assertEquals("main close failed", retry.getCause().getMessage());
+        assertEquals(3, retry.getCause().getSuppressed().length);
+        assertEquals(2, main.closeCount());
+        assertEquals(2, call.closeCount());
+        assertEquals(2, jump.closeCount());
+        assertEquals(2, range.closeCount());
     }
 
     /// Returns the deterministic executable-like input encoded by the 7-Zip 26.01 reference invocation.

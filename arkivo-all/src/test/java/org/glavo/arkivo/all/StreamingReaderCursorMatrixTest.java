@@ -8,6 +8,8 @@ import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
+import org.glavo.arkivo.archive.cpio.CPIOArkivoStreamingReader;
+import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -18,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
@@ -43,6 +46,116 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies cursor advancement and body ownership across every installed forward-only archive format.
 @NotNullByDefault
 final class StreamingReaderCursorMatrixTest {
+    /// Direct stream factories preserve an initial parser failure when the source repeats it during cleanup.
+    @ParameterizedTest
+    @ValueSource(strings = {"cpio", "rar"})
+    void preservesInitialInputStreamFailureDuringCleanup(String format) throws IOException {
+        IOException failure = new IOException("Source read and close failed");
+        var source = new RepeatedFailureInputStream(failure);
+        ArkivoStreamingReader reader = format.equals("cpio")
+                ? CPIOArkivoStreamingReader.open(source) : RarArkivoStreamingReader.open(source);
+        IOException actual = assertThrows(IOException.class, () -> {
+            try (reader) {
+                reader.next();
+            }
+        });
+        assertSame(failure, actual);
+        assertEquals(1, actual.getSuppressed().length);
+        assertSame(failure, rootCause(actual.getSuppressed()[0]));
+        source.fail = false;
+        reader.close();
+        reader.close();
+        assertTrue(source.closed);
+    }
+
+    /// A one-shot body read failure stays primary when draining succeeds but source closure repeats the failure.
+    @ParameterizedTest
+    @ValueSource(strings = {"cpio", "rar"})
+    void preservesBodyInputStreamFailureDuringSourceCleanup(String format) throws IOException {
+        IOException failure = new IOException("Body read and source close failed");
+        var source = new RepeatedFailureInputStream(failure, createArchive(format));
+        source.failClose = true;
+        ArkivoStreamingReader reader = format.equals("cpio")
+                ? CPIOArkivoStreamingReader.open(source) : RarArkivoStreamingReader.open(source);
+        assertTrue(reader.next());
+        InputStream body = reader.openInputStream();
+        source.failReadOnce = true;
+        IOException actual = assertThrows(IOException.class, () -> {
+            try (reader) {
+                body.readAllBytes();
+            }
+        });
+        assertSame(failure, actual);
+        assertTrue(actual.getSuppressed().length > 0);
+        assertSame(failure, rootCause(actual.getSuppressed()[0]));
+        source.failClose = false;
+        reader.close();
+        reader.close();
+        assertTrue(source.closed);
+    }
+
+    /// Reports shared read and close failures around an in-memory archive.
+    @NotNullByDefault
+    private static final class RepeatedFailureInputStream extends InputStream {
+        /// The exception reused for source reads and closure.
+        private final IOException failure;
+
+        /// The valid archive used when reads are not failing.
+        private final ByteArrayInputStream content;
+
+        /// Whether reads and closure still fail.
+        private boolean fail;
+
+        /// Whether the next read fails once before normal draining can resume.
+        private boolean failReadOnce;
+
+        /// Whether cleanup fails independently of reads.
+        private boolean failClose;
+
+        /// Whether cleanup has completed.
+        private boolean closed;
+
+        /// Creates a source that shares the supplied exception across operations.
+        private RepeatedFailureInputStream(IOException failure) {
+            this(failure, new byte[0]);
+            fail = true;
+        }
+
+        /// Creates a readable archive whose failures can be enabled after entry selection.
+        private RepeatedFailureInputStream(IOException failure, byte[] bytes) {
+            this.failure = failure;
+            content = new ByteArrayInputStream(bytes);
+        }
+
+        /// Reads one archive byte unless a read failure is armed.
+        @Override
+        public int read() throws IOException {
+            checkReadFailure();
+            return content.read();
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            checkReadFailure();
+            return content.read(bytes, offset, length);
+        }
+
+        /// Reports an armed read failure and disarms the one-shot injection.
+        private void checkReadFailure() throws IOException {
+            if (fail || failReadOnce) {
+                failReadOnce = false;
+                throw failure;
+            }
+        }
+
+        /// Reports the shared failure until successful cleanup is enabled.
+        @Override
+        public void close() throws IOException {
+            if (fail || failClose) throw failure;
+            closed = true;
+        }
+    }
+
     /// Installed formats that support forward-only reading of generated two-entry fixtures.
     private static final @Unmodifiable List<String> STREAMING_FORMATS =
             List.of("ar", "cpio", "rar", "tar", "zip");

@@ -50,20 +50,6 @@ final class SevenZipFolderMethod {
     /// The sole unbound folder output stream exposed as the folder result.
     private final int finalOutputStreamIndex;
 
-    /// Creates a linear single-input, single-output coder pipeline.
-    SevenZipFolderMethod(byte[][] methodIds, byte[][] properties, long[] unpackSizes) {
-        this(
-                methodIds,
-                properties,
-                ones(methodIds.length),
-                ones(methodIds.length),
-                linearBindInputs(methodIds.length),
-                linearBindOutputs(methodIds.length),
-                new int[]{0},
-                unpackSizes
-        );
-    }
-
     /// Creates a complete 7z folder coder graph.
     private SevenZipFolderMethod(
             byte[][] methodIds,
@@ -217,7 +203,16 @@ final class SevenZipFolderMethod {
 
     /// Creates a single-coder folder method.
     static SevenZipFolderMethod single(byte[] methodId, byte[] properties, long unpackSize) {
-        return new SevenZipFolderMethod(new byte[][]{methodId}, new byte[][]{properties}, new long[]{unpackSize});
+        return graph(
+                new byte[][]{methodId},
+                new byte[][]{properties},
+                new int[]{1},
+                new int[]{1},
+                new int[0],
+                new int[0],
+                new int[]{0},
+                new long[]{unpackSize}
+        );
     }
 
     /// Returns a copy of the method ID for the given coder.
@@ -370,31 +365,6 @@ final class SevenZipFolderMethod {
             }
         }
         coderStates[coderIndex] = 2;
-    }
-
-    /// Returns an array of the given length filled with ones.
-    private static int[] ones(int length) {
-        int[] result = new int[length];
-        Arrays.fill(result, 1);
-        return result;
-    }
-
-    /// Returns bind-pair input indexes for a linear coder pipeline.
-    private static int[] linearBindInputs(int coderCount) {
-        int[] result = new int[Math.max(0, coderCount - 1)];
-        for (int index = 0; index < result.length; index++) {
-            result[index] = index + 1;
-        }
-        return result;
-    }
-
-    /// Returns bind-pair output indexes for a linear coder pipeline.
-    private static int[] linearBindOutputs(int coderCount) {
-        int[] result = new int[Math.max(0, coderCount - 1)];
-        for (int index = 0; index < result.length; index++) {
-            result[index] = index;
-        }
-        return result;
     }
 
     /// Requires an index to address the given stream count.

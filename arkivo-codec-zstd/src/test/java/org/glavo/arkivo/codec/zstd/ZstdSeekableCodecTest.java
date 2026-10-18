@@ -4,6 +4,8 @@
 package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CodecResult;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
@@ -29,6 +31,10 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -43,6 +49,156 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies standard seek-table production, parsing, and logical random access.
 @NotNullByDefault
 public final class ZstdSeekableCodecTest {
+    /// Concurrent input cannot exceed frame capacity or a session pledge, and composite counts remain per-call.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesSeekableWrites(boolean interruptible, @TempDir Path directory) throws Exception {
+        for (int mode : new int[]{0, 1, 2}) {
+            for (int size : new int[]{4, 8}) {
+                Path path = directory.resolve("concurrent-" + mode + "-" + size + ".zst");
+                try (SeekableByteChannel file = Files.newByteChannel(path, StandardOpenOption.CREATE_NEW,
+                        StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+                    FailingSeekableChannel target = interruptible
+                            ? new InterruptibleFailingSeekableChannel(file)
+                            : new FailingSeekableChannel(file, -1, 0, null);
+                    CountDownLatch entered = new CountDownLatch(1);
+                    CountDownLatch release = new CountDownLatch(1);
+                    target.writeEntered = entered;
+                    target.writeRelease = release;
+                    var codec = ZstdCodec.DEFAULT.withFrameChecksum(true);
+                    var encoder = codec.newSeekableWritableByteChannel(target,
+                            new SeekableEncodingOptions(size, 3), ResourceOwnership.BORROWED);
+                    ByteBuffer secondSource = ByteBuffer.allocateDirect(4).put(new byte[]{5, 6, 7, 8}).flip();
+                    var first = new FutureTask<>(() -> concurrentEncode(encoder, ByteBuffer.wrap(new byte[]{1, 2, 3, 4}), mode));
+                    var second = new FutureTask<>(() -> concurrentEncode(encoder, secondSource, mode));
+                    Thread firstThread = new Thread(first, "active-seekable-write");
+                    Thread secondThread = new Thread(second, "queued-seekable-write");
+                    firstThread.setDaemon(true);
+                    secondThread.setDaemon(true);
+                    firstThread.start();
+                    try {
+                        assertTrue(entered.await(5, TimeUnit.SECONDS));
+                        secondThread.start();
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                        while (secondThread.getState() != Thread.State.BLOCKED) {
+                            assertTrue(secondThread.isAlive(), "queued seekable operation returned early");
+                            assertTrue(System.nanoTime() < deadline, "queued seekable operation did not block");
+                            Thread.sleep(1L);
+                        }
+                        release.countDown();
+                        CodecResult firstResult = first.get(5, TimeUnit.SECONDS);
+                        assertEquals(4L, firstResult.inputBytes());
+                        if (size == 4) {
+                            assertInstanceOf(IOException.class,
+                                    assertThrows(ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS)).getCause());
+                            assertEquals(0, secondSource.position());
+                        } else {
+                            CodecResult secondResult = second.get(5, TimeUnit.SECONDS);
+                            assertEquals(4L, secondResult.inputBytes());
+                            assertEquals(encoder.outputBytes(), firstResult.outputBytes() + secondResult.outputBytes());
+                        }
+                        encoder.close();
+                        file.position(0);
+                        var index = codec.readIndex(file);
+                        assertNotNull(index);
+                        assertEquals(size, index.uncompressedSize());
+                        for (int frame = 0; frame < index.frameCount(); frame++) {
+                            assertTrue(index.frameUncompressedSize(frame) <= 3);
+                        }
+                        byte[] expected = size == 4 ? new byte[]{1, 2, 3, 4} : new byte[]{1, 2, 3, 4, 5, 6, 7, 8};
+                        assertArrayEquals(expected, codec.withMaximumOutputSize(size)
+                                .decompress(ByteBuffer.wrap(Files.readAllBytes(path))).array());
+                        try (var decoded = index.newReadableByteChannel(file, ResourceOwnership.BORROWED)) {
+                            ByteBuffer result = ByteBuffer.allocate(size);
+                            while (result.hasRemaining()) assertTrue(decoded.read(result) > 0);
+                            assertArrayEquals(expected, result.array());
+                        }
+                    } finally {
+                        release.countDown();
+                        firstThread.join(TimeUnit.SECONDS.toMillis(5));
+                        secondThread.join(TimeUnit.SECONDS.toMillis(5));
+                        assertFalse(firstThread.isAlive());
+                        assertFalse(secondThread.isAlive());
+                        encoder.close();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Logical reads and seeks do not race physical frame loading or cached-frame positions.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesSeekableReads(boolean interruptible, @TempDir Path directory) throws Exception {
+        Path path = directory.resolve("concurrent-read.zst");
+        try (var target = Files.newByteChannel(path, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+             var encoder = ZstdCodec.DEFAULT.newSeekableWritableByteChannel(target,
+                     new SeekableEncodingOptions(6, 3), ResourceOwnership.BORROWED)) {
+            encoder.encode(ByteBuffer.wrap(new byte[]{1, 2, 3, 4, 5, 6}));
+        }
+        for (boolean reposition : new boolean[]{false, true}) {
+            try (SeekableByteChannel file = Files.newByteChannel(path)) {
+                var index = ZstdCodec.DEFAULT.readIndex(file);
+                assertNotNull(index);
+                FailingSeekableChannel source = interruptible ? new InterruptibleFailingSeekableChannel(file)
+                        : new FailingSeekableChannel(file, -1, 0, null);
+                CountDownLatch entered = new CountDownLatch(1);
+                CountDownLatch release = new CountDownLatch(1);
+                source.readEntered = entered;
+                source.readRelease = release;
+                var decoder = index.newReadableByteChannel(source, ResourceOwnership.BORROWED);
+                ByteBuffer firstTarget = ByteBuffer.allocate(2);
+                ByteBuffer secondTarget = ByteBuffer.allocateDirect(4);
+                var first = new FutureTask<>(() -> decoder.read(firstTarget));
+                var second = new FutureTask<>(() -> reposition
+                        ? decoder.position(4).position() : (long) decoder.read(secondTarget));
+                Thread firstThread = new Thread(first, "active-seekable-read");
+                Thread secondThread = new Thread(second, "queued-seekable-read");
+                firstThread.setDaemon(true);
+                secondThread.setDaemon(true);
+                firstThread.start();
+                try {
+                    assertTrue(entered.await(5, TimeUnit.SECONDS));
+                    secondThread.start();
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (secondThread.getState() != Thread.State.BLOCKED) {
+                        assertTrue(secondThread.isAlive(), "queued seekable operation returned early");
+                        assertTrue(System.nanoTime() < deadline, "queued seekable operation did not block");
+                        Thread.sleep(1L);
+                    }
+                    release.countDown();
+                    assertEquals(2, first.get(5, TimeUnit.SECONDS));
+                    assertEquals(4L, second.get(5, TimeUnit.SECONDS));
+                    assertArrayEquals(new byte[]{1, 2}, firstTarget.array());
+                    assertEquals(reposition ? 4L : 6L, decoder.position());
+                    if (!reposition) {
+                        byte[] actual = new byte[4];
+                        secondTarget.flip().get(actual);
+                        assertArrayEquals(new byte[]{3, 4, 5, 6}, actual);
+                    }
+                } finally {
+                    release.countDown();
+                    firstThread.join(TimeUnit.SECONDS.toMillis(5));
+                    secondThread.join(TimeUnit.SECONDS.toMillis(5));
+                    assertFalse(firstThread.isAlive());
+                    assertFalse(secondThread.isAlive());
+                    decoder.close();
+                }
+            }
+        }
+    }
+
+    /// Invokes a composite encoding operation for the seekable concurrency matrix.
+    private static CodecResult concurrentEncode(CompressingWritableByteChannel.FlushableFramed encoder,
+                                                ByteBuffer source, int mode) throws IOException {
+        return switch (mode) {
+            case 0 -> encoder.encode(source);
+            case 1 -> encoder.flush(source);
+            case 2 -> encoder.finishFrame(source);
+            default -> throw new AssertionError(mode);
+        };
+    }
+
     /// Verifies a seekable encoding remains sequentially compatible and exposes exact frame mappings.
     @Test
     @Timeout(10)
@@ -1094,6 +1250,18 @@ public final class ZstdSeekableCodecTest {
     /// Wraps an encoded file with configurable read, position-restoration, and close failures.
     @NotNullByDefault
     private static class FailingSeekableChannel implements SeekableByteChannel {
+        /// Optional notification that the first gated read has started.
+        private @Nullable CountDownLatch readEntered;
+
+        /// Optional release for the first gated read.
+        private @Nullable CountDownLatch readRelease;
+
+        /// Optional notification that the first gated write has started.
+        private @Nullable CountDownLatch writeEntered;
+
+        /// Optional release for the first gated write.
+        private @Nullable CountDownLatch writeRelease;
+
         /// The owned encoded file channel.
         private final SeekableByteChannel delegate;
 
@@ -1146,6 +1314,19 @@ public final class ZstdSeekableCodecTest {
         /// Reads normally except for one partial read at the configured frame origin.
         @Override
         public int read(ByteBuffer target) throws IOException {
+            if (readEntered != null) {
+                CountDownLatch entered = readEntered;
+                readEntered = null;
+                entered.countDown();
+                try {
+                    if (!java.util.Objects.requireNonNull(readRelease).await(5, TimeUnit.SECONDS)) {
+                        throw new IOException("Gated read was not released");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Gated read interrupted", exception);
+                }
+            }
             readCount++;
             if (failure != null && delegate.position() == failurePosition) {
                 Throwable pending = failure;
@@ -1171,6 +1352,19 @@ public final class ZstdSeekableCodecTest {
         /// Delegates writes except for an armed partial write failure.
         @Override
         public int write(ByteBuffer source) throws IOException {
+            if (writeEntered != null) {
+                CountDownLatch entered = writeEntered;
+                writeEntered = null;
+                entered.countDown();
+                try {
+                    if (!java.util.Objects.requireNonNull(writeRelease).await(5, TimeUnit.SECONDS)) {
+                        throw new IOException("Gated write was not released");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Gated write interrupted", exception);
+                }
+            }
             if (writeFailure != null) {
                 Throwable pending = writeFailure;
                 writeFailure = null;

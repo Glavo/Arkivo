@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.rar.internal;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -14,7 +15,7 @@ import java.util.Objects;
 
 /// Streams raw RAR5 LZ bytes through the format's standard post-processing filters.
 @NotNullByDefault
-final class Rar5OutputPipeline {
+final class Rar5OutputPipeline implements AutoCloseable {
     /// The delta filter identifier.
     static final int FILTER_DELTA = 0;
 
@@ -34,7 +35,10 @@ final class Rar5OutputPipeline {
     private static final int MAX_FILTER_COUNT = 8192;
 
     /// The size of the unfiltered output staging buffer.
-    private static final int OUTPUT_BUFFER_SIZE = 64 * 1024;
+    static final int OUTPUT_BUFFER_SIZE = 64 * 1024;
+
+    /// The owning session's work-array budget.
+    private final RarDecoderMemoryBudget memory;
 
     /// The caller-owned final output.
     private final OutputStream output;
@@ -49,7 +53,7 @@ final class Rar5OutputPipeline {
     private final ArrayDeque<Filter> filters = new ArrayDeque<>();
 
     /// Unfiltered bytes waiting for a bulk output write.
-    private final byte[] outputBuffer = new byte[OUTPUT_BUFFER_SIZE];
+    private byte[] outputBuffer;
 
     /// The number of staged bytes in {@link #outputBuffer}.
     private int outputBufferSize;
@@ -67,7 +71,8 @@ final class Rar5OutputPipeline {
     private int filterCount;
 
     /// Creates an output pipeline for one compressed entry.
-    Rar5OutputPipeline(OutputStream output, long entryStartPosition, long expectedSize) {
+    Rar5OutputPipeline(OutputStream output, long entryStartPosition, long expectedSize,
+                       RarDecoderMemoryBudget memory) throws IOException {
         this.output = Objects.requireNonNull(output, "output");
         if (entryStartPosition < 0L || expectedSize < 0L) {
             throw new IllegalArgumentException("Invalid RAR5 output range");
@@ -75,6 +80,14 @@ final class Rar5OutputPipeline {
         this.entryStartPosition = entryStartPosition;
         this.expectedSize = expectedSize;
         this.lastFilterEnd = entryStartPosition;
+        this.memory = Objects.requireNonNull(memory, "memory");
+        memory.reserve(OUTPUT_BUFFER_SIZE);
+        try {
+            outputBuffer = new byte[OUTPUT_BUFFER_SIZE];
+        } catch (RuntimeException | Error failure) {
+            memory.release(OUTPUT_BUFFER_SIZE);
+            throw failure;
+        }
     }
 
     /// Returns the absolute raw position immediately after bytes already accepted for this entry.
@@ -121,11 +134,17 @@ final class Rar5OutputPipeline {
             throw new IOException("RAR5 filter extends beyond the declared entry size");
         }
 
+        if (size != 0L) {
+            memory.reserve(size);
+            try {
+                filters.addLast(new Filter(start, (int) size, type, channels));
+            } catch (RuntimeException | Error failure) {
+                memory.release(size);
+                throw failure;
+            }
+        }
         filterCount++;
         lastFilterEnd = end;
-        if (size != 0L) {
-            filters.addLast(new Filter(start, (int) size, type, channels));
-        }
     }
 
     /// Accepts one raw LZ byte and emits it when any covering filter is complete.
@@ -135,7 +154,7 @@ final class Rar5OutputPipeline {
         }
 
         long position = rawPosition();
-        Filter filter = filters.peekFirst();
+        @Nullable Filter filter = filters.peekFirst();
         if (filter == null || position < filter.startPosition) {
             stage(value);
         } else {
@@ -145,14 +164,20 @@ final class Rar5OutputPipeline {
             filter.data[filter.filledSize++] = (byte) value;
             if (filter.filledSize == filter.data.length) {
                 flushStaged();
-                byte[] transformed = applyFilter(
-                        filter.type,
-                        filter.channels,
-                        filter.startPosition - entryStartPosition,
-                        filter.data
-                );
-                writeFinal(transformed, 0, transformed.length);
+                memory.reserve(filter.data.length);
+                try {
+                    byte[] transformed = applyFilter(
+                            filter.type,
+                            filter.channels,
+                            filter.startPosition - entryStartPosition,
+                            filter.data
+                    );
+                    writeFinal(transformed, 0, transformed.length);
+                } finally {
+                    memory.release(filter.data.length);
+                }
                 filters.removeFirst();
+                memory.release(filter.data.length);
             }
         }
         acceptedSize++;
@@ -172,6 +197,20 @@ final class Rar5OutputPipeline {
         if (writtenSize != expectedSize) {
             throw new IOException("RAR5 filter pipeline produced an invalid output size");
         }
+    }
+
+    /// Discards pending bytes and returns their budget without flushing or closing the caller's output.
+    /// Repeated calls have no effect; this pipeline must not be used after closing.
+    @Override
+    public void close() {
+        for (Filter filter : filters) {
+            memory.release(filter.data.length);
+        }
+        filters.clear();
+        int capacity = outputBuffer.length;
+        outputBuffer = new byte[0];
+        outputBufferSize = 0;
+        memory.release(capacity);
     }
 
     /// Applies one standard RAR5 filter and returns its final bytes.

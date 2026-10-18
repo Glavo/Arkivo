@@ -16,12 +16,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies bounded in-memory RAR3 descriptor bit and encoded-integer reads.
 @NotNullByDefault
 final class Rar3BitReaderTest {
-    /// Verifies reads are most-significant-bit first, bounded, and isolated from source-array mutation.
+    /// Verifies reads are most-significant-bit first and bounded by the borrowed byte array.
     @Test
-    void readsBoundedBitFieldsFromSnapshot() throws IOException {
+    void readsBoundedBitFields() throws IOException {
         byte[] bytes = {(byte) 0xb2, 0x34, 0x56, 0x78, (byte) 0x9a};
         Rar3BitReader reader = new Rar3BitReader(bytes);
-        bytes[0] = 0;
 
         assertEquals(40, reader.remainingBits());
         assertEquals(0, reader.readBits(0));

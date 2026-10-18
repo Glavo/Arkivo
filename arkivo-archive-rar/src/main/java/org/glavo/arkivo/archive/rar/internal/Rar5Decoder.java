@@ -3,7 +3,10 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -34,16 +37,26 @@ final class Rar5Decoder {
         return dictionarySize(dictionaryPower, dictionaryFraction) <= MAX_DICTIONARY_SIZE;
     }
 
-    /// Creates one stateful decoder session that can preserve RAR5 solid history.
-    static Session newSession() {
-        return new Session();
+    /// Creates a solid decoder session with byte limits for its window and accounted work arrays.
+    /// Either limit may be `UNLIMITED_SIZE`.
+    static Session newSession(long maximumWindowSize, long maximumMemorySize) {
+        if (maximumWindowSize < ArchiveReadLimits.UNLIMITED_SIZE) {
+            throw new IllegalArgumentException("maximumWindowSize must be UNLIMITED_SIZE or non-negative");
+        }
+        return new Session(maximumWindowSize, maximumMemorySize);
     }
 
     /// Retains the dictionary and Huffman state needed by sequential solid RAR5 entries.
     @NotNullByDefault
     static final class Session {
         /// The stateful Arkivo RAR5 LZ decompressor.
-        private final Rar5LzDecoder decoder = new Rar5LzDecoder();
+        private @Nullable Rar5LzDecoder decoder;
+
+        /// The budget shared by retained model data and per-entry work arrays.
+        private final RarDecoderMemoryBudget memory;
+
+        /// The configured history-window limit, or `UNLIMITED_SIZE`.
+        private final long maximumWindowSize;
 
         /// Whether this session has processed or invalidated an entry.
         private boolean initialized;
@@ -55,7 +68,9 @@ final class Rar5Decoder {
         private boolean released;
 
         /// Creates one decoder session.
-        private Session() {
+        private Session(long maximumWindowSize, long maximumMemorySize) {
+            this.maximumWindowSize = maximumWindowSize;
+            this.memory = new RarDecoderMemoryBudget(maximumMemorySize);
         }
 
         /// Decompresses one entry and returns its validated output size and CRC32.
@@ -90,10 +105,17 @@ final class Rar5Decoder {
             RarValidatingOutputStream decoderOutput =
                     new RarValidatingOutputStream("RAR5", output, unpackedSize);
             try {
+                long requiredWindowSize = dictionarySize(dictionaryPower, dictionaryFraction);
+                if (maximumWindowSize >= 0 && requiredWindowSize > maximumWindowSize) {
+                    throw new DecompressionWindowLimitException(maximumWindowSize, requiredWindowSize);
+                }
+                if (decoder == null) {
+                    decoder = new Rar5LzDecoder(memory);
+                }
                 decoder.decode(
                         input,
                         decoderOutput,
-                        Math.toIntExact(dictionarySize(dictionaryPower, dictionaryFraction)),
+                        Math.toIntExact(requiredWindowSize),
                         version7,
                         solid,
                         unpackedSize
@@ -103,9 +125,7 @@ final class Rar5Decoder {
                 historyAvailable = true;
                 return crc32;
             } catch (IOException | RuntimeException | Error exception) {
-                initialized = true;
-                historyAvailable = false;
-                decoder.invalidate();
+                invalidateHistory();
                 throw exception;
             }
         }
@@ -117,7 +137,7 @@ final class Rar5Decoder {
             }
             initialized = true;
             historyAvailable = false;
-            decoder.invalidate();
+            releaseDecoder();
         }
 
         /// Releases dictionary and filter buffers retained by this session.
@@ -128,7 +148,15 @@ final class Rar5Decoder {
             released = true;
             initialized = false;
             historyAvailable = false;
-            decoder.release();
+            releaseDecoder();
+        }
+
+        /// Discards the engine after its per-entry workspace has been released.
+        private void releaseDecoder() {
+            if (decoder != null) {
+                decoder.release();
+                decoder = null;
+            }
         }
     }
 }

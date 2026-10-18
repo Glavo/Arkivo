@@ -6,6 +6,8 @@ package org.glavo.arkivo.codec.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.channels.Channel;
@@ -160,9 +162,10 @@ final class InterruptibleChannelSupportTest {
         );
     }
 
-    /// Verifies a second data operation is rejected until the active operation has completed.
-    @Test
-    void rejectsConcurrentOperations() throws Exception {
+    /// Verifies a second operation waits and observes interruption only after gaining operation access.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void serializesConcurrentOperations(boolean interruptWaiting) throws Exception {
         TestInterruptibleChannel endpoint = new TestInterruptibleChannel();
         InterruptibleChannelSupport support = new InterruptibleChannelSupport(endpoint);
         CountDownLatch entered = new CountDownLatch(1);
@@ -182,17 +185,41 @@ final class InterruptibleChannelSupportTest {
         }, "interruptible-support-operation");
         worker.start();
 
+        CompletableFuture<Object> secondCompletion = new CompletableFuture<>();
+        AtomicInteger secondCalls = new AtomicInteger();
+        Thread second = new Thread(() -> {
+            try {
+                secondCompletion.complete(support.execute(() -> {
+                    secondCalls.incrementAndGet();
+                    return "second";
+                }, () -> {}));
+            } catch (Throwable failure) {
+                assertEquals(interruptWaiting, Thread.currentThread().isInterrupted());
+                secondCompletion.complete(failure);
+            }
+        }, "interruptible-support-queued-operation");
+        second.setDaemon(true);
         try {
             assertTrue(entered.await(TIMEOUT_SECONDS, TimeUnit.SECONDS));
-            IllegalStateException failure = assertThrows(
-                    IllegalStateException.class,
-                    () -> support.execute(() -> "second", () -> {
-                    })
-            );
-            assertEquals("Concurrent codec channel operations are not supported", failure.getMessage());
+            second.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
+            while (second.getState() != Thread.State.BLOCKED) {
+                assertTrue(second.isAlive(), "queued operation returned before the active operation");
+                assertTrue(System.nanoTime() < deadline, "queued operation did not block");
+                Thread.sleep(1L);
+            }
+            if (interruptWaiting) second.interrupt();
 
             release.countDown();
             assertEquals("completed", completion.get(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            Object secondResult = secondCompletion.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            assertEquals(interruptWaiting ? 0 : 1, secondCalls.get());
+            if (interruptWaiting) {
+                assertInstanceOf(ClosedByInterruptException.class, secondResult);
+                assertFalse(endpoint.isOpen());
+            } else {
+                assertEquals("second", secondResult);
+            }
             worker.join(TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS));
             assertFalse(worker.isAlive());
 
@@ -203,8 +230,23 @@ final class InterruptibleChannelSupportTest {
             release.countDown();
             endpoint.close();
             worker.join(TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS));
+            second.join(TimeUnit.SECONDS.toMillis(TIMEOUT_SECONDS));
             assertFalse(worker.isAlive(), "operation worker leaked");
+            assertFalse(second.isAlive(), "queued worker leaked");
         }
+    }
+
+    /// Rejects same-thread reentry without disturbing the surrounding operation.
+    @Test
+    void rejectsReentrantOperations() throws IOException {
+        var endpoint = new TestInterruptibleChannel();
+        var support = new InterruptibleChannelSupport(endpoint);
+        assertEquals("outer", support.execute(() -> {
+            assertThrows(IllegalStateException.class, () -> support.execute(() -> "inner", () -> {}));
+            return "outer";
+        }, () -> {}));
+        assertTrue(support.isOpen());
+        support.close(endpoint::close, () -> {});
     }
 
     /// Verifies a close nested inside its own graceful action is a no-op and later close retries remain possible.

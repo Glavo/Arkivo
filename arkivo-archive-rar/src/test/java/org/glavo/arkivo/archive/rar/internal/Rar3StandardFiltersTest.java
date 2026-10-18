@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
+
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -17,6 +19,34 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies native RAR3 standard-filter identification, transforms, and parameter validation.
 @NotNullByDefault
 final class Rar3StandardFiltersTest {
+    /// Reserves the output and shared audio scratch before filtering and returns only output ownership.
+    @Test
+    void accountsForAudioWorkspace() throws IOException {
+        byte[] code = codeWithCrc32(216, 0xbc85_e701L);
+        for (long maximum : new long[]{57, 58}) {
+            RarDecoderMemoryBudget memory = new RarDecoderMemoryBudget(maximum);
+            try (Rar3FilterProgram program = new Rar3FilterProgram(code, memory)) {
+                int[] registers = new int[7];
+                registers[0] = 2;
+                byte[] input = {1, 2, 3, 4, 5, 6};
+                if (maximum == 57) {
+                    DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                            () -> program.apply(input, registers, 1, new byte[0], 0));
+                    assertEquals(58, failure.requiredMemorySize());
+                    assertEquals(0, memory.used());
+                } else {
+                    byte[] result = program.apply(input, registers, 1, new byte[0], 0);
+                    assertEquals(6, memory.used());
+                    assertArrayEquals(Rar3StandardFilters.apply(5, registers, input, 0), result);
+                    memory.release(result.length);
+                    registers[0] = 0;
+                    assertThrows(IOException.class, () -> program.apply(input, registers, 1, new byte[0], 0));
+                    assertEquals(0, memory.used());
+                }
+            }
+            assertEquals(0, memory.used());
+        }
+    }
     /// Verifies every standard-filter fingerprint is recognized at its prescribed bytecode length.
     @Test
     void identifiesStandardFilterFingerprints() {

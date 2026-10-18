@@ -1471,12 +1471,13 @@ public final class ArArchiveIntegrationTest {
     public void rejectsDrivePrefixesExposedByFileSystemNormalization() throws IOException {
         for (String path : new String[]{"./C:/escape", ".\\C:\\escape", "././C:escape", ".//c:/escape"}) {
             byte[] bytes = archive(member(path + "/", 0, 0, 0, 0100644, new byte[0]));
+            assertNextFailure(bytes, "AR member path must be relative");
             Path archivePath = createTemporaryArchivePath("ar-normalized-drive-");
             try {
                 Files.write(archivePath, bytes);
-                assertEquals("AR entry path must be relative",
+                assertEquals("AR member path must be relative",
                         assertThrows(IOException.class, () -> ArArkivoFileSystem.open(archivePath).close()).getMessage());
-                assertEquals("AR entry path must be relative",
+                assertEquals("AR member path must be relative",
                         assertThrows(IOException.class, () -> ArArkivoFileSystem.update(archivePath).close()).getMessage());
                 assertArrayEquals(bytes, Files.readAllBytes(archivePath));
             } finally {

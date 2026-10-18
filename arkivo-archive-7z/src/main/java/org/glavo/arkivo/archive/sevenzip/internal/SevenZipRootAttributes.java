@@ -84,13 +84,13 @@ final class SevenZipRootAttributes implements PosixFileAttributes {
     /// Returns the synthesized owner principal for the root directory.
     @Override
     public UserPrincipal owner() {
-        return SevenZipPosixSupport.owner();
+        return SevenZipPosixSupport.DEFAULT_OWNER;
     }
 
     /// Returns the synthesized group principal for the root directory.
     @Override
     public GroupPrincipal group() {
-        return SevenZipPosixSupport.group();
+        return SevenZipPosixSupport.DEFAULT_GROUP;
     }
 
     /// Returns synthesized POSIX permissions for the root directory.

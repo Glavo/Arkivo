@@ -8,7 +8,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.util.Objects;
 import java.util.function.Function;
 
-/// Associates an NIO environment key with its value type and conversion rule.
+/// Associates an NIO environment key with its conversion rule.
 ///
 /// @param <T> the value type accepted by this option
 @NotNullByDefault
@@ -16,16 +16,12 @@ public final class ArchiveOption<T> {
     /// The stable NIO environment key used by this option.
     private final String key;
 
-    /// The typed value class accepted by this option.
-    private final Class<T> type;
-
     /// The converter used to validate and normalize raw option values.
     private final Function<Object, T> converter;
 
     /// Creates a typed option descriptor.
-    private ArchiveOption(String key, Class<T> type, Function<Object, T> converter) {
+    private ArchiveOption(String key, Function<Object, T> converter) {
         this.key = validateKey(key);
-        this.type = Objects.requireNonNull(type, "type");
         this.converter = Objects.requireNonNull(converter, "converter");
     }
 
@@ -37,7 +33,8 @@ public final class ArchiveOption<T> {
     /// @return an option that accepts instances of `type`
     /// @throws IllegalArgumentException if `key` is invalid
     public static <T> ArchiveOption<T> of(String key, Class<T> type) {
-        return new ArchiveOption<>(key, type, value -> {
+        Objects.requireNonNull(type, "type");
+        return new ArchiveOption<>(key, value -> {
             if (type.isInstance(value)) {
                 return type.cast(value);
             }
@@ -49,16 +46,14 @@ public final class ArchiveOption<T> {
     ///
     /// @param <T> the option value type
     /// @param key the dot-separated environment key, without empty segments or whitespace
-    /// @param type the runtime value class
-    /// @param converter the raw-value validator and normalizer
+    /// @param converter the raw-value validator and normalizer; must return a non-null value
     /// @return an option using `converter`
     /// @throws IllegalArgumentException if `key` is invalid
     public static <T> ArchiveOption<T> of(
             String key,
-            Class<T> type,
             Function<Object, T> converter
     ) {
-        return new ArchiveOption<>(key, type, converter);
+        return new ArchiveOption<>(key, converter);
     }
 
     /// Returns the stable NIO environment key used by this option.
@@ -70,14 +65,10 @@ public final class ArchiveOption<T> {
 
     /// Converts and validates one raw value.
     T convert(Object value) {
-        Object converted = Objects.requireNonNull(
+        return Objects.requireNonNull(
                 converter.apply(Objects.requireNonNull(value, "value")),
                 "converter result"
         );
-        if (!type.isInstance(converted)) {
-            throw new IllegalStateException("Converter for " + key + " returned " + converted.getClass().getName());
-        }
-        return type.cast(converted);
     }
 
     /// Returns the stable NIO environment key used by this option.

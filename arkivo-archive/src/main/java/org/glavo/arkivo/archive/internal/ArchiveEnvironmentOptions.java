@@ -24,7 +24,6 @@ public final class ArchiveEnvironmentOptions {
     public static final ArchiveOption<ArkivoFileSystemThreadSafety> THREAD_SAFETY =
             ArchiveOption.of(
                     "arkivo.threadSafety",
-                    ArkivoFileSystemThreadSafety.class,
                     ArchiveEnvironmentOptions::threadSafetyValue
             );
 
@@ -32,7 +31,6 @@ public final class ArchiveEnvironmentOptions {
     public static final ArchiveOption<Set<OpenOption>> OPEN_OPTIONS =
             ArchiveOption.of(
                     "arkivo.openOptions",
-                    openOptionsType(),
                     ArchiveEnvironmentOptions::openOptionsValue
             );
 
@@ -62,7 +60,6 @@ public final class ArchiveEnvironmentOptions {
     ) {
         return ArchiveOption.of(
                 key,
-                ArchiveMetadataDecoder.class,
                 value -> metadataDecoderValue(value, key)
         );
     }
@@ -114,11 +111,5 @@ public final class ArchiveEnvironmentOptions {
             throw new IllegalArgumentException("Expected OpenOption, OpenOption[], or Collection for key: arkivo.openOptions");
         }
         return Set.copyOf(options);
-    }
-
-    /// Returns the erased open-option set type.
-    @SuppressWarnings("unchecked")
-    private static Class<Set<OpenOption>> openOptionsType() {
-        return (Class<Set<OpenOption>>) (Class<?>) Set.class;
     }
 }

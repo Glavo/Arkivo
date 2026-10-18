@@ -11,15 +11,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
 
@@ -28,10 +35,133 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
 /// Tests CRC-32 validating 7z entry byte channels.
 @NotNullByDefault
 public final class SevenZipCRC32ByteChannelTest {
+    /// Cancellation never races a second validation read against an active read or graceful drain.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void cancelsWithoutDrainingAndRetriesPhysicalClose(int operation) throws Exception {
+        for (boolean failClose : new boolean[]{false, true}) {
+            byte[] bytes = {1, 2, 3};
+            var physical = new GatedChannel(bytes, failClose);
+            var channel = new SevenZipCRC32ByteChannel(physical, bytes.length, crc32(bytes));
+            var active = new FutureTask<>(() -> {
+                if (operation == 2) channel.close();
+                else channel.read(ByteBuffer.allocate(1));
+                return true;
+            });
+            startTask(active);
+            try {
+                assertTrue(physical.entered.await(5, TimeUnit.SECONDS));
+                var cancel = new FutureTask<>(() -> {
+                    if (failClose) {
+                        assertThrows(IOException.class, () -> {
+                            if (operation == 0) channel.close();
+                            else channel.forceClose();
+                        });
+                    }
+                    if (operation == 0) channel.close();
+                    else channel.forceClose();
+                    return true;
+                });
+                startTask(cancel);
+                assertTrue(cancel.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(AsynchronousCloseException.class,
+                        assertThrows(ExecutionException.class, () -> active.get(5, TimeUnit.SECONDS)).getCause());
+                assertEquals(1, physical.readCalls.get());
+                assertFalse(channel.isOpen());
+                channel.close();
+                assertEquals(failClose ? 2 : 1, physical.closeCount());
+            } finally {
+                physical.release.countDown();
+                channel.close();
+            }
+        }
+    }
+
+    /// Two reads cannot disable CRC validation by both observing the same old validation position.
+    @Test
+    void serializesSequentialReads() throws Exception {
+        byte[] bytes = {1, 2, 3};
+        var physical = new GatedChannel(bytes, false);
+        var channel = new SevenZipCRC32ByteChannel(physical, bytes.length, crc32(bytes));
+        ByteBuffer first = ByteBuffer.allocate(1);
+        ByteBuffer second = ByteBuffer.allocateDirect(1);
+        var read = new FutureTask<>(() -> channel.read(first));
+        startTask(read);
+        try {
+            assertTrue(physical.entered.await(5, TimeUnit.SECONDS));
+            var next = new FutureTask<>(() -> channel.read(second));
+            Thread waiter = startTask(next);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (waiter.isAlive() && waiter.getState() != Thread.State.WAITING && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(Thread.State.WAITING, waiter.getState());
+            assertEquals(1, physical.readCalls.get());
+            physical.release.countDown();
+            assertEquals(1, read.get(5, TimeUnit.SECONDS));
+            assertEquals(1, next.get(5, TimeUnit.SECONDS));
+            assertEquals(1, first.get(0));
+            assertEquals(2, second.get(0));
+            channel.close();
+            assertEquals(3, physical.readCalls.get());
+        } finally {
+            physical.release.countDown();
+            channel.close();
+        }
+    }
+
+    /// Starts a daemon worker whose completion is checked by the test.
+    private static Thread startTask(FutureTask<?> task) {
+        Thread thread = new Thread(task, "7z-crc-channel-test");
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
+    }
+
+    /// Pauses the first data read after copying bytes until release or successful physical close.
+    @NotNullByDefault
+    private static final class GatedChannel extends MemorySeekableByteChannel {
+        /// Signals the blocked read.
+        private final CountDownLatch entered = new CountDownLatch(1);
+        /// Releases the blocked read.
+        private final CountDownLatch release = new CountDownLatch(1);
+        /// Counts calls that must not overlap during cancellation.
+        private final AtomicInteger readCalls = new AtomicInteger();
+
+        /// Creates a source with an optional first-close failure.
+        private GatedChannel(byte[] bytes, boolean failClose) {
+            super(bytes, failClose);
+        }
+
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            int count = super.read(destination);
+            if (readCalls.incrementAndGet() == 1) {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) throw new IOException("Timed out waiting for source close");
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(exception);
+                }
+                if (!isOpen()) throw new AsynchronousCloseException();
+            }
+            return count;
+        }
+
+        @Override
+        public void close() throws IOException {
+            super.close();
+            release.countDown();
+        }
+    }
+
     /// Combines failures, delivered-byte counts, and direct versus bounded archive sources.
     private static Stream<Arguments> partialReadCases() {
         return Stream.of(
@@ -297,7 +427,7 @@ public final class SevenZipCRC32ByteChannelTest {
 
     /// Provides an in-memory read-only seekable byte channel for tests.
     @NotNullByDefault
-    private static final class MemorySeekableByteChannel implements SeekableByteChannel {
+    private static class MemorySeekableByteChannel implements SeekableByteChannel {
         /// The channel content.
         private final byte[] bytes;
 
@@ -317,7 +447,7 @@ public final class SevenZipCRC32ByteChannelTest {
         private final @Nullable IOException closeFailure;
 
         /// Whether this channel is open.
-        private boolean open = true;
+        private volatile boolean open = true;
 
         /// The number of close calls that should fail without closing this channel.
         private int closeFailures;
@@ -441,7 +571,7 @@ public final class SevenZipCRC32ByteChannelTest {
         }
 
         /// Returns the number of close calls.
-        private int closeCount() {
+        final int closeCount() {
             return closeCount;
         }
 

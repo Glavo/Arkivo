@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -223,9 +224,10 @@ public final class ArchiveSliceChannelTest {
         assertEquals(1, source.closeCount());
     }
 
-    /// Verifies a file-backed slice retains interruptible closure through nested range views.
-    @Test
-    public void preservesFileChannelInterruption() throws IOException {
+    /// Preserves pre-interruption through nested ranges, including reads that need no physical data.
+    @ParameterizedTest
+    @CsvSource({"0, 1", "0, 0", "1, 1", "1, 0", "2, 1"})
+    public void preservesFileChannelInterruption(long position, int remaining) throws IOException {
         Path path = temporaryDirectory.resolve("slice.bin");
         Files.write(path, new byte[]{1, 2, 3});
         FileChannel source = FileChannel.open(path, StandardOpenOption.READ);
@@ -233,7 +235,8 @@ public final class ArchiveSliceChannelTest {
              SeekableByteChannel inner = ArchiveSliceChannel.open(outer, 1, 1)) {
             assertInstanceOf(InterruptibleChannel.class, outer);
             assertInstanceOf(InterruptibleChannel.class, inner);
-            ByteBuffer target = ByteBuffer.allocate(1);
+            inner.position(position);
+            ByteBuffer target = ByteBuffer.allocate(remaining);
             Thread.currentThread().interrupt();
             try {
                 assertThrows(ClosedByInterruptException.class, () -> inner.read(target));
@@ -246,6 +249,27 @@ public final class ArchiveSliceChannelTest {
             assertFalse(outer.isOpen());
             assertFalse(inner.isOpen());
             assertThrows(ClosedChannelException.class, inner::position);
+        }
+    }
+
+    /// Leaves the interrupt flag and plain source unchanged when an empty or EOF read needs no physical I/O.
+    @ParameterizedTest
+    @CsvSource({"0, 0, 0", "1, 1, -1", "2, 1, -1"})
+    public void preservesPlainSourcePreInterruption(long position, int remaining, int expected) throws IOException {
+        try (SeekableByteChannel channel = ArchiveSliceChannel.open(
+                new ReadOnlyByteArrayChannel(new byte[]{1}), 0, 1)) {
+            channel.position(position);
+            ByteBuffer target = ByteBuffer.allocate(remaining);
+            Thread.currentThread().interrupt();
+            try {
+                assertEquals(expected, channel.read(target));
+                assertTrue(Thread.currentThread().isInterrupted());
+                assertTrue(channel.isOpen());
+                assertEquals(position, channel.position());
+                assertEquals(0, target.position());
+            } finally {
+                Thread.interrupted();
+            }
         }
     }
 

@@ -352,7 +352,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
         try (Operation ignored = beginReadOperation()) {
-            return ArkivoPathMatchers.create(syntaxAndPattern, '/');
+            return ArkivoPathMatchers.create(syntaxAndPattern);
         }
     }
 
@@ -923,37 +923,58 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                 }
             }
         }
-        resolveRedirectionSizes(nodes);
+        resolveRedirections(nodes);
         ArchiveReadLimits limits = options.common().limits();
         ArkivoReadLimitTracker logicalLimits = ArkivoReadLimitTracker.fromLimits(
-                ArchiveReadLimits.UNLIMITED_SIZE, limits.maximumEntrySize(), limits.maximumTotalEntrySize());
+                ArchiveReadLimits.builder()
+                        .maximumEntrySize(limits.maximumEntrySize())
+                        .maximumTotalEntrySize(limits.maximumTotalEntrySize())
+                        .build());
         for (Node node : nodes.values()) {
             logicalLimits.acceptEntry(node.path(), node.logicalSize);
         }
         return nodes;
     }
 
-    /// Resolves redirected entry sizes after every possible target has been indexed.
-    private static void resolveRedirectionSizes(Map<String, Node> nodes) {
+    /// Resolves sizes and hard-link identities after every possible target has been indexed.
+    private static void resolveRedirections(Map<String, Node> nodes) {
         Set<Node> resolved = new LinkedHashSet<>();
+        Set<Node> invalid = new LinkedHashSet<>();
         Set<Node> chain = new LinkedHashSet<>();
+        ArrayList<Node> orderedChain = new ArrayList<>();
         for (Node node : nodes.values()) {
             chain.clear();
+            orderedChain.clear();
             @Nullable Node current = node;
             while (current != null && !current.directory() && !resolved.contains(current)
                     && current.redirectionTarget() != null && chain.add(current)) {
+                orderedChain.add(current);
                 current = nodes.get(current.redirectionTarget());
             }
-            long size = current == null || current.directory() || chain.contains(current)
-                    ? RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE : current.logicalSize;
-            for (Node redirected : chain) {
+            // A processed chain may still have failed; later prefixes must inherit that failure.
+            boolean valid = current != null && !current.directory() && !chain.contains(current)
+                    && !invalid.contains(current);
+            long size = valid ? current.logicalSize : RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE;
+            @Nullable Object fileKey = valid ? current.attributes().fileKey() : null;
+            for (int index = orderedChain.size() - 1; index >= 0; index--) {
+                Node redirected = orderedChain.get(index);
                 redirected.logicalSize = size;
-                if (size != RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
-                    redirected.setAttributes(attributesWithResolvedSize(redirected.attributes(), size));
+                if (valid) {
+                    RarEntryAttributes attributes = redirected.attributes();
+                    // File copies share bytes, not identity. Hard links to a copy identify that copy.
+                    if (attributes.redirectionType() == RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY) {
+                        fileKey = attributes.fileKey();
+                    }
+                    redirected.setAttributes(new RarEntryAttributes(attributes,
+                            size == RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE ? attributes.unpackedSize() : size,
+                            Objects.requireNonNull(fileKey)));
                 }
             }
             resolved.addAll(chain);
             resolved.add(node);
+            if (!valid) {
+                invalid.addAll(chain);
+            }
         }
     }
     /// Returns whether an entry redirects content to another archive member.
@@ -984,37 +1005,6 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             start = end + 1;
         }
         return hasName ? normalizeEntryPath(target.replace('\\', '/')) : null;
-    }
-
-    /// Returns an attribute snapshot with a resolved regular file size.
-    private static RarEntryAttributes attributesWithResolvedSize(RarEntryAttributes attributes, long size) {
-        return new RarEntryAttributes(
-                attributes.path(),
-                attributes.isDirectory(),
-                attributes.isSymbolicLink(),
-                attributes.isOther(),
-                attributes.linkName(),
-                attributes.redirectionType(),
-                attributes.redirectionFlags(),
-                attributes.redirectionTarget(),
-                attributes.userName(),
-                attributes.groupName(),
-                attributes.userId(),
-                attributes.groupId(),
-                attributes.hostOs(),
-                attributes.fileAttributes(),
-                attributes.compressionMethod(),
-                attributes.packedSize(),
-                size,
-                attributes.dataCrc32(),
-                attributes.blake2spHash(),
-                attributes.isEncrypted(),
-                attributes.continuesFromPreviousVolume(),
-                attributes.continuesInNextVolume(),
-                attributes.lastModifiedTime(),
-                attributes.creationTime(),
-                attributes.lastAccessTime()
-        );
     }
 
     /// Adds implicit parent directory nodes.
@@ -1070,6 +1060,9 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             if (!name.isEmpty() && !".".equals(name)) {
                 if ("..".equals(name)) {
                     throw new IOException("RAR entry path must not contain ..");
+                }
+                if (normalized.isEmpty() && name.length() >= 2 && name.charAt(1) == ':') {
+                    throw new IOException("RAR entry path must be relative");
                 }
                 if (!normalized.isEmpty()) {
                     normalized.append('/');

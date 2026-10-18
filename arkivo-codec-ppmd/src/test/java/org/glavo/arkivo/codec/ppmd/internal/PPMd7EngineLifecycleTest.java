@@ -12,6 +12,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
@@ -32,6 +33,113 @@ final class PPMd7EngineLifecycleTest {
 
     /// Model arena size used by direct engine instances.
     private static final long MEMORY_SIZE = 1L << 20;
+
+    /// Accounts for retained capacity and simultaneous old/new arenas across repeated initialization.
+    @Test
+    void accountsForInitializationPeaks() throws IOException {
+        PPMd7Model model = new PPMd7Model(new PPMd7BufferRangeDecoder());
+        assertEquals(35_228, model.retainedMemorySize());
+        long[][] requests = {
+                {2_048, 37_292, 37_292}, {2_049, 37_292, 37_292},
+                {2_052, 39_368, 37_304}, {4_096, 41_420, 39_344},
+                {2_048, 39_344, 39_344}, {8_192, 47_552, 43_436},
+                {1_048_576, 1_092_032, 1_083_824}, {2_097_152, 3_180_992, 2_132_396}
+        };
+        for (long[] request : requests) {
+            long retained = model.retainedMemorySize();
+            assertEquals(request[1], model.initializationPeakMemorySize(true, 4, request[0]));
+            assertEquals(retained, model.retainedMemorySize());
+            model.initialize(true, 4, request[0]);
+            assertEquals(request[2], model.retainedMemorySize());
+            assertEquals(request[2], model.initializationPeakMemorySize(false, -1, -1));
+            model.initialize(false, -1, -1);
+            model.reset();
+            assertEquals(request[2], model.retainedMemorySize());
+            assertThrows(IOException.class, () -> model.initializationPeakMemorySize(false, 4, 2_048));
+        }
+        IOException preview = assertThrows(IOException.class,
+                () -> model.initializationPeakMemorySize(true, 1, -1));
+        IOException actual = assertThrows(IOException.class, () -> model.initialize(true, 1, -1));
+        assertEquals(actual.getMessage(), preview.getMessage());
+    }
+
+    /// Compares the declared payload with the actual primitive arrays around arena alignment boundaries.
+    @ParameterizedTest
+    @ValueSource(longs = {2_048, 2_049, 2_051, 2_052, 2_063, 2_064, 1_048_576})
+    void accountsForAllocatedModelArrays(long arenaSize) throws Exception {
+        PPMd7Model model = new PPMd7Model(new PPMd7BufferRangeDecoder());
+        var allocatorField = PPMd7Model.class.getDeclaredField("allocator");
+        allocatorField.setAccessible(true);
+        Object allocator = allocatorField.get(model);
+        assertEquals(35_228, primitiveArrayPayload(model) + primitiveArrayPayload(allocator));
+        model.initialize(true, MAXIMUM_ORDER, arenaSize);
+        assertEquals(PPMd7Model.requiredMemorySize(arenaSize),
+                primitiveArrayPayload(model) + primitiveArrayPayload(allocator));
+        model.reset();
+        assertEquals(PPMd7Model.requiredMemorySize(arenaSize),
+                primitiveArrayPayload(model) + primitiveArrayPayload(allocator));
+    }
+
+    /// Checks size calculation without allocating large arenas and rejects out-of-range requests.
+    @Test
+    void calculatesModelMemoryWithoutAllocation() throws IOException {
+        assertEquals(37_292, PPMd7Model.requiredMemorySize(2_048));
+        assertEquals(1_083_824, PPMd7Model.requiredMemorySize(1L << 20));
+        assertEquals(2_132_396, PPMd7Model.requiredMemorySize(2L << 20));
+        assertEquals(268_470_704, PPMd7Model.requiredMemorySize(256L << 20));
+        for (long invalid : new long[]{-1, 0, 2_047, (256L << 20) + 1, Long.MAX_VALUE}) {
+            assertThrows(IOException.class, () -> PPMd7Model.requiredMemorySize(invalid));
+        }
+    }
+
+    /// Preserves allocated capacity on shrink and leaves the existing arena intact after invalid requests.
+    @Test
+    void preservesAllocatorOnRejectedInitialization() throws Exception {
+        PPMd7Allocator allocator = new PPMd7Allocator();
+        allocator.initialize(4_096);
+        allocator.setSymbol(1, 123);
+        allocator.setFrequency(1, 17);
+        allocator.setSuccessor(1, 456);
+        long retained = primitiveArrayPayload(allocator);
+        for (long invalid : new long[]{2_047, (256L << 20) + 1, Long.MAX_VALUE}) {
+            assertThrows(IOException.class, () -> allocator.initialize(invalid));
+            assertEquals(retained, primitiveArrayPayload(allocator));
+            assertEquals(123, allocator.symbol(1));
+            assertEquals(17, allocator.frequency(1));
+            assertEquals(456, allocator.successor(1));
+        }
+        allocator.initialize(2_048);
+        allocator.restart();
+        assertEquals(retained, primitiveArrayPayload(allocator));
+        allocator.initialize(8_192);
+        allocator.restart();
+        assertEquals(PPMd7Allocator.FIXED_MEMORY_SIZE + PPMd7Allocator.arenaMemorySize(8_192),
+                primitiveArrayPayload(allocator));
+    }
+
+    /// Sums instance-owned array payloads independently of the production size formula.
+    private static long primitiveArrayPayload(Object holder) throws IllegalAccessException {
+        long total = 0;
+        for (var field : holder.getClass().getDeclaredFields()) {
+            if (!Modifier.isStatic(field.getModifiers()) && field.getType().isArray()) {
+                field.setAccessible(true);
+                total += arrayPayload(field.get(holder));
+            }
+        }
+        return total;
+    }
+
+    /// Counts primitive elements, excluding reference arrays and non-array objects.
+    private static long arrayPayload(@Nullable Object value) {
+        if (value instanceof byte[] bytes) return bytes.length;
+        if (value instanceof int[] values) return (long) values.length * Integer.BYTES;
+        if (value instanceof Object[] arrays) {
+            long total = 0;
+            for (@Nullable Object array : arrays) total += arrayPayload(array);
+            return total;
+        }
+        return 0;
+    }
 
     /// Reuses the model on reset but drops its arena on close, independently of garbage-collection scheduling.
     @ParameterizedTest

@@ -14,6 +14,7 @@ import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -66,6 +67,191 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests end-to-end TAR streaming, writing, file-system, update, metadata, and corruption behavior.
 @NotNullByDefault
 public final class TarArchiveIntegrationTest {
+    /// Device identifiers survive indexing, attribute mutations, renaming, and complete archive rewrites.
+    @ParameterizedTest
+    @ValueSource(strings = {"ustar", "gnu", "xstar", "pax"})
+    void preservesDeviceNumbers(String dialect, @TempDir Path directory) throws IOException {
+        for (int type : new int[]{'3', '4'}) {
+            for (long major : new long[]{0L, 1L, (1L << 21) - 1, 1L << 21, 1L << 40}) {
+                long minor = dialect.equals("pax") ? Long.MAX_VALUE : major + 1;
+                var output = new ByteArrayOutputStream();
+                if (dialect.equals("pax")) {
+                    writePaxHeader(output, Map.of("SCHILY.devmajor", Long.toString(major),
+                            "SCHILY.devminor", Long.toString(minor)));
+                }
+                output.write(deviceHeader(dialect, type, dialect.equals("pax") ? 7 : major,
+                        dialect.equals("pax") ? 8 : minor));
+                output.write(new byte[1024]);
+                Path archive = directory.resolve("device.tar");
+                Files.write(archive, output.toByteArray());
+                try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+                    assertTrue(reader.next());
+                    assertDeviceNumbers(reader.readAttributes(TarArkivoEntryAttributes.class), major, minor);
+                    assertFalse(reader.next());
+                }
+                try (var fs = TarArkivoFileSystem.update(archive)) {
+                    Path entry = fs.getPath("device");
+                    TarArkivoEntryAttributes snapshot = Files.readAttributes(entry, TarArkivoEntryAttributes.class);
+                    assertDeviceNumbers(snapshot, major, minor);
+                    Files.writeString(fs.getPath("unrelated"), "content");
+                    FileTime time = FileTime.fromMillis(1234);
+                    for (var attribute : Map.<String, Object>of(
+                            "tar:userId", 123L, "tar:groupId", 456L, "tar:mode", 0600,
+                            "tar:userName", "owner", "tar:groupName", "group",
+                            "basic:lastModifiedTime", time, "basic:lastAccessTime", time, "basic:creationTime", time,
+                            "tar:recordedStatusChangeTime", time, "tar:recordedLastAccessTime", time).entrySet()) {
+                        Files.setAttribute(entry, attribute.getKey(), attribute.getValue());
+                        assertDeviceNumbers(Files.readAttributes(entry, TarArkivoEntryAttributes.class), major, minor);
+                    }
+                    Files.setAttribute(entry, "tar:recordedCreationTime", time);
+                    Files.setPosixFilePermissions(entry, PosixFilePermissions.fromString("rw-r-----"));
+                    Files.move(entry, fs.getPath("renamed"));
+                    assertDeviceNumbers(snapshot, major, minor);
+                    assertEquals(Map.of("deviceMajor", major, "deviceMinor", minor),
+                            Files.readAttributes(fs.getPath("renamed"), "tar:deviceMajor,deviceMinor"));
+                }
+                try (var fs = TarArkivoFileSystem.open(archive)) {
+                    TarArkivoEntryAttributes attributes = Files.readAttributes(fs.getPath("renamed"), TarArkivoEntryAttributes.class);
+                    assertDeviceNumbers(attributes, major, minor);
+                    assertEquals((byte) type, attributes.typeFlag());
+                    assertEquals("content", Files.readString(fs.getPath("unrelated")));
+                    assertEquals(major, Files.readAttributes(fs.getPath("renamed"), "tar:*").get("deviceMajor"));
+                }
+                byte[] rewritten = Files.readAllBytes(archive);
+                boolean foundDevice = false;
+                for (int offset = 0; offset < rewritten.length; offset += 512) {
+                    if (rewritten[offset + 156] == type) {
+                        foundDevice = true;
+                        assertEquals(major < (1L << 21) ? major : 0L, Long.parseLong(
+                                new String(rewritten, offset + 329, 7, StandardCharsets.US_ASCII), 8));
+                        assertEquals(minor < (1L << 21) ? minor : 0L, Long.parseLong(
+                                new String(rewritten, offset + 337, 7, StandardCharsets.US_ASCII), 8));
+                    }
+                }
+                assertTrue(foundDevice);
+            }
+        }
+    }
+
+    /// Local PAX device fields override global values individually, while local deletions restore fixed values.
+    @Test
+    void appliesPaxDeviceNumberPrecedence() throws IOException {
+        var output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of("SCHILY.devmajor", "17", "SCHILY.devminor", "23"));
+        writePaxHeader(output, Map.of("SCHILY.devmajor", "31"));
+        output.write(deviceHeader("ustar", '3', 1, 3));
+        writePaxHeader(output, Map.of("SCHILY.devmajor", "", "SCHILY.devminor", ""));
+        output.write(deviceHeader("ustar", '4', 2, 4));
+        output.write(deviceHeader("ustar", '3', 5, 6));
+        output.write(new byte[1024]);
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            for (long[] expected : new long[][]{{31, 23}, {2, 4}, {17, 23}}) {
+                assertTrue(reader.next());
+                assertDeviceNumbers(reader.readAttributes(TarArkivoEntryAttributes.class), expected[0], expected[1]);
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Reserved bytes in non-device and V7 headers do not become device numbers.
+    @ParameterizedTest
+    @ValueSource(strings = {"regular", "v7", "unknown", "blank", "nul"})
+    void ignoresInapplicableDeviceFields(String kind, @TempDir Path directory) throws IOException {
+        byte[] header = deviceHeader("ustar", kind.equals("regular") ? '0' : '3', 1, 3);
+        java.util.Arrays.fill(header, 329, 345, switch (kind) {
+            case "blank" -> (byte) ' ';
+            case "nul" -> (byte) 0;
+            default -> (byte) '?';
+        });
+        if (kind.equals("v7")) java.util.Arrays.fill(header, 257, 265, (byte) 0);
+        if (kind.equals("unknown")) header[262] = '?';
+        updateHeaderChecksum(header);
+        var output = new ByteArrayOutputStream();
+        if (kind.equals("regular")) writePaxHeader(output, Map.of("SCHILY.devmajor", "invalid", "SCHILY.devminor", "-1"));
+        output.write(header);
+        output.write(new byte[1024]);
+        long expected = kind.equals("regular") ? TarArkivoEntryAttributes.NO_DEVICE_NUMBER : 0L;
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals(expected, attributes.deviceMajor());
+            assertEquals(expected, attributes.deviceMinor());
+            assertFalse(reader.next());
+        }
+        Path archive = directory.resolve("defaults.tar");
+        Files.write(archive, output.toByteArray());
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            Files.writeString(fs.getPath("unrelated"), "content");
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            var attributes = Files.readAttributes(fs.getPath("device"), TarArkivoEntryAttributes.class);
+            assertEquals(expected, attributes.deviceMajor());
+            assertEquals(expected, attributes.deviceMinor());
+        }
+    }
+
+    /// Negative, overflowing, or malformed PAX device numbers are rejected rather than truncated.
+    @ParameterizedTest
+    @ValueSource(strings = {"-1", "9223372036854775808", "invalid"})
+    void rejectsInvalidPaxDeviceNumbers(String invalid) throws IOException {
+        for (String key : List.of("SCHILY.devmajor", "SCHILY.devminor")) {
+            var output = new ByteArrayOutputStream();
+            writePaxHeader(output, Map.of(key, invalid));
+            output.write(deviceHeader("ustar", '3', 1, 3));
+            output.write(new byte[1024]);
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+                assertThrows(IOException.class, reader::next);
+            }
+        }
+    }
+
+    /// Invalid octal and negative base-256 device fields are rejected independently of other numeric fields.
+    @ParameterizedTest
+    @ValueSource(ints = {329, 337})
+    void rejectsInvalidFixedDeviceNumbers(int offset) throws IOException {
+        for (byte invalid : new byte[]{'?', (byte) 0xff}) {
+            byte[] header = deviceHeader("ustar", '3', 1, 3);
+            java.util.Arrays.fill(header, offset, offset + 8, invalid);
+            updateHeaderChecksum(header);
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(header))) {
+                assertThrows(IOException.class, reader::next);
+            }
+        }
+    }
+
+    /// Checks identifiers without treating a device as a regular file.
+    private static void assertDeviceNumbers(TarArkivoEntryAttributes attributes, long major, long minor) {
+        assertTrue(attributes.isOther());
+        assertEquals(major, attributes.deviceMajor());
+        assertEquals(minor, attributes.deviceMinor());
+    }
+
+    /// Builds a device header using fixed octal fields or GNU base-256 for larger identifiers.
+    private static byte[] deviceHeader(String dialect, int type, long major, long minor) throws IOException {
+        var output = new ByteArrayOutputStream();
+        writeHeader(output, "device", 0600, 0, 0, 0, type, "", "", "");
+        byte[] header = output.toByteArray();
+        if (dialect.equals("gnu")) {
+            writeRawString(header, 257, 8, "ustar  \0");
+        } else if (dialect.equals("xstar")) {
+            writeRawString(header, 508, 4, "tar\0");
+        }
+        if (major < (1L << 21)) writeOctal(header, 329, 8, major);
+        else writeBase256Number(header, 329, 8, major);
+        if (minor < (1L << 21)) writeOctal(header, 337, 8, minor);
+        else writeBase256Number(header, 337, 8, minor);
+        updateHeaderChecksum(header);
+        return header;
+    }
+
+    /// Recomputes the checksum after changing fixed header fields.
+    private static void updateHeaderChecksum(byte[] header) {
+        java.util.Arrays.fill(header, 148, 156, (byte) ' ');
+        int sum = 0;
+        for (byte value : header) sum += Byte.toUnsignedInt(value);
+        writeChecksum(header, sum);
+    }
+
     /// Explicit root directories retain their metadata and children through indexing and an update rewrite.
     @ParameterizedTest
     @ValueSource(strings = {".", "./", "././", ".\\", "pax"})
@@ -532,7 +718,9 @@ public final class TarArchiveIntegrationTest {
                 assertNull(tarNamedAttributes.get("linkName"));
 
                 Map<String, Object> allTarNamedAttributes = Files.readAttributes(file, "tar:*");
-                assertEquals(21, allTarNamedAttributes.size());
+                assertEquals(23, allTarNamedAttributes.size());
+                assertEquals(TarArkivoEntryAttributes.NO_DEVICE_NUMBER, allTarNamedAttributes.get("deviceMajor"));
+                assertEquals(TarArkivoEntryAttributes.NO_DEVICE_NUMBER, allTarNamedAttributes.get("deviceMinor"));
                 assertEquals("dir/hello.txt", allTarNamedAttributes.get("path"));
                 assertEquals((byte) '0', allTarNamedAttributes.get("typeFlag"));
                 assertEquals(0640, allTarNamedAttributes.get("mode"));
@@ -1020,6 +1208,99 @@ public final class TarArchiveIntegrationTest {
         }
     }
 
+    /// Charges readable bodies of links, devices, FIFOs, and unknown types despite their zero attribute size.
+    @ParameterizedTest
+    @ValueSource(chars = {'2', '3', '4', '6', 'V'})
+    void limitsNonRegularEntryBodies(char type, @TempDir Path directory) throws IOException {
+        byte[] body = {1, 2, 3, 4};
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        for (String name : List.of("first", "second")) {
+            writeHeader(output, name, 0600, 1, 2, body.length, type, "target", "u", "g");
+            writeBody(output, body);
+        }
+        output.write(new byte[1024]);
+        byte[] archive = output.toByteArray();
+        Path path = directory.resolve("special.tar");
+        Files.write(path, archive);
+        for (boolean total : new boolean[]{false, true}) {
+            ArchiveReadLimits limits = ArchiveReadLimits.builder()
+                    .maximumEntrySize(total ? 4 : 3).maximumTotalEntrySize(total ? 7 : 8).build();
+            ArkivoReadLimitKind kind = total ? ArkivoReadLimitKind.TOTAL_ENTRY_SIZE : ArkivoReadLimitKind.ENTRY_SIZE;
+            ByteArrayInputStream source = new ByteArrayInputStream(archive);
+            try (var reader = TarArkivoStreamingReader.open(source, TarArchiveOptions.READ_DEFAULTS
+                    .withCommon(ArchiveReadOptions.DEFAULT.withLimits(limits)))) {
+                if (total) {
+                    assertEquals(true, reader.next());
+                    assertEquals(0, reader.readAttributes(TarArkivoEntryAttributes.class).size());
+                }
+                ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, reader::next);
+                assertEquals(kind, failure.kind());
+                assertEquals(total ? 8 : 4, failure.actual());
+                int remaining = source.available();
+                assertThrows(ArkivoReadLimitException.class, reader::next);
+                reader.close();
+                assertEquals(remaining, source.available());
+            }
+            for (boolean update : new boolean[]{false, true}) {
+                ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> {
+                    try (var ignored = update
+                            ? TarArkivoFileSystem.update(path, TarArchiveOptions.UPDATE_DEFAULTS
+                                    .withCommon(ArchiveUpdateOptions.DEFAULT.withLimits(limits)))
+                            : TarArkivoFileSystem.open(path, TarArchiveOptions.READ_DEFAULTS
+                                    .withCommon(ArchiveReadOptions.DEFAULT.withLimits(limits)))) {
+                        // Indexing must account for retained bodies even when BasicFileAttributes.size() is zero.
+                    }
+                });
+                assertEquals(kind, failure.kind());
+                assertArrayEquals(archive, Files.readAllBytes(path));
+            }
+        }
+        ArchiveReadLimits exact = ArchiveReadLimits.builder().maximumEntrySize(4).maximumTotalEntrySize(8).build();
+        try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(archive),
+                TarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(exact)))) {
+            for (int index = 0; index < 2; index++) {
+                assertEquals(true, reader.next());
+                assertArrayEquals(body, reader.openInputStream().readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Combines retained special-entry bodies with the logical size of resolved hard links in the index budget.
+    @Test
+    void limitsSpecialBodiesTogetherWithHardLinks(@TempDir Path directory) throws IOException {
+        byte[] body = {1, 2, 3, 4};
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeEntry(output, "original", body);
+        writeHeader(output, "extension", 0600, 1, 2, body.length, 'V', "", "u", "g");
+        writeBody(output, body);
+        writeHeader(output, "alias", 0600, 1, 2, 0, '1', "original", "u", "g");
+        output.write(new byte[1024]);
+        Path path = directory.resolve("mixed.tar");
+        byte[] archive = output.toByteArray();
+        Files.write(path, archive);
+        for (boolean update : new boolean[]{false, true}) {
+            ArchiveReadLimits limits = ArchiveReadLimits.builder().maximumTotalEntrySize(11).build();
+            ArkivoReadLimitException failure = assertThrows(ArkivoReadLimitException.class, () -> {
+                try (var ignored = update
+                        ? TarArkivoFileSystem.update(path, TarArchiveOptions.UPDATE_DEFAULTS
+                                .withCommon(ArchiveUpdateOptions.DEFAULT.withLimits(limits)))
+                        : TarArkivoFileSystem.open(path, TarArchiveOptions.READ_DEFAULTS
+                                .withCommon(ArchiveReadOptions.DEFAULT.withLimits(limits)))) {
+                    // The stream sees eight body bytes, but the index exposes twelve including the alias.
+                }
+            });
+            assertEquals(ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, failure.kind());
+            assertEquals(12, failure.actual());
+            assertArrayEquals(archive, Files.readAllBytes(path));
+        }
+        ArchiveReadLimits exact = ArchiveReadLimits.builder().maximumTotalEntrySize(12).build();
+        try (var fs = TarArkivoFileSystem.open(path, TarArchiveOptions.READ_DEFAULTS
+                .withCommon(ArchiveReadOptions.DEFAULT.withLimits(exact)))) {
+            assertArrayEquals(body, Files.readAllBytes(fs.getPath("alias")));
+        }
+    }
+
     /// Verifies that unknown TAR entry bodies survive a rewrite and remain stream-readable.
     @Test
     public void updatePreservesUnknownEntryBodies() throws IOException {
@@ -1264,6 +1545,12 @@ public final class TarArchiveIntegrationTest {
                 output.write(new byte[1024]);
                 byte[] bytes = output.toByteArray();
                 Path archive = createTemporaryArchivePath("tar-normalized-drive-");
+                if (!hardLink) {
+                    try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+                        assertEquals("TAR entry path must be relative",
+                                assertThrows(IOException.class, reader::next).getMessage());
+                    }
+                }
                 try {
                     Files.write(archive, bytes);
                     String message = (hardLink ? "TAR hard link target" : "TAR entry path") + " must be relative";

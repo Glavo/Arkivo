@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.internal.ByteArrayAccess;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -13,10 +14,26 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /// Merges the four streams produced by the 7z BCJ2 x86 branch converter.
 @NotNullByDefault
-final class SevenZipBcj2InputStream extends InputStream {
+final class SevenZipBcj2InputStream extends InputStream implements ForceCloseable {
+    /// Separates decoder state from cancellation of the four input streams.
+    private final ReentrantLock operationLock = new ReentrantLock();
+
+    /// Serializes forced cleanup independently of normal close-time validation.
+    private final Object forceCloseLock = new Object();
+
+    /// Successful cleanup of MAIN, CALL, JUMP, and RANGE, guarded by the force-close lock.
+    private final boolean[] inputsClosed = new boolean[4];
+
+    /// Whether input cleanup must bypass final validation and draining.
+    private volatile boolean aborted;
+
+    /// Whether a previous cleanup attempt failed.
+    private volatile boolean closeFailed;
+
     /// Indicates that the exact input stream sizes are unavailable.
     private static final long UNKNOWN_SIZE = -1L;
 
@@ -144,7 +161,7 @@ final class SevenZipBcj2InputStream extends InputStream {
     private int convertedAddressPosition = convertedAddress.length;
 
     /// Whether this stream has been closed.
-    private boolean closed;
+    private volatile boolean closed;
 
     /// Whether full-stream terminal state has been validated.
     private boolean finished;
@@ -230,15 +247,30 @@ final class SevenZipBcj2InputStream extends InputStream {
     /// Reads one decoded byte.
     @Override
     public int read() throws IOException {
-        ensureOpen();
-        return readDecodedByte();
+        operationLock.lock();
+        try {
+            ensureOpen();
+            return readDecodedByte();
+        } finally {
+            operationLock.unlock();
+        }
     }
 
     /// Reads decoded bytes into the target array.
     @Override
     public int read(byte[] buffer, int offset, int length) throws IOException {
         Objects.checkFromIndexSize(offset, length, buffer.length);
-        ensureOpen();
+        operationLock.lock();
+        try {
+            ensureOpen();
+            return readBytes(buffer, offset, length);
+        } finally {
+            operationLock.unlock();
+        }
+    }
+
+    /// Reads a bounded output range while the operation lock is held.
+    private int readBytes(byte[] buffer, int offset, int length) throws IOException {
         if (length == 0) {
             return 0;
         }
@@ -257,29 +289,70 @@ final class SevenZipBcj2InputStream extends InputStream {
         return count;
     }
 
-    /// Closes all four BCJ2 input streams while retaining later failures as suppressed exceptions.
+    /// Closes all inputs, retaining failed physical closures for another attempt.
     @Override
-    public void close() throws IOException {
-        if (closed) {
-            return;
-        }
-        closed = true;
-
+    public synchronized void close() throws IOException {
         @Nullable Throwable failure = null;
-        if (mainSize != UNKNOWN_SIZE
-                && outputPosition == outputLimit
-                && outputLimit == expectedOutputSize
-                && !finished) {
-            try {
-                validateFinished();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
+        if (!closed) {
+            closed = true;
+            if (!operationLock.isHeldByCurrentThread() && operationLock.tryLock()) {
+                try {
+                    if (!aborted && mainSize != UNKNOWN_SIZE && outputPosition == outputLimit
+                            && outputLimit == expectedOutputSize && !finished) {
+                        validateFinished();
+                    }
+                } catch (IOException | RuntimeException | Error exception) {
+                    aborted = true;
+                    failure = exception;
+                } finally {
+                    operationLock.unlock();
+                }
+            } else {
+                aborted = true;
             }
         }
-        failure = closeInput(main, failure);
-        failure = closeInput(call, failure);
-        failure = closeInput(jump, failure);
-        failure = closeInput(rangeInput, failure);
+        closeInputs(failure);
+    }
+
+    /// Cancels every packed branch without waiting for active decoding or ordinary closure.
+    @Override
+    public void forceClose() throws IOException {
+        aborted = true;
+        closed = true;
+        closeInputs(null);
+    }
+
+    /// Attempts every remaining input cleanup and preserves the first failure.
+    private void closeInputs(@Nullable Throwable failure) throws IOException {
+        InputStream[] inputs = {main, call, jump, rangeInput};
+        for (int index = 0; index < inputs.length; index++) {
+            try {
+                if (aborted) {
+                    synchronized (forceCloseLock) {
+                        if (!inputsClosed[index]) {
+                            ForceCloseable.forceClose(inputs[index]);
+                            inputsClosed[index] = true;
+                        }
+                    }
+                } else {
+                    synchronized (forceCloseLock) {
+                        if (inputsClosed[index]) continue;
+                    }
+                    inputs[index].close();
+                    synchronized (forceCloseLock) {
+                        if (!aborted) inputsClosed[index] = true;
+                    }
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure == null) failure = exception;
+                else if (failure != exception) failure.addSuppressed(exception);
+            }
+        }
+        if (failure != null) {
+            boolean retry = closeFailed;
+            closeFailed = true;
+            if (retry) throw new IOException("BCJ2 input cleanup failed after an earlier failure", failure);
+        }
         throwCloseFailure(failure);
     }
 
@@ -528,21 +601,6 @@ final class SevenZipBcj2InputStream extends InputStream {
             throw new EOFException(failureMessage);
         }
         return value;
-    }
-
-    /// Closes one input and appends any failure to the current primary failure.
-    private static @Nullable Throwable closeInput(InputStream input, @Nullable Throwable failure) {
-        try {
-            input.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            if (failure == null) {
-                return exception;
-            }
-            if (failure != exception) {
-                failure.addSuppressed(exception);
-            }
-        }
-        return failure;
     }
 
     /// Rethrows a close failure with its original checked or unchecked type.

@@ -53,6 +53,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -76,6 +77,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies staged archive writers retain resources across failures without repeating publication.
@@ -725,6 +727,102 @@ final class ArchiveWriterStorageLifecycleTest {
             assertArrayEquals(BODY, Files.readAllBytes(result.getPath("/original")));
             assertArrayEquals(BODY, Files.readAllBytes(result.getPath("/added")));
         }
+    }
+
+    /// Rejects stalled symbolic-link staging without publishing a partial link or preventing a later retry.
+    @ParameterizedTest
+    @EnumSource(value = UpdateFormat.class, names = {"AR", "SEVEN_ZIP"})
+    void rejectsStalledSymbolicLinkStaging(UpdateFormat format, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("archive");
+        try (var initial = format.create(archive)) {
+            Files.write(initial.getPath("/original"), BODY);
+        }
+        TrackingStorage storage = new TrackingStorage();
+        try (var fileSystem = format.update(archive, storage)) {
+            Path link = fileSystem.getPath("/alias");
+            Path target = fileSystem.getPath("original");
+            int attempts = storage.count(Stage.WRITE);
+            storage.stallWrite = true;
+            try {
+                assertThrows(IOException.class, () -> Files.createSymbolicLink(link, target));
+                assertEquals(attempts + 1, storage.count(Stage.WRITE));
+                assertFalse(Files.exists(link, LinkOption.NOFOLLOW_LINKS));
+            } finally {
+                storage.stallWrite = false;
+                storage.failures.remove(Stage.WRITE);
+            }
+            Files.createSymbolicLink(link, target);
+            assertEquals(target, Files.readSymbolicLink(link));
+        }
+        storage.assertReleased();
+        try (var reopened = format.open(archive)) {
+            assertEquals(reopened.getPath("original"), Files.readSymbolicLink(reopened.getPath("/alias")));
+            assertArrayEquals(BODY, Files.readAllBytes(reopened.getPath("/alias")));
+        }
+    }
+
+    /// Rejects stalled copying before an update channel opens without changing the visible entry.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsStalledZipUpdateInitialization(boolean reading, @TempDir Path directory) throws IOException {
+        Path archive = createZip(directory);
+        TrackingStorage storage = new TrackingStorage();
+        try (ZipArkivoFileSystem fileSystem = updateZip(archive, storage)) {
+            Path entry = fileSystem.getPath("/original");
+            if (reading) {
+                // The read-side fault must target retained staged content, not the original archive channel.
+                Files.write(entry, BODY);
+                storage.stallRead = true;
+            } else {
+                storage.stallWrite = true;
+            }
+            Stage stage = reading ? Stage.READ : Stage.WRITE;
+            int attempts = storage.count(stage);
+            assertThrows(IOException.class, () -> {
+                try (var unexpected = Files.newByteChannel(entry, StandardOpenOption.WRITE)) {
+                    fail("A stalled initialization must not return an update channel");
+                }
+            });
+            assertEquals(attempts + 1, storage.count(stage));
+            storage.failures.remove(stage);
+            assertArrayEquals(BODY, Files.readAllBytes(entry));
+            try (var body = Files.newByteChannel(entry, StandardOpenOption.WRITE)) {
+                body.write(ByteBuffer.wrap(new byte[]{9}));
+            }
+        }
+        storage.assertReleased();
+        byte[] expected = BODY.clone();
+        expected[0] = 9;
+        try (ZipArkivoFileSystem result = ZipArkivoFileSystem.open(archive)) {
+            assertArrayEquals(expected, Files.readAllBytes(result.getPath("/original")));
+        }
+    }
+
+    /// Rejects stalled record or rewritten-header reads before publishing the updated archive.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsStalledZipRewriteRead(boolean renamed, @TempDir Path directory) throws IOException {
+        Path archive = createZip(directory);
+        byte[] original = Files.readAllBytes(archive);
+        TrackingStorage storage = new TrackingStorage();
+        ZipArkivoFileSystem fileSystem = updateZip(archive, storage);
+        Files.write(fileSystem.getPath("/added"), BODY);
+        if (renamed) {
+            Files.move(fileSystem.getPath("/added"), fileSystem.getPath("/renamed"));
+        }
+        int attempts = storage.count(Stage.READ);
+        storage.stallRead = true;
+        try {
+            assertThrows(IOException.class, fileSystem::close);
+            assertEquals(attempts + 1, storage.count(Stage.READ));
+        } finally {
+            storage.stallRead = false;
+            storage.failures.remove(Stage.READ);
+            fileSystem.close();
+        }
+        fileSystem.close();
+        storage.assertReleased();
+        assertArrayEquals(original, Files.readAllBytes(archive));
     }
 
     /// Verifies ZIP does not publish staged local records whose output channel failed to close.
@@ -1593,6 +1691,9 @@ final class ArchiveWriterStorageLifecycleTest {
         /// Whether the next staged read returns zero and rejects any retry.
         private boolean stallRead;
 
+        /// Whether the next staged write returns zero and rejects any retry.
+        private boolean stallWrite;
+
         /// Optional synchronization gates for a partially completed storage write.
         private @Nullable WriteGate writeGate;
 
@@ -1761,6 +1862,12 @@ final class ArchiveWriterStorageLifecycleTest {
             /// Writes bytes to the delegate.
             @Override
             public int write(ByteBuffer source) throws IOException {
+                if (stallWrite) {
+                    stallWrite = false;
+                    attempt(Stage.WRITE);
+                    fail(Stage.WRITE, new AssertionError("Stalled staging write was retried"));
+                    return 0;
+                }
                 @Nullable ArrayDeque<Throwable> queue = failures.get(Stage.WRITE);
                 int limit = source.limit();
                 if ((writeGate != null || queue != null && !queue.isEmpty()) && source.hasRemaining()) {

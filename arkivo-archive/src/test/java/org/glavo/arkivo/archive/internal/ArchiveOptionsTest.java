@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.internal;
 import org.glavo.arkivo.archive.ArchiveMetadataDecoder;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -17,11 +18,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -53,13 +52,12 @@ final class ArchiveOptionsTest {
         }
     }
 
-    /// Verifies converters normalize values and must return a non-null value of the declared type.
+    /// Verifies converters normalize values and must return a non-null value.
     @Test
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings("DataFlowIssue")
     void enforcesConverterResultContract() {
         ArchiveOption<String> normalized = ArchiveOption.of(
                 "test.normalized",
-                String.class,
                 value -> ((String) value).trim()
         );
         ArchiveOptions options = ArchiveOptions.fromEnvironment(Map.of(normalized.key(), " value "));
@@ -68,25 +66,32 @@ final class ArchiveOptionsTest {
 
         ArchiveOption<String> nullResult = ArchiveOption.of(
                 "test.nullResult",
-                String.class,
                 value -> null
         );
         assertThrows(NullPointerException.class, () -> ArchiveOptions.fromEnvironment(Map.of(nullResult.key(), "value")).get(nullResult));
-
-        Function wrongConverter = (Function<Object, Integer>) value -> 1;
-        ArchiveOption<String> wrongResult = ArchiveOption.of(
-                "test.wrongResult",
-                String.class,
-                wrongConverter
-        );
-        assertThrows(IllegalStateException.class, () -> ArchiveOptions.fromEnvironment(Map.of(wrongResult.key(), "value")).get(wrongResult));
     }
 
-    /// Verifies raw environments are copied, null values are absent, and value semantics use stored entries.
+    /// Verifies conversion is deferred until lookup and preserves validation failures.
     @Test
-    void copiesRawEnvironmentAndExposesValueSemantics() {
+    void convertsOnlyRequestedValues() {
+        IllegalArgumentException failure = new IllegalArgumentException("Invalid option value");
+        ArchiveOption<String> rejected = ArchiveOption.of("test.rejected", value -> {
+            throw failure;
+        });
+        ArchiveOptions options = ArchiveOptions.fromEnvironment(Map.of(rejected.key(), "invalid"));
+
+        assertTrue(options.contains(rejected));
+        assertSame(failure, assertThrows(IllegalArgumentException.class, () -> options.get(rejected)));
+        assertSame(failure, assertThrows(IllegalArgumentException.class,
+                () -> options.getOrDefault(rejected, "fallback")));
+        assertEquals("fallback", ArchiveOptions.fromEnvironment(Map.of()).getOrDefault(rejected, "fallback"));
+    }
+
+    /// Verifies raw environments are copied, null values are absent, and missing values use defaults.
+    @Test
+    void copiesRawEnvironmentAndResolvesMissingValues() {
         ArchiveOption<String> option = ArchiveOption.of("test.value", String.class);
-        LinkedHashMap<String, Object> environment = new LinkedHashMap<>();
+        LinkedHashMap<String, @Nullable Object> environment = new LinkedHashMap<>();
         environment.put(option.key(), "configured");
         environment.put("test.ignored", null);
         ArchiveOptions options = ArchiveOptions.fromEnvironment(environment);
@@ -94,6 +99,8 @@ final class ArchiveOptionsTest {
 
         assertFalse(options.isEmpty());
         assertTrue(options.contains(option));
+        assertFalse(options.contains(ArchiveOption.of("test.ignored", String.class)));
+        assertNull(options.get(ArchiveOption.of("test.ignored", String.class)));
         assertEquals("configured", options.get(option));
         assertEquals("configured", options.getOrDefault(option, "fallback"));
         assertNull(options.get(ArchiveOption.of("test.missing", String.class)));
@@ -101,15 +108,16 @@ final class ArchiveOptionsTest {
                 "fallback",
                 options.getOrDefault(ArchiveOption.of("test.missing", String.class), "fallback")
         );
-        assertEquals(options, ArchiveOptions.fromEnvironment(Map.of(option.key(), "configured")));
-        assertEquals(options.hashCode(), ArchiveOptions.fromEnvironment(Map.of(option.key(), "configured")).hashCode());
-        assertNotEquals(options, ArchiveOptions.EMPTY);
-        assertTrue(options.toString().contains(option.key()));
-
-        assertSame(ArchiveOptions.EMPTY, ArchiveOptions.fromEnvironment(Map.of()));
-        LinkedHashMap<String, Object> onlyNull = new LinkedHashMap<>();
+        assertFalse(ArchiveOptions.fromEnvironment(Map.of()).contains(option));
+        assertNull(ArchiveOptions.fromEnvironment(Map.of()).get(option));
+        LinkedHashMap<String, @Nullable Object> onlyNull = new LinkedHashMap<>();
         onlyNull.put("test.null", null);
-        assertSame(ArchiveOptions.EMPTY, ArchiveOptions.fromEnvironment(onlyNull));
+        ArchiveOption<String> nullOption = ArchiveOption.of("test.null", String.class);
+        ArchiveOptions empty = ArchiveOptions.fromEnvironment(onlyNull);
+        assertTrue(empty.isEmpty());
+        assertFalse(empty.contains(nullOption));
+        assertNull(empty.get(nullOption));
+        assertEquals("fallback", empty.getOrDefault(nullOption, "fallback"));
     }
 
     /// Verifies invalid raw keys and null default values are rejected.
@@ -120,12 +128,12 @@ final class ArchiveOptionsTest {
         blank.put(" ", "value");
         assertThrows(IllegalArgumentException.class, () -> ArchiveOptions.fromEnvironment(blank));
 
-        LinkedHashMap<String, Object> nullKey = new LinkedHashMap<>();
+        LinkedHashMap<@Nullable String, Object> nullKey = new LinkedHashMap<>();
         nullKey.put(null, "value");
         assertThrows(NullPointerException.class, () -> ArchiveOptions.fromEnvironment(nullKey));
 
         ArchiveOption<String> option = ArchiveOption.of("test.value", String.class);
-        assertThrows(NullPointerException.class, () -> ArchiveOptions.EMPTY.getOrDefault(option, null));
+        assertThrows(NullPointerException.class, () -> ArchiveOptions.fromEnvironment(Map.of()).getOrDefault(option, null));
     }
 
     /// Verifies every supported raw representation of NIO open options is normalized into an immutable set.

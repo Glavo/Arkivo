@@ -17,6 +17,8 @@ import java.util.Objects;
 /// Compiles and executes the bounded 32-bit virtual machine embedded in RAR3 filters.
 @NotNullByDefault
 final class Rar3Vm {
+    /// Primitive-array payload of one machine's registers and padded memory.
+    static final int MACHINE_MEMORY_SIZE = 8 * Integer.BYTES + 0x40000 + Integer.BYTES;
     /// The VM data-memory size.
     static final int MEMORY_SIZE = 0x40000;
     /// The address mask applied to every memory operand.
@@ -53,7 +55,7 @@ final class Rar3Vm {
     }
 
     /// Compiles a checksummed RAR3 VM bytecode buffer.
-    static Program compile(byte[] code) throws IOException {
+    static Program compile(byte[] code, RarDecoderMemoryBudget memory) throws IOException {
         Objects.requireNonNull(code, "code");
         if (code.length < 2) {
             throw new IOException("RAR3 filter program is empty");
@@ -66,26 +68,37 @@ final class Rar3Vm {
 
         Rar3BitReader reader = new Rar3BitReader(code, 1);
         byte[] staticData = new byte[0];
-        if (reader.readBits(1) != 0) {
-            long encodedSize = reader.readEncodedUint32();
-            if (encodedSize >= GLOBAL_SIZE - FIXED_GLOBAL_SIZE) {
-                throw new IOException("RAR3 filter static data is too large");
+        long reserved = 0;
+        boolean transferred = false;
+        try {
+            if (reader.readBits(1) != 0) {
+                long encodedSize = reader.readEncodedUint32();
+                if (encodedSize >= GLOBAL_SIZE - FIXED_GLOBAL_SIZE) {
+                    throw new IOException("RAR3 filter static data is too large");
+                }
+                int size = (int) encodedSize + 1;
+                memory.reserve(size);
+                reserved = size;
+                staticData = reader.readBytes(size);
             }
-            staticData = reader.readBytes((int) encodedSize + 1);
-        }
 
-        List<Instruction> instructions = new ArrayList<>();
-        while (reader.remainingBits() >= 4) {
-            try {
-                instructions.add(readInstruction(reader, instructions.size()));
-            } catch (EOFException ignored) {
-                break;
+            List<Instruction> instructions = new ArrayList<>();
+            while (reader.remainingBits() >= 4) {
+                try {
+                    instructions.add(readInstruction(reader, instructions.size()));
+                } catch (EOFException ignored) {
+                    break;
+                }
+                if (instructions.size() > MAX_PROGRAM_INSTRUCTIONS) {
+                    throw new IOException("RAR3 filter program contains too many instructions");
+                }
             }
-            if (instructions.size() > MAX_PROGRAM_INSTRUCTIONS) {
-                throw new IOException("RAR3 filter program contains too many instructions");
-            }
+            Program result = new Program(instructions.toArray(Instruction[]::new), staticData, memory);
+            transferred = true;
+            return result;
+        } finally {
+            if (!transferred) memory.release(reserved);
         }
-        return new Program(instructions.toArray(Instruction[]::new), staticData);
     }
 
     /// Decodes one VM instruction and its operands.
@@ -153,23 +166,38 @@ final class Rar3Vm {
 
     /// A compiled VM program with execution state retained between solid invocations.
     @NotNullByDefault
-    static final class Program {
+    static final class Program implements AutoCloseable {
+        /// The session budget that owns static and persistent data.
+        private final RarDecoderMemoryBudget memory;
+        /// Whether this program has released its arrays.
+        private boolean closed;
         /// The immutable decoded instruction sequence.
         private final Instruction @Unmodifiable [] instructions;
         /// The immutable program-defined global data.
-        private final byte @Unmodifiable [] staticData;
+        private byte @Unmodifiable [] staticData;
         /// Global bytes requested by the previous invocation.
         private byte[] persistentGlobal = new byte[0];
         /// The number of completed invocations.
         private int executionCount;
 
-        /// Creates a compiled VM program.
-        private Program(Instruction[] instructions, byte[] staticData) {
-            this.instructions = instructions.clone();
-            this.staticData = staticData.clone();
+        /// Takes ownership of newly compiled instructions and already-reserved static data.
+        private Program(Instruction[] instructions, byte[] staticData, RarDecoderMemoryBudget memory) {
+            this.instructions = instructions;
+            this.staticData = staticData;
+            this.memory = memory;
         }
 
-        /// Executes the program over one raw filter block.
+        /// Releases static and persistent arrays without executing the program; repeated calls have no effect.
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            memory.release((long) staticData.length + persistentGlobal.length);
+            staticData = new byte[0];
+            persistentGlobal = new byte[0];
+        }
+
+        /// Borrows the invocation arrays and returns a newly reserved result owned by the caller.
         byte[] execute(
                 byte[] input,
                 int[] initialRegisters,
@@ -177,6 +205,7 @@ final class Rar3Vm {
                 byte[] initialGlobal,
                 long offset
         ) throws IOException {
+            if (closed) throw new IOException("RAR3 VM program is closed");
             Objects.requireNonNull(input, "input");
             Objects.requireNonNull(initialRegisters, "initialRegisters");
             Objects.requireNonNull(initialGlobal, "initialGlobal");
@@ -184,41 +213,64 @@ final class Rar3Vm {
                 throw new IOException("Invalid RAR3 VM invocation");
             }
 
-            Machine machine = new Machine();
-            System.arraycopy(input, 0, machine.memory, 0, input.length);
-            machine.registers[3] = GLOBAL_ADDRESS;
-            machine.registers[4] = input.length;
-            machine.registers[5] = executionCount;
-            for (int index = 0; index < initialRegisters.length; index++) {
-                if ((initialRegisterMask & 1 << index) != 0) machine.registers[index] = initialRegisters[index];
+            memory.reserve(MACHINE_MEMORY_SIZE);
+            try {
+                Machine machine = new Machine();
+                System.arraycopy(input, 0, machine.memory, 0, input.length);
+                machine.registers[3] = GLOBAL_ADDRESS;
+                machine.registers[4] = input.length;
+                machine.registers[5] = executionCount;
+                for (int index = 0; index < initialRegisters.length; index++) {
+                    if ((initialRegisterMask & 1 << index) != 0) machine.registers[index] = initialRegisters[index];
+                }
+                machine.registers[6] = (int) offset;
+                machine.registers[7] = MEMORY_SIZE;
+
+                int global = GLOBAL_ADDRESS;
+                for (int index = 0; index < 7; index++) ByteArrayAccess.writeIntLittleEndian(machine.memory, global + index * 4, machine.registers[index]);
+                ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x1c, input.length);
+                ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x20, 0);
+                ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x24, (int) offset);
+                ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x28, (int) (offset >>> 32));
+                ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x2c, executionCount);
+
+                byte[] dynamicGlobal = persistentGlobal.length == 0 ? initialGlobal : persistentGlobal;
+                int copied = Math.min(dynamicGlobal.length, GLOBAL_SIZE - FIXED_GLOBAL_SIZE);
+                System.arraycopy(dynamicGlobal, 0, machine.memory, global + FIXED_GLOBAL_SIZE, copied);
+                int staticCount = Math.min(staticData.length, GLOBAL_SIZE - FIXED_GLOBAL_SIZE - copied);
+                System.arraycopy(staticData, 0, machine.memory, global + FIXED_GLOBAL_SIZE + copied, staticCount);
+                run(machine);
+                executionCount++;
+
+                int saveSize = Math.max(0, Math.min(
+                        ByteArrayAccess.readIntLittleEndian(machine.memory, global + 0x30),
+                        GLOBAL_SIZE - FIXED_GLOBAL_SIZE));
+                int outputLength = ByteArrayAccess.readIntLittleEndian(machine.memory, global + 0x1c) & MEMORY_MASK;
+                int outputStart = ByteArrayAccess.readIntLittleEndian(machine.memory, global + 0x20) & MEMORY_MASK;
+                if (outputStart + outputLength > MEMORY_SIZE) throw new IOException("RAR3 VM output exceeds its memory");
+
+                memory.reserve(saveSize);
+                byte[] replacement;
+                try {
+                    replacement = Arrays.copyOfRange(machine.memory, global + FIXED_GLOBAL_SIZE,
+                            global + FIXED_GLOBAL_SIZE + saveSize);
+                } catch (RuntimeException | Error failure) {
+                    memory.release(saveSize);
+                    throw failure;
+                }
+                memory.release(persistentGlobal.length);
+                persistentGlobal = replacement;
+
+                memory.reserve(outputLength);
+                try {
+                    return Arrays.copyOfRange(machine.memory, outputStart, outputStart + outputLength);
+                } catch (RuntimeException | Error failure) {
+                    memory.release(outputLength);
+                    throw failure;
+                }
+            } finally {
+                memory.release(MACHINE_MEMORY_SIZE);
             }
-            machine.registers[6] = (int) offset;
-            machine.registers[7] = MEMORY_SIZE;
-
-            int global = GLOBAL_ADDRESS;
-            for (int index = 0; index < 7; index++) ByteArrayAccess.writeIntLittleEndian(machine.memory, global + index * 4, machine.registers[index]);
-            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x1c, input.length);
-            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x20, 0);
-            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x24, (int) offset);
-            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x28, (int) (offset >>> 32));
-            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x2c, executionCount);
-
-            byte[] dynamicGlobal = persistentGlobal.length == 0 ? initialGlobal : persistentGlobal;
-            int copied = Math.min(dynamicGlobal.length, GLOBAL_SIZE - FIXED_GLOBAL_SIZE);
-            System.arraycopy(dynamicGlobal, 0, machine.memory, global + FIXED_GLOBAL_SIZE, copied);
-            int staticCount = Math.min(staticData.length, GLOBAL_SIZE - FIXED_GLOBAL_SIZE - copied);
-            System.arraycopy(staticData, 0, machine.memory, global + FIXED_GLOBAL_SIZE + copied, staticCount);
-            run(machine);
-            executionCount++;
-
-            int saveSize = Math.min(ByteArrayAccess.readIntLittleEndian(machine.memory, global + 0x30), GLOBAL_SIZE - FIXED_GLOBAL_SIZE);
-            persistentGlobal = saveSize <= 0
-                    ? new byte[0]
-                    : Arrays.copyOfRange(machine.memory, global + FIXED_GLOBAL_SIZE, global + FIXED_GLOBAL_SIZE + saveSize);
-            int outputLength = ByteArrayAccess.readIntLittleEndian(machine.memory, global + 0x1c) & MEMORY_MASK;
-            int outputStart = ByteArrayAccess.readIntLittleEndian(machine.memory, global + 0x20) & MEMORY_MASK;
-            if (outputStart + outputLength > MEMORY_SIZE) throw new IOException("RAR3 VM output exceeds its memory");
-            return Arrays.copyOfRange(machine.memory, outputStart, outputStart + outputLength);
         }
 
         /// Runs the instruction sequence until RET, an out-of-range jump, or the execution limit.
@@ -422,8 +474,7 @@ final class Rar3Vm {
     /// Pushes all registers in ascending register order.
     private static void pushAll(Machine machine) {
         int stack = machine.registers[7];
-        int[] snapshot = machine.registers.clone();
-        for (int value : snapshot) {
+        for (int value : machine.registers) {
             stack -= 4;
             writeMemory(machine, stack, value, false);
         }

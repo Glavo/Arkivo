@@ -5,6 +5,10 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
+import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
@@ -12,15 +16,21 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.FileSystemAlreadyExistsException;
+import java.nio.file.FileSystemNotFoundException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
@@ -35,6 +45,61 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies split 7z publication boundaries, terminal failures, and retryable transaction cleanup.
 @NotNullByDefault
 final class SevenZipSplitArchiveOutputTest {
+    /// Contains the source archive for update-mode registration tests.
+    @TempDir
+    private Path temporaryDirectory;
+
+    /// Retains a split file system's URI until rollback succeeds in both creation and update modes.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void reservesUriUntilRollbackCompletes(boolean update) throws IOException {
+        Path source = temporaryDirectory.resolve("source.7z");
+        try (var original = SevenZipArkivoFileSystem.create(source)) {
+            Files.writeString(original.getPath("entry"), "original");
+        }
+        var registry = new ArkivoFileSystemProviderSupport.Registry<SevenZipArkivoFileSystemImpl>();
+        var provider = new SevenZipArkivoFileSystemProvider();
+        RecordingVolumeOutput physicalOutput = new RecordingVolumeOutput();
+        physicalOutput.commitFailures = 1;
+        physicalOutput.rollbackFailures = Integer.MAX_VALUE;
+        physicalOutput.closeFailures = Integer.MAX_VALUE;
+        RecordingVolumeTarget target = new RecordingVolumeTarget(physicalOutput);
+        var config = update
+                ? SevenZipArkivoFileSystemConfig.fromUpdateOptions(SevenZipArchiveOptions.UPDATE_DEFAULTS)
+                : SevenZipArkivoFileSystemConfig.fromCreateOptions(SevenZipArchiveOptions.CREATE_DEFAULTS);
+        var archive = registry.open(source, closeAction -> new SevenZipArkivoFileSystemImpl(
+                provider, null, update ? ArkivoVolumeSource.of(List.of(source)) : null,
+                target, 64L, config, closeAction));
+        try {
+            Files.writeString(archive.getPath("entry"), "replacement");
+            for (int attempt = 0; attempt < 2; attempt++) {
+                assertThrows(IOException.class, archive::close);
+                assertFalse(archive.isOpen());
+                assertThrows(FileSystemNotFoundException.class, () -> registry.require(source));
+                assertThrows(FileSystemAlreadyExistsException.class, () -> registry.open(source, action -> {
+                    throw new AssertionError("A reserved URI must not invoke another factory");
+                }));
+            }
+        } finally {
+            physicalOutput.rollbackFailures = 0;
+            physicalOutput.closeFailures = 0;
+            archive.close();
+        }
+        assertTrue(physicalOutput.rolledBack);
+        assertEquals(1, physicalOutput.commitAttempts);
+        int rollbackAttempts = physicalOutput.rollbackAttempts;
+        int closeAttempts = physicalOutput.closeAttempts;
+        try (var replacement = registry.open(source, action -> new SevenZipArkivoFileSystemImpl(
+                provider, source, null,
+                SevenZipArkivoFileSystemConfig.fromReadOptions(SevenZipArchiveOptions.READ_DEFAULTS), action))) {
+            archive.close();
+            assertSame(replacement, registry.require(source));
+            assertEquals("original", Files.readString(replacement.getPath("entry")));
+        }
+        assertEquals(rollbackAttempts, physicalOutput.rollbackAttempts);
+        assertEquals(closeAttempts, physicalOutput.closeAttempts);
+    }
+
     /// The fixed 7z signature at the start of every assembled archive.
     private static final byte @Unmodifiable [] SIGNATURE = {
             '7', 'z', (byte) 0xbc, (byte) 0xaf, 0x27, 0x1c

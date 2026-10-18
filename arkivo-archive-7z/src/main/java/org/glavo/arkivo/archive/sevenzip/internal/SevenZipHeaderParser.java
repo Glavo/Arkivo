@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
@@ -26,9 +27,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
-/// Parses unencoded 7z metadata headers.
+/// Parses 7z metadata headers and decodes referenced header streams.
 @NotNullByDefault
-public final class SevenZipHeaderParser {
+final class SevenZipHeaderParser {
     /// The `kEnd` property ID.
     private static final int K_END = 0x00;
 
@@ -111,55 +112,17 @@ public final class SevenZipHeaderParser {
     private SevenZipHeaderParser() {
     }
 
-    /// Parses entries from a validated 7z next header.
+    /// Parses entries under logical and decoder resource limits.
     ///
     /// @param header the complete validated next-header bytes
-    /// @return the immutable parsed entry metadata in archive order
-    /// @throws IOException if the header structure, coder graph, property values, or referenced data are invalid
-    public static List<SevenZipEntryMetadata> parseEntries(byte[] header) throws IOException {
-        return parseEntries(header, null, null);
-    }
-
-    /// Parses entries from a validated 7z next header, reading packed encoded header streams when needed.
-    static List<SevenZipEntryMetadata> parseEntries(
-            byte[] header,
-            @Nullable PackedStreamOpener packedStreamOpener
-    ) throws IOException {
-        return parseEntries(header, packedStreamOpener, null);
-    }
-
-    /// Parses entries from a validated 7z next header, reading packed encoded header streams when needed.
-    static List<SevenZipEntryMetadata> parseEntries(
-            byte[] header,
-            @Nullable PackedStreamOpener packedStreamOpener,
-            @Nullable ArkivoPasswordProvider passwordProvider
-    ) throws IOException {
-        return parseEntries(
-                header,
-                packedStreamOpener,
-                passwordProvider,
-                ArkivoReadLimitTracker.fromLimits(-1L, -1L, -1L, -1L)
-        );
-    }
-
-    /// Parses entries from a validated 7z next header under a common archive read budget.
-    static List<SevenZipEntryMetadata> parseEntries(
-            byte[] header,
-            @Nullable PackedStreamOpener packedStreamOpener,
-            @Nullable ArkivoPasswordProvider passwordProvider,
-            ArkivoReadLimitTracker readLimits
-    ) throws IOException {
-        return parseEntries(
-                header,
-                packedStreamOpener,
-                passwordProvider,
-                readLimits,
-                ArchiveReadLimits.UNLIMITED
-        );
-    }
-
-    /// Parses entries under logical and decoder resource limits.
-    static List<SevenZipEntryMetadata> parseEntries(
+    /// @param packedStreamOpener opens referenced streams, or `null` when archive stream access is unavailable
+    /// @param passwordProvider the provider for encrypted headers, or `null` when none is available
+    /// @param readLimits the shared metadata budget
+    /// @param archiveLimits the decoder resource limits
+    /// @return the immutable parsed entries in archive order
+    /// @throws IOException if metadata or referenced data is invalid, required access is unavailable,
+    ///                     or a configured limit is exceeded
+    static @Unmodifiable List<SevenZipEntryMetadata> parseEntries(
             byte[] header,
             @Nullable PackedStreamOpener packedStreamOpener,
             @Nullable ArkivoPasswordProvider passwordProvider,
@@ -312,7 +275,8 @@ public final class SevenZipHeaderParser {
             throw exception;
         } finally {
             try {
-                decoded.close();
+                if (failure == null) decoded.close();
+                else ForceCloseable.forceClose(decoded);
             } catch (IOException | RuntimeException | Error exception) {
                 if (failure != null) {
                     if (failure != exception) {
@@ -364,12 +328,12 @@ public final class SevenZipHeaderParser {
         }
     }
 
-    /// Closes input streams while retaining every failure after the first as suppressed.
+    /// Cancels streams from failed setup while retaining every cleanup failure after the first as suppressed.
     private static void closeInputStreams(List<? extends InputStream> inputs) throws IOException {
         Throwable failure = null;
         for (InputStream input : inputs) {
             try {
-                input.close();
+                ForceCloseable.forceClose(input);
             } catch (IOException | RuntimeException | Error exception) {
                 if (failure == null) {
                     failure = exception;
@@ -777,9 +741,7 @@ public final class SevenZipHeaderParser {
             if (inputStreamCount <= 0 || outputStreamCount <= 0) {
                 throw new IOException("7z coder stream counts must be positive");
             }
-            if (!SevenZipFolderDecoder.isSupported(methodId)) {
-                throw new IOException("Unsupported 7z coder method: " + Arrays.toString(methodId));
-            }
+            SevenZipFolderDecoder.parseMethod(methodId);
             coders[coderIndex] = new CoderInfo(
                     methodId,
                     properties,
@@ -1483,7 +1445,7 @@ public final class SevenZipHeaderParser {
                 StreamsInfo.EMPTY,
                 null,
                 null,
-                ArkivoReadLimitTracker.fromLimits(-1L, -1L, -1L, -1L),
+                ArkivoReadLimitTracker.fromLimits(ArchiveReadLimits.UNLIMITED),
                 ArchiveReadLimits.UNLIMITED
         );
 
@@ -1537,22 +1499,15 @@ public final class SevenZipHeaderParser {
     }
 
     /// Stores one file-addressable output stream inside a 7z folder.
+    ///
+    /// @param folderIndex the non-negative index of the containing folder
+    /// @param decodedOffset the non-negative byte offset inside the decoded folder output
+    /// @param size the non-negative decoded stream size in bytes
+    /// @param crc32 the unsigned CRC-32, or `UNKNOWN_CRC32` when absent
     @NotNullByDefault
-    private static final class SubStreamInfo {
-        /// The folder index that contains this stream.
-        private final int folderIndex;
-
-        /// The decoded offset inside the folder output.
-        private final long decodedOffset;
-
-        /// The decoded stream size.
-        private final long size;
-
-        /// The expected uncompressed stream CRC-32, or `UNKNOWN_CRC32` when not present.
-        private final long crc32;
-
-        /// Creates substream information.
-        private SubStreamInfo(int folderIndex, long decodedOffset, long size, long crc32) {
+    private record SubStreamInfo(int folderIndex, long decodedOffset, long size, long crc32) {
+        /// Validates the folder index, decoded range, and optional checksum.
+        private SubStreamInfo {
             if (folderIndex < 0) {
                 throw new IllegalArgumentException("folderIndex must be non-negative");
             }
@@ -1565,30 +1520,6 @@ public final class SevenZipHeaderParser {
             if (crc32 < SevenZipEntryMetadata.UNKNOWN_CRC32 || crc32 > 0xffff_ffffL) {
                 throw new IllegalArgumentException("crc32 must be an unsigned 32-bit value or UNKNOWN_CRC32");
             }
-            this.folderIndex = folderIndex;
-            this.decodedOffset = decodedOffset;
-            this.size = size;
-            this.crc32 = crc32;
-        }
-
-        /// Returns the folder index that contains this stream.
-        private int folderIndex() {
-            return folderIndex;
-        }
-
-        /// Returns the decoded offset inside the folder output.
-        private long decodedOffset() {
-            return decodedOffset;
-        }
-
-        /// Returns the decoded stream size.
-        private long size() {
-            return size;
-        }
-
-        /// Returns the expected uncompressed stream CRC-32, or `UNKNOWN_CRC32` when not present.
-        private long crc32() {
-            return crc32;
         }
     }
 

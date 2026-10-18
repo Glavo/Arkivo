@@ -4,6 +4,10 @@
 package org.glavo.arkivo.archive.rar;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -24,6 +28,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies RAR5 compressed-body interoperability through Arkivo APIs.
@@ -75,6 +80,114 @@ public final class Rar5CompressionTest {
 
     /// The UTF-8 password used by the encrypted fixtures.
     private static final byte @Unmodifiable [] PASSWORD = "junrar".getBytes(StandardCharsets.UTF_8);
+
+    /// Preserves the budget error across automatic cleanup and permits retrying a failed source close.
+    @Test
+    void retriesSourceCloseAfterDecoderMemoryFailure() throws IOException {
+        var source = new ByteArrayInputStream(SOLID_ARCHIVE) {
+            /// Number of source-close attempts.
+            private int closeCount;
+
+            /// Fails only the first source-close attempt.
+            @Override
+            public void close() throws IOException {
+                if (++closeCount == 1) {
+                    throw new IOException("source close failed");
+                }
+                super.close();
+            }
+        };
+        var limits = ArchiveReadLimits.builder().maximumDecoderMemorySize(0).build();
+        var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
+        RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source, options);
+        assertTrue(reader.next());
+        int remaining = source.available();
+        DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                () -> {
+                    try (reader; InputStream body = reader.openInputStream()) {
+                        body.readAllBytes();
+                    }
+                });
+        assertEquals(0, failure.maximum());
+        assertEquals(2, failure.getSuppressed().length);
+        assertTrue(failure.getSuppressed()[0] instanceof DecompressionMemoryLimitException);
+        assertNotSame(failure, failure.getSuppressed()[0]);
+        assertEquals("source close failed", failure.getSuppressed()[1].getMessage());
+        assertEquals(remaining, source.available());
+        assertEquals(1, source.closeCount);
+        reader.close();
+        reader.close();
+        assertEquals(2, source.closeCount);
+        assertEquals(remaining, source.available());
+    }
+
+    /// Applies the workspace limit while decoding skipped solid predecessors and rebuilding indexed content.
+    @Test
+    void enforcesSolidDecoderMemoryLimit() throws IOException {
+        // This archive declares a 1 MiB window; its tables and input/output buffers require another 134714 bytes.
+        int required = (1 << 20) + 3642 + 2 * (64 << 10);
+        for (int maximum : new int[]{required - 1, required}) {
+            var limits = ArchiveReadLimits.builder().maximumDecoderMemorySize(maximum).build();
+            var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
+            ByteArrayInputStream source = new ByteArrayInputStream(SOLID_ARCHIVE);
+            try (var reader = RarArkivoStreamingReader.open(source, options)) {
+                assertTrue(reader.next());
+                int remaining = source.available();
+                if (maximum < required) {
+                    DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                            reader::next);
+                    assertEquals(maximum, failure.maximum());
+                    assertEquals(required, failure.actual());
+                    assertThrows(DecompressionMemoryLimitException.class, reader::next);
+                    assertEquals(remaining, source.available());
+                } else {
+                    for (int index = 2; index <= 9; index++) {
+                        assertTrue(reader.next());
+                    }
+                    try (InputStream body = reader.openInputStream()) {
+                        assertArrayEquals("file9\n".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
+                    }
+                }
+            }
+            if (maximum < required) {
+                assertThrows(DecompressionMemoryLimitException.class,
+                        () -> RarArkivoFileSystem.open(new ReadOnlyByteArrayChannel(SOLID_ARCHIVE), options));
+            } else {
+                try (var fs = RarArkivoFileSystem.open(new ReadOnlyByteArrayChannel(SOLID_ARCHIVE), options)) {
+                    assertArrayEquals("file9\n".getBytes(StandardCharsets.UTF_8),
+                            Files.readAllBytes(fs.getPath("/file9.txt")));
+                }
+            }
+        }
+    }
+
+    /// Applies the same decoder accounting after decrypting an encrypted RAR5 entry.
+    @Test
+    void enforcesEncryptedDecoderMemoryLimit() throws IOException {
+        int required = (1 << 17) + 3642 + 2 * (64 << 10);
+        for (int maximum : new int[]{required - 1, required}) {
+            var limits = ArchiveReadLimits.builder().maximumDecoderMemorySize(maximum).build();
+            var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits))
+                    .withPasswordProvider(ArkivoPasswordProvider.fixed(PASSWORD));
+            try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(ENCRYPTED_BODY_ARCHIVE), options)) {
+                assertTrue(reader.next());
+                if (maximum < required) {
+                    DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                            () -> {
+                                try (InputStream body = reader.openInputStream()) {
+                                    body.readAllBytes();
+                                }
+                            });
+                    assertEquals(maximum, failure.maximum());
+                    assertEquals(required, failure.actual());
+                } else {
+                    try (InputStream body = reader.openInputStream()) {
+                        assertArrayEquals("file1\n".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
+                    }
+                }
+            }
+        }
+    }
 
     /// Reads every solid entry and verifies skipped predecessors preserve decoder state.
     @Test

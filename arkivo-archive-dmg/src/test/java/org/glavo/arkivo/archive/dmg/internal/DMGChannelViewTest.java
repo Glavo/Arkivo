@@ -50,6 +50,99 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the bounded-read, extent-mapping, capability, and cleanup contracts of DMG channel views.
 @NotNullByDefault
 final class DMGChannelViewTest {
+    /// Preserves file-channel pre-interruption when outer fork views can answer without reading physical bytes.
+    @ParameterizedTest
+    @ValueSource(strings = {"empty", "eof", "past-eof"})
+    void layeredForkPreservesPreInterruption(String boundary, @TempDir Path directory) throws IOException {
+        Path path = directory.resolve("fork.bin");
+        Files.write(path, sequence(32));
+        FileChannel source = FileChannel.open(path, StandardOpenOption.READ);
+        SeekableByteChannel disk = UDIFBlockChannel.open(source, rawLayout(32L), ArchiveReadLimits.UNLIMITED);
+        SeekableByteChannel partition = ArchiveSliceChannel.open(disk, 4L, 16L);
+        var fork = new HFSPlusFork(7L, 2L, List.of(new HFSPlusExtent(2L, 1L), new HFSPlusExtent(0L, 1L)));
+        try (SeekableByteChannel channel = HFSPlusForkChannel.open(partition, fork, 4)) {
+            assertInstanceOf(InterruptibleChannel.class, channel);
+            channel.position(boundary.equals("empty") ? 0 : boundary.equals("eof") ? 7 : 8);
+            ByteBuffer target = ByteBuffer.allocate(boundary.equals("empty") ? 0 : 1);
+            Thread.currentThread().interrupt();
+            try {
+                assertThrows(ClosedByInterruptException.class, () -> channel.read(target));
+                assertTrue(Thread.currentThread().isInterrupted());
+            } finally {
+                Thread.interrupted();
+            }
+            assertEquals(0, target.position());
+            assertFalse(channel.isOpen());
+            assertFalse(partition.isOpen());
+            assertFalse(disk.isOpen());
+            assertFalse(source.isOpen());
+        }
+    }
+
+    /// Does not introduce interruption semantics into ordinary partition and fork channels.
+    @ParameterizedTest
+    @ValueSource(strings = {"empty", "eof", "past-eof"})
+    void layeredForkPreservesPlainSourcePreInterruption(String boundary) throws IOException {
+        var source = new TestSeekableByteChannel(sequence(32), 32);
+        SeekableByteChannel disk = UDIFBlockChannel.open(source, rawLayout(32L), ArchiveReadLimits.UNLIMITED);
+        SeekableByteChannel partition = ArchiveSliceChannel.open(disk, 4L, 16L);
+        var fork = new HFSPlusFork(7L, 2L, List.of(new HFSPlusExtent(2L, 1L), new HFSPlusExtent(0L, 1L)));
+        try (SeekableByteChannel channel = HFSPlusForkChannel.open(partition, fork, 4)) {
+            assertFalse(channel instanceof InterruptibleChannel);
+            long position = boundary.equals("empty") ? 0 : boundary.equals("eof") ? 7 : 8;
+            channel.position(position);
+            ByteBuffer target = ByteBuffer.allocate(boundary.equals("empty") ? 0 : 1);
+            Thread.currentThread().interrupt();
+            try {
+                assertEquals(boundary.equals("empty") ? 0 : -1, channel.read(target));
+                assertTrue(Thread.currentThread().isInterrupted());
+                assertTrue(channel.isOpen());
+                assertEquals(position, channel.position());
+                assertEquals(0, target.position());
+                assertEquals(0, source.readCount);
+                assertEquals(0, source.closeAttempts);
+            } finally {
+                Thread.interrupted();
+            }
+        }
+    }
+
+    /// Keeps pre-interruption primary and retries cleanup through partition and fork views after source failure.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void layeredPreInterruptionRetriesCleanup(boolean closeBeforeFailure) throws IOException {
+        for (boolean useFork : new boolean[]{false, true}) {
+            for (Throwable cleanup : new Throwable[]{new IOException("cleanup failure"),
+                    new IllegalStateException("cleanup failure"), new AssertionError("cleanup failure")}) {
+                TestSeekableByteChannel source = new InterruptibleTestChannel(sequence(32), 32);
+                source.closeFailures = 1;
+                source.closeFailure = cleanup;
+                source.closeBeforeFailure = closeBeforeFailure;
+                SeekableByteChannel disk = UDIFBlockChannel.open(source, rawLayout(32L), ArchiveReadLimits.UNLIMITED);
+                SeekableByteChannel partition = ArchiveSliceChannel.open(disk, 4L, 16L);
+                var fork = new HFSPlusFork(7L, 2L, List.of(new HFSPlusExtent(2L, 1L), new HFSPlusExtent(0L, 1L)));
+                try (SeekableByteChannel channel = useFork ? HFSPlusForkChannel.open(partition, fork, 4) : partition) {
+                    Thread.currentThread().interrupt();
+                    try {
+                        ClosedByInterruptException failure = assertThrows(ClosedByInterruptException.class,
+                                () -> channel.read(ByteBuffer.allocate(0)));
+                        assertTrue(Thread.currentThread().isInterrupted());
+                        assertArrayEquals(new Throwable[]{cleanup}, failure.getSuppressed());
+                    } finally {
+                        Thread.interrupted();
+                    }
+                    assertFalse(channel.isOpen());
+                    assertEquals(!closeBeforeFailure, source.isOpen());
+                    assertEquals(1, source.closeAttempts);
+                    channel.close();
+                    channel.close();
+                    assertFalse(source.isOpen());
+                    assertEquals(2, source.closeAttempts);
+                }
+            }
+        }
+    }
+
     /// Preserves interruption, delivered bytes, and a retryable cleanup failure at each read interruption boundary.
     @ParameterizedTest
     @ValueSource(strings = {"before", "source", "after"})

@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.xz.XZCheckType;
 import org.glavo.arkivo.codec.xz.XZCodec;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -223,16 +224,11 @@ final class XZDecoderLifecycleTest {
         assertFailureMessage(footerFlags, "XZ Stream Header and Footer flags differ");
 
         byte[] backwardSize = valid.clone();
-        long storedBackwardSize = XZSupport.getLittleEndian(
+        int storedBackwardSize = ByteArrayAccess.readIntLittleEndian(backwardSize, footerOffset + 4);
+        ByteArrayAccess.writeIntLittleEndian(
                 backwardSize,
                 footerOffset + 4,
-                Integer.BYTES
-        );
-        XZSupport.putLittleEndian(
-                backwardSize,
-                footerOffset + 4,
-                storedBackwardSize + 1L,
-                Integer.BYTES
+                storedBackwardSize + 1
         );
         rewriteCrc32(backwardSize, footerOffset + 4, 6, footerOffset);
         assertFailureMessage(backwardSize, "XZ Stream Footer backward size does not match the Index");
@@ -604,11 +600,7 @@ final class XZDecoderLifecycleTest {
     /// Returns the Index offset recorded by a Stream Footer.
     private static int indexOffset(byte[] encoded) {
         int footerOffset = encoded.length - STREAM_FOOTER_SIZE;
-        long storedBackwardSize = XZSupport.getLittleEndian(
-                encoded,
-                footerOffset + 4,
-                Integer.BYTES
-        );
+        long storedBackwardSize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(encoded, footerOffset + 4));
         int indexSize = Math.toIntExact((storedBackwardSize + 1L) * 4L);
         return footerOffset - indexSize;
     }
@@ -628,11 +620,10 @@ final class XZDecoderLifecycleTest {
 
     /// Rewrites one little-endian CRC-32 for the selected byte range.
     private static void rewriteCrc32(byte[] bytes, int offset, int length, int storedOffset) {
-        XZSupport.putLittleEndian(
+        ByteArrayAccess.writeIntLittleEndian(
                 bytes,
                 storedOffset,
-                XZSupport.crc32(bytes, offset, length),
-                Integer.BYTES
+                (int) XZSupport.crc32(bytes, offset, length)
         );
     }
 

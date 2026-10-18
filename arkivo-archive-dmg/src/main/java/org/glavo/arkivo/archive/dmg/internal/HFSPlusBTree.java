@@ -17,6 +17,12 @@ final class HFSPlusBTree {
     /// The encoded node-descriptor size.
     private static final int NODE_DESCRIPTOR_SIZE = 14;
 
+    /// The fixed size of the B-tree header record.
+    private static final int HEADER_RECORD_SIZE = 106;
+
+    /// The fixed size of the reserved user-data record in a header node.
+    private static final int USER_DATA_RECORD_SIZE = 128;
+
     /// The signed node-kind value for a leaf node.
     private static final byte LEAF_NODE_KIND = -1;
 
@@ -50,9 +56,19 @@ final class HFSPlusBTree {
         }
         byte[] headerNode = ChannelIO.readBytes(tree, 0L, nodeSize);
         tracker.acceptMetadata(nodeSize, null);
+        int recordCount = Short.toUnsignedInt(ByteArrayAccess.readShortBigEndian(headerNode, 10));
+        if (headerNode[9] != 0 || uint32(headerNode, 4) != 0L || recordCount != 3) {
+            throw new IOException("Invalid HFS Plus B-tree header-node descriptor");
+        }
         int recordOffset = recordOffset(headerNode, 0);
-        if (recordOffset < NODE_DESCRIPTOR_SIZE || recordOffset > nodeSize - 106) {
+        if (recordOffset != NODE_DESCRIPTOR_SIZE) {
             throw new IOException("Invalid HFS Plus B-tree header-record offset");
+        }
+        validateRecordTable(headerNode, recordCount);
+        if (recordOffset(headerNode, 1) != recordOffset + HEADER_RECORD_SIZE
+                || recordOffset(headerNode, 2) != recordOffset + HEADER_RECORD_SIZE + USER_DATA_RECORD_SIZE
+                || recordOffset(headerNode, 3) != nodeSize - (recordCount + 1) * Short.BYTES) {
+            throw new IOException("Invalid HFS Plus B-tree header-record boundaries");
         }
         int treeDepth = Short.toUnsignedInt(ByteArrayAccess.readShortBigEndian(headerNode, recordOffset));
         long rootNode = uint32(headerNode, recordOffset + 2);

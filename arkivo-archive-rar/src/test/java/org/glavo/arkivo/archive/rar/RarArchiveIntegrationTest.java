@@ -17,6 +17,9 @@ import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -85,6 +88,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -92,6 +96,393 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests end-to-end RAR streaming, file-system, volume, encryption, and corruption behavior.
 @NotNullByDefault
 public final class RarArchiveIntegrationTest {
+    /// Applies the RAR 1.5 memory limit to direct reads, skipped solid bodies, and indexed replay.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void enforcesRar15DecoderMemoryLimits(boolean solid) throws IOException {
+        Member[] members = rar15SolidMembers(0);
+        byte[] bytes = rar4ArchiveVolume(true, false, 15, solid, solid ? members : new Member[]{members[0]});
+        for (int maximum : new int[]{0, 72_719, 203_791, 203_792}) {
+            var limits = ArchiveReadLimits.builder().maximumDecoderMemorySize(maximum).build();
+            var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
+            ByteArrayInputStream source = new ByteArrayInputStream(bytes);
+            try (var reader = RarArkivoStreamingReader.open(source, options)) {
+                assertTrue(reader.next());
+                int remaining = source.available();
+                if (maximum < 203_792) {
+                    DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                            () -> {
+                                if (solid) {
+                                    reader.next();
+                                } else {
+                                    try (InputStream body = reader.openInputStream()) {
+                                        body.readAllBytes();
+                                    }
+                                }
+                            });
+                    assertEquals(maximum, failure.maximum());
+                    assertEquals(maximum < 72_720 ? 72_720 : 203_792, failure.actual());
+                    assertThrows(DecompressionMemoryLimitException.class, reader::next);
+                    assertThrows(DecompressionMemoryLimitException.class, reader::next);
+                    assertEquals(remaining, source.available());
+                } else {
+                    if (solid) {
+                        assertTrue(reader.next());
+                    }
+                    try (InputStream body = reader.openInputStream()) {
+                        assertEquals(solid ? "AA" : "AAAAAAAAAAAA",
+                                new String(body.readAllBytes(), StandardCharsets.US_ASCII));
+                    }
+                    assertFalse(reader.next());
+                }
+            }
+            if (solid && maximum < 203_792) {
+                assertThrows(DecompressionMemoryLimitException.class, () -> {
+                    try (var ignored = RarArkivoFileSystem.open(new TestByteArraySeekableChannel(bytes), options)) {
+                        // Indexing must decode the predecessor of a solid entry.
+                    }
+                });
+            } else {
+                try (var fs = RarArkivoFileSystem.open(new TestByteArraySeekableChannel(bytes), options)) {
+                    Path path = fs.getPath(solid ? "/second" : "/first");
+                    for (int attempt = 0; attempt < 2; attempt++) {
+                        if (maximum < 203_792) {
+                            assertThrows(DecompressionMemoryLimitException.class, () -> Files.readAllBytes(path));
+                        } else {
+                            assertEquals(solid ? "AA" : "AAAAAAAAAAAA", Files.readString(path));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Preserves RAR 1.5 history when advancing over compressed bodies, directories, and stored entries.
+    @ParameterizedTest
+    @CsvSource({"read,0", "read,1", "read,2", "read,3", "skip,0", "skip,1", "skip,2", "skip,3",
+            "partial,0", "partial,1", "partial,2", "partial,3"})
+    void readsRar15ArchiveSolidHistory(String consumption, int layout) throws IOException {
+        Member[] members = rar15SolidMembers(layout);
+        byte[] bytes = rar4ArchiveVolume(true, false, 15, true, members);
+        try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            for (Member member : members) {
+                assertTrue(reader.next());
+                assertEquals(member.path(), reader.readAttributes().path());
+                if (member.directory()) {
+                    assertTrue(reader.readAttributes().isDirectory());
+                } else if (member.path().equals("first") && !consumption.equals("read")) {
+                    if (consumption.equals("partial")) {
+                        try (InputStream body = reader.openInputStream()) {
+                            assertEquals('A', body.read());
+                        }
+                    }
+                } else {
+                    try (InputStream body = reader.openInputStream()) {
+                        byte[] expected = member.compressionMethod() == 0 ? member.body()
+                                : "A".repeat((int) member.unpackedSize()).getBytes(StandardCharsets.US_ASCII);
+                        assertArrayEquals(expected, body.readAllBytes());
+                    }
+                }
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Replays the preceding solid bodies when the last RAR 1.5 entry is requested first.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void replaysRar15ArchiveSolidHistory(int layout) throws IOException {
+        byte[] bytes = rar4ArchiveVolume(true, false, 15, true, rar15SolidMembers(layout));
+        try (var fs = RarArkivoFileSystem.open(new TestByteArraySeekableChannel(bytes))) {
+            assertArrayEquals(new byte[]{'A', 'A'}, Files.readAllBytes(fs.getPath("/second")));
+            assertEquals("AAAAAAAAAAAA", Files.readString(fs.getPath("/first")));
+            assertArrayEquals(new byte[]{'A', 'A'}, Files.readAllBytes(fs.getPath("/second")));
+        }
+    }
+
+    /// Retains one decoder across a split RAR 1.5 body and its following solid member.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 4, 7})
+    void readsRar15SolidHistoryAcrossVolumes(int splitOffset) throws IOException {
+        Member[] members = rar15SolidMembers(0);
+        Member first = members[0];
+        byte[] firstPart = Arrays.copyOfRange(first.body(), 0, splitOffset);
+        byte[] secondPart = Arrays.copyOfRange(first.body(), splitOffset, first.body().length);
+        List<byte[]> contents = List.of(
+                rar4ArchiveVolume(true, true, 15, true, splitCompressedFilePart(
+                        first.path(), first.modificationTime(), first.attributes(), first.unpackedSize(),
+                        crc32(firstPart), firstPart, false, true)),
+                rar4ArchiveVolume(true, false, 15, true, splitCompressedFilePart(
+                        first.path(), first.modificationTime(), first.attributes(), first.unpackedSize(),
+                        first.crc32(), secondPart, true, false), members[1]));
+        ArkivoVolumeSource volumes = index -> index >= 0L && index < contents.size()
+                ? new TestByteArraySeekableChannel(contents.get((int) index)) : null;
+        try (var reader = RarArkivoStreamingReader.open(volumes)) {
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertEquals("AAAAAAAAAAAA", new String(body.readAllBytes(), StandardCharsets.US_ASCII));
+            }
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{'A', 'A'}, body.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+        try (var fs = RarArkivoFileSystem.open(volumes)) {
+            assertArrayEquals(new byte[]{'A', 'A'}, Files.readAllBytes(fs.getPath("/second")));
+        }
+    }
+
+    /// Does not retain RAR 1.5 history when the archive has no global solid flag.
+    @Test
+    void rejectsRar15HistoryWithoutArchiveSolidFlag() throws IOException {
+        byte[] bytes = rar4ArchiveVolume(true, false, 15, false, rar15SolidMembers(0));
+        try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertEquals("AAAAAAAAAAAA", new String(body.readAllBytes(), StandardCharsets.US_ASCII));
+            }
+            assertTrue(reader.next());
+            IOException failure = assertThrows(IOException.class, () -> {
+                try (InputStream body = reader.openInputStream()) {
+                    body.readAllBytes();
+                }
+            });
+            assertEquals("Unexpected end of legacy RAR compressed data", failure.getMessage());
+        }
+    }
+
+    /// Ignores file-level solid bits for RAR 1.5 when the archive is not solid.
+    @Test
+    void ignoresRar15FileSolidFlag() throws IOException {
+        Member first = rar15SolidMembers(0)[0];
+        Member second = splitCompressedFilePart("independent", first.modificationTime(), first.attributes(),
+                first.unpackedSize(), first.crc32(), first.body(), false, false);
+        byte[] bytes = rar4ArchiveVolume(true, false, 15, false, first, second);
+        int offset = RAR4_SIGNATURE.length + rar4BlockHeader(0x73, 0, new byte[6]).length;
+        for (Member member : new Member[]{first, second}) {
+            int headerSize = rar4MemberHeader(member, false, null, 15).length;
+            int flags = Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(bytes, offset + 3));
+            ByteArrayAccess.writeShortLittleEndian(bytes, offset + 3, (short) (flags | 0x0010));
+            CRC32 checksum = new CRC32();
+            checksum.update(bytes, offset + 2, headerSize - 2);
+            ByteArrayAccess.writeShortLittleEndian(bytes, offset, (short) checksum.getValue());
+            offset += headerSize + member.body().length;
+        }
+        try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            for (int index = 0; index < 2; index++) {
+                assertTrue(reader.next());
+                try (InputStream body = reader.openInputStream()) {
+                    assertEquals("AAAAAAAAAAAA", new String(body.readAllBytes(), StandardCharsets.US_ASCII));
+                }
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Keeps the file-level reset rule for RAR 3.x entries inside an archive marked solid.
+    @Test
+    void keepsRar29FileSolidFlagSemantics() throws IOException {
+        byte[] plain = "file1\n".getBytes(StandardCharsets.US_ASCII);
+        byte[] bytes = rar4ArchiveVolume(true, false, 29, true,
+                splitCompressedFilePart("first", 1_700_000_000L, 0100644, plain.length,
+                        crc32(plain), RAR4_COMPRESSED_BODY, false, false),
+                splitCompressedFilePart("second", 1_700_000_000L, 0100644, plain.length,
+                        crc32(plain), RAR4_COMPRESSED_BODY, false, false));
+        try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            for (int index = 0; index < 2; index++) {
+                assertTrue(reader.next());
+                try (InputStream body = reader.openInputStream()) {
+                    assertArrayEquals(plain, body.readAllBytes());
+                }
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Allows a non-solid RAR 3.x member to replace a RAR 1.5 decoder in an archive marked solid.
+    @ParameterizedTest
+    @ValueSource(ints = {29, 36})
+    void resetsRar15HistoryForIndependentRar3Member(int extractionVersion) throws IOException {
+        Member first = rar15SolidMembers(0)[0];
+        byte[] plain = "file1\n".getBytes(StandardCharsets.US_ASCII);
+        Member second = splitCompressedFilePart("second", 1_700_000_000L, 0100644, plain.length,
+                crc32(plain), RAR4_COMPRESSED_BODY, false, false);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(rar4ArchiveVolume(false, false, 15, true, first));
+        output.write(rar4MemberHeader(second, false, null, extractionVersion));
+        output.write(second.body());
+        writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+        try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertTrue(reader.next());
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals(plain, body.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+        try (var fs = RarArkivoFileSystem.open(new TestByteArraySeekableChannel(output.toByteArray()))) {
+            assertArrayEquals(plain, Files.readAllBytes(fs.getPath("/second")));
+        }
+    }
+
+    /// Builds two RAR 1.5 bodies sharing history, optionally interleaved with entries that have no dictionary state.
+    private static Member[] rar15SolidMembers(int layout) {
+        List<Member> members = new ArrayList<>();
+        if ((layout & 1) != 0) {
+            members.add(new Member("before", 1_700_000_000L, 040755, true, false, 3, 0, 0,
+                    new byte[0], null, false, false, false));
+            members.add(storedFile("before-stored", 1_700_000_000L, 0100644, new byte[]{'x'}, null));
+        }
+        // A literal followed by long and short matches produces twelve A bytes.
+        byte[] packed = {(byte) 0xab, (byte) 0xe5, 0, 0, 0, 0x20, 0, 0};
+        byte[] plain = "AAAAAAAAAAAA".getBytes(StandardCharsets.US_ASCII);
+        members.add(splitCompressedFilePart("first", 1_700_000_000L, 0100644, plain.length, crc32(plain), packed, false, false));
+        if ((layout & 2) != 0) {
+            members.add(new Member("between", 1_700_000_000L, 040755, true, false, 3, 0, 0,
+                    new byte[0], null, false, false, false));
+            members.add(storedFile("between-stored", 1_700_000_000L, 0100644, new byte[]{'y'}, null));
+        }
+        // The short match reuses the previous entry's dictionary and adaptive model.
+        members.add(splitCompressedFilePart("second", 1_700_000_000L, 0100644, 2, crc32(new byte[]{'A', 'A'}),
+                new byte[]{(byte) 0xab, 0, 0, 0}, false, false));
+        return members.toArray(Member[]::new);
+    }
+
+    /// Enforces the complete RAR5 workspace ceiling and does not cache a failed indexed decode.
+    @Test
+    void enforcesRar5DecoderMemoryLimits() throws IOException {
+        Member member = splitCompressedFilePart("body", 1_700_000_000L, 0100644, RAR5_COMPRESSED_CONTENT.length,
+                crc32(RAR5_COMPRESSED_CONTENT), RAR5_COMPRESSED_BODY, false, false);
+        byte[] bytes = archive(member);
+        // Fixed tables, a 128 KiB dictionary, two 64 KiB staging buffers, and a whole-entry filter plus its copy.
+        int workspace = 3642 + (1 << 17) + 2 * (64 << 10);
+        int filterSize = RAR5_COMPRESSED_CONTENT.length;
+        int required = workspace + 2 * filterSize;
+        for (int maximum : new int[]{workspace - 1, workspace + filterSize - 1, required - 1, required}) {
+            int rejectedAllocation = maximum < workspace ? workspace
+                    : maximum < workspace + filterSize ? workspace + filterSize : required;
+            var limits = ArchiveReadLimits.builder().maximumDecoderMemorySize(maximum).build();
+            var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
+            ByteArrayInputStream source = new ByteArrayInputStream(bytes);
+            try (var reader = RarArkivoStreamingReader.open(source, options)) {
+                assertTrue(reader.next());
+                int remaining = source.available();
+                if (maximum < required) {
+                    DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                            () -> {
+                                try (InputStream body = reader.openInputStream()) {
+                                    body.readAllBytes();
+                                }
+                            });
+                    assertEquals(maximum, failure.maximum());
+                    assertEquals(rejectedAllocation, failure.actual());
+                    assertEquals(1, failure.getSuppressed().length);
+                    assertTrue(failure.getSuppressed()[0] instanceof DecompressionMemoryLimitException);
+                    assertNotSame(failure, failure.getSuppressed()[0]);
+                    int remainingAfterFailure = source.available();
+                    if (maximum < workspace) {
+                        assertEquals(remaining, remainingAfterFailure);
+                    }
+                    assertThrows(DecompressionMemoryLimitException.class, reader::next);
+                    assertThrows(DecompressionMemoryLimitException.class, reader::next);
+                    assertEquals(remainingAfterFailure, source.available());
+                } else {
+                    try (InputStream body = reader.openInputStream()) {
+                        assertArrayEquals(RAR5_COMPRESSED_CONTENT, body.readAllBytes());
+                    }
+                    assertFalse(reader.next());
+                }
+            }
+            try (var fs = RarArkivoFileSystem.open(new TestByteArraySeekableChannel(bytes), options)) {
+                Path path = fs.getPath("/body");
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    if (maximum < required) {
+                        DecompressionMemoryLimitException failure = assertThrows(DecompressionMemoryLimitException.class,
+                                () -> Files.readAllBytes(path));
+                        assertEquals(maximum, failure.maximum());
+                        assertEquals(rejectedAllocation, failure.actual());
+                    } else {
+                        assertArrayEquals(RAR5_COMPRESSED_CONTENT, Files.readAllBytes(path));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Applies declared window bounds in streaming and indexed reads without consuming an oversized body.
+    @ParameterizedTest
+    @CsvSource({"4,0", "4,1", "4,2", "4,3", "4,4", "4,5", "4,6", "5,0"})
+    void enforcesDecoderWindowLimits(int version, int windowCode) throws IOException {
+        byte[] content = version == 4 ? "file1\n".getBytes(StandardCharsets.UTF_8) : RAR5_COMPRESSED_CONTENT;
+        Member member = splitCompressedFilePart("body", 1_700_000_000L, 0100644, content.length,
+                crc32(content), version == 4 ? RAR4_COMPRESSED_BODY : RAR5_COMPRESSED_BODY, false, false);
+        byte[] bytes = version == 4 ? rar4Archive(member) : archive(member);
+        int window = version == 4 ? 0x10000 << windowCode : 0x20000;
+        if (version == 4) {
+            int header = RAR4_SIGNATURE.length
+                    + Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(bytes, RAR4_SIGNATURE.length + 5));
+            int flags = Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(bytes, header + 3));
+            ByteArrayAccess.writeShortLittleEndian(bytes, header + 3, (short) (flags | windowCode << 5));
+            int headerSize = Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(bytes, header + 5));
+            CRC32 headerCrc = new CRC32();
+            headerCrc.update(bytes, header + 2, headerSize - 2);
+            ByteArrayAccess.writeShortLittleEndian(bytes, header, (short) headerCrc.getValue());
+        }
+        for (int maximum : new int[]{0, window - 1, window}) {
+            var limits = ArchiveReadLimits.builder().maximumCompressionWindowSize(maximum).build();
+            var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
+            ByteArrayInputStream source = new ByteArrayInputStream(bytes);
+            try (var reader = RarArkivoStreamingReader.open(source, options)) {
+                assertTrue(reader.next());
+                int remaining = source.available();
+                InputStream body = reader.openInputStream();
+                if (maximum < window) {
+                    DecompressionWindowLimitException failure = assertThrows(DecompressionWindowLimitException.class,
+                            body::readAllBytes);
+                    assertEquals(maximum, failure.maximum());
+                    assertEquals(window, failure.actual());
+                    assertNotSame(failure, assertThrows(DecompressionWindowLimitException.class, body::read));
+                    assertNotSame(failure, assertThrows(DecompressionWindowLimitException.class, body::close));
+                    body.close();
+                    assertThrows(DecompressionWindowLimitException.class, reader::next);
+                    assertEquals(remaining, source.available());
+                } else {
+                    try (body) {
+                        assertArrayEquals(content, body.readAllBytes());
+                    }
+                    assertFalse(reader.next());
+                }
+            }
+            try (var fileSystem = RarArkivoFileSystem.open(new TestByteArraySeekableChannel(bytes), options)) {
+                Path path = fileSystem.getPath("/body");
+                if (maximum < window) {
+                    assertThrows(DecompressionWindowLimitException.class, () -> Files.readAllBytes(path));
+                    assertThrows(DecompressionWindowLimitException.class, () -> Files.readAllBytes(path));
+                } else {
+                    assertArrayEquals(content, Files.readAllBytes(path));
+                }
+            }
+        }
+    }
+
+    /// Stored entries do not require a decompression history window or decoder workspace.
+    @Test
+    void readsStoredEntriesWithZeroWindowLimit() throws IOException {
+        var limits = ArchiveReadLimits.builder().maximumCompressionWindowSize(0).maximumDecoderMemorySize(0).build();
+        var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
+        Member member = storedFile("body", 1_700_000_000L, 0100644, new byte[]{1, 2, 3}, null);
+        for (byte[] bytes : new byte[][]{rar4Archive(member), archive(member)}) {
+            try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(bytes), options)) {
+                assertTrue(reader.next());
+                try (var body = reader.openInputStream()) {
+                    assertArrayEquals(new byte[]{1, 2, 3}, body.readAllBytes());
+                }
+                assertFalse(reader.next());
+            }
+        }
+    }
+
     /// Reports stalled volume reads without returning fabricated entry bytes or consuming source data.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
@@ -576,6 +967,71 @@ public final class RarArchiveIntegrationTest {
         }
     }
 
+    /// Preserves hard-link identity independently of entry order and shared file-copy content.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void fileSystemDistinguishesHardLinkIdentityFromFileCopies(boolean reverse) throws IOException {
+        byte[] content = "shared-content".getBytes(StandardCharsets.UTF_8);
+        Member[] members = {
+                storedFile("original", 0, 0100644, content, null),
+                redirectedEntry("alias", 0, 0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK, 0, "original"),
+                redirectedEntry("second-alias", 0, 0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK, 0, "alias"),
+                redirectedEntry("copy", 0, 0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY, 0, "second-alias"),
+                redirectedEntry("copy-alias", 0, 0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK, 0, "copy"),
+                redirectedEntry("second-copy-alias", 0, 0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK, 0, "copy-alias")
+        };
+        if (reverse) {
+            Collections.reverse(Arrays.asList(members));
+        }
+        Path archivePath = createTemporaryArchivePath("rar-hard-link-identity-");
+        Files.write(archivePath, archive(members));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        try (var fileSystem = RarArkivoFileSystem.open(archivePath, RarArchiveOptions.DEFAULT.withCommon(
+                ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)))) {
+            List<String> names = List.of("original", "alias", "second-alias",
+                    "copy", "copy-alias", "second-copy-alias");
+            Object originalKey = Objects.requireNonNull(Files.readAttributes(
+                    fileSystem.getPath("original"), BasicFileAttributes.class).fileKey());
+            Object copyKey = Objects.requireNonNull(Files.readAttributes(
+                    fileSystem.getPath("copy"), BasicFileAttributes.class).fileKey());
+            assertFalse(originalKey.equals(copyKey));
+            for (int index = 0; index < names.size(); index++) {
+                Path path = fileSystem.getPath(names.get(index));
+                Object expectedKey = index < 3 ? originalKey : copyKey;
+                assertEquals(expectedKey, Files.readAttributes(path, BasicFileAttributes.class).fileKey());
+                assertEquals(expectedKey, Files.readAttributes(
+                        path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).fileKey());
+                assertEquals(expectedKey, Files.readAttributes(
+                        path, RarArkivoEntryAttributes.class, LinkOption.NOFOLLOW_LINKS).fileKey());
+                assertEquals(expectedKey, Files.readAttributes(
+                        path, "basic:fileKey", LinkOption.NOFOLLOW_LINKS).get("fileKey"));
+                assertEquals(expectedKey, Files.readAttributes(
+                        path, "rar:fileKey", LinkOption.NOFOLLOW_LINKS).get("fileKey"));
+                for (int other = 0; other < names.size(); other++) {
+                    assertEquals(index / 3 == other / 3,
+                            Files.isSameFile(path, fileSystem.getPath(names.get(other))));
+                }
+            }
+            assertEquals(0, storage.createdContentCount());
+            for (String name : names) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath(name)));
+            }
+            assertEquals(1, storage.createdContentCount());
+            assertFalse(Files.isSameFile(fileSystem.getPath("original"), fileSystem.getPath("copy")));
+            assertEquals(originalKey, Files.readAttributes(
+                    fileSystem.getPath("second-alias"), BasicFileAttributes.class).fileKey());
+            assertEquals(copyKey, Files.readAttributes(
+                    fileSystem.getPath("second-copy-alias"), BasicFileAttributes.class).fileKey());
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Counts each redirected logical body, including targets whose sizes are discovered during scanning.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
@@ -610,22 +1066,33 @@ public final class RarArchiveIntegrationTest {
         }
     }
 
-    /// Invalid redirection chains fail without poisoning other entries or caching incomplete content.
+    /// Invalid redirection chains retain distinct identities and fail without caching incomplete content.
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    public void fileSystemRejectsInvalidRedirectionChains(boolean cyclic) throws IOException {
+    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+    public void fileSystemRejectsInvalidRedirectionChains(boolean cyclic, boolean reverse) throws IOException {
         byte[] content = "unrelated-content".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchivePath("rar-redirection-invalid-");
-        Files.write(archivePath, archive(
+        Member[] members = {
                 storedFile("source", 0, 0100644, content, null),
                 redirectedEntry("first", 0, 0100644, RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK,
                         0, "second"),
                 redirectedEntry("second", 0, 0100644, RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY,
-                        0, cyclic ? "first" : "missing")));
+                        0, cyclic ? "first" : "missing"),
+                redirectedEntry("prefix", 0, 0100644, RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK,
+                        0, "first")
+        };
+        if (reverse) {
+            Collections.reverse(Arrays.asList(members));
+        }
+        Files.write(archivePath, archive(members));
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (var fileSystem = RarArkivoFileSystem.open(archivePath, RarArchiveOptions.DEFAULT.withCommon(
                 ArchiveReadOptions.DEFAULT.withEditStorageFactory(() -> storage)))) {
-            for (String name : List.of("first", "second", "first")) {
+            for (String name : List.of("first", "second", "prefix", "first")) {
+                for (String other : List.of("first", "second", "prefix")) {
+                    assertEquals(name.equals(other), Files.isSameFile(
+                            fileSystem.getPath(name), fileSystem.getPath(other)));
+                }
                 IOException failure = assertThrows(IOException.class,
                         () -> Files.readAllBytes(fileSystem.getPath(name)));
                 assertTrue(failure.getMessage().contains(cyclic ? "Cyclic" : "unavailable"));
@@ -1049,6 +1516,80 @@ public final class RarArchiveIntegrationTest {
         }
     }
 
+    /// Rejects stored split sizes before oversized data can escape through reads, skips, or indexed access.
+    @ParameterizedTest
+    @CsvSource({"4,1,2,0", "5,1,2,0", "4,3,2,2", "5,3,2,2", "4,5,2,2", "5,5,2,2",
+            "4,0,0,1", "5,0,0,1"})
+    void rejectsIncorrectStoredSplitSize(int version, int declaredSize, int firstSize, int lastSize) throws IOException {
+        byte[] first = new byte[firstSize];
+        byte[] last = new byte[lastSize];
+        long crc = crc32(concatenate(first, last));
+        Member[] parts = {
+                splitStoredFilePart("split", 1_700_000_000L, 0100644, declaredSize, crc, first, false, true),
+                splitStoredFilePart("split", 1_700_000_000L, 0100644, declaredSize, crc, last, true, false)
+        };
+        byte[] bytes = version == 4 ? rar4Archive(parts) : archive(parts);
+        var limits = ArchiveReadLimits.builder()
+                .maximumEntrySize(declaredSize).maximumTotalEntrySize(declaredSize).build();
+        var options = new RarArchiveOptions(ArchiveReadOptions.DEFAULT.withLimits(limits));
+        for (String operation : List.of("read", "skip", "advance", "close", "reader-close")) {
+            ByteArrayInputStream source = new ByteArrayInputStream(bytes);
+            try (var reader = RarArkivoStreamingReader.open(source, options)) {
+                IOException failure = assertThrows(IOException.class, () -> {
+                    assertTrue(reader.next());
+                    if (operation.equals("advance")) {
+                        reader.next();
+                    } else {
+                        try (InputStream body = reader.openInputStream()) {
+                            switch (operation) {
+                                case "read" -> body.readAllBytes();
+                                case "skip" -> body.skipNBytes(firstSize + lastSize);
+                                case "close" -> body.read();
+                                case "reader-close" -> {
+                                    body.read();
+                                    reader.close();
+                                }
+                                default -> throw new AssertionError(operation);
+                            }
+                        }
+                    }
+                }, operation);
+                assertTrue(failure.getMessage().contains("declared unpacked size"), failure::toString);
+                int remaining = source.available();
+                assertThrows(IOException.class, reader::next);
+                reader.close();
+                assertEquals(remaining, source.available(), "Failure cleanup must not consume more input");
+            }
+        }
+        assertThrows(IOException.class, () -> {
+            try (var ignored = RarArkivoFileSystem.open(new TestByteArraySeekableChannel(bytes), options)) {
+                // Indexing must reject contradictory part sizes, even without opening an entry body.
+            }
+        });
+    }
+
+    /// Accepts zero-length physical parts without confusing them with the logical end of a stored entry.
+    @ParameterizedTest
+    @CsvSource({"4,0,0", "5,0,0", "4,0,3", "5,0,3", "4,3,0", "5,3,0"})
+    void readsStoredSplitEntryWithEmptyPart(int version, int firstSize, int lastSize) throws IOException {
+        byte[] first = new byte[firstSize];
+        byte[] last = new byte[lastSize];
+        byte[] content = concatenate(first, last);
+        long crc = crc32(content);
+        Member[] parts = {
+                splitStoredFilePart("split", 1_700_000_000L, 0100644, content.length, crc, first, false, true),
+                splitStoredFilePart("split", 1_700_000_000L, 0100644, content.length, crc, last, true, false)
+        };
+        byte[] bytes = version == 4 ? rar4Archive(parts) : archive(parts);
+        try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals(content, body.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
     /// Verifies that stored RAR5 entries split across file parts are exposed as one logical entry.
     @Test
     public void readsStoredMultiVolumeEntry() throws IOException {
@@ -1126,6 +1667,30 @@ public final class RarArchiveIntegrationTest {
             IOException exception = assertThrows(IOException.class, reader::openInputStream);
             assertEquals(true, exception.getMessage().contains("previous volume"));
             org.junit.jupiter.api.Assertions.assertFalse(reader.next());
+        }
+    }
+
+    /// Preserves nonempty logical sizes on redirections that carry no physical stored body.
+    @ParameterizedTest
+    @ValueSource(ints = {RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK,
+            RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY})
+    void readsRedirectionWithTargetSize(int redirectionType) throws IOException {
+        byte[] content = {1, 2, 3};
+        Member alias = new Member("alias", 1_700_000_000L, 0100644, false, false,
+                0, 0, content.length, new byte[0], redirection(redirectionType, 0, "target"),
+                false, false, false);
+        byte[] bytes = archive(storedFile("target", 1_700_000_000L, 0100644, content, null), alias);
+        try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+            assertTrue(reader.next());
+            assertTrue(reader.next());
+            assertEquals(content.length, reader.readAttributes(RarArkivoEntryAttributes.class).unpackedSize());
+            try (InputStream input = reader.openInputStream()) {
+                assertEquals(-1, input.read());
+            }
+            assertFalse(reader.next());
+        }
+        try (var fs = RarArkivoFileSystem.open(new TestByteArraySeekableChannel(bytes))) {
+            assertArrayEquals(content, Files.readAllBytes(fs.getPath("alias")));
         }
     }
 
@@ -3262,6 +3827,49 @@ public final class RarArchiveIntegrationTest {
         deleteTemporaryArchive(archivePath);
     }
 
+    /// Invalid UTF-8 link bodies cannot resolve to a file whose name contains a replacement character.
+    @Test
+    void rejectsUndecodableRar4LinkTargets() throws IOException {
+        for (byte[] target : List.of(new byte[]{(byte) 0xff}, new byte[]{(byte) 0xe2, (byte) 0x82},
+                new byte[]{(byte) 0xc0, (byte) 0xaf})) {
+            byte[] bytes = rar4Archive(
+                    storedFile("link", 1_700_000_000L, 0120777, target, null),
+                    storedFile("\ufffd", 1_700_000_000L, 0100644, new byte[]{7}, null));
+            try (var reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(bytes))) {
+                assertThrows(java.nio.charset.CharacterCodingException.class, reader::next);
+            }
+            Path archive = createTemporaryArchivePath("rar4-invalid-link-");
+            try {
+                Files.write(archive, bytes);
+                assertThrows(java.nio.charset.CharacterCodingException.class, () -> {
+                    try (var fs = RarArkivoFileSystem.open(archive)) {
+                        Files.readSymbolicLink(fs.getPath("link"));
+                    }
+                });
+            } finally {
+                deleteTemporaryArchive(archive);
+            }
+        }
+    }
+
+    /// Valid UTF-8 containing the replacement character is not confused with a decoding failure.
+    @Test
+    void readsEncodedReplacementCharacterInRar4LinkTarget() throws IOException {
+        byte[] bytes = rar4Archive(
+                storedFile("link", 1_700_000_000L, 0120777, "\ufffd".getBytes(StandardCharsets.UTF_8), null),
+                storedFile("\ufffd", 1_700_000_000L, 0100644, new byte[]{7}, null));
+        Path archive = createTemporaryArchivePath("rar4-valid-link-");
+        try {
+            Files.write(archive, bytes);
+            try (var fs = RarArkivoFileSystem.open(archive)) {
+                assertEquals("\ufffd", Files.readSymbolicLink(fs.getPath("link")).toString());
+                assertArrayEquals(new byte[]{7}, Files.readAllBytes(fs.getPath("link")));
+            }
+        } finally {
+            deleteTemporaryArchive(archive);
+        }
+    }
+
     /// Verifies that stored entry CRC32 mismatches are reported while draining the entry.
     @Test
     public void rejectsBadStoredEntryCrc32() throws IOException {
@@ -3396,11 +4004,26 @@ public final class RarArchiveIntegrationTest {
             boolean nextVolume,
             Member... members
     ) throws IOException {
+        return rar4ArchiveVolume(includeEndHeader, nextVolume, 29, false, members);
+    }
+
+    /// Creates a RAR4 volume with explicit extraction version and archive-level solid flag.
+    private static byte[] rar4ArchiveVolume(
+            boolean includeEndHeader,
+            boolean nextVolume,
+            int extractionVersion,
+            boolean solid,
+            Member... members
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(RAR4_SIGNATURE);
-        writeRar4Block(output, 0x73, 0, new byte[6], new byte[0]);
+        writeRar4Block(output, 0x73, solid ? 0x0008L : 0L, new byte[6], new byte[0]);
         for (Member member : members) {
-            writeRar4Member(output, member);
+            if (member.service()) {
+                continue;
+            }
+            output.write(rar4MemberHeader(member, false, null, extractionVersion));
+            output.write(member.body());
         }
         if (includeEndHeader) {
             writeRar4Block(output, 0x7b, nextVolume ? 0x0001L : 0L, new byte[0], new byte[0]);
@@ -3619,6 +4242,9 @@ public final class RarArchiveIntegrationTest {
         }
 
         long flags = 0x8000L;
+        if (member.directory()) {
+            flags |= 0x00e0L;
+        }
         if (member.continuesFromPreviousVolume()) {
             flags |= 0x0001L;
         }

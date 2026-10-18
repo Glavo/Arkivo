@@ -31,15 +31,18 @@ public final class ArkivoPathMatchersTest {
         assertThrows(PatternSyntaxException.class, () -> ArkivoPathMatchers.create(syntax + ":["));
     }
 
-    /// Verifies that glob matchers use the configured separator.
+    /// Colons and backslashes are name characters rather than archive path separators.
     @Test
-    public void globMatcherUsesConfiguredSeparator() {
-        Path unixPath = path("/dir/hello.txt");
-        Path customPath = path(":dir:hello.txt");
+    public void onlySlashSeparatesPathSegments() {
+        PathMatcher segment = ArkivoPathMatchers.create("glob:*.txt");
+        assertTrue(segment.matches(path("dir:hello.txt")));
+        assertTrue(segment.matches(path("dir\\hello.txt")));
+        assertFalse(segment.matches(path("dir/hello.txt")));
 
-        assertTrue(ArkivoPathMatchers.create("glob:**/*.txt", '/').matches(unixPath));
-        assertFalse(ArkivoPathMatchers.create("glob:**/*.bin", '/').matches(unixPath));
-        assertTrue(ArkivoPathMatchers.create("glob:**:*.txt", ':').matches(customPath));
+        PathMatcher characterClass = ArkivoPathMatchers.create("glob:[!a]");
+        assertTrue(characterClass.matches(path(":")));
+        assertTrue(characterClass.matches(path("\\")));
+        assertFalse(characterClass.matches(path("/")));
     }
 
     /// Verifies that regex matchers are forwarded unchanged.

@@ -14,6 +14,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -52,11 +53,13 @@ public final class ZipSplitVolumePaths {
     ///
     /// This method reads and closes the final archive path while inspecting its end records and may block. The returned
     /// list is ordered from `.z01` through the final archive path and does not transfer ownership of any open resource.
+    /// Each numbered volume must exist when discovered; the files may change after this method returns.
     ///
     /// @param archivePath the final archive path, conventionally ending in `.zip`
     /// @return the immutable ordered volume paths, or `null` when `.z01` is absent or end metadata is single-volume
     /// @throws NullPointerException if `archivePath` is `null`
-    /// @throws IOException if end metadata cannot be read or describes too many conventional volumes
+    /// @throws IOException if end metadata cannot be read, a numbered volume cannot be inspected,
+    ///                     or the volume count exceeds the list size limit
     public static @Nullable @Unmodifiable List<Path> discover(Path archivePath) throws IOException {
         Path firstVolumePath = numberedVolumePath(archivePath, 0);
         if (!Files.exists(firstVolumePath)) {
@@ -71,9 +74,12 @@ public final class ZipSplitVolumePaths {
             throw new IOException("ZIP split archive has too many conventional volumes");
         }
 
-        ArrayList<Path> paths = new ArrayList<>((int) finalDiskNumber + 1);
+        ArrayList<Path> paths = new ArrayList<>();
         for (int diskNumber = 0; diskNumber < finalDiskNumber; diskNumber++) {
-            paths.add(numberedVolumePath(archivePath, diskNumber));
+            Path path = numberedVolumePath(archivePath, diskNumber);
+            // Grow only for volumes present on disk, not for an untrusted declared count.
+            Files.readAttributes(path, BasicFileAttributes.class);
+            paths.add(path);
         }
         paths.add(archivePath);
         return List.copyOf(paths);

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 package org.glavo.arkivo.archive.zip.internal;
-import org.glavo.arkivo.internal.ByteArrayAccess;
 
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.EOFException;
@@ -43,11 +43,6 @@ final class ZipLittleEndian {
                 | (readRequiredByte(input) << 8)
                 | (readRequiredByte(input) << 16)
                 | (readRequiredByte(input) << 24);
-    }
-
-    /// Reads a little-endian signed 32-bit integer from a byte array.
-    static int readInt(byte[] value, int offset) {
-        return ByteArrayAccess.readIntLittleEndian(value, offset);
     }
 
     /// Reads a little-endian unsigned 32-bit integer, or `-1` when no bytes remain.
