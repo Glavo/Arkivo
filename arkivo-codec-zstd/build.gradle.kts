@@ -252,10 +252,12 @@ tasks.register<Exec>("buildZstdPrefixReference") {
 }
 
 listOf("RoundTrip" to "round_trip", "StreamRoundTrip" to "stream_round_trip",
+    "DictionaryStreamRoundTrip" to "dictionary_stream_round_trip",
     "DictionaryLoader" to "dictionary_loader", "RawDictionary" to "raw_dictionary",
     "DictionaryRoundTrip" to "dictionary_round_trip",
     "DictionaryDecompress" to "dictionary_decompress").forEach { (taskSuffix, sourceSuffix) ->
-    val referenceSource = layout.projectDirectory.file("src/tier2Test/c/zstd_${sourceSuffix}_reference.c")
+    val referenceSourceSuffix = if (sourceSuffix == "dictionary_stream_round_trip") "stream_round_trip" else sourceSuffix
+    val referenceSource = layout.projectDirectory.file("src/tier2Test/c/zstd_${referenceSourceSuffix}_reference.c")
     val referenceExecutable = layout.buildDirectory.file("reference-tools/zstd-${sourceSuffix.replace('_', '-')}-reference" +
         if (System.getProperty("os.name").startsWith("Windows")) ".exe" else "")
     tasks.register<Exec>("buildZstd${taskSuffix}Reference") {
@@ -274,6 +276,7 @@ listOf("RoundTrip" to "round_trip", "StreamRoundTrip" to "stream_round_trip",
             executable.parentFile.mkdirs()
             val command = mutableListOf(compiler)
             if (File(compiler).nameWithoutExtension.equals("zig", ignoreCase = true)) command.add("cc")
+            if (sourceSuffix == "dictionary_stream_round_trip") command.add("-DARKIVO_DICTIONARY_STREAM")
             command.addAll(listOf("-O2", "-DZSTD_DISABLE_ASM", "-DXXH_NAMESPACE=ZSTD_",
                 "-DZSTD_MULTITHREAD", "-DFUZZING_ASSERT_VALID_SEQUENCE",
                 "-I${root.resolve("lib")}", "-I${root.resolve("lib/common")}",
@@ -334,6 +337,10 @@ tasks.named<Test>("tier2Test") {
         providers.environmentVariable("ARKIVO_ZSTD_STREAM_ROUND_TRIP_EXECUTABLE").orElse(""))
     inputs.property("requireStreamRoundTripReference",
         providers.environmentVariable("ARKIVO_REQUIRE_ZSTD_STREAM_ROUND_TRIP").orElse("false"))
+    inputs.property("dictionaryStreamRoundTripReferenceExecutable",
+        providers.environmentVariable("ARKIVO_ZSTD_DICTIONARY_STREAM_ROUND_TRIP_EXECUTABLE").orElse(""))
+    inputs.property("requireDictionaryStreamRoundTripReference",
+        providers.environmentVariable("ARKIVO_REQUIRE_ZSTD_DICTIONARY_STREAM_ROUND_TRIP").orElse("false"))
     inputs.property("dictionaryLoaderReferenceExecutable",
         providers.environmentVariable("ARKIVO_ZSTD_DICTIONARY_LOADER_EXECUTABLE").orElse(""))
     inputs.property("requireDictionaryLoaderReference",
@@ -354,7 +361,8 @@ tasks.named<Test>("tier2Test") {
     // Missing optional tools remain the tests' responsibility, including required-reference CI failures.
     inputs.files(providers.provider {
         listOf("DECODECORPUS", "FSE", "HUFFMAN", "BLOCK", "PREFIX", "ROUND_TRIP", "STREAM_ROUND_TRIP",
-            "DICTIONARY_LOADER", "RAW_DICTIONARY", "DICTIONARY_ROUND_TRIP", "DICTIONARY_DECOMPRESS").mapNotNull { key ->
+            "DICTIONARY_LOADER", "RAW_DICTIONARY", "DICTIONARY_ROUND_TRIP", "DICTIONARY_DECOMPRESS",
+            "DICTIONARY_STREAM_ROUND_TRIP").mapNotNull { key ->
             providers.environmentVariable("ARKIVO_ZSTD_${key}_EXECUTABLE").orNull
         }.filter { it.isNotBlank() }.map { file(it) }.filter { it.isFile }
     }).withPropertyName("nativeReferenceExecutables").withPathSensitivity(PathSensitivity.NONE)

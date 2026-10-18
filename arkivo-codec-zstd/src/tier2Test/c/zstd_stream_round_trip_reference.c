@@ -16,6 +16,99 @@ static size_t accepted;
 static size_t produced;
 static size_t frames;
 
+#ifdef ARKIVO_DICTIONARY_STREAM
+/* Exports the original interpretation and lifetime without modifying the trainer or its entropy consumption. */
+static void dictionary(const void* bytes, size_t size, int type, int prefix, int load) {
+    size_t i;
+    printf("D %d %d %d %zu ", type, prefix, load, size);
+    if (!size) putchar('-');
+    for (i = 0; i < size; i++) printf("%02x", (unsigned)((const unsigned char*)bytes)[i]);
+    putchar('\n');
+}
+
+/* Observes persistent dictionary loading, including copied and referenced variants. */
+static size_t traceLoad(ZSTD_CCtx* context, const void* bytes, size_t size,
+                        ZSTD_dictLoadMethod_e load, ZSTD_dictContentType_e type) {
+    dictionary(bytes, size, type, 0, load);
+    return ZSTD_CCtx_loadDictionary_advanced(context, bytes, size, load, type);
+}
+
+/* Observes a prefix that is consumed by the first frame only. */
+static size_t tracePrefix(ZSTD_CCtx* context, const void* bytes, size_t size, ZSTD_dictContentType_e type) {
+    dictionary(bytes, size, type, 1, -1);
+    return ZSTD_CCtx_refPrefix_advanced(context, bytes, size, type);
+}
+
+/* Reads bounded hexadecimal input for independent verification of Java-produced streams. */
+static unsigned char* readBytes(size_t* size) {
+    unsigned char* bytes;
+    size_t i;
+    FUZZ_ASSERT(scanf("%zu", size) == 1 && *size <= 32 * 1024 * 1024);
+    bytes = (unsigned char*)FUZZ_malloc(*size);
+    if (!*size) {
+        char empty;
+        FUZZ_ASSERT(scanf(" %c", &empty) == 1 && empty == '-');
+    }
+    for (i = 0; i < *size; i++) {
+        unsigned value;
+        FUZZ_ASSERT(scanf("%2x", &value) == 1);
+        bytes[i] = (unsigned char)value;
+    }
+    return bytes;
+}
+
+/* Checks complete streams using the original dictionary interpretation and prefix lifetime. */
+static int decodeRequests(void) {
+    int type, prefix;
+    while (scanf("%d %d", &type, &prefix) == 2) {
+        size_t plainSize, dictSize, encodedSize, result;
+        unsigned char* plain = readBytes(&plainSize);
+        unsigned char* dict = readBytes(&dictSize);
+        unsigned char* encoded = readBytes(&encodedSize);
+        unsigned char* output = (unsigned char*)FUZZ_malloc(plainSize + 1);
+        ZSTD_DCtx* decoder = ZSTD_createDCtx();
+        FUZZ_ASSERT(decoder && type >= 0 && type <= 2 && (prefix == 0 || prefix == 1));
+        if (prefix) FUZZ_ZASSERT(ZSTD_DCtx_refPrefix_advanced(decoder, dict, dictSize, (ZSTD_dictContentType_e)type));
+        else FUZZ_ZASSERT(ZSTD_DCtx_loadDictionary_advanced(decoder, dict, dictSize,
+                ZSTD_dlm_byCopy, (ZSTD_dictContentType_e)type));
+        result = ZSTD_decompressDCtx(decoder, output, plainSize, encoded, encodedSize);
+        FUZZ_ZASSERT(result);
+        FUZZ_ASSERT(result == plainSize && !FUZZ_memcmp(plain, output, plainSize));
+        /* Independently require every flush to expose its accepted plaintext without later input. */
+        FUZZ_ZASSERT(ZSTD_DCtx_reset(decoder, ZSTD_reset_session_and_parameters));
+        if (prefix) FUZZ_ZASSERT(ZSTD_DCtx_refPrefix_advanced(decoder, dict, dictSize, (ZSTD_dictContentType_e)type));
+        else FUZZ_ZASSERT(ZSTD_DCtx_loadDictionary_advanced(decoder, dict, dictSize,
+                ZSTD_dlm_byCopy, (ZSTD_dictContentType_e)type));
+        {
+            size_t count, index;
+            ZSTD_inBuffer in = { encoded, 0, 0 };
+            ZSTD_outBuffer out = { output, plainSize + 1, 0 };
+            FUZZ_ASSERT(scanf("%zu", &count) == 1 && count <= encodedSize + 1);
+            for (index = 0; index < count; index++) {
+                size_t encodedEnd, decodedEnd;
+                int frameEnd;
+                FUZZ_ASSERT(scanf("%zu %zu %d", &encodedEnd, &decodedEnd, &frameEnd) == 3);
+                FUZZ_ASSERT(encodedEnd >= in.pos && encodedEnd <= encodedSize && decodedEnd <= plainSize);
+                in.size = encodedEnd;
+                while (in.pos < in.size) {
+                    size_t beforeInput = in.pos, beforeOutput = out.pos;
+                    result = ZSTD_decompressStream(decoder, &out, &in);
+                    FUZZ_ZASSERT(result);
+                    FUZZ_ASSERT(in.pos > beforeInput || out.pos > beforeOutput);
+                }
+                FUZZ_ASSERT((result == 0) == frameEnd && out.pos == decodedEnd);
+                FUZZ_ASSERT(!FUZZ_memcmp(plain, output, decodedEnd));
+            }
+            FUZZ_ASSERT(in.pos == encodedSize && out.pos == plainSize && result == 0);
+        }
+        puts("OK");
+        ZSTD_freeDCtx(decoder);
+        free(plain); free(dict); free(encoded); free(output);
+    }
+    return ferror(stdin) || fflush(stdout) != 0 ? 2 : 0;
+}
+#endif
+
 /* Emits one requested native parameter after the original parameter producer has run. */
 static void parameter(ZSTD_CCtx* context, const char* name, ZSTD_cParameter key) {
     int value;
@@ -71,12 +164,23 @@ static size_t traceCompress(ZSTD_CCtx* context, ZSTD_outBuffer* out,
 #define STATEFUL_FUZZING
 #define FUZZ_setRandomParameters traceParameters
 #define ZSTD_compressStream2 traceCompress
+#ifdef ARKIVO_DICTIONARY_STREAM
+#define ZSTD_CCtx_loadDictionary_advanced traceLoad
+#define ZSTD_CCtx_refPrefix_advanced tracePrefix
+#include "dictionary_stream_round_trip.c"
+#undef ZSTD_CCtx_loadDictionary_advanced
+#undef ZSTD_CCtx_refPrefix_advanced
+#else
 #include "stream_round_trip.c"
+#endif
 #undef FUZZ_setRandomParameters
 #undef ZSTD_compressStream2
 
 /* Runs original finite inputs and exports their logical actions and concatenated physical frames. */
 int main(int argc, char** argv) {
+#ifdef ARKIVO_DICTIONARY_STREAM
+    if (argc == 2 && strcmp(argv[1], "--decode") == 0) return decodeRequests();
+#endif
     int original = argc == 2 && strcmp(argv[1], "--original-reuse") == 0;
     int reuse = original || (argc == 2 && strcmp(argv[1], "--reuse") == 0);
     int fields;

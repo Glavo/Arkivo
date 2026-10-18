@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.CleanupMode;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-/// Replays the completed actions of Zstandard 1.5.7 stream_round_trip.c through Java's separate encoding operations.
+/// Replays Zstandard 1.5.7 stream_round_trip.c and dictionary_stream_round_trip.c through Java encoding operations.
 ///
 /// Native calls, entropy consumption, output-only retries and overlapping decompression remain in the original target.
 /// Java receives the accepted plaintext and completed flush/frame boundaries, not native compressed-byte expectations.
@@ -48,6 +48,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /// contexts may be retained, but the previous seed's optional decoder block limit is cleared before each new seed.
 /// Set `ARKIVO_ZSTD_STREAM_ROUND_TRIP_EXECUTABLE` to the executable built by `buildZstdStreamRoundTripReference`;
 /// `ARKIVO_REQUIRE_ZSTD_STREAM_ROUND_TRIP=true` makes a missing executable fail instead of skip.
+/// Dictionary streams use `buildZstdDictionaryStreamRoundTripReference` and the corresponding
+/// `ARKIVO_ZSTD_DICTIONARY_STREAM_ROUND_TRIP_EXECUTABLE` and `ARKIVO_REQUIRE_ZSTD_DICTIONARY_STREAM_ROUND_TRIP`.
+/// Native prefixes are attached to Java's first frame only; loaded dictionaries remain configured across frames.
 @NotNullByDefault
 @Timeout(240)
 final class ZstdOfficialStreamRoundTripTest {
@@ -57,10 +60,15 @@ final class ZstdOfficialStreamRoundTripTest {
 
     /// Checks original native streams and Java action replay with fresh and retained native contexts.
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void officialStreams(boolean reuse) throws IOException, InterruptedException {
-        List<byte[]> seeds = seeds();
-        List<String> lines = run(executable(), reuse, seeds);
+    @CsvSource({"false,false", "true,false", "false,true", "true,true"})
+    void officialStreams(boolean reuse, boolean dictionaries) throws IOException, InterruptedException {
+        String executable = executable(dictionaries);
+        List<byte[]> seeds = dictionaries ? dictionarySeeds() : seeds();
+        List<String> lines = run(executable, reuse, seeds);
+        List<String> decodeRequests = new ArrayList<>();
+        boolean[][] dictionaryModes = new boolean[3][2];
+        int trained = 0;
+        int emptyDictionaries = 0;
         int cursor = 0;
         int flushed = 0;
         int emptyCalls = 0;
@@ -77,8 +85,27 @@ final class ZstdOfficialStreamRoundTripTest {
             List<Integer> frameEnds = new ArrayList<>();
             List<Boundary> boundaries = new ArrayList<>();
             int configurations = 0;
+            @Nullable Dictionary dictionary = null;
             while (!lines.get(cursor).startsWith("R ")) {
                 String operation = lines.get(cursor++);
+                if (operation.startsWith("D ")) {
+                    assertTrue(dictionaries && dictionary == null);
+                    String[] fields = operation.split(" ");
+                    assertEquals(6, fields.length);
+                    byte[] bytes = fields[5].equals("-") ? new byte[0] : HexFormat.of().parseHex(fields[5]);
+                    assertEquals(Integer.parseInt(fields[4]), bytes.length);
+                    int type = Integer.parseInt(fields[1]);
+                    boolean prefix = Integer.parseInt(fields[2]) != 0;
+                    int load = Integer.parseInt(fields[3]);
+                    assertTrue(prefix ? load == -1 : load == 0 || load == 1);
+                    dictionary = new Dictionary(bytes, type, prefix);
+                    if (bytes.length == 0) emptyDictionaries++;
+                    else {
+                        trained++;
+                        dictionaryModes[type][prefix ? 1 : 0] = true;
+                    }
+                    continue;
+                }
                 operations.add(operation);
                 if (operation.startsWith("F ") || operation.startsWith("E ")) {
                     String[] fields = operation.split(" ");
@@ -104,13 +131,19 @@ final class ZstdOfficialStreamRoundTripTest {
             assertFalse(frameEnds.isEmpty());
             assertEquals(size, frameEnds.get(frameEnds.size() - 1));
             if (frameEnds.size() > 1) multipleFrames++;
+            assertEquals(dictionaries, dictionary != null);
             try {
-                checkFrames(encoded, plain, frameEnds);
-                checkBoundaries(encoded, plain, boundaries);
-                for (int kind = 0; kind < 3; kind++) decode(encoded, plain, frameEnds, kind);
-                byte[] javaEncoded = replay(operations, plain, capacity, index % 3);
-                checkFrames(javaEncoded, plain, frameEnds);
-                decode(javaEncoded, plain, frameEnds, index % 3);
+                checkFrames(encoded, plain, frameEnds, dictionary);
+                checkBoundaries(encoded, plain, boundaries, dictionary);
+                for (int kind = 0; kind < 3; kind++) decode(encoded, plain, frameEnds, kind, dictionary);
+                Replay replay = replay(operations, plain, capacity, index % 3, dictionary);
+                byte[] javaEncoded = replay.bytes();
+                checkFrames(javaEncoded, plain, frameEnds, dictionary);
+                decode(javaEncoded, plain, frameEnds, index % 3, dictionary);
+                if (dictionary != null) {
+                    decodeRequests.add(decodeRequest(dictionary, plain, encoded, boundaries));
+                    decodeRequests.add(decodeRequest(dictionary, plain, javaEncoded, replay.boundaries()));
+                }
             } catch (IOException | RuntimeException | AssertionError failure) {
                 throw new AssertionError("Seed " + index + ", reuse=" + reuse + ", size=" + size, failure);
             }
@@ -118,16 +151,46 @@ final class ZstdOfficialStreamRoundTripTest {
         assertEquals(lines.size(), cursor);
         assertTrue(flushed > 100 && emptyCalls > 0 && multipleFrames > 10 && reconfiguredInput > 0,
                 "flush=" + flushed + ", empty=" + emptyCalls + ", multi=" + multipleFrames + ", reconfigured=" + reconfiguredInput);
+        if (dictionaries) {
+            assertTrue(trained > 0 && emptyDictionaries > 0);
+            for (boolean[] modes : dictionaryModes) for (boolean mode : modes) assertTrue(mode);
+            List<String> verified = runRequests(executable, "--decode", decodeRequests, "decoded");
+            assertEquals(seeds.size() * 2, verified.size());
+            for (String line : verified) assertEquals("OK", line);
+        }
+    }
+
+    /// Captures the original native dictionary bytes, interpretation and lifetime.
+    ///
+    /// @param bytes generated dictionary, or an empty array when training failed
+    /// @param type native auto, raw-content or full-dictionary interpretation
+    /// @param prefix whether only the first frame uses the dictionary
+    @NotNullByDefault
+    private record Dictionary(byte @Unmodifiable [] bytes, int type, boolean prefix) {
+        /// Applies the dictionary only to frames where the original target retains it.
+        ZstdCodec configure(ZstdCodec codec, int frame) {
+            if (bytes.length == 0 || prefix && frame > 0) return codec;
+            return codec.withDictionary(switch (type) {
+                case 0 -> ZstdDictionary.of(bytes);
+                case 1 -> ZstdDictionary.rawContent(bytes);
+                case 2 -> ZstdDictionary.fullDictionary(bytes);
+                default -> throw new AssertionError("Unknown dictionary type: " + type);
+            });
+        }
     }
 
     /// Replays accepted chunks and completed native actions without imposing native output sizes on Java encoders.
-    private static byte[] replay(List<String> operations, byte[] plain, int capacity, int kind) throws IOException {
+    private static Replay replay(List<String> operations, byte[] plain, int capacity, int kind,
+                                 @Nullable Dictionary dictionary) throws IOException {
         ByteArrayOutputStream result = new ByteArrayOutputStream();
         ByteBuffer source = source(plain, kind);
         ByteBuffer storage = storage(capacity, kind);
         List<Boundary> boundaries = new ArrayList<>();
         @Nullable CompressionEncoder.FlushableFramed encoder = null;
         boolean activeFrame = false;
+        ZstdCodec configuration = ZstdCodec.DEFAULT;
+        int frames = 0;
+        boolean prefixExpired = false;
         try {
             for (String line : operations) {
                 String[] fields = line.split(" ");
@@ -136,9 +199,18 @@ final class ZstdOfficialStreamRoundTripTest {
                         assertFalse(activeFrame, "Parameters may change only between completed frames");
                         encoder.close();
                     }
-                    encoder = codec(fields).newEncoder();
+                    configuration = codec(fields);
+                    if (dictionary != null && frames == 0) configuration = configuration.withFrameChecksum(false);
+                    encoder = (dictionary == null ? configuration : dictionary.configure(configuration, frames)).newEncoder();
+                    prefixExpired = false;
                     activeFrame = true;
                     continue;
+                }
+                if (prefixExpired) {
+                    Objects.requireNonNull(encoder).close();
+                    encoder = configuration.newEncoder();
+                    activeFrame = true;
+                    prefixExpired = false;
                 }
                 var current = Objects.requireNonNull(encoder);
                 if (fields[0].equals("N")) {
@@ -189,7 +261,11 @@ final class ZstdOfficialStreamRoundTripTest {
                         assertTrue(outcome == expected || target.position() > 3, "No boundary progress");
                     } while (outcome != expected);
                     boundaries.add(new Boundary(result.size(), offset, end));
-                    if (end) activeFrame = false;
+                    if (end) {
+                        activeFrame = false;
+                        frames++;
+                        prefixExpired = dictionary != null && dictionary.prefix() && frames == 1;
+                    }
                 }
                 assertTrue(result.size() <= capacity, "Unbounded output during finite action replay");
             }
@@ -205,8 +281,28 @@ final class ZstdOfficialStreamRoundTripTest {
             if (encoder != null) encoder.close();
         }
         byte[] encoded = result.toByteArray();
-        checkBoundaries(encoded, plain, boundaries);
-        return encoded;
+        checkBoundaries(encoded, plain, boundaries, dictionary);
+        return new Replay(encoded, List.copyOf(boundaries));
+    }
+
+    /// Holds an encoded action replay and the observable flush and frame boundaries.
+    ///
+    /// @param bytes encoded stream
+    /// @param boundaries completed actions in stream order
+    @NotNullByDefault
+    private record Replay(byte @Unmodifiable [] bytes, @Unmodifiable List<Boundary> boundaries) {
+    }
+
+    /// Requests independent native decoding at every completed flush and frame boundary.
+    private static String decodeRequest(Dictionary dictionary, byte[] plain, byte[] encoded, List<Boundary> boundaries) {
+        StringBuilder request = new StringBuilder().append(dictionary.type()).append(' ')
+                .append(dictionary.prefix() ? 1 : 0).append(' ').append(bytes(plain)).append(' ')
+                .append(bytes(dictionary.bytes())).append(' ').append(bytes(encoded)).append(' ').append(boundaries.size());
+        for (Boundary boundary : boundaries) {
+            request.append(' ').append(boundary.encodedEnd()).append(' ').append(boundary.decodedEnd())
+                    .append(' ').append(boundary.frameEnd() ? 1 : 0);
+        }
+        return request.toString();
     }
 
     /// Describes the byte extents visible when a flush or frame end has completed.
@@ -218,27 +314,32 @@ final class ZstdOfficialStreamRoundTripTest {
     private record Boundary(int encodedEnd, int decodedEnd, boolean frameEnd) {
     }
 
-    /// Requires both decoders to expose all accepted plaintext without reading past each completed action.
-    private static void checkBoundaries(byte[] encoded, byte[] plain, List<Boundary> boundaries) throws IOException {
+    /// Checks Java flush visibility; dictionary-free streams also use JNI here, while dictionaries use the native runner.
+    private static void checkBoundaries(byte[] encoded, byte[] plain, List<Boundary> boundaries,
+                                        @Nullable Dictionary dictionary) throws IOException {
         ByteBuffer nativeSource = ByteBuffer.allocateDirect(encoded.length).put(encoded).flip();
         ByteBuffer nativeTarget = ByteBuffer.allocateDirect(plain.length + 1);
         @UnmodifiableView ByteBuffer javaSource = ByteBuffer.wrap(encoded).asReadOnlyBuffer();
         ByteBuffer javaTarget = ByteBuffer.allocate(plain.length + 1);
-        try (var reference = new ZstdDecompressCtx(); var decoder = ZstdCodec.DEFAULT.newDecoder()) {
+        var decoder = (dictionary == null ? ZstdCodec.DEFAULT : dictionary.configure(ZstdCodec.DEFAULT, 0)).newDecoder();
+        try (var reference = new ZstdDecompressCtx()) {
             boolean finished = false;
             int verified = 0;
+            int frames = 0;
             for (Boundary boundary : boundaries) {
                 nativeSource.limit(boundary.encodedEnd());
                 javaSource.limit(boundary.encodedEnd());
-                while (nativeSource.hasRemaining()) {
+                while (dictionary == null && nativeSource.hasRemaining()) {
                     int input = nativeSource.position();
                     int output = nativeTarget.position();
                     finished = reference.decompressDirectByteBufferStream(nativeTarget, nativeSource);
                     assertTrue(nativeSource.position() > input || nativeTarget.position() > output,
                             "No native progress at " + boundary);
                 }
-                assertEquals(boundary.frameEnd(), finished, "Native frame status at " + boundary);
-                assertEquals(boundary.decodedEnd(), nativeTarget.position(), "Native flush visibility at " + boundary);
+                if (dictionary == null) {
+                    assertEquals(boundary.frameEnd(), finished, "Native frame status at " + boundary);
+                    assertEquals(boundary.decodedEnd(), nativeTarget.position(), "Native flush visibility at " + boundary);
+                }
                 CodecOutcome outcome;
                 do {
                     int input = javaSource.position();
@@ -254,19 +355,29 @@ final class ZstdOfficialStreamRoundTripTest {
                 assertEquals(boundary.decodedEnd(), javaTarget.position(), "Java flush visibility at " + boundary);
                 @UnmodifiableView ByteBuffer expected = ByteBuffer.wrap(plain, verified,
                         boundary.decodedEnd() - verified).asReadOnlyBuffer();
-                assertEquals(-1, expected.mismatch(nativeTarget.duplicate().limit(boundary.decodedEnd()).position(verified)),
-                        "Native plaintext at " + boundary);
+                if (dictionary == null) {
+                    assertEquals(-1, expected.mismatch(nativeTarget.duplicate().limit(boundary.decodedEnd()).position(verified)),
+                            "Native plaintext at " + boundary);
+                }
                 assertEquals(-1, expected.mismatch(javaTarget.duplicate().limit(boundary.decodedEnd()).position(verified)),
                         "Java plaintext at " + boundary);
                 verified = boundary.decodedEnd();
-                if (boundary.frameEnd()) decoder.reset();
+                if (boundary.frameEnd()) {
+                    frames++;
+                    if (dictionary != null && dictionary.prefix() && frames == 1) {
+                        decoder.close();
+                        decoder = ZstdCodec.DEFAULT.newDecoder();
+                    } else decoder.reset();
+                }
             }
+        } finally {
+            decoder.close();
         }
-        assertEquals(encoded.length, nativeSource.position());
+        if (dictionary == null) assertEquals(encoded.length, nativeSource.position());
         assertEquals(encoded.length, javaSource.position());
         byte[] nativePlain = new byte[nativeTarget.position()];
         nativeTarget.flip().get(nativePlain);
-        assertArrayEquals(plain, nativePlain);
+        if (dictionary == null) assertArrayEquals(plain, nativePlain);
         assertArrayEquals(plain, Arrays.copyOf(javaTarget.array(), javaTarget.position()));
     }
 
@@ -301,22 +412,24 @@ final class ZstdOfficialStreamRoundTripTest {
     }
 
     /// Checks every physical frame against the accepted plaintext interval at its native end operation.
-    private static void checkFrames(byte[] encoded, byte[] plain, List<Integer> frameEnds) {
+    private static void checkFrames(byte[] encoded, byte[] plain, List<Integer> frameEnds,
+                                    @Nullable Dictionary dictionary) {
         int offset = 0;
         int start = 0;
         for (int end : frameEnds) {
             int length = Math.toIntExact(Zstd.findFrameCompressedSize(encoded, offset, encoded.length - offset));
             byte[] frame = Arrays.copyOfRange(encoded, offset, offset + length);
-            assertArrayEquals(Arrays.copyOfRange(plain, start, end), Zstd.decompress(frame, end - start));
+            if (dictionary == null) assertArrayEquals(Arrays.copyOfRange(plain, start, end), Zstd.decompress(frame, end - start));
             offset += length;
             start = end;
         }
         assertEquals(encoded.length, offset);
-        assertArrayEquals(plain, Zstd.decompress(encoded, plain.length));
+        if (dictionary == null) assertArrayEquals(plain, Zstd.decompress(encoded, plain.length));
     }
 
     /// Decodes concatenated frames with explicit Java resets, including empty frames and bytes after the final frame.
-    private static void decode(byte[] encoded, byte[] plain, List<Integer> frameEnds, int kind) throws IOException {
+    private static void decode(byte[] encoded, byte[] plain, List<Integer> frameEnds, int kind,
+                               @Nullable Dictionary dictionary) throws IOException {
         byte[] withTail = Arrays.copyOf(encoded, encoded.length + 7);
         Arrays.fill(withTail, encoded.length, withTail.length, (byte) 0x37);
         ByteBuffer source = source(withTail, kind);
@@ -325,7 +438,8 @@ final class ZstdOfficialStreamRoundTripTest {
         int completed = 0;
         int frameOffset = 0;
         int frameEnd = Math.toIntExact(Zstd.findFrameCompressedSize(encoded));
-        try (var decoder = ZstdCodec.DEFAULT.newDecoder()) {
+        var decoder = (dictionary == null ? ZstdCodec.DEFAULT : dictionary.configure(ZstdCodec.DEFAULT, 0)).newDecoder();
+        try {
             for (int call = 0; completed < frameEnds.size(); call++) {
                 assertTrue(call <= encoded.length + plain.length + frameEnds.size() * 4 + 32);
                 source.limit(Math.min(3 + withTail.length, source.position() + (kind == 0 ? 7 : 8191)));
@@ -344,13 +458,18 @@ final class ZstdOfficialStreamRoundTripTest {
                     frameOffset = frameEnd;
                     if (completed < frameEnds.size()) {
                         frameEnd += Math.toIntExact(Zstd.findFrameCompressedSize(encoded, frameOffset, encoded.length - frameOffset));
-                        decoder.reset();
+                        if (dictionary != null && dictionary.prefix() && completed == 1) {
+                            decoder.close();
+                            decoder = ZstdCodec.DEFAULT.newDecoder();
+                        } else decoder.reset();
                     }
                 } else {
                     assertTrue(outcome == CodecOutcome.NEEDS_INPUT || outcome == CodecOutcome.NEEDS_OUTPUT);
                     if (call != 0) assertTrue(source.position() > before || target.position() > 3, "No decoding progress");
                 }
             }
+        } finally {
+            decoder.close();
         }
         assertArrayEquals(plain, result.toByteArray());
         assertEquals(encoded.length, frameOffset);
@@ -463,6 +582,66 @@ final class ZstdOfficialStreamRoundTripTest {
         return List.copyOf(seeds);
     }
 
+    /// Preserves the original trainer offsets, dictionary modes and action entropy, including exhausted inputs.
+    private static @Unmodifiable List<byte[]> dictionarySeeds() {
+        List<byte[]> seeds = new ArrayList<>();
+        Random random = new Random(0xd1c7_57eaL);
+        for (int size : new int[]{0, 8, 1024, 16384}) {
+            for (int type = 0; type < 3; type++) {
+                for (int prefix = 0; prefix < 2; prefix++) {
+                    for (int mode = 0; mode < 10; mode++) {
+                        ByteArrayOutputStream tail = new ByteArrayOutputStream();
+                        parameter(tail, 0, 2, type);
+                        for (int sample = 0; sample < 100; sample++) {
+                            parameter(tail, 0, Math.max(size, 1) - 1, size == 0 ? 0 : sample * 127 % size);
+                        }
+                        parameter(tail, 0, 1, prefix);
+                        tail.writeBytes(profile(mode % 9 + 1, mode % 2, mode % 3));
+                        if (prefix == 0) parameter(tail, 0, 1, mode % 2);
+                        if (size != 0) {
+                            parameter(tail, 1, size, size / 2);
+                            int capacity = Math.toIntExact(Zstd.compressBound(size) * 15);
+                            parameter(tail, 1, capacity, capacity);
+                            parameter(tail, 0, 9, mode);
+                            if (mode == 3) {
+                                parameter(tail, 0, 7, 0);
+                                tail.writeBytes(profile(3, 1, 0));
+                            }
+                        }
+                        byte[] actions = new byte[256];
+                        random.nextBytes(actions);
+                        tail.writeBytes(actions);
+                        seeds.add(seed(payload(size, mode % 2), tail.toByteArray()));
+                    }
+                }
+            }
+        }
+        // Exhausted entropy exercises trainer failures and the producer's minimum-value fallback.
+        for (int size = 0; size <= 64; size++) {
+            byte[] exhausted = new byte[size];
+            random.nextBytes(exhausted);
+            seeds.add(exhausted);
+        }
+        for (int prefix = 0; prefix < 2; prefix++) {
+            for (int workers = 0; workers < 3; workers++) {
+                int size = 1024 * 1024 + 1;
+                ByteArrayOutputStream tail = new ByteArrayOutputStream();
+                parameter(tail, 0, 2, workers);
+                for (int sample = 0; sample < 100; sample++) parameter(tail, 0, size - 1, sample * 127);
+                parameter(tail, 0, 1, prefix);
+                tail.writeBytes(profile(3, 1, workers));
+                if (prefix == 0) parameter(tail, 0, 1, workers % 2);
+                parameter(tail, 1, size, size);
+                int capacity = Math.toIntExact(Zstd.compressBound(size) * 15);
+                parameter(tail, 1, capacity, capacity);
+                parameter(tail, 0, 9, 5);
+                seeds.add(seed(payload(size, 1), tail.toByteArray()));
+            }
+        }
+        assertEquals(311, seeds.size());
+        return List.copyOf(seeds);
+    }
+
     /// Encodes a fixed-width original parameter profile with optional hints and the external producer disabled.
     private static byte[] profile(int strategy, int variant, int workers) {
         ByteArrayOutputStream tail = new ByteArrayOutputStream();
@@ -537,11 +716,12 @@ final class ZstdOfficialStreamRoundTripTest {
     }
 
     /// Resolves the reference executable and enforces required-reference CI configuration.
-    private static String executable() {
-        @Nullable String configured = System.getenv("ARKIVO_ZSTD_STREAM_ROUND_TRIP_EXECUTABLE");
+    private static String executable(boolean dictionaries) {
+        String key = dictionaries ? "DICTIONARY_STREAM_ROUND_TRIP" : "STREAM_ROUND_TRIP";
+        @Nullable String configured = System.getenv("ARKIVO_ZSTD_" + key + "_EXECUTABLE");
         boolean available = configured != null && Files.isRegularFile(Path.of(configured));
-        if (Boolean.parseBoolean(System.getenv("ARKIVO_REQUIRE_ZSTD_STREAM_ROUND_TRIP"))) {
-            assertTrue(available, "Set ARKIVO_ZSTD_STREAM_ROUND_TRIP_EXECUTABLE to the built official streaming reference");
+        if (Boolean.parseBoolean(System.getenv("ARKIVO_REQUIRE_ZSTD_" + key))) {
+            assertTrue(available, "Set ARKIVO_ZSTD_" + key + "_EXECUTABLE to the built official streaming reference");
         }
         assumeTrue(available, "Official streaming reference is not configured");
         return Path.of(Objects.requireNonNull(configured)).toAbsolutePath().toString();
@@ -549,16 +729,28 @@ final class ZstdOfficialStreamRoundTripTest {
 
     /// Runs one bounded batch with original stateful or fresh native contexts.
     private List<String> run(String executable, boolean reuse, List<byte[]> seeds) throws IOException, InterruptedException {
-        Path input = directory.resolve("streams.input");
-        Path output = directory.resolve("streams.output");
-        Path errors = directory.resolve("streams.errors");
+        return runRequests(executable, reuse ? "--reuse" : null,
+                seeds.stream().map(seed -> seed.length + " " + HexFormat.of().formatHex(seed)).toList(), "streams");
+    }
+
+    /// Formats a bounded byte sequence, including an explicit token for an empty field.
+    private static String bytes(byte[] bytes) {
+        return bytes.length + " " + (bytes.length == 0 ? "-" : HexFormat.of().formatHex(bytes));
+    }
+
+    /// Runs a native batch and preserves its input, output and diagnostics when verification fails.
+    private List<String> runRequests(String executable, @Nullable String argument, List<String> requests, String name)
+            throws IOException, InterruptedException {
+        Path input = directory.resolve(name + ".input");
+        Path output = directory.resolve(name + ".output");
+        Path errors = directory.resolve(name + ".errors");
         try (var writer = Files.newBufferedWriter(input, StandardCharsets.US_ASCII)) {
-            for (byte[] seed : seeds) {
-                writer.write(seed.length + " " + HexFormat.of().formatHex(seed));
+            for (String request : requests) {
+                writer.write(request);
                 writer.newLine();
             }
         }
-        ProcessBuilder builder = reuse ? new ProcessBuilder(executable, "--reuse") : new ProcessBuilder(executable);
+        ProcessBuilder builder = argument == null ? new ProcessBuilder(executable) : new ProcessBuilder(executable, argument);
         Process process = builder.redirectInput(input.toFile()).redirectOutput(output.toFile()).redirectError(errors.toFile()).start();
         try {
             if (!process.waitFor(60, TimeUnit.SECONDS)) fail("Official stream reference timed out");

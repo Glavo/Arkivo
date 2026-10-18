@@ -2146,6 +2146,61 @@ public final class TarArchiveIntegrationTest {
         }
     }
 
+    /// PAX sizes apply to file bodies, not intervening GNU extension records.
+    ///
+    /// Reproduces tar-rs GHSA-3pv8-6f4r-ffg2's PAX/long-name desynchronization with generated records.
+    @ParameterizedTest
+    @ValueSource(strings = {"L", "K", "LK", "KL"})
+    public void paxSizeDoesNotApplyToGnuExtensionHeaders(String extensions, @TempDir Path directory)
+            throws IOException {
+        byte[] content = new byte[2048];
+        java.util.Arrays.fill(content, (byte) 'A');
+        byte[] following = "following entry".getBytes(StandardCharsets.US_ASCII);
+        String name = extensions.contains("L") ? "longname.txt" : "short.txt";
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writePaxHeader(output, Map.of("size", Integer.toString(content.length)));
+        for (char extension : extensions.toCharArray()) {
+            writeMetadataEntry(output, "././@LongLink", extension,
+                    (extension == 'L' ? "longname.txt\0" : "unused-target\0").getBytes(StandardCharsets.US_ASCII));
+        }
+        // The fixed size deliberately disagrees with PAX; extension bodies retain their own sizes.
+        writeHeader(output, "short.txt", 0644, 0, 0, 0, '0', "", "", "");
+        writeBody(output, content);
+        writeEntry(output, "file_b", following);
+        output.write(new byte[1024]);
+        byte[] archive = output.toByteArray();
+        for (boolean skip : new boolean[]{false, true}) {
+            try (var reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+                assertTrue(reader.next());
+                assertEquals(name, reader.readAttributes().path());
+                assertEquals(content.length, reader.readAttributes().size());
+                if (!skip) {
+                    try (var input = reader.openInputStream()) {
+                        assertArrayEquals(content, input.readAllBytes());
+                    }
+                }
+                assertTrue(reader.next());
+                assertEquals("file_b", reader.readAttributes().path());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(following, input.readAllBytes());
+                }
+                assertFalse(reader.next());
+            }
+        }
+        Path path = directory.resolve("extensions.tar");
+        Files.write(path, archive);
+        try (var fs = TarArkivoFileSystem.update(path)) {
+            assertArrayEquals(content, Files.readAllBytes(fs.getPath(name)));
+            assertArrayEquals(following, Files.readAllBytes(fs.getPath("file_b")));
+            Files.writeString(fs.getPath("added"), "updated");
+        }
+        try (var fs = TarArkivoFileSystem.open(path)) {
+            assertArrayEquals(content, Files.readAllBytes(fs.getPath(name)));
+            assertArrayEquals(following, Files.readAllBytes(fs.getPath("file_b")));
+            assertEquals("updated", Files.readString(fs.getPath("added")));
+        }
+    }
+
     /// Pending GNU values do not bypass strict decoding of intervening extension headers.
     @ParameterizedTest
     @CsvSource({"L,x,0", "L,g,0", "K,x,157", "K,g,157"})
