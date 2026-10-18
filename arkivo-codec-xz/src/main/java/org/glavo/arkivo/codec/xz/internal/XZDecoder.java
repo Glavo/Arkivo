@@ -386,6 +386,9 @@ public final class XZDecoder implements CompressionDecoder.Framed {
                 if (compressedSize == 0L) {
                     throw new IOException("XZ Block declares an empty compressed-data field");
                 }
+                if (compressedSize > Long.MAX_VALUE - headerSize - XZCheck.sizeOf(checkType)) {
+                    throw new IOException("XZ Block declared unpadded size exceeds the VLI range");
+                }
             }
             if ((flags & 0x80) != 0) {
                 uncompressedSize = XZSupport.readVli(fields);
@@ -477,8 +480,17 @@ public final class XZDecoder implements CompressionDecoder.Framed {
         throw new IOException("Unsupported XZ filter identifier: " + identifier);
     }
 
-    /// Creates one BCJ decoding transform.
-    private static ByteTransform bcjTransform(long identifier, long startOffset) {
+    /// Creates one BCJ decoding transform after validating the XZ start-offset alignment.
+    private static ByteTransform bcjTransform(long identifier, long startOffset) throws IOException {
+        int alignment = switch ((int) identifier) {
+            case 0x04 -> 1;
+            case 0x06 -> 16;
+            case 0x08, 0x0b -> 2;
+            default -> 4;
+        };
+        if ((startOffset & (alignment - 1)) != 0) {
+            throw new IOException("XZ BCJ start offset is not aligned to " + alignment + " bytes");
+        }
         return switch ((int) identifier) {
             case 0x04 -> BCJTransforms.x86(Direction.DECODE, startOffset);
             case 0x05 -> BCJTransforms.powerPC(Direction.DECODE, startOffset);
