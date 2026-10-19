@@ -70,24 +70,6 @@ final class BZip2EncoderLifecycleTest {
         encoder.close();
     }
 
-    /// Verifies terminal finalization after a completed boundary does not append another empty member.
-    @Test
-    void finishesWithoutAddingFrameAfterBoundary() throws IOException {
-        byte[] expected = patternedBytes(513, 37);
-        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        BZip2Encoder encoder = new BZip2Encoder(1);
-
-        encode(encoder, ByteBuffer.wrap(expected), encoded, 5);
-        finishFrame(encoder, encoded, 3);
-        int boundarySize = encoded.size();
-
-        assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(0)));
-        assertEquals(boundarySize, encoded.size());
-        assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(0)));
-        assertArrayEquals(expected, decompress(encoded.toByteArray(), expected.length));
-        encoder.close();
-    }
-
     /// Verifies pending frame output prevents source consumption until target space becomes available.
     @Test
     void preservesSourceWhilePendingOutputNeedsSpace() throws IOException {

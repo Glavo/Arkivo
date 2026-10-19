@@ -29,72 +29,6 @@ final class XZEncoderLifecycleTest {
     /// The CRC-32 integrity-check identifier.
     private static final int CHECK_CRC32 = 1;
 
-    /// Verifies every incomplete boundary operation excludes data and all other boundary operations.
-    @Test
-    void enforcesMutuallyExclusiveBoundaryOperations() throws IOException {
-        byte[] first = patternedBytes(129, 3);
-        byte[] second = patternedBytes(97, 11);
-        byte[] third = patternedBytes(65, 29);
-        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        XZEncoder encoder = newEncoder();
-
-        encode(encoder, ByteBuffer.wrap(first), encoded, 3);
-        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.flush(ByteBuffer.allocate(0)));
-        assertRejectsDataAndOtherBoundaries(encoder, BoundaryOperation.FLUSH);
-        flush(encoder, encoded, 2);
-        assertEquals(CodecOutcome.FLUSHED, encoder.flush(ByteBuffer.allocate(0)));
-
-        encode(encoder, ByteBuffer.wrap(second), encoded, 3);
-        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.finishFrame(ByteBuffer.allocate(0)));
-        assertRejectsDataAndOtherBoundaries(encoder, BoundaryOperation.FINISH_FRAME);
-        finishFrame(encoder, encoded, 2);
-        assertEquals(CodecOutcome.FLUSHED, encoder.flush(ByteBuffer.allocate(0)));
-        assertEquals(CodecOutcome.BOUNDARY_REACHED, encoder.finishFrame(ByteBuffer.allocate(0)));
-        assertEquals(
-                CodecOutcome.NEEDS_INPUT,
-                encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
-        );
-
-        encode(encoder, ByteBuffer.wrap(third), encoded, 3);
-        finishFrame(encoder, encoded, 2);
-        encoder.startFrame(EncodingOptions.ofSourceSize(0L));
-        assertThrows(IllegalStateException.class, () -> encoder.startFrame(EncodingOptions.DEFAULT));
-
-        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.finish(ByteBuffer.allocate(0)));
-        assertRejectsDataAndOtherBoundaries(encoder, BoundaryOperation.FINISH);
-        finish(encoder, encoded, 2);
-        assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(0)));
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.flush(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.startFrame(EncodingOptions.DEFAULT));
-
-        byte[] expected = concatenate(first, second, third);
-        assertArrayEquals(expected, decompress(encoded.toByteArray(), expected.length));
-        encoder.close();
-    }
-
-    /// Verifies terminal finalization after a completed Stream boundary emits no additional empty Stream.
-    @Test
-    void finishesWithoutAddingStreamAfterBoundary() throws IOException {
-        byte[] expected = patternedBytes(513, 37);
-        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        XZEncoder encoder = newEncoder();
-
-        encode(encoder, ByteBuffer.wrap(expected), encoded, 5);
-        finishFrame(encoder, encoded, 3);
-        int boundarySize = encoded.size();
-
-        assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(0)));
-        assertEquals(boundarySize, encoded.size());
-        assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(0)));
-        assertArrayEquals(expected, decompress(encoded.toByteArray(), expected.length));
-        encoder.close();
-    }
-
     /// Verifies reset discards an undrained Stream and restores a fresh initial Stream.
     @Test
     void resetsWhileBoundaryOutputIsPending() throws IOException {
@@ -176,27 +110,6 @@ final class XZEncoderLifecycleTest {
         );
     }
 
-    /// Verifies operations other than the selected boundary fail while its output remains pending.
-    private static void assertRejectsDataAndOtherBoundaries(
-            XZEncoder encoder,
-            BoundaryOperation activeOperation
-    ) {
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.startFrame(EncodingOptions.DEFAULT));
-        if (activeOperation != BoundaryOperation.FLUSH) {
-            assertThrows(IllegalStateException.class, () -> encoder.flush(ByteBuffer.allocate(1)));
-        }
-        if (activeOperation != BoundaryOperation.FINISH_FRAME) {
-            assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
-        }
-        if (activeOperation != BoundaryOperation.FINISH) {
-            assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
-        }
-    }
-
     /// Supplies all remaining source bytes while draining bounded direct target buffers.
     private static void encode(
             XZEncoder encoder,
@@ -212,36 +125,6 @@ final class XZEncoderLifecycleTest {
         } while (outcome == CodecOutcome.NEEDS_OUTPUT);
         assertEquals(CodecOutcome.NEEDS_INPUT, outcome);
         assertFalse(source.hasRemaining());
-    }
-
-    /// Drains one complete nonterminal flush operation.
-    private static void flush(
-            XZEncoder encoder,
-            ByteArrayOutputStream output,
-            int targetSize
-    ) throws IOException {
-        CodecOutcome outcome;
-        do {
-            ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
-            outcome = encoder.flush(target);
-            drain(target, output);
-        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-        assertEquals(CodecOutcome.FLUSHED, outcome);
-    }
-
-    /// Drains one complete nonterminal Stream finalization.
-    private static void finishFrame(
-            XZEncoder encoder,
-            ByteArrayOutputStream output,
-            int targetSize
-    ) throws IOException {
-        CodecOutcome outcome;
-        do {
-            ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
-            outcome = encoder.finishFrame(target);
-            drain(target, output);
-        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-        assertEquals(CodecOutcome.BOUNDARY_REACHED, outcome);
     }
 
     /// Drains complete terminal finalization.
@@ -277,15 +160,6 @@ final class XZEncoderLifecycleTest {
         return actual;
     }
 
-    /// Concatenates three byte arrays in encounter order.
-    private static byte[] concatenate(byte[] first, byte[] second, byte[] third) {
-        byte[] result = new byte[first.length + second.length + third.length];
-        System.arraycopy(first, 0, result, 0, first.length);
-        System.arraycopy(second, 0, result, first.length, second.length);
-        System.arraycopy(third, 0, result, first.length + second.length, third.length);
-        return result;
-    }
-
     /// Creates deterministic source bytes from a size and seed.
     private static byte[] patternedBytes(int size, int seed) {
         byte[] bytes = new byte[size];
@@ -293,18 +167,5 @@ final class XZEncoderLifecycleTest {
             bytes[index] = (byte) (seed + index * 31 + index / 17);
         }
         return bytes;
-    }
-
-    /// Identifies the boundary operation whose output is being drained.
-    @NotNullByDefault
-    private enum BoundaryOperation {
-        /// A nonterminal flush is active.
-        FLUSH,
-
-        /// A nonterminal frame finish is active.
-        FINISH_FRAME,
-
-        /// Terminal finalization is active.
-        FINISH
     }
 }

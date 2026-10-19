@@ -190,38 +190,6 @@ public final class GzipBufferEngineTest {
         assertArrayEquals(content, decodeFragments(withEmptyExtraField(member), 1, 2));
     }
 
-    /// Verifies finished decoding is idempotent and every stateful operation rejects a closed decoder.
-    @Test
-    public void decoderFinishedAndClosedStates() throws IOException {
-        byte[] content = "finished gzip decoder".getBytes(StandardCharsets.UTF_8);
-        byte[] member = gzip(content);
-        CompressionDecoder decoder = CODEC.newDecoder();
-        try {
-            ByteBuffer source = ByteBuffer.wrap(member);
-            ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-            CodecOutcome outcome;
-            do {
-                ByteBuffer target = ByteBuffer.allocate(2);
-                outcome = decoder.finish(source, target);
-                drain(target, decoded);
-            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FINISHED, outcome);
-            assertArrayEquals(content, decoded.toByteArray());
-            assertEquals(CodecOutcome.FINISHED, decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(0)));
-        } finally {
-            decoder.close();
-        }
-        assertThrows(IllegalStateException.class, decoder::reset);
-        assertThrows(
-                IllegalStateException.class,
-                () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
-        );
-        assertThrows(
-                IllegalStateException.class,
-                () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
-        );
-    }
-
     /// Verifies trailer corruption, truncation, reset, and terminal lifecycle behavior.
     @Test
     public void validationAndLifecycle() throws IOException {

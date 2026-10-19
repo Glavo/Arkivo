@@ -12,12 +12,14 @@ import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.util.Arrays;
 import java.util.stream.Stream;
 
@@ -27,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// Verifies every installed buffer codec restores its original configuration when reset.
+/// Verifies reset, completed decoding, and closed decoder states across installed buffer codecs.
 @NotNullByDefault
 final class CodecEngineResetContractTest {
     /// Number of decoded bytes in every independently encoded test stream.
@@ -143,6 +145,34 @@ final class CodecEngineResetContractTest {
     /// Returns each installed format as a separately reported reset test invocation.
     private static Stream<String> installedFormats() {
         return CompressionFormats.installed().stream().map(CompressionFormat::name);
+    }
+
+    /// Completed decoders remain finished until reset, and closed decoders reject all stateful operations.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("installedFormats")
+    void decoderFinishedAndClosedStates(String formatName) throws IOException {
+        CompressionCodec<?> codec = CompressionFormats.require(formatName).defaultCodec();
+        byte[] encoded;
+        try (var encoder = codec.newEncoder()) {
+            encoded = encode(encoder, FIRST_CONTENT, formatName);
+        }
+        try (var decoder = CodecContractConfigurations.decoderCodec(codec, CONTENT_SIZE).newDecoder()) {
+            assertArrayEquals(FIRST_CONTENT, decode(decoder, encoded, formatName));
+            assertEquals(CodecOutcome.FINISHED, decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(0)));
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(0)));
+            decoder.close();
+            decoder.close();
+            assertThrows(IllegalStateException.class, decoder::reset);
+            assertClosedDecoderOperation(() -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(0)));
+            assertClosedDecoderOperation(() -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(0)));
+        }
+    }
+
+    /// Accepts state or channel-closure errors without treating unrelated decoding failures as closure rejection.
+    private static void assertClosedDecoderOperation(Executable operation) {
+        Exception failure = assertThrows(Exception.class, operation);
+        assertTrue(failure instanceof IllegalStateException || failure instanceof ClosedChannelException,
+                () -> "Unexpected closed decoder failure: " + failure);
     }
 
     /// Encodes one complete stream through a reusable engine with bounded direct targets.

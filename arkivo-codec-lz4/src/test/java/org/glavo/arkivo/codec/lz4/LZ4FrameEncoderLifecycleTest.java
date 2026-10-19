@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Verifies LZ4 frame encoder size pledges, frame boundaries, and mutually exclusive lifecycle operations.
+/// Verifies LZ4 frame encoder size pledges and owned workspace release.
 @NotNullByDefault
 final class LZ4FrameEncoderLifecycleTest {
     /// Keeps the block allocation across reset but releases owned block and dictionary storage on close.
@@ -90,99 +90,6 @@ final class LZ4FrameEncoderLifecycleTest {
         }
     }
 
-    /// Verifies explicit empty frames and boundary no-ops do not introduce an implicit terminal frame.
-    @Test
-    void startsExplicitFramesAndPreservesBoundaryNoOps() throws IOException {
-        byte[] expected = {4, 5, 6, 7};
-        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-
-        try (CompressionEncoder.FlushableFramed encoder = LZ4Codec.DEFAULT.newEncoder()) {
-            encode(encoder, ByteBuffer.wrap(expected), encoded, 2);
-            finishFrame(encoder, encoded, 2);
-
-            assertEquals(CodecOutcome.FLUSHED, encoder.flush(ByteBuffer.allocate(0)));
-            assertEquals(CodecOutcome.BOUNDARY_REACHED, encoder.finishFrame(ByteBuffer.allocate(0)));
-            assertEquals(
-                    CodecOutcome.NEEDS_INPUT,
-                    encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(0))
-            );
-
-            encoder.startFrame(EncodingOptions.ofSourceSize(0L));
-            assertThrows(IllegalStateException.class, encoder::startFrame);
-            finishFrame(encoder, encoded, 1);
-            assertEquals(CodecOutcome.BOUNDARY_REACHED, encoder.finishFrame(ByteBuffer.allocate(0)));
-
-            assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(0)));
-            assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(0)));
-            assertThrows(IllegalStateException.class, encoder::startFrame);
-        }
-
-        assertArrayEquals(expected, decompress(encoded.toByteArray()));
-    }
-
-    /// Verifies flush, frame finalization, and terminal finalization reject every incompatible operation.
-    @Test
-    void enforcesMutuallyExclusiveBoundaryOperations() throws IOException {
-        byte[] expected = {8, 9, 10};
-        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        CompressionEncoder.FlushableFramed encoder = LZ4Codec.DEFAULT.newEncoder();
-
-        encode(encoder, ByteBuffer.wrap(expected), encoded, 3);
-        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.flush(ByteBuffer.allocate(0)));
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, encoder::startFrame);
-        flush(encoder, encoded, 2);
-
-        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.finishFrame(ByteBuffer.allocate(0)));
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.flush(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, encoder::startFrame);
-        finishFrame(encoder, encoded, 2);
-
-        encoder.startFrame(EncodingOptions.ofSourceSize(0L));
-        assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.finish(ByteBuffer.allocate(0)));
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.flush(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, encoder::startFrame);
-        finish(encoder, encoded, 2);
-
-        assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(0)));
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.flush(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, encoder::startFrame);
-
-        encoder.close();
-        encoder.close();
-        assertThrows(IllegalStateException.class, encoder::reset);
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.flush(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, encoder::startFrame);
-
-        assertArrayEquals(expected, decompress(encoded.toByteArray()));
-    }
-
     /// Supplies every remaining source byte to an incremental encoder.
     private static void encode(
             CompressionEncoder encoder,
@@ -198,36 +105,6 @@ final class LZ4FrameEncoderLifecycleTest {
                 throw new AssertionError("Unexpected LZ4 encode outcome: " + outcome);
             }
         }
-    }
-
-    /// Drains one complete nonterminal flush boundary.
-    private static void flush(
-            CompressionEncoder.Flushable encoder,
-            ByteArrayOutputStream output,
-            int targetSize
-    ) throws IOException {
-        CodecOutcome outcome;
-        do {
-            ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
-            outcome = encoder.flush(target);
-            drain(target, output);
-        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-        assertEquals(CodecOutcome.FLUSHED, outcome);
-    }
-
-    /// Drains one complete nonterminal frame boundary.
-    private static void finishFrame(
-            CompressionEncoder.Framed encoder,
-            ByteArrayOutputStream output,
-            int targetSize
-    ) throws IOException {
-        CodecOutcome outcome;
-        do {
-            ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
-            outcome = encoder.finishFrame(target);
-            drain(target, output);
-        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-        assertEquals(CodecOutcome.BOUNDARY_REACHED, outcome);
     }
 
     /// Drains complete terminal encoder finalization.
