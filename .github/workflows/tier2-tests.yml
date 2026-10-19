@@ -77,6 +77,61 @@ jobs:
       - name: Run Tier 2 tests
         run: ./gradlew tier2Test --no-daemon --stacktrace
 
+  reference-interop:
+    name: Required compression and archive references
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Install reference toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends gcc libc6-dev llvm nodejs tar
+          echo "ARKIVO_NODE_EXECUTABLE=$(command -v node)" >> "$GITHUB_ENV"
+          echo "ARKIVO_LLVM_AR_EXECUTABLE=$(command -v llvm-ar)" >> "$GITHUB_ENV"
+          echo "ARKIVO_GNU_TAR_EXECUTABLE=$(command -v tar)" >> "$GITHUB_ENV"
+          node --version
+          llvm-ar --version
+          tar --version
+          gcc --version
+
+      - name: Build verified sources and require reference tests
+        env:
+          ARKIVO_REFERENCE_C_COMPILER: gcc
+          ARKIVO_NCOMPRESS_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-compress/build/reference-tools/ncompress-reference
+          ARKIVO_REQUIRE_NCOMPRESS: "true"
+          ARKIVO_ZOPFLI_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-deflate/build/reference-tools/zopfli
+          ARKIVO_REQUIRE_ZOPFLI: "true"
+          ARKIVO_LZ4_EXECUTABLE: ${{ github.workspace }}/arkivo-codec-lz4/build/reference-tools/lz4
+          ARKIVO_REQUIRE_LZ4: "true"
+          ARKIVO_REQUIRE_NODE: "true"
+          ARKIVO_REQUIRE_LLVM_AR: "true"
+          ARKIVO_REQUIRE_GNU_TAR: "true"
+        run: >-
+          ./gradlew
+          :arkivo-codec-compress:buildNcompressReference
+          :arkivo-codec-deflate:buildZopfliReference
+          :arkivo-codec-lz4:buildLZ4Reference
+          :arkivo-codec-compress:tier2Test
+          :arkivo-codec-deflate:tier2Test
+          :arkivo-codec-lz4:tier2Test
+          :arkivo-archive-ar:tier2Test
+          :arkivo-archive-tar:tier2Test
+          --no-daemon --continue --stacktrace
+
   zstd-reference:
     name: Required official Zstandard references
     runs-on: ubuntu-24.04

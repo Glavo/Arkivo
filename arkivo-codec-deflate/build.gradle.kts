@@ -319,8 +319,35 @@ val prepareZopfliReference = tasks.register<Sync>("prepareZopfliReference") {
     into(zopfliTestDataDirectory)
 }
 
+val zopfliReferenceCompiler = providers.environmentVariable("ARKIVO_REFERENCE_C_COMPILER")
+val zopfliReferenceExecutable = layout.buildDirectory.file("reference-tools/zopfli" +
+    if (System.getProperty("os.name").startsWith("Windows")) ".exe" else "")
+
+tasks.register<Exec>("buildZopfliReference") {
+    group = "verification"
+    description = "Builds verified Zopfli sources with ARKIVO_REFERENCE_C_COMPILER (GCC, Clang, or Zig)."
+    dependsOn(prepareZopfliReference)
+    inputs.dir(zopfliTestDataDirectory)
+    inputs.property("compiler", zopfliReferenceCompiler.orElse(""))
+    outputs.file(zopfliReferenceExecutable)
+    doFirst {
+        val compiler = zopfliReferenceCompiler.orNull
+            ?: throw GradleException("Set ARKIVO_REFERENCE_C_COMPILER to a GCC, Clang, or Zig executable.")
+        val executable = zopfliReferenceExecutable.get().asFile
+        executable.parentFile.mkdirs()
+        val command = mutableListOf(compiler)
+        if (File(compiler).nameWithoutExtension.equals("zig", ignoreCase = true)) command.add("cc")
+        command.add("-O2")
+        command.addAll(zopfliTestDataDirectory.get().dir("src/zopfli").asFile.listFiles()!!
+            .filter { it.isFile && it.extension == "c" }.map { it.absolutePath }.sorted())
+        command.addAll(listOf("-lm", "-o", executable.absolutePath))
+        commandLine(command)
+    }
+}
+
 tasks.named<Test>("tier2Test") {
     dependsOn(prepareZopfliReference)
+    mustRunAfter(tasks.named("buildZopfliReference"))
     inputs.dir(zopfliTestDataDirectory)
     inputs.property("zopfliExecutable", providers.environmentVariable("ARKIVO_ZOPFLI_EXECUTABLE").orElse(""))
     // Track replacements and newly installed tools without requiring optional executables to exist.

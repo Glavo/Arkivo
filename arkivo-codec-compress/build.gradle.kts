@@ -59,8 +59,34 @@ val prepareNcompressTestCorpus = tasks.register<Sync>("prepareNcompressTestCorpu
     into(ncompressTestDataDirectory)
 }
 
+val ncompressReferenceCompiler = providers.environmentVariable("ARKIVO_REFERENCE_C_COMPILER")
+val ncompressReferenceExecutable = layout.buildDirectory.file("reference-tools/ncompress-reference" +
+    if (System.getProperty("os.name").startsWith("Windows")) ".exe" else "")
+
+tasks.register<Exec>("buildNcompressReference") {
+    group = "verification"
+    description = "Builds verified ncompress sources with ARKIVO_REFERENCE_C_COMPILER (GCC, Clang, or Zig)."
+    dependsOn(prepareNcompressTestCorpus)
+    inputs.dir(ncompressTestDataDirectory)
+    inputs.property("compiler", ncompressReferenceCompiler.orElse(""))
+    outputs.file(ncompressReferenceExecutable)
+    doFirst {
+        val compiler = ncompressReferenceCompiler.orNull
+            ?: throw GradleException("Set ARKIVO_REFERENCE_C_COMPILER to a GCC, Clang, or Zig executable.")
+        val executable = ncompressReferenceExecutable.get().asFile
+        executable.parentFile.mkdirs()
+        val command = mutableListOf(compiler)
+        if (File(compiler).nameWithoutExtension.equals("zig", ignoreCase = true)) command.add("cc")
+        command.addAll(listOf("-O2", "-std=gnu17", "-DUTIME_H", "-DUSERMEM=800000",
+            ncompressTestDataDirectory.get().file("compress.c").asFile.absolutePath,
+            "-o", executable.absolutePath))
+        commandLine(command)
+    }
+}
+
 tasks.named<Test>("tier2Test") {
     dependsOn(prepareNcompressTestCorpus)
+    mustRunAfter(tasks.named("buildNcompressReference"))
     inputs.dir(ncompressTestDataDirectory)
     systemProperty("arkivo.ncompress.testDataDirectory", ncompressTestDataDirectory.get().asFile.absolutePath)
     inputs.property("ncompressExecutable", providers.environmentVariable("ARKIVO_NCOMPRESS_EXECUTABLE").orElse(""))

@@ -146,10 +146,14 @@ val prepareLZ4TestCorpus = tasks.register<Sync>("prepareLZ4TestCorpus") {
     group = "verification"
     description = "Extracts official LZ4 frame and block regression sources and golden samples."
     dependsOn(downloadLZ4TestSources)
+    val referenceSources = listOf("$lz4Root/lib/*.c", "$lz4Root/lib/*.h",
+        "$lz4Root/programs/*.c", "$lz4Root/programs/*.h")
+    inputs.property("referenceSources", referenceSources)
     from(downloadLZ4TestSources.flatMap { it.destination }.map { archive ->
         tarTree(resources.gzip(archive.asFile))
     }) {
         include("$lz4Root/LICENSE", "$lz4Root/lib/LICENSE", "$lz4Root/tests/COPYING")
+        include(referenceSources)
         include("$lz4Root/tests/goldenSamples/**", "$lz4Root/tests/fuzzer.c", "$lz4Root/tests/frametest.c",
                 "$lz4Root/tests/decompress-partial.c", "$lz4Root/tests/decompress-partial-usingDict.c")
         eachFile {
@@ -165,8 +169,38 @@ val prepareLZ4TestCorpus = tasks.register<Sync>("prepareLZ4TestCorpus") {
     into(lz4TestDataDirectory)
 }
 
+val lz4ReferenceCompiler = providers.environmentVariable("ARKIVO_REFERENCE_C_COMPILER")
+val lz4ReferenceExecutable = layout.buildDirectory.file("reference-tools/lz4" +
+    if (System.getProperty("os.name").startsWith("Windows")) ".exe" else "")
+
+tasks.register<Exec>("buildLZ4Reference") {
+    group = "verification"
+    description = "Builds verified LZ4 sources with ARKIVO_REFERENCE_C_COMPILER (GCC, Clang, or Zig)."
+    dependsOn(prepareLZ4TestCorpus)
+    inputs.dir(lz4TestDataDirectory)
+    inputs.property("compiler", lz4ReferenceCompiler.orElse(""))
+    outputs.file(lz4ReferenceExecutable)
+    doFirst {
+        val compiler = lz4ReferenceCompiler.orNull
+            ?: throw GradleException("Set ARKIVO_REFERENCE_C_COMPILER to a GCC, Clang, or Zig executable.")
+        val root = lz4TestDataDirectory.get().asFile
+        val executable = lz4ReferenceExecutable.get().asFile
+        executable.parentFile.mkdirs()
+        val command = mutableListOf(compiler)
+        if (File(compiler).nameWithoutExtension.equals("zig", ignoreCase = true)) command.add("cc")
+        command.addAll(listOf("-O2", "-I${root.resolve("lib")}"))
+        command.addAll(listOf("lib", "programs").flatMap { directory ->
+            root.resolve(directory).listFiles()!!.filter { it.isFile && it.extension == "c" }
+                .map { it.absolutePath }
+        }.sorted())
+        command.addAll(listOf("-o", executable.absolutePath))
+        commandLine(command)
+    }
+}
+
 tasks.named<Test>("tier2Test") {
     dependsOn(prepareLZ4TestCorpus)
+    mustRunAfter(tasks.named("buildLZ4Reference"))
     inputs.dir(lz4TestDataDirectory)
     systemProperty("arkivo.lz4.testDataDirectory", lz4TestDataDirectory.get().asFile.absolutePath)
     inputs.property("officialLz4Executable", providers.environmentVariable("ARKIVO_LZ4_EXECUTABLE").orElse(""))
