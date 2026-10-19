@@ -146,6 +146,34 @@ final class LZ4OfficialInteropTest {
         }
     }
 
+    /// Verifies the hand-assembled layout matrix against the official decoder, including external-history matches.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3})
+    void verifiesIncrementalLayoutFixtures(int checksums) throws IOException {
+        String executable = officialExecutable();
+        Path input = temporaryDirectory.resolve("layout.lz4");
+        Path output = temporaryDirectory.resolve("layout.raw");
+        Path dictionaryFile = temporaryDirectory.resolve("layout.dict");
+        for (boolean independent : new boolean[]{false, true}) {
+            for (boolean dictionary : new boolean[]{false, true}) {
+                for (int size : new int[]{23, 65_536}) {
+                    var fixture = LZ4IncrementalLayoutTest.frame(independent, dictionary, checksums, size);
+                    Files.write(input, fixture.encoded());
+                    var arguments = new ArrayList<>(List.of("-d"));
+                    if (dictionary) {
+                        Files.write(dictionaryFile, Objects.requireNonNull(fixture.codec().dictionary()).bytes());
+                        arguments.add("-D");
+                        arguments.add(dictionaryFile.toString());
+                    }
+                    arguments.add(input.toString());
+                    arguments.add(output.toString());
+                    run(executable, arguments);
+                    assertArrayEquals(fixture.content(), Files.readAllBytes(output));
+                }
+            }
+        }
+    }
+
     /// Returns the explicitly configured reference tool, skipping optional runs when it is unavailable.
     private static String officialExecutable() {
         @Nullable String configured = System.getenv("ARKIVO_LZ4_EXECUTABLE");
@@ -295,6 +323,7 @@ final class LZ4OfficialInteropTest {
         LZ4Codec bounded = codec.withMaximumOutputSize(content.length).withMaximumMemorySize(64L * 1024 * 1024);
         assertArrayEquals(content, decodeStream(bounded, frame, content.length), options.toString());
         assertArrayEquals(content, decodeChunks(bounded, frame, 97, 4093), options.toString());
+        LZ4IncrementalLayoutTest.assertNativeFrame(bounded, frame, content);
         Files.write(arkivoFrame, bytes(codec.compress(ByteBuffer.wrap(content))));
         List<String> decompress = new ArrayList<>(List.of("-d"));
         if (dictionary != null) {
