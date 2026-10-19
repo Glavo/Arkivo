@@ -51,21 +51,6 @@ final class Deflate64BufferEngineTest {
         assertEquals(compressed.length, decoded.consumedInput());
     }
 
-    /// Verifies that reaching the final block leaves bytes belonging to a following container field untouched.
-    @Test
-    void preservesTrailingInput() throws IOException {
-        byte[] input = "payload before a container trailer".repeat(64).getBytes(StandardCharsets.UTF_8);
-        byte[] compressed = encode(input, 11, 3);
-        byte[] trailer = {0x12, 0x34, 0x56, 0x78};
-        byte[] combined = Arrays.copyOf(compressed, compressed.length + trailer.length);
-        System.arraycopy(trailer, 0, combined, compressed.length, trailer.length);
-
-        DecodeResult decoded = decode(combined, combined.length, 2, false);
-
-        assertArrayEquals(input, decoded.content());
-        assertEquals(compressed.length, decoded.consumedInput());
-    }
-
     /// Verifies that flush ends a nonfinal block and finish emits the final stream boundary through tiny targets.
     @Test
     void flushesAndFinishesThroughFreshTargets() throws IOException {

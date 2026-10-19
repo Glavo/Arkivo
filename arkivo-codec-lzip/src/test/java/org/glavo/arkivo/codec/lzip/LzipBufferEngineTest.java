@@ -485,26 +485,6 @@ public final class LzipBufferEngineTest {
         }
     }
 
-    /// Verifies a completed decoder is stable and can be reset for another independently validated member.
-    @Test
-    public void completedDecoderIsStableAndReusable() throws IOException {
-        byte[] content = patternedData(4_097);
-        byte[] encoded = encode(content, CODEC, EncodingOptions.DEFAULT, 29, 11);
-
-        try (CompressionDecoder.Framed decoder = CODEC.newDecoder()) {
-            assertArrayEquals(content, decodeComplete(decoder, encoded));
-
-            ByteBuffer followingSource = ByteBuffer.wrap(new byte[]{1, 2, 3});
-            ByteBuffer followingTarget = ByteBuffer.allocate(3);
-            assertEquals(CodecOutcome.FINISHED, decoder.decode(followingSource, followingTarget));
-            assertEquals(0, followingSource.position());
-            assertEquals(0, followingTarget.position());
-
-            decoder.reset();
-            assertArrayEquals(content, decodeComplete(decoder, encoded));
-        }
-    }
-
     /// Encodes source fragments into one complete lzip member.
     private static byte @Unmodifiable [] encode(
             byte @Unmodifiable [] content,

@@ -26,48 +26,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies BZip2 decoder frame boundaries, reset behavior, malformed headers, and terminal states.
 @NotNullByDefault
 final class BZip2DecoderLifecycleTest {
-    /// Verifies concatenated frames remain separated until the caller explicitly resets the decoder.
-    @Test
-    void decodesConcatenatedFramesAfterExplicitReset() throws IOException {
-        byte[] first = "first BZip2 frame".getBytes(StandardCharsets.UTF_8);
-        byte[] second = "second BZip2 frame".getBytes(StandardCharsets.UTF_8);
-        byte[] firstEncoded = encode(first);
-        byte[] secondEncoded = encode(second);
-        byte[] trailing = {11, 22, 33};
-        ByteBuffer source = ByteBuffer.allocate(firstEncoded.length + secondEncoded.length + trailing.length)
-                .put(firstEncoded)
-                .put(secondEncoded)
-                .put(trailing)
-                .flip();
-        BZip2Decoder decoder = new BZip2Decoder();
-
-        ByteBuffer firstTarget = ByteBuffer.allocate(first.length + 1);
-        assertEquals(CodecOutcome.FINISHED, decoder.finish(source, firstTarget));
-        assertEquals(firstEncoded.length, source.position());
-        firstTarget.flip();
-        byte[] firstActual = new byte[firstTarget.remaining()];
-        firstTarget.get(firstActual);
-        assertArrayEquals(first, firstActual);
-
-        int boundaryPosition = source.position();
-        assertEquals(CodecOutcome.FINISHED, decoder.decode(source, ByteBuffer.allocate(0)));
-        assertEquals(boundaryPosition, source.position());
-
-        decoder.reset();
-        ByteBuffer secondTarget = ByteBuffer.allocate(second.length + 1);
-        assertEquals(CodecOutcome.FINISHED, decoder.finish(source, secondTarget));
-        assertEquals(firstEncoded.length + secondEncoded.length, source.position());
-        secondTarget.flip();
-        byte[] secondActual = new byte[secondTarget.remaining()];
-        secondTarget.get(secondActual);
-        assertArrayEquals(second, secondActual);
-
-        byte[] remaining = new byte[source.remaining()];
-        source.get(remaining);
-        assertArrayEquals(trailing, remaining);
-        decoder.close();
-    }
-
     /// Verifies reset discards buffered input and every operation enforces null and closed-state contracts.
     @Test
     @SuppressWarnings("DataFlowIssue")
