@@ -33,8 +33,10 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -51,6 +53,174 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Exercises libzip regression archives with independent content digests and upstream operation expectations.
 @NotNullByDefault
 final class LibzipCorpusTest {
+    /// Replays partial and complete deletion with path identities that do not shift when earlier entries disappear.
+    @ParameterizedTest
+    @ValueSource(strings = {"24", "42", "1234", "4321", "3412"})
+    void deletesMultipleEntries(String order, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("deleted.zip");
+        Path original = fixture("testcomment.zip");
+        Files.copy(original, archive);
+        var remaining = new ArrayList<>(ArchiveCorpusAssertions.readZipReference(original));
+        @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> expected = ArchiveCorpusAssertions.readZipReference(
+                fixture(order.length() == 2 ? "testcomment13.zip" : "testempty.zip"));
+        try (var fs = ZipArkivoFileSystem.update(archive)) {
+            for (int i = 0; i < order.length(); i++) {
+                String name = "file" + order.charAt(i);
+                Path entry = fs.getPath(name);
+                Files.delete(entry);
+                remaining.removeIf(value -> value.path().equals(name));
+                assertThrows(NoSuchFileException.class, () -> Files.readAllBytes(entry));
+                assertThrows(NoSuchFileException.class, () -> Files.delete(entry));
+                ArchiveCorpusAssertions.assertEquivalentEntries(List.copyOf(remaining),
+                        ArchiveCorpusAssertions.readFileSystem(fs));
+            }
+        }
+        // libzip can remove the archive when its last entry is deleted; Arkivo keeps an empty ZIP file.
+        assertTrue(Files.isRegularFile(archive));
+        assertPublishedContents(archive, expected);
+        try (var source = new java.util.zip.ZipFile(original.toFile());
+             var result = new java.util.zip.ZipFile(archive.toFile())) {
+            assertEquals(expected.size(), result.size());
+            assertEquals(source.getComment(), result.getComment());
+            for (var entry : result.stream().toList()) {
+                assertEquals(source.getEntry(entry.getName()).getComment(), entry.getComment());
+            }
+        }
+    }
+
+    /// Varies unchanged, changed, empty, and multi-buffer replacement bodies with both method-setting requests.
+    private static Stream<Arguments> storedReplacements() {
+        return Stream.of("aaaaaaaa", "bbbbbbbb", "", "replacement content", "abcd".repeat(16_385))
+                .flatMap(content -> Stream.of(ZipMethod.STORED, ZipMethod.DEFLATED)
+                        .map(method -> Arguments.of(content, method)));
+    }
+
+    /// Adapts replace_set_stored.test to the completed-entry contract: method changes fail without losing new content.
+    @ParameterizedTest(name = "{index}: requested method={1}")
+    @MethodSource("storedReplacements")
+    void rejectsMethodSettingAfterStoredReplacement(String content, ZipMethod method, @TempDir Path directory)
+            throws IOException {
+        Path archive = directory.resolve("replace.zip");
+        Files.copy(fixture("aaaaaaaa-stored.zip"), archive);
+        byte[] expected = content.getBytes(StandardCharsets.US_ASCII);
+        try (var fs = ZipArkivoFileSystem.update(archive)) {
+            Path entry = fs.getPath("aaaaaaaa.txt");
+            assertEntryContentAndMetadata(entry, "aaaaaaaa".getBytes(StandardCharsets.US_ASCII), 0);
+            Files.write(entry, expected);
+            assertEntryContentAndMetadata(entry, expected, 8);
+            @Nullable var view = Files.getFileAttributeView(entry, ZipArkivoEntryAttributeView.class);
+            assertNotNull(view);
+            var before = view.readAttributes();
+            assertThrows(UnsupportedOperationException.class, () -> view.setMethod(method));
+            var after = view.readAttributes();
+            assertEquals(before.compressionMethodId(), after.compressionMethodId());
+            assertEquals(before.compressedSize(), after.compressedSize());
+            assertEquals(before.crc32(), after.crc32());
+            assertEntryContentAndMetadata(entry, expected, 8);
+        }
+        try (var fs = ZipArkivoFileSystem.open(archive)) {
+            assertEntryContentAndMetadata(fs.getPath("aaaaaaaa.txt"), expected, 8);
+        }
+        try (var reference = new java.util.zip.ZipFile(archive.toFile())) {
+            assertEquals(1, reference.size());
+            @Nullable var entry = reference.getEntry("aaaaaaaa.txt");
+            assertNotNull(entry);
+            assertEquals(8, entry.getMethod());
+            assertEquals(expected.length, entry.getSize());
+            var crc = new java.util.zip.CRC32();
+            crc.update(expected);
+            assertEquals(crc.getValue(), entry.getCrc());
+            try (var input = reference.getInputStream(entry)) {
+                assertArrayEquals(expected, input.readAllBytes());
+            }
+        }
+        assertPublishedContents(archive, ArchiveCorpusAssertions.readZipReference(archive));
+    }
+
+    /// Crosses stored and compressed sources with new and existing destination archives.
+    private static Stream<Arguments> copiedSources() {
+        return Stream.of("teststored.zip", "testdeflated.zip")
+                .flatMap(source -> Stream.of(false, true).map(update -> Arguments.of(source, update)));
+    }
+
+    /// Replays add_from_zip_deflated2.test and then modifies the copies independently after reopening.
+    @ParameterizedTest(name = "{0}, update={1}")
+    @MethodSource("copiedSources")
+    void copiesOneEntryTwice(String sourceName, boolean update, @TempDir Path directory) throws IOException {
+        Path sourceArchive = fixture(sourceName);
+        byte[] originalArchive = Files.readAllBytes(sourceArchive);
+        byte[] expected;
+        try (var reference = new java.util.zip.ZipFile(sourceArchive.toFile());
+             var input = reference.getInputStream(reference.getEntry("abac-repeat.txt"))) {
+            expected = input.readAllBytes();
+        }
+        Path archive = directory.resolve("copies.zip");
+        if (update) Files.copy(fixture("testempty.zip"), archive);
+        @Unmodifiable List<ArchiveCorpusAssertions.EntryDigest> expectedEntries =
+                ArchiveCorpusAssertions.readZipReference(fixture("testdeflated2.zip"));
+        try (var target = update ? ZipArkivoFileSystem.update(archive) : ZipArkivoFileSystem.create(archive)) {
+            try (var source = ZipArkivoFileSystem.open(sourceArchive)) {
+                Path input = source.getPath("abac-repeat.txt");
+                try (var reader = Files.newInputStream(input)) {
+                    assertArrayEquals(Arrays.copyOf(expected, 7), reader.readNBytes(7));
+                    Files.copy(input, target.getPath("abac-repeat.txt"));
+                    Files.copy(input, target.getPath("abac-repeat2.txt"));
+                    assertArrayEquals(Arrays.copyOfRange(expected, 7, expected.length), reader.readAllBytes());
+                }
+            }
+            // Files.copy completes the transfer synchronously; committing the target must not need the source session.
+            // Create sessions are forward-only; update sessions additionally expose completed entries immediately.
+            if (update) {
+                ArchiveCorpusAssertions.assertEquivalentEntries(expectedEntries, ArchiveCorpusAssertions.readFileSystem(target));
+            }
+        }
+        assertPublishedContents(archive, expectedEntries);
+        byte[] appended = Arrays.copyOf(expected, expected.length + 1);
+        appended[expected.length] = '!';
+        byte[] replacement = "independent".getBytes(StandardCharsets.US_ASCII);
+        try (var target = ZipArkivoFileSystem.update(archive)) {
+            Path first = target.getPath("abac-repeat.txt");
+            Path second = target.getPath("abac-repeat2.txt");
+            try (var oldFirst = Files.newInputStream(first); var oldSecond = Files.newInputStream(second)) {
+                assertEquals(Byte.toUnsignedInt(expected[0]), oldFirst.read());
+                assertEquals(Byte.toUnsignedInt(expected[0]), oldSecond.read());
+                try (var append = Files.newByteChannel(first, StandardOpenOption.APPEND)) {
+                    ByteBuffer suffix = ByteBuffer.wrap(new byte[]{'!'});
+                    while (suffix.hasRemaining()) assertTrue(append.write(suffix) > 0);
+                }
+                assertArrayEquals(expected, Files.readAllBytes(second));
+                Files.delete(second);
+                Files.write(second, replacement);
+                assertEntryContentAndMetadata(first, appended, 8);
+                assertEntryContentAndMetadata(second, replacement, 8);
+                byte[] tail = Arrays.copyOfRange(expected, 1, expected.length);
+                assertArrayEquals(tail, oldFirst.readAllBytes());
+                assertArrayEquals(tail, oldSecond.readAllBytes());
+            }
+        }
+        try (var reference = new java.util.zip.ZipFile(archive.toFile())) {
+            assertEquals(2, reference.size());
+            try (var first = reference.getInputStream(reference.getEntry("abac-repeat.txt"));
+                 var second = reference.getInputStream(reference.getEntry("abac-repeat2.txt"))) {
+                assertArrayEquals(appended, first.readAllBytes());
+                assertArrayEquals(replacement, second.readAllBytes());
+            }
+        }
+        assertPublishedContents(archive, ArchiveCorpusAssertions.readZipReference(archive));
+        assertArrayEquals(originalArchive, Files.readAllBytes(sourceArchive));
+    }
+
+    /// Checks decoded content and the independently calculated size and CRC against a ZIP entry snapshot.
+    private static void assertEntryContentAndMetadata(Path entry, byte[] expected, int method) throws IOException {
+        assertArrayEquals(expected, Files.readAllBytes(entry));
+        var attributes = Files.readAttributes(entry, ZipArkivoEntryAttributes.class);
+        var crc = new java.util.zip.CRC32();
+        crc.update(expected);
+        assertEquals(expected.length, attributes.size());
+        assertEquals(crc.getValue(), attributes.crc32());
+        assertEquals(method, attributes.compressionMethodId());
+    }
+
     /// Replays `fseek_ok`, `fseek_fail`, `fseek_deflated`, and `read_seek_read` with NIO seek semantics.
     @ParameterizedTest
     @ValueSource(strings = {"test.zip", "testdeflated.zip"})
@@ -555,13 +725,16 @@ final class LibzipCorpusTest {
         assertPublishedContents(archive, expected);
     }
 
-    /// Checks committed contents with both Arkivo and an independent ZIP decoder.
+    /// Checks committed contents with both Arkivo reading APIs and an independent ZIP decoder.
     private static void assertPublishedContents(Path archive, List<ArchiveCorpusAssertions.EntryDigest> expected)
             throws IOException {
         try (var fs = ZipArkivoFileSystem.open(archive)) {
             ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readFileSystem(fs), expected);
         }
         ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readZipReference(archive), expected);
+        try (var reader = ZipArkivoStreamingReader.open(archive)) {
+            ArchiveCorpusAssertions.assertEquivalentEntries(ArchiveCorpusAssertions.readStreaming(reader), expected);
+        }
     }
 
     /// Executes the read lengths from `fopen_multiple.test` without sharing stream position.
