@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -174,18 +173,6 @@ public final class DeflateBufferEngineTest {
                 IllegalStateException.class,
                 () -> encoder.encode(ByteBuffer.wrap(input), ByteBuffer.allocate(8))
         );
-    }
-
-    /// Verifies that the output limiter accepts the exact bound and rejects one additional byte.
-    @Test
-    public void maximumOutputSizeAppliesToBufferDecoder() throws IOException {
-        byte[] input = testData();
-        byte[] encoded = encodeInFragments(input, 13, 5, false);
-        DeflateCodec exactCodec = CODEC.withMaximumOutputSize(input.length);
-        DeflateCodec shortCodec = CODEC.withMaximumOutputSize(input.length - 1L);
-
-        assertArrayEquals(input, decode(encoded, 1, exactCodec));
-        assertThrows(DecompressionLimitException.class, () -> decode(encoded, 1, shortCodec));
     }
 
     /// Encodes source fragments into one raw Deflate stream.

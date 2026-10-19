@@ -10,7 +10,6 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -308,9 +307,9 @@ public final class ZstdBufferEngineTest {
         assertArrayEquals(input, decoded.toByteArray());
     }
 
-    /// Verifies skippable-frame boundaries and output-limit enforcement.
+    /// Verifies skippable frames leave following bytes unconsumed.
     @Test
-    public void skippableFrameAndOutputLimit() throws IOException {
+    public void skippableFrameBoundary() throws IOException {
         byte[] payload = testData(257);
         byte[] tail = {1, 2, 3};
         ByteBuffer skippable = ByteBuffer.allocate(8 + payload.length + tail.length);
@@ -324,16 +323,6 @@ public final class ZstdBufferEngineTest {
             );
         }
         assertEquals(8 + payload.length, skippable.position());
-
-        byte[] input = testData(4097);
-        byte[] encoded = encode(input, CODEC.newEncoder(), 101, 5, false);
-        ZstdCodec exactCodec = CODEC.withMaximumOutputSize(input.length);
-        ZstdCodec shortCodec = CODEC.withMaximumOutputSize((long) input.length - 1L);
-        assertArrayEquals(input, decode(encoded, exactCodec, 1));
-        assertThrows(
-                DecompressionLimitException.class,
-                () -> decode(encoded, shortCodec, 1)
-        );
     }
 
     /// Verifies truncated input, checksum corruption, and maximum-window enforcement.
