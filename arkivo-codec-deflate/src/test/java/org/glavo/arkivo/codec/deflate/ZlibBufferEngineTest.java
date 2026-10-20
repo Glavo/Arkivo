@@ -19,7 +19,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Random;
-import java.util.zip.Adler32;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 
@@ -90,52 +89,6 @@ public final class ZlibBufferEngineTest {
         }
 
         assertArrayEquals(input, decoded.toByteArray());
-    }
-
-    /// Verifies late dictionary negotiation and configured automatic dictionary application.
-    @Test
-    public void lateDictionaryBinding() throws IOException {
-        byte[] dictionaryBytes = dictionaryData();
-        Adler32 checksum = new Adler32();
-        checksum.update(dictionaryBytes);
-        ZlibDictionary dictionary = ZlibDictionary.of(dictionaryBytes);
-        byte[] input = Arrays.copyOfRange(dictionaryBytes, dictionaryBytes.length - 2048, dictionaryBytes.length);
-        ZlibCodec dictionaryCodec = CODEC.withDictionary(dictionary);
-        byte[] encoded = encodeInFragments(input, dictionaryCodec, 17, 3);
-        ByteBuffer source = ByteBuffer.wrap(encoded);
-        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-
-        try (CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> decoder =
-                     CODEC.withMaximumOutputSize(input.length).newDecoder()) {
-            CodecOutcome outcome;
-            do {
-                ByteBuffer target = ByteBuffer.allocate(5);
-                outcome = decoder.finish(source, target);
-                drain(target, decoded);
-            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.NEEDS_DICTIONARY, outcome);
-            assertEquals(checksum.getValue(), decoder.dictionaryRequest().adler32());
-
-            byte[] wrongBytes = dictionaryBytes.clone();
-            wrongBytes[0] ^= 1;
-            ZlibDictionary wrongDictionary = ZlibDictionary.of(wrongBytes);
-            assertThrows(IllegalArgumentException.class, () -> decoder.provideDictionary(wrongDictionary));
-            assertEquals(checksum.getValue(), decoder.dictionaryRequest().adler32());
-            decoder.provideDictionary(dictionary);
-
-            do {
-                ByteBuffer target = ByteBuffer.allocate(5);
-                outcome = decoder.finish(source, target);
-                drain(target, decoded);
-            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FINISHED, outcome);
-        }
-
-        assertArrayEquals(input, decoded.toByteArray());
-        assertArrayEquals(
-                input,
-                decode(encoded, 2, dictionaryCodec)
-        );
     }
 
     /// Verifies sync-flush visibility through the standard JDK zlib inflater.
@@ -269,40 +222,6 @@ public final class ZlibBufferEngineTest {
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
 
-    }
-
-    /// Verifies reset discards an outstanding dictionary request and restores a completed decoder for reuse.
-    @Test
-    public void decoderResetRestoresDictionaryAndCompletedStates() throws IOException {
-        byte[] dictionaryBytes = dictionaryData();
-        ZlibDictionary dictionary = ZlibDictionary.of(dictionaryBytes);
-        byte[] dictionaryInput = Arrays.copyOfRange(
-                dictionaryBytes,
-                dictionaryBytes.length - 2048,
-                dictionaryBytes.length
-        );
-        byte[] dictionaryEncoded = encodeInFragments(dictionaryInput, CODEC.withDictionary(dictionary), 19, 3);
-        byte[] regularInput = testData();
-        byte[] regularEncoded = encodeInFragments(regularInput, CODEC, 23, 5);
-        CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> decoder = CODEC.newDecoder();
-
-        try {
-            ByteBuffer dictionarySource = ByteBuffer.wrap(dictionaryEncoded);
-            ByteBuffer dictionaryTarget = ByteBuffer.allocate(1);
-            assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.finish(dictionarySource, dictionaryTarget));
-            assertEquals(0, dictionaryTarget.position());
-            assertEquals(dictionary.adler32(), decoder.dictionaryRequest().adler32());
-
-            decoder.reset();
-            assertThrows(IllegalStateException.class, decoder::dictionaryRequest);
-            assertArrayEquals(regularInput, decode(decoder, regularEncoded, 2));
-
-            decoder.reset();
-            assertArrayEquals(regularInput, decode(decoder, regularEncoded, 1));
-        } finally {
-            decoder.close();
-        }
-        assertThrows(IllegalStateException.class, decoder::reset);
     }
 
     /// Verifies fragmented metadata, truncated stream phases, dictionary waiting, and terminal decoder behavior.

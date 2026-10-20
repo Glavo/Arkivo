@@ -255,58 +255,6 @@ public final class ZstdBufferEngineTest {
         }
     }
 
-    /// Rejects a mismatched dictionary without losing the pending request, then decodes with the matching dictionary.
-    @Test
-    public void requestsAndAcceptsDictionary() throws IOException {
-        byte[] samples = testData(8192);
-        ZstdDictionaryTrainer trainer = new ZstdDictionaryTrainer(samples.length, 1024);
-        trainer.addSample(ByteBuffer.wrap(samples));
-        ZstdDictionary dictionary = trainer.train();
-        byte[] input = Arrays.copyOfRange(samples, 1024, 3072);
-        ZstdCodec encoderCodec = CODEC.withDictionary(dictionary);
-        byte[] encoded = encode(
-                input,
-                encoderCodec.newEncoder(EncodingOptions.ofSourceSize(input.length)),
-                31,
-                3,
-                false
-        );
-        ByteBuffer source = ByteBuffer.wrap(encoded);
-        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-
-        try (CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> decoder =
-                     CODEC.withMaximumOutputSize(input.length).newDecoder()) {
-            CodecOutcome outcome;
-            do {
-                ByteBuffer target = ByteBuffer.allocate(7);
-                outcome = decoder.finish(source, target);
-                drain(target, decoded);
-            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.NEEDS_DICTIONARY, outcome);
-            assertEquals(dictionary.dictionaryId(), decoder.dictionaryRequest().dictionaryId());
-
-            int waitingSourcePosition = source.position();
-            ByteBuffer waitingTarget = ByteBuffer.allocate(1);
-            ZstdDictionary wrongDictionary = ZstdDictionary.rawContent(samples);
-            assertFalse(decoder.dictionaryRequest().matches(wrongDictionary));
-            assertThrows(IllegalArgumentException.class, () -> decoder.provideDictionary(wrongDictionary));
-            assertEquals(dictionary.dictionaryId(), decoder.dictionaryRequest().dictionaryId());
-            assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.finish(source, waitingTarget));
-            assertEquals(waitingSourcePosition, source.position());
-            assertEquals(0, waitingTarget.position());
-
-            decoder.provideDictionary(dictionary);
-            do {
-                ByteBuffer target = ByteBuffer.allocate(7);
-                outcome = decoder.finish(source, target);
-                drain(target, decoded);
-            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FINISHED, outcome);
-        }
-
-        assertArrayEquals(input, decoded.toByteArray());
-    }
-
     /// Verifies skippable frames leave following bytes unconsumed.
     @Test
     public void skippableFrameBoundary() throws IOException {

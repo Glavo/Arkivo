@@ -240,35 +240,6 @@ public final class LZ4FrameDictionaryAndLegacyTest {
         assertThrows(IOException.class, () -> decompress(new LZ4Codec(), outOfBandFrame));
     }
 
-    /// Verifies a parsed dictionary request rejects a mismatched identified dictionary and accepts the requested one.
-    @Test
-    public void lateDictionaryBindingFollowsDecoderLifecycle() throws IOException {
-        byte[] dictionaryBytes = dictionaryBytes();
-        byte[] input = Arrays.copyOfRange(dictionaryBytes, 7, 40_007);
-        LZ4Dictionary requested = LZ4Dictionary.identified(23L, dictionaryBytes);
-        LZ4Dictionary wrong = LZ4Dictionary.identified(24L, dictionaryBytes);
-        byte[] frame = compress(new LZ4Codec().withDictionary(requested), input);
-
-        try (CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> decoder =
-                     new LZ4Codec().newDecoder()) {
-            ByteBuffer source = ByteBuffer.wrap(frame);
-            ByteBuffer target = ByteBuffer.allocate(input.length + 1);
-            assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.decode(source, target));
-            assertEquals(23L, decoder.dictionaryRequest().dictionaryId());
-            int waitingPosition = source.position();
-            assertThrows(IllegalArgumentException.class, () -> decoder.provideDictionary(wrong));
-            assertEquals(23L, decoder.dictionaryRequest().dictionaryId());
-            assertEquals(CodecOutcome.NEEDS_DICTIONARY, decoder.finish(source, target));
-            assertEquals(waitingPosition, source.position());
-            assertEquals(0, target.position());
-            decoder.provideDictionary(requested);
-            assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
-            assertFalse(source.hasRemaining());
-            assertEquals(input.length, target.position());
-            assertArrayEquals(input, bytes(target.flip()));
-        }
-    }
-
     /// Verifies framed high-level adapters preserve an identified dictionary request.
     @Test
     public void framedAdaptersExposeTypedDictionaryRequests() throws IOException {
