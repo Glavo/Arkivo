@@ -124,9 +124,9 @@ public final class LzipBufferEngineTest {
         assertEquals(stream.length - firstMemberSize, secondResult.consumedInput());
     }
 
-    /// Verifies pledged-size failures preserve buffer progress and reset can discard failed state.
+    /// Verifies an oversized input leaves the source untouched after emitting the lzip header.
     @Test
-    public void pledgedSourceSizeFailuresAndRecovery() throws IOException {
+    public void pledgedSizeFailurePreservesHeaderProgress() throws IOException {
         CompressionEncoder.Framed oversized = CODEC.newEncoder(EncodingOptions.ofSourceSize(3L));
         ByteBuffer oversizedSource = ByteBuffer.wrap(new byte[4]);
         ByteBuffer oversizedTarget = ByteBuffer.allocate(32);
@@ -134,23 +134,6 @@ public final class LzipBufferEngineTest {
         assertEquals(0, oversizedSource.position());
         assertEquals(LzipSupport.HEADER_SIZE, oversizedTarget.position());
         oversized.close();
-
-        byte[] exactContent = {1, 2, 3};
-        try (CompressionEncoder.Framed undersized = CODEC.newEncoder(EncodingOptions.ofSourceSize(3L))) {
-            ByteArrayOutputStream discarded = new ByteArrayOutputStream();
-            encodeSource(undersized, directBuffer(new byte[]{1, 2}), discarded, 7);
-            assertThrows(IOException.class, () -> undersized.finish(ByteBuffer.allocate(64)));
-
-            undersized.reset();
-            ByteArrayOutputStream recovered = new ByteArrayOutputStream();
-            encodeSource(undersized, directBuffer(exactContent), recovered, 7);
-            finish(undersized, recovered, 2);
-            ByteBuffer decoded = CODEC.withMaximumOutputSize(exactContent.length)
-                    .decompress(ByteBuffer.wrap(recovered.toByteArray()));
-            byte[] restored = new byte[decoded.remaining()];
-            decoded.get(restored);
-            assertArrayEquals(exactContent, restored);
-        }
     }
 
     /// Verifies reset discards partial header, payload, finalization, and trailer state before engine reuse.
@@ -365,53 +348,6 @@ public final class LzipBufferEngineTest {
         assertThrows(
                 IllegalStateException.class,
                 () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-    }
-
-    /// Verifies null arguments do not alter engine state and every operation rejects a closed engine.
-    @Test
-    @SuppressWarnings("DataFlowIssue")
-    public void validatesArgumentsAndClosedState() throws IOException {
-        byte[] content = {1, 2, 3, 4};
-        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        CompressionEncoder.Framed encoder = CODEC.newEncoder();
-
-        assertThrows(NullPointerException.class, () -> encoder.encode(null, ByteBuffer.allocate(1)));
-        assertThrows(NullPointerException.class, () -> encoder.encode(ByteBuffer.allocate(0), null));
-        assertThrows(NullPointerException.class, () -> encoder.finishFrame(null));
-        assertThrows(NullPointerException.class, () -> encoder.finish(null));
-        assertThrows(NullPointerException.class, () -> encoder.startFrame(null));
-
-        encodeSource(encoder, directBuffer(content), encoded, 7);
-        finish(encoder, encoded, 3);
-        encoder.close();
-        encoder.close();
-        assertThrows(IllegalStateException.class, encoder::reset);
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, encoder::startFrame);
-
-        CompressionDecoder.Framed decoder = CODEC.newDecoder();
-        assertThrows(NullPointerException.class, () -> decoder.decode(null, ByteBuffer.allocate(1)));
-        assertThrows(NullPointerException.class, () -> decoder.decode(ByteBuffer.allocate(0), null));
-        assertThrows(NullPointerException.class, () -> decoder.finish(null, ByteBuffer.allocate(1)));
-        assertThrows(NullPointerException.class, () -> decoder.finish(ByteBuffer.allocate(0), null));
-        assertArrayEquals(content, decodeComplete(decoder, encoded.toByteArray()));
-
-        decoder.close();
-        decoder.close();
-        assertThrows(IllegalStateException.class, decoder::reset);
-        assertThrows(
-                IllegalStateException.class,
-                () -> decoder.decode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(
-                IllegalStateException.class,
-                () -> decoder.finish(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
         );
     }
 

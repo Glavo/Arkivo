@@ -8,9 +8,12 @@ import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
+import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
 import org.glavo.arkivo.archive.cpio.CPIOArkivoStreamingReader;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
+import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
+import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -18,6 +21,8 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.jetbrains.annotations.UnmodifiableView;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
@@ -35,6 +40,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -115,6 +121,9 @@ final class StreamingReaderCursorMatrixTest {
         /// Whether cleanup has completed.
         private boolean closed;
 
+        /// Number of source cleanup attempts, including failures.
+        private int closeAttempts;
+
         /// Creates a source that shares the supplied exception across operations.
         private RepeatedFailureInputStream(IOException failure) {
             this(failure, new byte[0]);
@@ -151,6 +160,7 @@ final class StreamingReaderCursorMatrixTest {
         /// Reports the shared failure until successful cleanup is enabled.
         @Override
         public void close() throws IOException {
+            closeAttempts++;
             if (fail || failClose) throw failure;
             closed = true;
         }
@@ -167,6 +177,78 @@ final class StreamingReaderCursorMatrixTest {
     /// Content of the entry read after cursor advancement.
     private static final byte @Unmodifiable [] SECOND_CONTENT =
             "second-body".getBytes(StandardCharsets.UTF_8);
+
+    /// Covers direct stream ownership before, during, and after entry traversal.
+    private static Stream<Arguments> streamCloseStates() {
+        return STREAMING_FORMATS.stream().flatMap(format ->
+                Stream.of("before-entry", "selected", "open-body", "end")
+                        .map(state -> Arguments.of(format, state)));
+    }
+
+    /// Direct stream factories retain failed source cleanup while permanently closing the reader and its body.
+    @ParameterizedTest(name = "{0}, {1}")
+    @MethodSource("streamCloseStates")
+    void retriesOwnedInputStreamClose(String format, String state) throws IOException {
+        IOException failure = new IOException("source close failed");
+        var source = new RepeatedFailureInputStream(failure, createArchive(format));
+        source.failClose = true;
+        ArkivoStreamingReader reader = openDirectReader(format, source);
+        @Nullable ReadableByteChannel body = null;
+        try {
+            switch (state) {
+                case "before-entry" -> { }
+                case "selected" -> assertTrue(reader.next());
+                case "open-body" -> {
+                    assertTrue(reader.next());
+                    body = reader.openChannel();
+                    assertEquals(1, body.read(ByteBuffer.allocate(1)));
+                }
+                case "end" -> {
+                    while (reader.next()) {
+                        try (InputStream entry = reader.openInputStream()) {
+                            entry.readAllBytes();
+                        }
+                    }
+                }
+                default -> throw new AssertionError(state);
+            }
+            assertEquals(0, source.closeAttempts);
+            assertSame(failure, assertThrows(IOException.class, reader::close));
+            assertEquals(1, source.closeAttempts);
+            assertFalse(source.closed);
+            assertThrows(ClosedChannelException.class, reader::next);
+            assertThrows(ClosedChannelException.class, reader::readAttributes);
+            assertThrows(ClosedChannelException.class, reader::openChannel);
+            assertThrows(ClosedChannelException.class, reader::openInputStream);
+            if (body != null) {
+                ReadableByteChannel closedBody = body;
+                assertFalse(closedBody.isOpen());
+                assertThrows(ClosedChannelException.class, () -> closedBody.read(ByteBuffer.allocate(1)));
+            }
+
+            source.failClose = false;
+            reader.close();
+            assertEquals(2, source.closeAttempts);
+            assertTrue(source.closed);
+            reader.close();
+            assertEquals(2, source.closeAttempts);
+        } finally {
+            source.failClose = false;
+            reader.close();
+        }
+    }
+
+    /// Uses each concrete format's InputStream factory rather than the shared channel factory.
+    private static ArkivoStreamingReader openDirectReader(String format, InputStream source) throws IOException {
+        return switch (format) {
+            case "ar" -> ArArkivoStreamingReader.open(source);
+            case "cpio" -> CPIOArkivoStreamingReader.open(source);
+            case "rar" -> RarArkivoStreamingReader.open(source);
+            case "tar" -> TarArkivoStreamingReader.open(source);
+            case "zip" -> ZipArkivoStreamingReader.open(source);
+            default -> throw new AssertionError(format);
+        };
+    }
 
     /// Reading and automatic body or reader closure must not suppress the same source failure on itself.
     @ParameterizedTest

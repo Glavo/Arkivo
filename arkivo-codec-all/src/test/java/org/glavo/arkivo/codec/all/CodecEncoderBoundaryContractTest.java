@@ -70,6 +70,122 @@ final class CodecEncoderBoundaryContractTest {
         return codecs().map(CodecEncoderBoundaryContractTest::namedCodec);
     }
 
+    /// Covers empty, one-byte, and fragmented payloads with exact metadata for every installed format.
+    private static Stream<Arguments> exactSourceSizes() {
+        return CompressionFormats.installed().stream().flatMap(format -> Stream.of(false, true)
+                .flatMap(direct -> Stream.of(0, 1, CONTENT.length)
+                        .map(size -> Arguments.of(namedCodec(format.defaultCodec()), direct, size))));
+    }
+
+    /// Covers oversized initial buffers and excess bytes supplied after earlier progress.
+    private static Stream<Arguments> excessSourceSizes() {
+        return codecs().filter(CodecContractConfigurations::validatesSourceSize)
+                .flatMap(codec -> Stream.of(false, true).flatMap(direct -> Stream.of(false, true)
+                        .map(partial -> Arguments.of(namedCodec(codec), direct, partial))));
+    }
+
+    /// Covers terminal and frame-only completion for formats that validate input sizes.
+    private static Stream<Arguments> incompleteSourceSizes() {
+        return codecs().filter(CodecContractConfigurations::validatesSourceSize)
+                .flatMap(codec -> Stream.of(Boundary.FINISH, Boundary.FRAME)
+                        .filter(boundary -> boundary.supports(codec))
+                        .flatMap(boundary -> Stream.of(false, true)
+                                .map(direct -> Arguments.of(namedCodec(codec), boundary, direct))));
+    }
+
+    /// Exact metadata accepts the whole input and is restored when the encoder is reused.
+    @ParameterizedTest(name = "{0}, direct={1}, size={2}")
+    @MethodSource("exactSourceSizes")
+    void acceptsExactSourceSize(CompressionCodec<?> codec, boolean direct, int size) throws IOException {
+        try (var encoder = codec.newEncoder(EncodingOptions.ofSourceSize(size))) {
+            for (byte[] content : new byte[][]{Arrays.copyOf(CONTENT, size), Arrays.copyOf(NEXT_CONTENT, size)}) {
+                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                encode(encoder, Arrays.copyOfRange(content, 0, size / 2), encoded, direct);
+                encode(encoder, Arrays.copyOfRange(content, size / 2, size), encoded, direct);
+                complete(encoder, Boundary.FINISH, encoded, direct);
+                assertDecodes(codec, encoded.toByteArray(), content);
+                encoder.reset();
+            }
+        }
+    }
+
+    /// Oversized input is rejected without consuming the failing buffer, and reset restores the initial pledge.
+    @ParameterizedTest(name = "{0}, direct={1}, partial={2}")
+    @MethodSource("excessSourceSizes")
+    void resetsAfterExcessSourceSize(CompressionCodec<?> codec, boolean direct, boolean partial) throws IOException {
+        for (int size : new int[]{0, 3, CONTENT.length}) {
+            try (var encoder = codec.newEncoder(EncodingOptions.ofSourceSize(size))) {
+                int prefix = partial ? size / 2 : 0;
+                if (prefix > 0) {
+                    encode(encoder, Arrays.copyOf(CONTENT, prefix), new ByteArrayOutputStream(), direct);
+                }
+                byte[] excess = Arrays.copyOf(CONTENT, size - prefix + 1);
+                ByteBuffer storage = direct ? ByteBuffer.allocateDirect(excess.length + 6)
+                        : ByteBuffer.allocate(excess.length + 6);
+                storage.position(3).put(excess).flip().position(3);
+                @UnmodifiableView ByteBuffer source = storage.asReadOnlyBuffer().order(ByteOrder.LITTLE_ENDIAN);
+                ByteBuffer target = target(direct, 32);
+                assertThrows(IOException.class, () -> encoder.encode(source, target));
+                assertEquals(3, source.position());
+                assertEquals(excess.length + 3, source.limit());
+                assertEquals(ByteOrder.LITTLE_ENDIAN, source.order());
+                verifyTarget(target, 32);
+
+                encoder.reset();
+                byte[] expected = Arrays.copyOf(NEXT_CONTENT, size);
+                ByteArrayOutputStream recovered = new ByteArrayOutputStream();
+                encode(encoder, expected, recovered, direct);
+                complete(encoder, Boundary.FINISH, recovered, direct);
+                assertDecodes(codec, recovered.toByteArray(), expected);
+            }
+        }
+    }
+
+    /// Incomplete streams and frames fail before completion and can be discarded without changing the pledge.
+    @ParameterizedTest(name = "{0}, {1}, direct={2}")
+    @MethodSource("incompleteSourceSizes")
+    void resetsAfterIncompleteSourceSize(CompressionCodec<?> codec, Boundary boundary, boolean direct)
+            throws IOException {
+        for (int size : new int[]{1, CONTENT.length}) {
+            for (int supplied : new int[]{0, size - 1}) {
+                try (var encoder = codec.newEncoder(EncodingOptions.ofSourceSize(size))) {
+                    encode(encoder, Arrays.copyOf(CONTENT, supplied), new ByteArrayOutputStream(), direct);
+                    assertThrows(IOException.class,
+                            () -> complete(encoder, boundary, new ByteArrayOutputStream(), direct));
+                    encoder.reset();
+                    encoder.reset();
+                    ByteArrayOutputStream recovered = new ByteArrayOutputStream();
+                    byte[] expected = Arrays.copyOf(NEXT_CONTENT, size);
+                    encode(encoder, expected, recovered, direct);
+                    complete(encoder, boundary, recovered, direct);
+                    assertDecodes(codec, recovered.toByteArray(), expected);
+                }
+            }
+        }
+    }
+
+    /// Reset restores the initial frame options rather than a later frame's different size declaration.
+    @ParameterizedTest(name = "{0}, direct={1}")
+    @MethodSource("framedCodecs")
+    void restoresInitialFrameSourceSize(CompressionCodec.Framed<?> codec, boolean direct) throws IOException {
+        try (var encoder = codec.newEncoder(EncodingOptions.ofSourceSize(CONTENT.length))) {
+            encode(encoder, CONTENT, new ByteArrayOutputStream(), direct);
+            complete(encoder, Boundary.FRAME, new ByteArrayOutputStream(), direct);
+            encoder.startFrame(EncodingOptions.ofSourceSize(0));
+            complete(encoder, Boundary.FRAME, new ByteArrayOutputStream(), direct);
+            encoder.reset();
+            ByteArrayOutputStream restored = new ByteArrayOutputStream();
+            encode(encoder, NEXT_CONTENT, restored, direct);
+            complete(encoder, Boundary.FINISH, restored, direct);
+            assertDecodes(codec, restored.toByteArray(), NEXT_CONTENT);
+            if (CodecContractConfigurations.validatesSourceSize(codec)) {
+                encoder.reset();
+                assertThrows(IOException.class,
+                        () -> complete(encoder, Boundary.FINISH, new ByteArrayOutputStream(), direct));
+            }
+        }
+    }
+
     /// Identifies format and non-default configuration without object identity hashes in reports.
     private static Named<CompressionCodec<?>> namedCodec(CompressionCodec<?> codec) {
         String name = codec.format().name();
@@ -264,7 +380,12 @@ final class CodecEncoderBoundaryContractTest {
         while (true) {
             assertTrue(calls++ < MAX_ENGINE_CALLS, "Encoder did not complete " + boundary);
             ByteBuffer target = target(direct, 2);
-            CodecOutcome outcome = boundary.apply(encoder, target);
+            CodecOutcome outcome;
+            try {
+                outcome = boundary.apply(encoder, target);
+            } finally {
+                verifyTarget(target, 2);
+            }
             if (outcome == CodecOutcome.NEEDS_OUTPUT) assertEquals(target.limit(), target.position());
             drain(target, output, 2);
             if (outcome != CodecOutcome.NEEDS_OUTPUT) {

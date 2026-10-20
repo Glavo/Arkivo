@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DictionaryRequest;
+import org.glavo.arkivo.codec.DictionaryRequiredException;
 import org.glavo.arkivo.codec.deflate.ZlibCodec;
 import org.glavo.arkivo.codec.deflate.ZlibDictionary;
 import org.glavo.arkivo.codec.deflate.ZlibDictionaryRequest;
@@ -25,10 +26,12 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.Channels;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
@@ -57,6 +60,84 @@ final class CodecDictionaryNegotiationTest {
         return SCENARIOS.stream().flatMap(scenario -> Stream.of(false, true).flatMap(direct ->
                 Stream.of(false, true).flatMap(fragmented -> Stream.of(false, true)
                         .map(limited -> Arguments.of(scenario, direct, fragmented, limited)))));
+    }
+
+    /// Covers complete-buffer factories and the additional one-frame factories where supported.
+    private static Stream<Arguments> bufferAdapters() {
+        return SCENARIOS.stream().flatMap(scenario ->
+                Stream.of("allocating", "buffer", "frame-allocating", "frame-buffer")
+                        .filter(operation -> !operation.startsWith("frame-")
+                                || scenario.plain() instanceof CompressionCodec.Framed<?>)
+                        .flatMap(operation -> Stream.of(false, true)
+                                .map(direct -> Arguments.of(scenario, operation, direct))));
+    }
+
+    /// Covers stream, channel, and complete-transfer adapters without duplicating buffer-layout cases.
+    private static Stream<Arguments> transportAdapters() {
+        return SCENARIOS.stream().flatMap(scenario -> Stream.of("stream", "channel", "transfer")
+                .map(operation -> Arguments.of(scenario, operation)));
+    }
+
+    /// Complete-buffer adapters preserve the typed request and report consumed header bytes without output.
+    @ParameterizedTest(name = "{0}, {1}, direct={2}")
+    @MethodSource("bufferAdapters")
+    void bufferAdaptersPreserveRequest(Scenario<?> scenario, String operation, boolean direct) throws IOException {
+        byte[] encoded = encode(scenario.configured(), CONTENT);
+        CompressionCodec<?> codec = scenario.plain().withMaximumOutputSize(CONTENT.length);
+        @UnmodifiableView ByteBuffer source = source(encoded, direct);
+        ByteBuffer target = target(CONTENT.length, direct);
+        int sourceLimit = source.limit();
+        DictionaryRequiredException failure = assertThrows(DictionaryRequiredException.class, () -> {
+            switch (operation) {
+                case "allocating" -> codec.decompress(source);
+                case "buffer" -> codec.decompress(source, target);
+                case "frame-allocating" -> ((CompressionCodec.Framed<?>) codec).decompressFrame(source);
+                case "frame-buffer" -> ((CompressionCodec.Framed<?>) codec).decompressFrame(source, target);
+                default -> throw new AssertionError(operation);
+            }
+        });
+        assertEquals(scenario.request(), failure.request());
+        assertTrue(source.position() > 2 && source.position() < sourceLimit);
+        assertEquals(sourceLimit, source.limit());
+        assertEquals(ByteOrder.LITTLE_ENDIAN, source.order());
+        assertEquals(2, target.position());
+        verifyTarget(target, CONTENT.length);
+    }
+
+    /// Transport adapters expose the complete dictionary request without delivering undecodable body bytes.
+    @ParameterizedTest(name = "{0}, {1}")
+    @MethodSource("transportAdapters")
+    void transportAdaptersPreserveRequest(Scenario<?> scenario, String operation) throws IOException {
+        byte[] encoded = encode(scenario.configured(), CONTENT);
+        CompressionCodec<?> codec = scenario.plain().withMaximumOutputSize(CONTENT.length);
+        ByteArrayInputStream source = new ByteArrayInputStream(encoded);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        DictionaryRequiredException failure;
+        switch (operation) {
+            case "stream" -> {
+                try (var stream = codec.newInputStream(source)) {
+                    failure = assertThrows(DictionaryRequiredException.class, () -> stream.transferTo(output));
+                }
+            }
+            case "channel" -> {
+                ByteBuffer target = target(CONTENT.length, true);
+                try (var channel = codec.newReadableByteChannel(Channels.newChannel(source))) {
+                    failure = assertThrows(DictionaryRequiredException.class, () -> channel.read(target));
+                }
+                assertEquals(2, target.position());
+                verifyTarget(target, CONTENT.length);
+            }
+            case "transfer" -> {
+                try (var input = Channels.newChannel(source); var target = Channels.newChannel(output)) {
+                    failure = assertThrows(DictionaryRequiredException.class, () -> codec.decompress(input, target));
+                    assertTrue(input.isOpen());
+                    assertTrue(target.isOpen());
+                }
+            }
+            default -> throw new AssertionError(operation);
+        }
+        assertEquals(scenario.request(), failure.request());
+        assertEquals(0, output.size());
     }
 
     /// Keeps a rejected request intact and resumes at the saved source position with the correct dictionary.

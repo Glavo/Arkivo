@@ -81,12 +81,6 @@ final class LZ4FrameEncoderLifecycleTest {
             IOException incompleteFailure = assertThrows(IOException.class, () -> encoder.finish(target));
             assertEquals("LZ4 frame source size 2 does not match declared size 3", incompleteFailure.getMessage());
             assertEquals(0, target.position());
-
-            encoder.reset();
-            ByteArrayOutputStream retried = new ByteArrayOutputStream();
-            encode(encoder, ByteBuffer.wrap(expected), retried, 2);
-            finish(encoder, retried, 3);
-            assertArrayEquals(expected, decompress(retried.toByteArray()));
         }
     }
 

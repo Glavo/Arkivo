@@ -18,7 +18,6 @@ import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
-import org.glavo.arkivo.codec.bzip2.BZip2Codec;
 import org.glavo.arkivo.codec.deflate.DeflateCodec;
 import org.glavo.arkivo.codec.deflate.ZlibCodec;
 import org.glavo.arkivo.codec.deflate.ZlibDictionary;
@@ -105,36 +104,6 @@ final class CodecChannelContractTest {
 
     /// Sentinel retained outside caller-visible output ranges.
     private static final byte BUFFER_GUARD = (byte) 0xa5;
-
-    /// Verifies every installed codec exposes immutable, reusable decoding resource configuration.
-    @Test
-    void configuresReusableDecodingLimitsAcrossEveryCodec() {
-        for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
-            long originalOutputSize = codec.maximumOutputSize();
-            long originalWindowSize = codec.maximumWindowSize();
-            long originalMemorySize = codec.maximumMemorySize();
-
-            CompressionCodec<?> configured = codec
-                    .withMaximumOutputSize(123L)
-                    .withMaximumWindowSize(456L)
-                    .withMaximumMemorySize(789L);
-
-            assertEquals(123L, configured.maximumOutputSize(), format.name());
-            assertEquals(456L, configured.maximumWindowSize(), format.name());
-            assertEquals(789L, configured.maximumMemorySize(), format.name());
-            assertSame(configured, configured.withMaximumOutputSize(123L), format.name());
-            assertSame(configured, configured.withMaximumWindowSize(456L), format.name());
-            assertSame(configured, configured.withMaximumMemorySize(789L), format.name());
-            assertEquals(originalOutputSize, codec.maximumOutputSize(), format.name());
-            assertEquals(originalWindowSize, codec.maximumWindowSize(), format.name());
-            assertEquals(originalMemorySize, codec.maximumMemorySize(), format.name());
-
-            assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOutputSize(-2L), format.name());
-            assertThrows(IllegalArgumentException.class, () -> codec.withMaximumWindowSize(-2L), format.name());
-            assertThrows(IllegalArgumentException.class, () -> codec.withMaximumMemorySize(-2L), format.name());
-        }
-    }
 
     /// Verifies channel transfer, counters, endpoint ownership, and interface consistency.
     @Test
@@ -981,25 +950,6 @@ final class CodecChannelContractTest {
         }
     }
 
-    /// Verifies capability configuration preserves a codec's concrete return type.
-    @Test
-    void preservesConcreteTypeAcrossCapabilityConfiguration() {
-        BZip2Codec configured = withMinimumCompressionLevel(BZip2Codec.DEFAULT);
-
-        assertEquals(BZip2Codec.MINIMUM_COMPRESSION_LEVEL, configured.compressionLevel());
-    }
-
-    /// Returns a codec configured with its minimum level.
-    ///
-    /// @param <C>   the codec's concrete self type
-    /// @param codec the configurable codec
-    /// @return a reconfigured codec with the same concrete type
-    private static <C extends CompressionCodec<C>> C withMinimumCompressionLevel(
-            CompressionCodec.LevelConfigurable<C> codec
-    ) {
-        return codec.withCompressionLevel(codec.minimumCompressionLevel());
-    }
-
     /// Verifies dictionary configuration subinterfaces and preset-dictionary round trips.
     @Test
     void roundTripsPresetDictionariesForEveryDictionaryCodec() throws IOException {
@@ -1049,26 +999,12 @@ final class CodecChannelContractTest {
     /// Verifies every codec accepts exact source-size metadata and size-aware codecs enforce it.
     @Test
     void acceptsExactSourceSizesAcrossAllCodecs() throws IOException {
-        Set<String> sizeAwareCodecs = Set.of("lz4", "lzma", "lzma-raw", "zstd");
         byte[] input = (
                 "exact source size contract 0123456789abcdef;"
         ).repeat(512).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec<?> codec = format.defaultCodec();
-            assertThrows(
-                    IllegalArgumentException.class,
-                    () -> {
-                        try (CompressionEncoder ignored =
-                                     codec.newEncoder(EncodingOptions.ofSourceSize(
-                                             CompressionCodec.UNKNOWN_SIZE - 1L
-                                     ))) {
-                            ignored.reset();
-                        }
-                    },
-                    codec.format().name()
-            );
-
             ByteArrayOutputStream compressed = new ByteArrayOutputStream();
             try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                     Channels.newChannel(compressed),
@@ -1087,7 +1023,7 @@ final class CodecChannelContractTest {
             );
             assertArrayEquals(input, decoded.toByteArray(), codec.format().name());
 
-            if (sizeAwareCodecs.contains(codec.format().name())) {
+            if (CodecContractConfigurations.validatesSourceSize(codec)) {
                 assertThrows(
                         IOException.class,
                         () -> {

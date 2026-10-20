@@ -197,31 +197,6 @@ final class LZMA2DecoderLifecycleTest {
         assertArrayEquals(concatenate(first, second), decode(combined.toByteArray()));
     }
 
-    /// Verifies null arguments are rejected before decoder state can change.
-    @Test
-    @SuppressWarnings("DataFlowIssue")
-    void validatesNullArguments() {
-        LZMA2Decoder decoder = new LZMA2Decoder(DICTIONARY_SIZE);
-
-        assertThrows(
-                NullPointerException.class,
-                () -> decoder.decode(null, ByteBuffer.allocate(1))
-        );
-        assertThrows(
-                NullPointerException.class,
-                () -> decoder.decode(ByteBuffer.allocate(0), null)
-        );
-        assertThrows(
-                NullPointerException.class,
-                () -> decoder.finish(null, ByteBuffer.allocate(1))
-        );
-        assertThrows(
-                NullPointerException.class,
-                () -> decoder.finish(ByteBuffer.allocate(0), null)
-        );
-        decoder.close();
-    }
-
     /// Decodes one complete raw LZMA2 stream through small direct target buffers.
     private static byte[] decode(byte[] encoded) throws IOException {
         ByteBuffer source = ByteBuffer.wrap(encoded);

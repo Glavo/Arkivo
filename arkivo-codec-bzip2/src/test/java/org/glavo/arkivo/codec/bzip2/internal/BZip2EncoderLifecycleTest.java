@@ -122,36 +122,11 @@ final class BZip2EncoderLifecycleTest {
         assertThrows(IllegalStateException.class, encoder::reset);
     }
 
-    /// Verifies constructor, null-argument, and closed-state validation for every operation.
+    /// Rejects block-size levels outside the bzip2 format range.
     @Test
-    @SuppressWarnings("DataFlowIssue")
-    void validatesArgumentsAndClosedState() throws IOException {
+    void validatesBlockSizeLevel() {
         assertThrows(IllegalArgumentException.class, () -> new BZip2Encoder(0));
         assertThrows(IllegalArgumentException.class, () -> new BZip2Encoder(10));
-
-        BZip2Encoder encoder = new BZip2Encoder(1);
-        assertThrows(
-                NullPointerException.class,
-                () -> encoder.encode(null, ByteBuffer.allocate(1))
-        );
-        assertThrows(
-                NullPointerException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), null)
-        );
-        assertThrows(NullPointerException.class, () -> encoder.flush(null));
-        assertThrows(NullPointerException.class, () -> encoder.finishFrame(null));
-        assertThrows(NullPointerException.class, () -> encoder.finish(null));
-        assertThrows(NullPointerException.class, () -> encoder.startFrame(null));
-
-        encoder.close();
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.flush(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.startFrame(EncodingOptions.DEFAULT));
     }
 
     /// Verifies operations other than the selected boundary are rejected while that boundary is being drained.

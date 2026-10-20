@@ -7,8 +7,6 @@ import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
-import java.nio.ByteBuffer;
-import java.nio.ReadOnlyBufferException;
 import java.util.zip.Adler32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -35,23 +33,6 @@ final class ZlibDictionaryTest {
         assertEquals(4, dictionary.size());
         assertInstanceOf(CompressionDictionary.class, dictionary);
         assertTrue(new ZlibDictionaryRequest(checksum.getValue()).matches(dictionary));
-    }
-
-    /// Verifies buffer factories preserve source state and return read-only views.
-    @Test
-    void preservesBufferState() {
-        ByteBuffer source = ByteBuffer.wrap(new byte[]{9, 1, 2, 3, 9});
-        source.position(1);
-        source.limit(4);
-
-        ZlibDictionary dictionary = ZlibDictionary.of(source);
-
-        assertEquals(1, source.position());
-        assertEquals(4, source.limit());
-        assertArrayEquals(new byte[]{1, 2, 3}, dictionary.bytes());
-        ByteBuffer view = dictionary.buffer();
-        assertEquals(0, view.position());
-        assertThrows(ReadOnlyBufferException.class, () -> view.put((byte) 0));
     }
 
     /// Verifies dictionary requests accept only unsigned 32-bit Adler-32 values.

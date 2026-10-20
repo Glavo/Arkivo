@@ -4,7 +4,6 @@
 package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.xz.XZCodec;
 import org.glavo.arkivo.codec.xz.XZFilterChain;
@@ -52,10 +51,10 @@ final class XZEncoderLifecycleTest {
         assertThrows(IllegalStateException.class, encoder::reset);
     }
 
-    /// Verifies constructor, null-argument, active-state, and closed-state validation.
+    /// Rejects missing filter configuration, negative block sizes, and unsupported integrity checks.
     @Test
     @SuppressWarnings("DataFlowIssue")
-    void validatesArgumentsAndClosedState() throws IOException {
+    void validatesConstruction() {
         LZMAProperties properties = LZMAProperties.defaults(DICTIONARY_SIZE);
         assertThrows(
                 NullPointerException.class,
@@ -73,31 +72,6 @@ final class XZEncoderLifecycleTest {
                 IOException.class,
                 () -> new XZEncoder(properties, 2, XZFilterChain.EMPTY, 0L)
         );
-
-        XZEncoder encoder = newEncoder();
-        assertThrows(
-                NullPointerException.class,
-                () -> encoder.encode(null, ByteBuffer.allocate(1))
-        );
-        assertThrows(
-                NullPointerException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), null)
-        );
-        assertThrows(NullPointerException.class, () -> encoder.flush(null));
-        assertThrows(NullPointerException.class, () -> encoder.finishFrame(null));
-        assertThrows(NullPointerException.class, () -> encoder.finish(null));
-        assertThrows(NullPointerException.class, () -> encoder.startFrame(null));
-        assertThrows(IllegalStateException.class, () -> encoder.startFrame(EncodingOptions.DEFAULT));
-
-        encoder.close();
-        assertThrows(
-                IllegalStateException.class,
-                () -> encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
-        );
-        assertThrows(IllegalStateException.class, () -> encoder.flush(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
-        assertThrows(IllegalStateException.class, () -> encoder.startFrame(EncodingOptions.DEFAULT));
     }
 
     /// Creates one encoder with small deterministic properties and Block boundaries.

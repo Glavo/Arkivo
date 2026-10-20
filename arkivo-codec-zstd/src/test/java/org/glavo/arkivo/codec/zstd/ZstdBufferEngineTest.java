@@ -188,17 +188,6 @@ public final class ZstdBufferEngineTest {
                 false
         );
         assertArrayEquals(input, decode(encoded, codec, 19));
-
-        CompressionEncoder encoder = CODEC.newEncoder(
-                EncodingOptions.ofSourceSize((long) input.length + 1L)
-        );
-        try {
-            ByteArrayOutputStream ignored = new ByteArrayOutputStream();
-            encodeSource(encoder, ByteBuffer.wrap(input), ignored, 64);
-            assertThrows(IOException.class, () -> finish(encoder, ignored, 64));
-        } finally {
-            encoder.close();
-        }
     }
 
     /// Rejects further encoding after a source-size failure and restores a clean, deterministic frame on reset.

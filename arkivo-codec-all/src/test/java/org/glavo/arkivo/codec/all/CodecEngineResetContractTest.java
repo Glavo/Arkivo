@@ -11,6 +11,7 @@ import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
+import org.jetbrains.annotations.UnmodifiableView;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -29,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/// Verifies reset, completed decoding, and closed decoder states across installed buffer codecs.
+/// Verifies argument validation, reset, completed decoding, and closed decoder states across installed buffer codecs.
 @NotNullByDefault
 final class CodecEngineResetContractTest {
     /// Number of decoded bytes in every independently encoded test stream.
@@ -145,6 +146,60 @@ final class CodecEngineResetContractTest {
     /// Returns each installed format as a separately reported reset test invocation.
     private static Stream<String> installedFormats() {
         return CompressionFormats.installed().stream().map(CompressionFormat::name);
+    }
+
+    /// Invalid buffer arguments do not start a boundary operation or consume any input.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("installedFormats")
+    @SuppressWarnings("DataFlowIssue")
+    void encoderNullArgumentsPreserveInitialState(String formatName) throws IOException {
+        CompressionCodec<?> codec = CompressionFormats.require(formatName).defaultCodec();
+        @UnmodifiableView ByteBuffer source = ByteBuffer.wrap(FIRST_CONTENT).asReadOnlyBuffer();
+        ByteBuffer target = ByteBuffer.allocate(7);
+        byte[] encoded;
+        try (var encoder = codec.newEncoder()) {
+            assertThrows(NullPointerException.class, () -> encoder.encode(null, target));
+            assertThrows(NullPointerException.class, () -> encoder.encode(source, null));
+            assertThrows(NullPointerException.class, () -> encoder.finish(null));
+            if (encoder instanceof CompressionEncoder.Flushable flushable) {
+                assertThrows(NullPointerException.class, () -> flushable.flush(null));
+            }
+            if (encoder instanceof CompressionEncoder.Framed framed) {
+                assertThrows(NullPointerException.class, () -> framed.finishFrame(null));
+                assertThrows(NullPointerException.class, () -> framed.startFrame(null));
+            }
+            assertEquals(0, source.position());
+            assertEquals(0, target.position());
+            assertArrayEquals(new byte[7], target.array());
+            encoded = encode(encoder, FIRST_CONTENT, formatName);
+        }
+        try (var decoder = CodecContractConfigurations.decoderCodec(codec, CONTENT_SIZE).newDecoder()) {
+            assertArrayEquals(FIRST_CONTENT, decode(decoder, encoded, formatName));
+        }
+    }
+
+    /// Null inputs or outputs leave a new decoder usable without reset or lost compressed input.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("installedFormats")
+    @SuppressWarnings("DataFlowIssue")
+    void decoderNullArgumentsPreserveInitialState(String formatName) throws IOException {
+        CompressionCodec<?> codec = CompressionFormats.require(formatName).defaultCodec();
+        byte[] encoded;
+        try (var encoder = codec.newEncoder()) {
+            encoded = encode(encoder, FIRST_CONTENT, formatName);
+        }
+        @UnmodifiableView ByteBuffer source = ByteBuffer.wrap(encoded).asReadOnlyBuffer();
+        ByteBuffer target = ByteBuffer.allocate(7);
+        try (var decoder = CodecContractConfigurations.decoderCodec(codec, CONTENT_SIZE).newDecoder()) {
+            assertThrows(NullPointerException.class, () -> decoder.decode(null, target));
+            assertThrows(NullPointerException.class, () -> decoder.decode(source, null));
+            assertThrows(NullPointerException.class, () -> decoder.finish(null, target));
+            assertThrows(NullPointerException.class, () -> decoder.finish(source, null));
+            assertEquals(0, source.position());
+            assertEquals(0, target.position());
+            assertArrayEquals(new byte[7], target.array());
+            assertArrayEquals(FIRST_CONTENT, decode(decoder, encoded, formatName));
+        }
     }
 
     /// Completed decoders remain finished until reset, and closed decoders reject all stateful operations.

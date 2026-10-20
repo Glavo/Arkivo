@@ -186,15 +186,10 @@ final class LZ4BlockDecoderLifecycleTest {
         exactlyBounded.close();
     }
 
-    /// Verifies null validation precedes state changes and closure permanently rejects decoder operations.
+    /// Verifies closed raw decoders retain the format-specific diagnostic for every operation.
     @Test
-    @SuppressWarnings("DataFlowIssue")
-    void validatesArgumentsAndClosedState() {
+    void diagnosesClosedOperations() {
         LZ4BlockDecoder decoder = decoder(16, 16);
-        assertThrows(NullPointerException.class, () -> decoder.decode(null, ByteBuffer.allocate(0)));
-        assertThrows(NullPointerException.class, () -> decoder.decode(ByteBuffer.allocate(0), null));
-        assertThrows(NullPointerException.class, () -> decoder.finish(null, ByteBuffer.allocate(0)));
-        assertThrows(NullPointerException.class, () -> decoder.finish(ByteBuffer.allocate(0), null));
 
         decoder.close();
         decoder.close();

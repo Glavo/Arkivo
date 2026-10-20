@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -144,6 +145,10 @@ public final class BZip2CodecTest {
         assertEquals(1L, codec.minimumCompressionLevel());
         assertEquals(9L, codec.maximumCompressionLevel());
         assertEquals(9L, codec.defaultCompressionLevel());
+        assertEquals(9L, codec.compressionLevel());
+        BZip2Codec configured = codec.withCompressionLevel(3L);
+        assertEquals(3L, configured.compressionLevel());
+        assertSame(configured, configured.withCompressionLevel(3L));
 
         assertThrows(IllegalArgumentException.class, () -> codec.withCompressionLevel(0L));
         assertThrows(IllegalArgumentException.class, () -> codec.withCompressionLevel(10L));

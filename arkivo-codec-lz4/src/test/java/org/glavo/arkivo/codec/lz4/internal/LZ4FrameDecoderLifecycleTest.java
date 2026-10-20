@@ -286,7 +286,7 @@ final class LZ4FrameDecoderLifecycleTest {
         assertLegacyLookaheadBoundary(SKIPPABLE_FRAME_MAGIC);
     }
 
-    /// Verifies invalid magic and null arguments fail without weakening permanent closed-state checks.
+    /// Verifies magic, dictionary, and closed-state diagnostics for framed decoders.
     @Test
     @SuppressWarnings("DataFlowIssue")
     void validatesMagicArgumentsAndClosedState() {
@@ -302,10 +302,6 @@ final class LZ4FrameDecoderLifecycleTest {
         malformed.close();
 
         LZ4FrameDecoder decoder = decoder(null, UNLIMITED);
-        assertThrows(NullPointerException.class, () -> decoder.decode(null, ByteBuffer.allocate(0)));
-        assertThrows(NullPointerException.class, () -> decoder.decode(ByteBuffer.allocate(0), null));
-        assertThrows(NullPointerException.class, () -> decoder.finish(null, ByteBuffer.allocate(0)));
-        assertThrows(NullPointerException.class, () -> decoder.finish(ByteBuffer.allocate(0), null));
         assertThrows(NullPointerException.class, () -> decoder.provideDictionary(null));
 
         decoder.close();

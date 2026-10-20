@@ -102,9 +102,9 @@ public final class RawLZMABufferEngineTest {
         }
     }
 
-    /// Verifies reset, close, and pledged-size enforcement.
+    /// Verifies reset produces identical raw bytes and closure rejects reuse.
     @Test
-    public void lifecycleAndPledgedSize() throws IOException {
+    public void lifecycle() throws IOException {
         byte[] content = Arrays.copyOf(testData(), 12_345);
         CompressionEncoder encoder = CODEC.newEncoder();
         byte[] first = encodeWithEncoder(encoder, content, 13, 2);
@@ -113,15 +113,6 @@ public final class RawLZMABufferEngineTest {
         assertArrayEquals(first, second);
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
-
-        CompressionEncoder incomplete = CODEC.newEncoder(
-                EncodingOptions.ofSourceSize(content.length + 1L)
-        );
-        ByteArrayOutputStream ignored = new ByteArrayOutputStream();
-        encodeSource(incomplete, ByteBuffer.wrap(content), ignored, 7);
-        assertThrows(IOException.class, () -> incomplete.finish(ByteBuffer.allocate(32)));
-        incomplete.close();
-
     }
 
     /// Verifies raw decoder reset discards partial input and restores a reusable terminal state.

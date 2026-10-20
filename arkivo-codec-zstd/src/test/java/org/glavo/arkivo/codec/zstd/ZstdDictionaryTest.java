@@ -12,13 +12,11 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.ReadOnlyBufferException;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies Zstandard dictionary interpretation, identifiers, and immutable content.
@@ -62,23 +60,9 @@ final class ZstdDictionaryTest {
         assertThrows(IOException.class, () -> new ZstdCodec().withDictionary(automatic).newEncoder());
     }
 
-    /// Verifies dictionary content is copied and exposed only through immutable views or copies.
+    /// Verifies buffer interpretation and identifier inspection use the remaining dictionary prefix.
     @Test
-    void preservesImmutableContent() {
-        byte[] source = magicPrefixedBytes();
-        ZstdDictionary dictionary = ZstdDictionary.rawContent(source);
-        source[0] = 0;
-
-        assertEquals(256, dictionary.size());
-        assertEquals(0x37, Byte.toUnsignedInt(dictionary.bytes()[0]));
-        ByteBuffer view = dictionary.buffer();
-        assertEquals(0, view.position());
-        assertThrows(ReadOnlyBufferException.class, () -> view.put((byte) 0));
-    }
-
-    /// Verifies every buffer factory copies only remaining bytes and preserves the complete source-view state.
-    @Test
-    void copiesRemainingBuffersWithoutChangingState() {
+    void interpretsRemainingDictionaryPrefix() {
         byte @Unmodifiable [] expected = magicPrefixedBytes();
         int offset = 3;
         ByteBuffer storage = ByteBuffer.allocateDirect(expected.length + 9);
@@ -92,11 +76,8 @@ final class ZstdDictionaryTest {
         source.mark();
 
         ZstdDictionary automatic = ZstdDictionary.of(source);
-        assertSourceState(source, offset, expected.length);
         ZstdDictionary raw = ZstdDictionary.rawContent(source);
-        assertSourceState(source, offset, expected.length);
         ZstdDictionary full = ZstdDictionary.fullDictionary(source);
-        assertSourceState(source, offset, expected.length);
         assertEquals(0x1234_5678L, ZstdDictionary.dictionaryId(source));
         assertSourceState(source, offset, expected.length);
 
@@ -106,17 +87,6 @@ final class ZstdDictionaryTest {
         assertEquals(ZstdDictionary.ContentType.AUTO, automatic.contentType());
         assertEquals(ZstdDictionary.ContentType.RAW_CONTENT, raw.contentType());
         assertEquals(ZstdDictionary.ContentType.FULL_DICTIONARY, full.contentType());
-
-        storage.put(offset, (byte) 0);
-        assertArrayEquals(expected, automatic.bytes());
-        assertArrayEquals(expected, raw.bytes());
-        assertArrayEquals(expected, full.bytes());
-
-        @UnmodifiableView ByteBuffer first = automatic.buffer();
-        @UnmodifiableView ByteBuffer second = automatic.buffer();
-        assertNotSame(first, second);
-        first.position(first.limit());
-        assertEquals(0, second.position());
     }
 
     /// Verifies invalid dictionary representations and request identifiers are rejected eagerly.
@@ -136,9 +106,6 @@ final class ZstdDictionaryTest {
 
         assertEquals(ZstdDictionary.NO_DICTIONARY_ID, ZstdDictionary.dictionaryId(ByteBuffer.allocate(7)));
         assertEquals(ZstdDictionary.NO_DICTIONARY_ID, ZstdDictionary.dictionaryId(ByteBuffer.allocate(8)));
-        assertThrows(NullPointerException.class, () -> ZstdDictionary.of((ByteBuffer) null));
-        assertThrows(NullPointerException.class, () -> ZstdDictionary.rawContent((ByteBuffer) null));
-        assertThrows(NullPointerException.class, () -> ZstdDictionary.fullDictionary((ByteBuffer) null));
         assertThrows(NullPointerException.class, () -> ZstdDictionary.dictionaryId(null));
     }
 

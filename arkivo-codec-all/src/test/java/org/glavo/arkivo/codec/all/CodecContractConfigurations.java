@@ -26,4 +26,12 @@ final class CodecContractConfigurations {
     static boolean requiresDecoderConfiguration(CompressionCodec<?> codec) {
         return codec instanceof PPMdCodec;
     }
+
+    /// Selects default encoders that validate exact input sizes rather than merely accepting size metadata.
+    static boolean validatesSourceSize(CompressionCodec<?> codec) {
+        return switch (codec.format().name()) {
+            case "lz4", "lzma", "lzma-raw", "lzip", "zstd" -> true;
+            default -> false;
+        };
+    }
 }

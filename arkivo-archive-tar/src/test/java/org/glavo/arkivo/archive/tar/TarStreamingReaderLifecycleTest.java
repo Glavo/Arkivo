@@ -100,24 +100,6 @@ final class TarStreamingReaderLifecycleTest {
         }
     }
 
-    /// Verifies that source cleanup can be retried after a close failure.
-    @Test
-    void readerCloseRetriesSourceCleanupAfterFailure() throws IOException {
-        CloseFailingOnceInputStream source = new CloseFailingOnceInputStream(archive());
-        TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(source);
-        assertTrue(reader.next());
-
-        IOException exception = assertThrows(IOException.class, reader::close);
-        assertEquals("close failed", exception.getMessage());
-        assertThrows(ClosedChannelException.class, reader::next);
-        assertEquals(1, source.closeCount());
-
-        reader.close();
-        reader.close();
-
-        assertEquals(2, source.closeCount());
-    }
-
     /// Verifies that a closed entry channel rejects reads and leaves the reader able to advance.
     @Test
     void entryChannelOperationsAfterCloseAreRejectedAsClosed() throws IOException {
@@ -272,36 +254,4 @@ final class TarStreamingReaderLifecycleTest {
 
     }
 
-    /// Input stream that fails its first close call.
-    @NotNullByDefault
-    private static final class CloseFailingOnceInputStream extends ByteArrayInputStream {
-        /// The number of close calls.
-        private int closeCount;
-
-        /// Creates a close-failing input stream over the given bytes.
-        ///
-        /// @param bytes the immutable test content
-        private CloseFailingOnceInputStream(byte[] bytes) {
-            super(bytes);
-        }
-
-        /// Fails on the first close call and records all close attempts.
-        ///
-        /// @throws IOException on the first close attempt
-        @Override
-        public void close() throws IOException {
-            closeCount++;
-            if (closeCount == 1) {
-                throw new IOException("close failed");
-            }
-            super.close();
-        }
-
-        /// Returns the number of close calls.
-        ///
-        /// @return the number of attempted closes
-        private int closeCount() {
-            return closeCount;
-        }
-    }
 }

@@ -9,22 +9,19 @@ import org.jetbrains.annotations.UnmodifiableView;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.ReadOnlyBufferException;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies LZ4 dictionary factories, identifier boundaries, and caller-buffer isolation.
+/// Verifies LZ4 dictionary identification and identifier boundaries.
 @NotNullByDefault
 final class LZ4DictionaryTest {
-    /// Verifies every buffer factory copies only remaining bytes without changing any caller-visible buffer state.
+    /// Derives and preserves identifiers from the selected content rather than surrounding buffer bytes.
     @Test
-    void copiesRemainingBufferWithoutChangingState() {
+    void identifiesRemainingBufferContent() {
         byte @Unmodifiable [] expected = {
                 3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3
         };
@@ -36,15 +33,10 @@ final class LZ4DictionaryTest {
         @UnmodifiableView ByteBuffer source = storage.asReadOnlyBuffer();
         source.position(offset);
         source.limit(offset + expected.length);
-        source.order(ByteOrder.LITTLE_ENDIAN);
-        source.mark();
 
         LZ4Dictionary raw = LZ4Dictionary.rawContent(source);
-        assertSourceState(source, offset, expected.length);
         LZ4Dictionary identified = LZ4Dictionary.identified(0xffff_ffffL, source);
-        assertSourceState(source, offset, expected.length);
         LZ4Dictionary contentIdentified = LZ4Dictionary.identifiedByContent(source);
-        assertSourceState(source, offset, expected.length);
 
         assertArrayEquals(expected, raw.bytes());
         assertArrayEquals(expected, identified.bytes());
@@ -57,21 +49,6 @@ final class LZ4DictionaryTest {
                 LZ4Dictionary.identifiedByContent(expected).dictionaryId(),
                 contentIdentified.dictionaryId()
         );
-
-        storage.put(offset, (byte) 0x7f);
-        assertArrayEquals(expected, raw.bytes());
-        assertArrayEquals(expected, identified.bytes());
-        assertArrayEquals(expected, contentIdentified.bytes());
-
-        byte[] returned = identified.bytes();
-        returned[0] = 0;
-        assertArrayEquals(expected, identified.bytes());
-        @UnmodifiableView ByteBuffer firstView = identified.buffer();
-        @UnmodifiableView ByteBuffer secondView = identified.buffer();
-        assertNotSame(firstView, secondView);
-        firstView.position(firstView.limit());
-        assertEquals(0, secondView.position());
-        assertThrows(ReadOnlyBufferException.class, () -> secondView.put((byte) 0));
     }
 
     /// Verifies optional dictionary identifiers and required request identifiers use their exact unsigned domains.
@@ -104,14 +81,5 @@ final class LZ4DictionaryTest {
         assertThrows(NullPointerException.class, () -> zeroRequest.matches(null));
         assertThrows(IllegalArgumentException.class, () -> new LZ4DictionaryRequest(-1L));
         assertThrows(IllegalArgumentException.class, () -> new LZ4DictionaryRequest(0x1_0000_0000L));
-    }
-
-    /// Verifies one source view retains its position, limit, byte order, and mark.
-    private static void assertSourceState(ByteBuffer source, int position, int length) {
-        assertEquals(position, source.position());
-        assertEquals(position + length, source.limit());
-        assertEquals(ByteOrder.LITTLE_ENDIAN, source.order());
-        source.reset();
-        assertEquals(position, source.position());
     }
 }
