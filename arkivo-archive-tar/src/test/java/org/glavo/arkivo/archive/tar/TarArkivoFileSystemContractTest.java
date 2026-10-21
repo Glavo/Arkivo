@@ -30,6 +30,7 @@ import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.DosFileAttributeView;
 import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileStoreAttributeView;
@@ -211,6 +212,221 @@ final class TarArkivoFileSystemContractTest {
             assertTrue(Files.isSameFile(fs.getPath("/moved"), fs.getPath("/chain")));
             assertEquals("new", Files.readString(fs.getPath("/chain")));
         }
+    }
+
+    /// Standard attribute views share metadata across direct, chained, and symbolically reached hard links.
+    @ParameterizedTest
+    @ValueSource(strings = {"original", "alias", "chain", "symbolic"})
+    void updatesSharedHardLinkAttributes(String name) throws IOException {
+        Path archive = createHardLinkMetadataArchive();
+        PosixFileAttributes expected;
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            Path path = fs.getPath(name);
+            var before = Files.readAttributes(fs.getPath("original"), PosixFileAttributes.class);
+            for (String member : List.of("original", "alias", "chain", "symbolic")) {
+                assertFileAttributes(fs.getPath(member), before);
+            }
+            int seconds = 10;
+            for (String view : List.of("named", "basic-owner", "posix")) {
+                FileTime modified = FileTime.from(Instant.ofEpochSecond(seconds++));
+                FileTime accessed = FileTime.from(Instant.ofEpochSecond(seconds++));
+                FileTime created = FileTime.from(Instant.ofEpochSecond(seconds++));
+                UserPrincipal owner = () -> view + "-owner";
+                GroupPrincipal group = () -> view + "-group";
+                Set<PosixFilePermission> permissions = PosixFilePermissions.fromString(switch (view) {
+                    case "named" -> "r--------";
+                    case "basic-owner" -> "rw-------";
+                    default -> "rwx------";
+                });
+                var posix = Objects.requireNonNull(Files.getFileAttributeView(path, PosixFileAttributeView.class));
+                switch (view) {
+                    case "named" -> {
+                        Files.setAttribute(path, "basic:lastModifiedTime", modified);
+                        Files.setAttribute(path, "posix:lastAccessTime", accessed);
+                        Files.setAttribute(path, "creationTime", created);
+                        UserPrincipal interimOwner = () -> "owner-view";
+                        Files.setAttribute(path, "owner:owner", interimOwner);
+                        assertEquals(interimOwner.getName(), Files.getOwner(fs.getPath("original")).getName());
+                        Files.setAttribute(path, "posix:owner", owner);
+                        Files.setAttribute(path, "posix:group", group);
+                        Files.setAttribute(path, "posix:permissions", permissions);
+                    }
+                    case "basic-owner" -> {
+                        Objects.requireNonNull(Files.getFileAttributeView(path, BasicFileAttributeView.class))
+                                .setTimes(modified, accessed, created);
+                        Objects.requireNonNull(Files.getFileAttributeView(path, FileOwnerAttributeView.class))
+                                .setOwner(owner);
+                        posix.setGroup(group);
+                        posix.setPermissions(permissions);
+                    }
+                    default -> {
+                        posix.setTimes(modified, accessed, created);
+                        posix.setOwner(owner);
+                        posix.setGroup(group);
+                        posix.setPermissions(permissions);
+                    }
+                }
+                expected = Files.readAttributes(fs.getPath("original"), PosixFileAttributes.class);
+                assertEquals(modified, expected.lastModifiedTime());
+                assertEquals(accessed, expected.lastAccessTime());
+                assertEquals(created, expected.creationTime());
+                assertEquals(owner.getName(), expected.owner().getName());
+                assertEquals(group.getName(), expected.group().getName());
+                assertEquals(permissions, expected.permissions());
+                for (String member : List.of("original", "alias", "chain", "symbolic")) {
+                    assertFileAttributes(fs.getPath(member), expected);
+                }
+            }
+            assertEquals(FileTime.fromMillis(0), before.lastModifiedTime());
+            assertEquals(PosixFilePermissions.fromString("rw-r--r--"), before.permissions());
+            assertEquals("link-owner", Files.getAttribute(fs.getPath("alias"), "tar:userName"));
+            expected = Files.readAttributes(fs.getPath("original"), PosixFileAttributes.class);
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            for (String member : List.of("original", "alias", "chain", "symbolic")) {
+                assertFileAttributes(fs.getPath(member), expected);
+            }
+            assertTrue(Files.readAttributes(fs.getPath("alias"), TarArkivoEntryAttributes.class).isHardLink());
+            assertEquals("alias", Files.getAttribute(fs.getPath("chain"), "tar:linkName"));
+        }
+    }
+
+    /// TAR-specific mutations retain independent header metadata without changing the shared standard attributes.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesHardLinkHeaderAttributes(boolean named) throws IOException {
+        Path archive = createHardLinkMetadataArchive();
+        FileTime time = FileTime.fromMillis(100_000);
+        PosixFileAttributes expected;
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            Path alias = fs.getPath("alias");
+            expected = Files.readAttributes(fs.getPath("original"), PosixFileAttributes.class);
+            if (named) {
+                Files.setAttribute(alias, "tar:mode", 0600);
+                Files.setAttribute(alias, "tar:userName", "header-owner");
+                Files.setAttribute(alias, "tar:groupName", "header-group");
+                Files.setAttribute(alias, "tar:lastModifiedTime", time);
+                Files.setAttribute(alias, "tar:lastAccessTime", time);
+                Files.setAttribute(alias, "tar:creationTime", time);
+            } else {
+                var view = Objects.requireNonNull(Files.getFileAttributeView(alias, TarArkivoEntryAttributeView.class));
+                view.setMode(0600);
+                view.setUserName("header-owner");
+                view.setGroupName("header-group");
+                view.setTimes(time, time, time);
+            }
+            assertFileAttributes(alias, expected);
+            assertFileAttributes(fs.getPath("chain"), expected);
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            Path alias = fs.getPath("alias");
+            assertFileAttributes(alias, expected);
+            assertFileAttributes(fs.getPath("chain"), expected);
+            var raw = Files.readAttributes(alias, TarArkivoEntryAttributes.class);
+            assertEquals(0600, raw.mode());
+            assertEquals("header-owner", raw.userName());
+            assertEquals("header-group", raw.groupName());
+            assertEquals(time, raw.lastModifiedTime());
+            assertEquals(time, raw.lastAccessTime());
+            assertEquals(time, raw.creationTime());
+            assertEquals(time, Files.getAttribute(alias, "tar:lastModifiedTime"));
+        }
+    }
+
+    /// NOFOLLOW_LINKS affects symbolic links but does not split the identity of a hard-linked file.
+    @Test
+    void distinguishesSymbolicAndHardLinkAttributeMutations() throws IOException {
+        Path archive = createHardLinkMetadataArchive();
+        FileTime time = FileTime.fromMillis(200_000);
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            Path symbolic = fs.getPath("symbolic");
+            Files.setAttribute(symbolic, "basic:lastModifiedTime", time, LinkOption.NOFOLLOW_LINKS);
+            assertEquals(time, Files.getLastModifiedTime(symbolic, LinkOption.NOFOLLOW_LINKS));
+            assertEquals(FileTime.fromMillis(0), Files.getLastModifiedTime(symbolic));
+            var alias = Objects.requireNonNull(Files.getFileAttributeView(
+                    fs.getPath("alias"), BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS));
+            alias.setTimes(time, null, null);
+            assertEquals(time, Files.getLastModifiedTime(fs.getPath("original")));
+            try (var channel = Files.newByteChannel(fs.getPath("chain"), StandardOpenOption.WRITE)) {
+                assertThrows(FileSystemException.class, () -> alias.setTimes(time, null, null));
+            }
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            assertEquals(time, Files.getLastModifiedTime(fs.getPath("original")));
+            assertEquals(time, Files.getLastModifiedTime(fs.getPath("symbolic"), LinkOption.NOFOLLOW_LINKS));
+        }
+    }
+
+    /// Removing the metadata owner or an intermediate link preserves standard metadata through promotion and rewrites.
+    @ParameterizedTest
+    @ValueSource(strings = {"original", "alias", "replace-original", "move-original"})
+    void preservesSharedMetadataWhenRemovingHardLinkNames(String operation) throws IOException {
+        Path archive = createHardLinkMetadataArchive();
+        PosixFileAttributes expected;
+        try (var fs = TarArkivoFileSystem.update(archive)) {
+            Path original = fs.getPath("original");
+            Files.setLastModifiedTime(original, FileTime.fromMillis(100_000));
+            Files.setPosixFilePermissions(original, PosixFilePermissions.fromString("r--------"));
+            Files.setOwner(original, () -> "shared-owner");
+            expected = Files.readAttributes(original, PosixFileAttributes.class);
+            switch (operation) {
+                case "replace-original" -> {
+                    Files.writeString(fs.getPath("replacement"), "replacement");
+                    Files.move(fs.getPath("replacement"), original, StandardCopyOption.REPLACE_EXISTING);
+                }
+                case "move-original" -> Files.move(original, fs.getPath("moved"));
+                default -> Files.delete(fs.getPath(operation));
+            }
+            assertFileAttributes(fs.getPath("chain"), expected);
+            assertEquals("body", Files.readString(fs.getPath("chain")));
+        }
+        try (var fs = TarArkivoFileSystem.open(archive)) {
+            assertFileAttributes(fs.getPath("chain"), expected);
+            assertEquals("body", Files.readString(fs.getPath("chain")));
+        }
+    }
+
+    /// Creates a linked file whose content owner and link headers have deliberately different attributes.
+    private Path createHardLinkMetadataArchive() throws IOException {
+        Path archive = temporaryDirectory.resolve("hard-link-metadata.tar");
+        try (var writer = TarArkivoStreamingWriter.create(archive)) {
+            try (var entry = writer.beginFile("original"); var output = entry.openOutputStream()) {
+                output.write("body".getBytes(StandardCharsets.UTF_8));
+            }
+            try (var entry = writer.beginHardLink("alias", "original")) {
+                var view = Objects.requireNonNull(entry.attributeView(TarArkivoEntryAttributeView.class));
+                view.setMode(0700);
+                view.setUserName("link-owner");
+                view.setGroupName("link-group");
+                view.setTimes(FileTime.fromMillis(1000), null, null);
+            }
+            writer.beginHardLink("chain", "alias").close();
+            writer.beginSymbolicLink("symbolic", "chain").close();
+        }
+        return archive;
+    }
+
+    /// Compares standard attribute snapshots without requiring a stable file key after a content-owner rename.
+    private static void assertFileAttributes(Path path, PosixFileAttributes expected) throws IOException {
+        var actual = Files.readAttributes(path, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (actual.isSymbolicLink()) {
+            actual = Files.readAttributes(path, PosixFileAttributes.class);
+        }
+        assertEquals(expected.lastModifiedTime(), actual.lastModifiedTime());
+        assertEquals(expected.lastAccessTime(), actual.lastAccessTime());
+        assertEquals(expected.creationTime(), actual.creationTime());
+        assertEquals(expected.permissions(), actual.permissions());
+        assertEquals(expected.owner().getName(), actual.owner().getName());
+        assertEquals(expected.group().getName(), actual.group().getName());
+        var basic = Files.readAttributes(path, BasicFileAttributes.class);
+        assertEquals(expected.lastModifiedTime(), basic.lastModifiedTime());
+        assertEquals(expected.lastAccessTime(), basic.lastAccessTime());
+        assertEquals(expected.creationTime(), basic.creationTime());
+        assertEquals(expected.lastModifiedTime(), Files.getAttribute(path, "basic:lastModifiedTime"));
+        assertEquals(expected.permissions(), Files.getAttribute(path, "posix:permissions"));
+        assertEquals(expected.owner().getName(), Files.getOwner(path).getName());
+        assertEquals(expected.owner().getName(),
+                ((UserPrincipal) Files.getAttribute(path, "owner:owner")).getName());
     }
 
     /// Writes through chained hard links without replacing their link records.

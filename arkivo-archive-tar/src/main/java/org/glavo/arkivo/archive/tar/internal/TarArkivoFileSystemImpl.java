@@ -1144,14 +1144,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         String view = separator >= 0 ? attribute.substring(0, separator) : "basic";
         String name = separator >= 0 ? attribute.substring(separator + 1) : attribute;
         switch (view) {
-            case "basic" -> setBasicAttribute(path, name, value);
+            case "basic" -> setBasicAttribute(fileAttributePath(path), name, value);
             case "owner" -> {
                 if (!"owner".equals(name) || !(value instanceof UserPrincipal owner)) {
                     throw new IllegalArgumentException("Unsupported TAR owner attribute: " + name);
                 }
-                setOwner(path, owner);
+                setOwner(fileAttributePath(path), owner);
             }
-            case "posix" -> setPosixAttribute(path, name, value);
+            case "posix" -> setPosixAttribute(fileAttributePath(path), name, value);
             case "tar" -> setTarAttribute(path, name, value);
             default -> throw new UnsupportedOperationException("Unsupported TAR attribute view: " + view);
         }
@@ -1352,7 +1352,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         requireReadableFileSystem();
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(options, "options");
-        TarArkivoEntryAttributes attributes = attributeSnapshot(requireNode(path));
+        Node node = requireNode(path);
+        TarArkivoEntryAttributes attributes = type == TarArkivoEntryAttributes.class
+                ? attributeSnapshot(node) : resolveHardLinkContentNode(node).attributes();
         if (type == BasicFileAttributes.class || type == TarArkivoEntryAttributes.class || type == PosixFileAttributes.class) {
             return type.cast(attributes);
         }
@@ -1381,9 +1383,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         requireReadableFileSystem();
         Objects.requireNonNull(attributes, "attributes");
         Objects.requireNonNull(options, "options");
-        TarArkivoEntryAttributes entryAttributes = attributeSnapshot(requireNode(path));
         HashMap<String, Object> values = new HashMap<>();
         RequestedAttributes requestedAttributes = RequestedAttributes.parse(attributes);
+        Node node = requireNode(path);
+        TarArkivoEntryAttributes entryAttributes = requestedAttributes.tarView()
+                ? attributeSnapshot(node) : resolveHardLinkContentNode(node).attributes();
         boolean all = requestedAttributes.contains("*");
         if (requestedAttributes.ownerView()) {
             putOwnerAttributes(values, (PosixFileAttributes) entryAttributes, requestedAttributes, all);
@@ -2086,7 +2090,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if (promote) {
                 replacementPath = node.path();
             }
-            TarEntryAttributes replacement = copyAttributes(attributes, node.path(),
+            TarEntryAttributes replacement = copyAttributes(promote ? owner.attributes() : attributes, node.path(),
                     promote ? TarEntryAttributes.REGULAR_TYPE : TarEntryAttributes.HARD_LINK_TYPE,
                     promote ? null : replacementPath, node.contentSize());
             nodes.put(node.path(), replaceNodeAttributes(node, replacement, node.content()));
@@ -2411,6 +2415,15 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         TarArkivoEntryAttributes attributes = mutation.apply(node.attributes());
         nodes.put(node.path(), replaceNodeAttributes(node, attributes, node.content()));
         dirty = true;
+    }
+
+    /// Resolves the metadata owner for a standard file-attribute mutation, preserving TAR header views separately.
+    private Path fileAttributePath(Path path) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        Node node = requireNode(path);
+        Node owner = resolveHardLinkContentNode(node);
+        return owner == node ? path : getPath(owner.path());
     }
 
     /// Rejects names that TAR's fixed-width and PAX fields cannot preserve.
@@ -3159,7 +3172,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 @Nullable FileTime createTime
         ) throws IOException {
             try (Operation ignored = beginWriteOperation()) {
-                TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+                TarArkivoFileSystemImpl.this.setTimes(fileAttributePath(path.resolve()),
+                        lastModifiedTime, lastAccessTime, createTime);
             }
         }
     }
@@ -3285,7 +3299,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         @Override
         public void setOwner(UserPrincipal owner) throws IOException {
             try (Operation ignored = beginWriteOperation()) {
-                TarArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+                TarArkivoFileSystemImpl.this.setOwner(fileAttributePath(path.resolve()), owner);
             }
         }
     }
@@ -3327,7 +3341,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 @Nullable FileTime createTime
         ) throws IOException {
             try (Operation ignored = beginWriteOperation()) {
-                TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
+                TarArkivoFileSystemImpl.this.setTimes(fileAttributePath(path.resolve()),
+                        lastModifiedTime, lastAccessTime, createTime);
             }
         }
 
@@ -3335,7 +3350,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         @Override
         public void setOwner(UserPrincipal owner) throws IOException {
             try (Operation ignored = beginWriteOperation()) {
-                TarArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
+                TarArkivoFileSystemImpl.this.setOwner(fileAttributePath(path.resolve()), owner);
             }
         }
 
@@ -3343,7 +3358,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         @Override
         public void setGroup(GroupPrincipal group) throws IOException {
             try (Operation ignored = beginWriteOperation()) {
-                TarArkivoFileSystemImpl.this.setGroup(path.resolve(), group);
+                TarArkivoFileSystemImpl.this.setGroup(fileAttributePath(path.resolve()), group);
             }
         }
 
@@ -3351,7 +3366,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         @Override
         public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
             try (Operation ignored = beginWriteOperation()) {
-                TarArkivoFileSystemImpl.this.setPermissions(path.resolve(), permissions);
+                TarArkivoFileSystemImpl.this.setPermissions(fileAttributePath(path.resolve()), permissions);
             }
         }
     }

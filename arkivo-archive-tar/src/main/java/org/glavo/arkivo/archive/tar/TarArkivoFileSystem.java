@@ -38,6 +38,9 @@ import java.util.Objects;
 /// only when the staged body is committed.
 /// Writing through a hard link stages replacement content for its regular-file target. A successful channel close
 /// updates the content visible through all hard links to that target while retaining their link records.
+/// The `basic`, `posix`, and `owner` attribute views read and update the content owner's metadata for every hard link
+/// to that file. The `tar` view instead reads and updates each entry's header metadata independently. Removing the
+/// content owner's name preserves its file metadata on the surviving hard link promoted to store the content.
 /// If a storage write or truncation fails on an update channel, further mutations through that channel fail. Closing
 /// it discards the staged body and reports an `IOException` with the mutation failure as its cause. An existing entry
 /// remains unchanged, and a new entry is not added. Invalid arguments rejected before storage access do not discard a body.
