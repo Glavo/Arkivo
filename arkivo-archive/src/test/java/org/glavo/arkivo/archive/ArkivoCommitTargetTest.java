@@ -7,6 +7,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -30,6 +32,38 @@ final class ArkivoCommitTargetTest {
     /// Directory containing commit targets and staging files.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Keeps atomic staging attached to its original directory when a parent symbolic link is retargeted.
+    @ParameterizedTest
+    @ValueSource(strings = {"commit", "rollback", "close"})
+    void retainsAtomicStagingAfterParentLinkChanges(String operation) throws IOException {
+        Path first = Files.createDirectory(temporaryDirectory.resolve("first"));
+        Path second = Files.createDirectory(temporaryDirectory.resolve("second"));
+        Path alias = Files.createSymbolicLink(temporaryDirectory.resolve("alias"), first);
+        Path source = Files.writeString(temporaryDirectory.resolve("archive"), "original");
+        Path staged;
+        Path unrelated;
+        try (ArkivoCommitOutput output = ArkivoCommitTarget.atomicReplace(alias).openOutput(source)) {
+            write(output, new byte[]{1, 2, 3});
+            staged = first.resolve(output.path().getFileName());
+            unrelated = Files.write(second.resolve(output.path().getFileName()), new byte[]{4, 5});
+            Files.delete(alias);
+            Files.createSymbolicLink(alias, second);
+            switch (operation) {
+                case "commit" -> output.commit();
+                case "rollback" -> output.rollback();
+                case "close" -> output.close();
+                default -> throw new AssertionError(operation);
+            }
+        }
+        assertFalse(Files.exists(staged));
+        assertArrayEquals(new byte[]{4, 5}, Files.readAllBytes(unrelated));
+        if (operation.equals("commit")) {
+            assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(source));
+        } else {
+            assertEquals("original", Files.readString(source));
+        }
+    }
 
     /// Verifies direct replacement writes the source path and remains committed after rollback or close.
     @Test

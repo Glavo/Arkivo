@@ -1367,7 +1367,8 @@ public final class CodecChannelAdapters {
         /// Cancels source cleanup even when no interruptible data operation is active.
         @Override
         public void forceClose() throws IOException {
-            state.close(delegate::forceClose, delegate::forceClose);
+            delegate.cancelled = true;
+            state.forceClose(delegate::forceClose);
         }
 
         /// Executes a capability-specific operation under the interruptible lifecycle.

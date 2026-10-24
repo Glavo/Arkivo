@@ -27,6 +27,9 @@ public interface ArkivoSeekableChannelSource extends ArkivoVolumeSource {
     ///
     /// Closing a logical channel leaves the source and other logical channels open. Closing the source closes the
     /// supplied channel and invalidates all of its logical channels. A failed close can be retried.
+    /// Closing the source does not wait for pending reads to finish before invoking the supplied channel's `close`
+    /// method. Cancellation of those reads depends on the supplied channel. Closing an individual logical channel
+    /// still waits for any current physical read.
     /// If cleanup repeats an exception previously thrown by a physical read, positioning, or close operation, it
     /// throws a new `IOException` with that exception as its cause, preserving the original failure during automatic
     /// resource closure.

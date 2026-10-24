@@ -111,6 +111,51 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests end-to-end 7z reading, writing, updating, encryption, and volume handling.
 @NotNullByDefault
 public final class SevenZipArchiveIntegrationTest {
+    /// Rejects NUL-delimited names before publishing entries or changing existing content.
+    @ParameterizedTest
+    @MethodSource("nulEntryNames")
+    void rejectsNulEntryNames(String name, @TempDir Path directory) throws IOException {
+        Path archive = directory.resolve("archive.7z");
+        try (var writer = SevenZipArkivoStreamingWriter.create(archive)) {
+            assertThrows(IllegalArgumentException.class, () -> writer.beginFile(name));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory(name));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink(name, "source"));
+            try (var entry = writer.beginDirectory("valid")) {
+                // A rejected name must not leave a pending entry.
+            }
+        }
+        try (var fs = SevenZipArkivoFileSystem.open(archive)) {
+            assertTrue(Files.isDirectory(fs.getPath("valid")));
+        }
+        try (var fs = SevenZipArkivoFileSystem.create(archive)) {
+            Path invalid = fs.getPath(name);
+            assertThrows(FileSystemException.class, () -> Files.writeString(invalid, "invalid"));
+            assertThrows(FileSystemException.class, () -> Files.createDirectory(invalid));
+            assertThrows(FileSystemException.class, () -> Files.createSymbolicLink(invalid, fs.getPath("source")));
+            Files.writeString(fs.getPath("source"), "body");
+        }
+        try (var fs = SevenZipArkivoFileSystem.update(archive)) {
+            Path source = fs.getPath("source");
+            Path invalid = fs.getPath(name);
+            assertThrows(FileSystemException.class, () -> Files.writeString(invalid, "invalid"));
+            assertThrows(FileSystemException.class, () -> Files.createDirectory(invalid));
+            assertThrows(FileSystemException.class, () -> Files.createSymbolicLink(invalid, source));
+            assertThrows(FileSystemException.class, () -> Files.copy(source, invalid));
+            assertThrows(FileSystemException.class, () -> Files.move(source, invalid));
+            assertEquals("body", Files.readString(source));
+            Files.writeString(fs.getPath("valid"), "updated");
+        }
+        try (var fs = SevenZipArkivoFileSystem.open(archive)) {
+            assertEquals("body", Files.readString(fs.getPath("source")));
+            assertEquals("updated", Files.readString(fs.getPath("valid")));
+        }
+    }
+
+    /// Supplies NUL characters at each boundary and inside a parent component.
+    private static Stream<String> nulEntryNames() {
+        return Stream.of("\0name", "na\0me", "name\0", "par\0ent/child");
+    }
+
     /// Rejects unrepresentable times before changing pending, created, or updated entry metadata.
     @ParameterizedTest
     @MethodSource("unrepresentableFileTimes")

@@ -25,6 +25,36 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies decoding with fixed Zstandard frames that do not depend on a native encoder.
 @NotNullByDefault
 public final class ZstdPureJavaDecoderTest {
+    /// Requires at least six regenerated literals in four-stream Huffman mode.
+    @Test
+    public void rejectsUndersizedFourStreamLiterals() throws IOException {
+        byte[] frame = java.util.HexFormat.of().parseHex("28b52ffd000085000066000380100100010001000404040100");
+        assertArrayEquals(new byte[6], decompress(frame));
+        // The high nibble is the regenerated size; each of the first three streams emits two zeros.
+        frame[9] = 0x56;
+        assertThrows(IOException.class, () -> decompress(frame));
+        try (var decoder = ZstdCodec.DEFAULT.newDecoder()) {
+            assertThrows(IOException.class, () -> decoder.finish(ByteBuffer.wrap(frame), ByteBuffer.allocate(1)));
+            decoder.reset();
+            frame[9] = 0x66;
+            ByteBuffer source = ByteBuffer.wrap(frame);
+            for (int index = 0; index < 6; index++) {
+                ByteBuffer output = ByteBuffer.allocate(1);
+                CodecOutcome outcome = decoder.finish(source, output);
+                assertEquals(1, output.position());
+                assertEquals((byte) 0, output.get(0));
+                assertEquals(index == 5 ? CodecOutcome.FINISHED : CodecOutcome.NEEDS_OUTPUT, outcome);
+            }
+        }
+        // A single zero per stream would generate four literals, below the format minimum.
+        frame[9] = 0x46;
+        frame[19] = 2;
+        frame[20] = 2;
+        frame[21] = 2;
+        frame[22] = 2;
+        assertThrows(IOException.class, () -> decompress(frame));
+    }
+
     /// A single-segment raw frame containing abc.
     private static final byte[] RAW_FRAME = {
             0x28, (byte) 0xb5, 0x2f, (byte) 0xfd,

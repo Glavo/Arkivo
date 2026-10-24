@@ -24,8 +24,14 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
     /// The owned physical channel.
     private final SeekableByteChannel channel;
 
-    /// Serializes physical channel positioning, reads, and closure.
+    /// Serializes physical channel positioning and reads.
     private final ReentrantLock lock = new ReentrantLock();
+
+    /// Serializes source close attempts without waiting for a blocked physical read.
+    private final Object closeLock = new Object();
+
+    /// Protects exception bookkeeping without holding a lock across physical I/O or closure.
+    private final Object failureLock = new Object();
 
     /// The physical offset represented by logical position zero.
     private final long origin;
@@ -34,9 +40,9 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
     private final long size;
 
     /// Whether source closure has completed successfully.
-    private boolean closed;
+    private volatile boolean closed;
 
-    /// Previously delivered physical-channel failures, guarded by the source lock and allocated only on failure.
+    /// Previously delivered physical-channel failures, guarded by the failure lock and allocated only on failure.
     private @Nullable Set<Throwable> reportedFailures;
 
     /// Creates an owning shared source and closes the channel if initial metadata access fails.
@@ -86,8 +92,7 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
     /// Closes the physical channel and commits source closure only after success.
     @Override
     public void close() throws IOException {
-        lock.lock();
-        try {
+        synchronized (closeLock) {
             if (closed) {
                 return;
             }
@@ -101,19 +106,24 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
                 }
                 throw failure;
             }
-            closed = true;
-            reportedFailures = null;
-        } finally {
-            lock.unlock();
+            synchronized (failureLock) {
+                closed = true;
+                reportedFailures = null;
+            }
         }
     }
 
-    /// Records a physical failure under the source lock and reports whether it has not been delivered before.
+    /// Records a physical failure unless cleanup has completed, and reports whether it has not been delivered before.
     private boolean recordFailure(Throwable failure) {
-        if (reportedFailures == null) {
-            reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+        synchronized (failureLock) {
+            if (closed) {
+                return true;
+            }
+            if (reportedFailures == null) {
+                reportedFailures = Collections.newSetFromMap(new IdentityHashMap<>());
+            }
+            return reportedFailures.add(failure);
         }
-        return reportedFailures.add(failure);
     }
 
     /// Requires the source and physical channel to remain open.

@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -18,7 +19,7 @@ import java.util.Objects;
 
 /// Enforces a decoded archive byte limit without retaining caller buffers.
 @NotNullByDefault
-public class ArchiveSizeLimitChannel implements ReadableByteChannel {
+public class ArchiveSizeLimitChannel implements ReadableByteChannel, ForceCloseable {
     /// The owned decoded archive channel.
     private final ReadableByteChannel delegate;
 
@@ -30,6 +31,9 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
 
     /// The terminal limit failure, or `null` while the limit has not been exceeded.
     private @Nullable ArkivoReadLimitException failure;
+
+    /// Whether further reads and graceful delegate cleanup have been disabled.
+    private volatile boolean abortRequested;
 
     /// Creates a limiting channel over an owned delegate.
     ///
@@ -80,7 +84,7 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
-        if (!delegate.isOpen()) {
+        if (!isOpen()) {
             throw new ClosedChannelException();
         }
         if (!target.hasRemaining()) {
@@ -165,20 +169,32 @@ public class ArchiveSizeLimitChannel implements ReadableByteChannel {
         }
     }
 
-    /// Returns whether the owned delegate remains open.
+    /// Returns whether cancellation has not been requested and the owned delegate remains open.
     ///
-    /// @return `true` while the delegate is open
+    /// @return `true` if cancellation has not been requested and the delegate is open
     @Override
     public boolean isOpen() {
-        return delegate.isOpen();
+        return !abortRequested && delegate.isOpen();
     }
 
-    /// Closes the owned delegate.
+    /// Closes the owned delegate, preserving abortive cleanup after cancellation or a limit violation.
     ///
     /// @throws IOException if delegate cleanup fails
     @Override
     public void close() throws IOException {
-        delegate.close();
+        if (abortRequested || failure != null) {
+            forceClose();
+        } else {
+            delegate.close();
+        }
+    }
+
+    /// Cancels the delegate without finishing unread content or waiting for an active wrapper read.
+    /// Failed cancellation remains retryable through either close method; reads remain disabled.
+    @Override
+    public void forceClose() throws IOException {
+        abortRequested = true;
+        ForceCloseable.forceClose(delegate);
     }
 
     /// Preserves the interruptible-channel marker of an interruptible delegate.

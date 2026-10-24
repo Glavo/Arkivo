@@ -14,11 +14,14 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.channels.spi.AbstractInterruptibleChannel;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -39,6 +42,112 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class SharedSeekableChannelSourceTest {
     /// Maximum time allowed for one concurrent logical-channel read to complete.
     private static final long CONCURRENT_READ_TIMEOUT_SECONDS = 10L;
+
+    /// Source closure reaches the physical channel even while a logical read is blocked inside it.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void closesSourceDuringBlockedRead(boolean partial) throws Exception {
+        BlockingSeekableChannel backing = new BlockingSeekableChannel(partial);
+        ArkivoSeekableChannelSource source = ArkivoSeekableChannelSource.of(backing);
+        SeekableByteChannel view = source.openChannel();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        ByteBuffer target = ByteBuffer.allocate(2);
+        try {
+            Future<Integer> read = executor.submit(() -> view.read(target));
+            assertTrue(backing.readStarted.await(CONCURRENT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            Future<Boolean> close = executor.submit(() -> {
+                source.close();
+                return true;
+            });
+            assertTrue(close.get(CONCURRENT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> read.get(CONCURRENT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof AsynchronousCloseException);
+            assertEquals(partial ? 1 : 0, target.position());
+            assertFalse(view.isOpen());
+            assertThrows(ClosedChannelException.class, source::openChannel);
+        } finally {
+            // Release the physical read even when a broken wrapper prevented source closure.
+            backing.close();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(CONCURRENT_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+            view.close();
+            source.close();
+        }
+    }
+
+    /// Blocks a physical read until its owned channel is closed, optionally delivering one byte first.
+    @NotNullByDefault
+    private static final class BlockingSeekableChannel extends AbstractInterruptibleChannel
+            implements SeekableByteChannel {
+        /// Signals entry into the physical read.
+        private final CountDownLatch readStarted = new CountDownLatch(1);
+
+        /// Releases a physical read after closure.
+        private final CountDownLatch released = new CountDownLatch(1);
+
+        /// Whether one byte is delivered before the read blocks.
+        private final boolean partial;
+
+        /// Creates a channel with optional partial progress.
+        private BlockingSeekableChannel(boolean partial) {
+            this.partial = partial;
+        }
+
+        /// Waits for closure after recording any configured partial progress.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            begin();
+            try {
+                if (partial) target.put((byte) 1);
+                readStarted.countDown();
+                try {
+                    released.await();
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                }
+                return 0;
+            } finally {
+                end(false);
+            }
+        }
+
+        /// Releases the blocked read.
+        @Override
+        protected void implCloseChannel() {
+            released.countDown();
+        }
+
+        /// Returns the initial physical offset used when creating the shared source.
+        @Override
+        public long position() {
+            return 0L;
+        }
+
+        /// Accepts the position selected before the single test read.
+        @Override
+        public SeekableByteChannel position(long position) {
+            return this;
+        }
+
+        /// Returns enough bytes to allow a physical read.
+        @Override
+        public long size() {
+            return 2L;
+        }
+
+        /// Rejects writes to this read-only source.
+        @Override
+        public int write(ByteBuffer source) {
+            throw new NonWritableChannelException();
+        }
+
+        /// Rejects truncation of this read-only source.
+        @Override
+        public SeekableByteChannel truncate(long size) {
+            throw new NonWritableChannelException();
+        }
+    }
 
     /// Preserves physical read and positioning failures when automatic cleanup repeats the same exception instance.
     @ParameterizedTest

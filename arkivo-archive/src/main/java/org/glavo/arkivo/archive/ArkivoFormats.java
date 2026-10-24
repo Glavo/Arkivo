@@ -6,8 +6,9 @@ package org.glavo.arkivo.archive;
 import org.glavo.arkivo.archive.internal.ArkivoStreamingSource;
 import org.glavo.arkivo.archive.internal.ArchiveSizeLimitChannel;
 import org.glavo.arkivo.archive.internal.PrefixReplayReadableByteChannel;
-import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.internal.TemporaryArchiveSource;
+import org.glavo.arkivo.internal.ForceCloseable;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -1603,10 +1604,10 @@ public final class ArkivoFormats {
         }
     }
 
-    /// Closes a consumed endpoint after setup fails without hiding the primary failure.
+    /// Aborts a consumed endpoint after setup fails, using ordinary closure when no abort operation is available.
     private static void closeAfterFailedOpen(Closeable endpoint, Throwable failure) {
         try {
-            endpoint.close();
+            ForceCloseable.forceClose(endpoint);
         } catch (IOException | RuntimeException | Error exception) {
             if (failure != exception) {
                 failure.addSuppressed(exception);

@@ -234,6 +234,37 @@ final class CodecEncoderBoundaryContractTest {
         assertDecodes(codec, encoded.toByteArray(), expected);
     }
 
+    /// Terminal completion excludes new input even when the initial header has not reached the output.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("namedCodecs")
+    void finishesEmptyStreamBeforeHeaderDrains(CompressionCodec<?> codec) throws IOException {
+        for (boolean direct : new boolean[]{false, true}) {
+            for (int capacity : new int[]{0, 1}) {
+                try (var encoder = codec.newEncoder()) {
+                    ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                    ByteBuffer first = target(direct, capacity);
+                    CodecOutcome outcome = encoder.finish(first);
+                    assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
+                    drain(first, encoded, capacity);
+                    ByteBuffer source = ByteBuffer.wrap(new byte[]{7});
+                    ByteBuffer rejected = target(direct, 32);
+                    assertThrows(IllegalStateException.class, () -> encoder.encode(source, rejected));
+                    assertEquals(0, source.position());
+                    assertEquals(2, rejected.position());
+                    verifyTarget(rejected, 32);
+                    complete(encoder, Boundary.FINISH, encoded, direct);
+                    assertDecodes(codec, encoded.toByteArray(), new byte[0]);
+
+                    encoder.reset();
+                    ByteArrayOutputStream recovered = new ByteArrayOutputStream();
+                    encode(encoder, NEXT_CONTENT, recovered, direct);
+                    complete(encoder, Boundary.FINISH, recovered, direct);
+                    assertDecodes(codec, recovered.toByteArray(), NEXT_CONTENT);
+                }
+            }
+        }
+    }
+
     /// Closing an active encoder releases it without allowing reset or any further boundary operation.
     @ParameterizedTest(name = "{0}")
     @MethodSource("namedCodecs")

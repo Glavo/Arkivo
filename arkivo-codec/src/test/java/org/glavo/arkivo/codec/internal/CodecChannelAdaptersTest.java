@@ -159,9 +159,103 @@ final class CodecChannelAdaptersTest {
         }
     }
 
+    /// Explicit cancellation reaches the source even while ordinary decoder closure is draining it.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void forceClosesDecoderDuringGracefulSourceClose(boolean interruptible) throws Exception {
+        var endpoint = interruptible ? new InterruptibleDrainingGateChannel() : new DrainingGateChannel();
+        var engine = new CopyDecoder();
+        var channel = CodecChannelAdapters.newReadableByteChannel(endpoint, ResourceOwnership.OWNED, () -> engine);
+        var close = new FutureTask<>(() -> { channel.close(); return true; });
+        var force = new FutureTask<>(() -> { ForceCloseable.forceClose(channel); return true; });
+        Thread closer = startWorker(close);
+        Thread cancellation = new Thread(force, "cancel-decoder-close");
+        cancellation.setDaemon(true);
+        try {
+            assertTrue(endpoint.entered.await(5, TimeUnit.SECONDS));
+            cancellation.start();
+            assertTrue(force.get(5, TimeUnit.SECONDS));
+            Throwable failure = assertThrows(ExecutionException.class,
+                    () -> close.get(5, TimeUnit.SECONDS)).getCause();
+            if (interruptible) assertInstanceOf(AsynchronousCloseException.class, failure);
+            else assertInstanceOf(java.io.UncheckedIOException.class, failure);
+            assertFalse(channel.isOpen());
+            channel.close();
+            assertEquals(1, engine.closeCalls());
+        } finally {
+            endpoint.forceClose();
+            endpoint.release.countDown();
+            joinWorker(closer);
+            joinWorker(cancellation);
+        }
+    }
+
+    /// Ordinary close retries cancellation after an earlier abort failed to unblock graceful source cleanup.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void retriesFailedCancellationDuringGracefulSourceClose(boolean interruptible) throws Exception {
+        var endpoint = interruptible ? new InterruptibleDrainingGateChannel() : new DrainingGateChannel();
+        var failure = new IOException("first cancellation failed");
+        endpoint.abortFailure = failure;
+        var engine = new CopyDecoder();
+        var channel = CodecChannelAdapters.newReadableByteChannel(endpoint, ResourceOwnership.OWNED, () -> engine);
+        var close = new FutureTask<>(() -> { channel.close(); return true; });
+        var retry = new FutureTask<>(() -> { channel.close(); return true; });
+        Thread closer = startWorker(close);
+        Thread cancellationRetry = new Thread(retry, "retry-decoder-cancellation");
+        cancellationRetry.setDaemon(true);
+        try {
+            assertTrue(endpoint.entered.await(5, TimeUnit.SECONDS));
+            assertSame(failure, assertThrows(IOException.class, () -> ForceCloseable.forceClose(channel)));
+            assertFalse(channel.isOpen());
+            cancellationRetry.start();
+            assertTrue(retry.get(5, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> close.get(5, TimeUnit.SECONDS));
+            channel.close();
+            assertEquals(1, engine.closeCalls());
+        } finally {
+            endpoint.forceClose();
+            endpoint.release.countDown();
+            joinWorker(closer);
+            joinWorker(cancellationRetry);
+        }
+    }
+
+    /// Cancelling an idle decoder releases its engine without touching a borrowed endpoint.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void forceClosingIdleDecoderPreservesBorrowedSource(boolean interruptible) throws IOException {
+        var endpoint = interruptible ? new InterruptibleDrainingGateChannel() : new DrainingGateChannel();
+        var engine = new CopyDecoder();
+        var channel = CodecChannelAdapters.newReadableByteChannel(endpoint, ResourceOwnership.BORROWED, () -> engine);
+        try {
+            ForceCloseable.forceClose(channel);
+            channel.close();
+            ForceCloseable.forceClose(channel);
+            assertFalse(channel.isOpen());
+            assertTrue(endpoint.isOpen());
+            assertEquals(0, endpoint.calls.get());
+            assertEquals(1, engine.closeCalls());
+        } finally {
+            endpoint.forceClose();
+        }
+    }
+
+    /// Marks a draining source as interruptible without changing its cancellation gates.
+    @NotNullByDefault
+    private static final class InterruptibleDrainingGateChannel extends DrainingGateChannel
+            implements InterruptibleChannel {
+        /// Creates a source whose graceful close can be cancelled by another thread.
+        private InterruptibleDrainingGateChannel() {
+        }
+    }
+
     /// Models a channel whose graceful close reads input and whose forced close cancels that read.
     @NotNullByDefault
-    private static final class DrainingGateChannel extends GateChannel implements ForceCloseable {
+    private static class DrainingGateChannel extends GateChannel implements ForceCloseable {
+        /// Optional failure delivered once before cancellation can release the graceful close.
+        private @Nullable IOException abortFailure;
+
         /// Creates an open source whose first transfer is gated.
         private DrainingGateChannel() {
         }
@@ -175,8 +269,14 @@ final class CodecChannelAdaptersTest {
             }
         }
 
+        /// Reports one configured failure, then releases blocked source operations on a later call.
         @Override
-        public void forceClose() {
+        public synchronized void forceClose() throws IOException {
+            if (abortFailure != null) {
+                IOException failure = abortFailure;
+                abortFailure = null;
+                throw failure;
+            }
             super.close();
         }
     }

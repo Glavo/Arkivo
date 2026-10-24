@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -35,7 +36,8 @@ public final class TemporaryArchiveSource implements ArkivoSeekableChannelSource
     /// Materializes an owned transformed stream into a temporary seekable source.
     ///
     /// This method always closes `source`. A returned source owns its temporary file until [#close()].
-    /// If materialization fails, failures during source cleanup or temporary-file deletion are suppressed on
+    /// Failed materialization aborts sources that support cancellation instead of finishing unread content.
+    /// Failures during source cleanup or temporary-file deletion are suppressed on
     /// the original exception.
     ///
     /// @param source the transformed channel whose ownership transfers after argument validation
@@ -129,7 +131,7 @@ public final class TemporaryArchiveSource implements ArkivoSeekableChannelSource
     /// Closes an input after another failure without hiding the primary failure.
     private static void closeAfterFailure(ReadableByteChannel source, Throwable failure) {
         try {
-            source.close();
+            ForceCloseable.forceClose(source);
         } catch (IOException | RuntimeException | Error cleanupFailure) {
             if (failure != cleanupFailure) {
                 failure.addSuppressed(cleanupFailure);

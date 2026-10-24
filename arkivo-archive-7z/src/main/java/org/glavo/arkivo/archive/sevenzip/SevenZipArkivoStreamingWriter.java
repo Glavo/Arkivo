@@ -24,6 +24,7 @@ import java.util.Objects;
 /// Only one entry may be pending. Closing its `ArkivoStreamingWriter.Entry` commits it without opening a caller-writable
 /// body; opening a regular-file body commits its metadata and transfers completion to that body. Another entry cannot
 /// begin until the body closes successfully. Attribute views are configurable only while the entry is pending.
+/// Beginning an entry with a name containing NUL throws [IllegalArgumentException] without creating a pending entry.
 ///
 /// A successfully returned writer owns a supplied stream or channel. An `ArkivoVolumeTarget` remains caller-owned; the
 /// writer owns and completes the transaction obtained from it. Writer close commits a pending entry, finalizes and

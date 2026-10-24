@@ -329,6 +329,9 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
     /// Converts a logical entry path to normalized relative 7z path text.
     private static String entryPathText(String path) {
         Objects.requireNonNull(path, "path");
+        if (path.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException("7z entry names cannot contain NUL");
+        }
         String normalizedSeparators = path.replace('\\', '/');
         if (normalizedSeparators.startsWith("/")) {
             throw new IllegalArgumentException("7z streaming entry paths must be relative");

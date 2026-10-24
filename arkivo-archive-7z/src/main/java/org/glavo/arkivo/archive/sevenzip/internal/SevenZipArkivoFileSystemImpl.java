@@ -1187,6 +1187,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
         }
 
+        validateEntryPath(target);
         source = ArkivoFileSystemProviderSupport.resolveMutationPath(source, false);
         target = ArkivoFileSystemProviderSupport.resolveMutationPath(target, false);
         String sourcePath = requireExistingPath(source);
@@ -2317,6 +2318,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             throw new IllegalArgumentException("7z entry update channel requires READ, WRITE, or APPEND");
         }
 
+        validateEntryPath(path);
         path = ArkivoFileSystemProviderSupport.resolveMutationPath(path, !options.contains(StandardOpenOption.CREATE_NEW));
         String pathText = normalizedPathText(path);
         if ("/".equals(pathText)) {
@@ -2452,6 +2454,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     private String prepareUpdateEntry(Path path) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
+        validateEntryPath(path);
         path = ArkivoFileSystemProviderSupport.resolveMutationPath(path, false);
         String pathText = normalizedPathText(path);
         if ("/".equals(pathText) || entries.containsKey(pathText) || children.containsKey(pathText)) {
@@ -2944,6 +2947,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Prepares a new archive entry path for forward-only writing.
     private String prepareWritableEntry(Path path, boolean directory) throws IOException {
+        validateEntryPath(path);
         ArkivoFileSystemProviderSupport.validateWritablePath(path);
         String pathText = normalizedPathText(path);
         if ("/".equals(pathText)) {
@@ -2954,6 +2958,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
         markImplicitWritableParents(pathText);
         return pathText;
+    }
+
+    /// Rejects NUL characters that would terminate an entry name in the 7z names property.
+    private static void validateEntryPath(Path path) throws IOException {
+        if (path.toString().indexOf('\0') >= 0) {
+            throw new java.nio.file.FileSystemException(path.toString(), null, "7z entry names cannot contain NUL");
+        }
     }
 
     /// Records implicit parent directories for a path and rejects file-parent conflicts.

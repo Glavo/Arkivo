@@ -32,6 +32,9 @@ public final class LZMAEncoder implements CompressionEncoder {
     /// Pending header view reset for each encoding.
     private @UnmodifiableView ByteBuffer header;
 
+    /// Whether terminal completion was requested before the header finished draining.
+    private boolean finishingHeader;
+
     /// Whether this wrapper has closed.
     private boolean closed;
 
@@ -55,6 +58,7 @@ public final class LZMAEncoder implements CompressionEncoder {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         requireOpen();
+        requireHeaderNotFinishing();
         CodecBuffers.transfer(header, target);
         if (header.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
@@ -72,6 +76,7 @@ public final class LZMAEncoder implements CompressionEncoder {
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
+        requireHeaderNotFinishing();
         CodecBuffers.transfer(header, target);
         if (header.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
@@ -84,6 +89,10 @@ public final class LZMAEncoder implements CompressionEncoder {
     public CodecOutcome finish(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
+        // The raw engine cannot record this transition until the header has drained.
+        if (header.hasRemaining()) {
+            finishingHeader = true;
+        }
         CodecBuffers.transfer(header, target);
         if (header.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
@@ -97,6 +106,7 @@ public final class LZMAEncoder implements CompressionEncoder {
         requireOpen();
         header = ByteBuffer.wrap(headerBytes).asReadOnlyBuffer();
         rawEncoder.reset();
+        finishingHeader = false;
     }
 
     /// Releases the raw encoder without implicitly finishing it.
@@ -114,6 +124,13 @@ public final class LZMAEncoder implements CompressionEncoder {
         result.putInt(properties.dictionarySize());
         result.putLong(uncompressedSize);
         return result.array();
+    }
+
+    /// Rejects new input and nonterminal flushing after terminal header emission starts.
+    private void requireHeaderNotFinishing() {
+        if (finishingHeader) {
+            throw new IllegalStateException("LZMA encoder is finishing");
+        }
     }
 
     /// Requires this wrapper to remain open.

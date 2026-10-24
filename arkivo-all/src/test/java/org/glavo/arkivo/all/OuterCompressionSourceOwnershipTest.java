@@ -3,8 +3,11 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
@@ -13,6 +16,7 @@ import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
 import org.glavo.arkivo.codec.CompressionFormats;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -22,6 +26,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -49,6 +54,55 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies source ownership when generic readers and file systems adapt non-native outer compression.
 @NotNullByDefault
 final class OuterCompressionSourceOwnershipTest {
+    /// Verifies automatic probing preserves abortive ownership through nested compression and size wrappers.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2})
+    void abortsSourceWhenDecodedArchiveLimitRejectsProbe(int layers) throws IOException {
+        byte[] bytes = zipArchive();
+        int archiveSize = bytes.length;
+        long maximum = 0;
+        for (int index = 0; index < layers; index++) {
+            if (index > 0) maximum = bytes.length;
+            bytes = gzip(bytes);
+        }
+        // The outer layer fits exactly; only decoding the innermost archive exceeds this budget.
+        assertTrue(maximum < archiveSize);
+        AbortTrackingInput source = new AbortTrackingInput(bytes);
+        ArchiveReadOptions options = ArchiveReadOptions.DEFAULT.withLimits(
+                ArchiveReadLimits.builder().maximumDecodedArchiveSize(maximum).build());
+        ArkivoReadLimitException failure = assertThrows(
+                ArkivoReadLimitException.class, () -> ArkivoFormats.openStreamingReader(source, options));
+        assertEquals(maximum + 1, failure.actual());
+        assertEquals(0, source.closeCalls);
+        assertEquals(1, source.abortCalls);
+    }
+
+    /// Distinguishes releasing an owned input from finishing it during normal close.
+    @NotNullByDefault
+    private static final class AbortTrackingInput extends ByteArrayInputStream implements ForceCloseable {
+        /// Number of ordinary close calls.
+        private int closeCalls;
+        /// Number of abort calls.
+        private int abortCalls;
+
+        /// Creates a source containing the compressed archive.
+        private AbortTrackingInput(byte[] bytes) {
+            super(bytes);
+        }
+
+        /// Records ordinary cleanup, which an entry stream could use to drain unread data.
+        @Override
+        public void close() {
+            closeCalls++;
+        }
+
+        /// Records cleanup that must not finish unread data.
+        @Override
+        public void forceClose() {
+            abortCalls++;
+        }
+    }
+
     /// Leaves transformed input cleanup to its owner and preserves the first read failure.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})

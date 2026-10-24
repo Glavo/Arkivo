@@ -42,6 +42,40 @@ public final class ArkivoEditStorageContractTest {
     @TempDir
     public Path temporaryDirectory;
 
+    /// Reads, writes, and deletes the original temporary file after its parent link changes.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void retainsTemporaryContentAfterParentLinkChanges(boolean hybrid) throws IOException {
+        Path first = Files.createDirectory(temporaryDirectory.resolve("first"));
+        Path second = Files.createDirectory(temporaryDirectory.resolve("second"));
+        Path alias = Files.createSymbolicLink(temporaryDirectory.resolve("alias"), first);
+        Path staged;
+        Path unrelated;
+        try (ArkivoEditStorage storage = hybrid ? ArkivoEditStorage.hybrid(128, alias)
+                : ArkivoEditStorage.temporaryFiles(alias);
+             ArkivoStoredContent content = storage.createContent("entry", ArkivoEditStorage.UNKNOWN_SIZE)) {
+            try (var writer = content.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                writer.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
+            }
+            try (var files = Files.list(first)) {
+                staged = files.toList().get(0);
+            }
+            unrelated = Files.write(second.resolve(staged.getFileName()), new byte[]{4, 5});
+            Files.delete(alias);
+            Files.createSymbolicLink(alias, second);
+            assertEquals(3, content.size());
+            try (var reader = content.openChannel(Set.of(StandardOpenOption.READ))) {
+                assertArrayEquals(new byte[]{1, 2, 3}, readRemaining(reader));
+            }
+            try (var writer = content.openChannel(Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING))) {
+                writer.write(ByteBuffer.wrap(new byte[]{6}));
+            }
+            assertArrayEquals(new byte[]{6}, Files.readAllBytes(staged));
+        }
+        assertFalse(Files.exists(staged));
+        assertArrayEquals(new byte[]{4, 5}, Files.readAllBytes(unrelated));
+    }
+
     /// Rejects read-only destinations consistently for memory and temporary-file content.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})

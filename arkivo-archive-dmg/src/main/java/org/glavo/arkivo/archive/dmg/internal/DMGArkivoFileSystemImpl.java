@@ -571,6 +571,7 @@ public final class DMGArkivoFileSystemImpl extends DMGArkivoFileSystem {
 
     /// Resolves and validates one path as a normalized indexed node.
     private HFSPlusNode requireNode(Path path) throws IOException {
+        ensureOpen();
         DMGArkivoPath dmgPath = DMGArkivoPath.require(path, this);
         DMGArkivoPath normalized = (DMGArkivoPath) dmgPath.toAbsolutePath().normalize();
         String archivePath = normalized.archivePath();

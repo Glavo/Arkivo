@@ -192,6 +192,22 @@ public final class InterruptibleChannelSupport {
     /// @param abortAction       the codec cleanup performed after terminal cancellation
     /// @throws IOException if terminal processing, endpoint close, or cleanup fails
     public void close(IOAction normalCloseAction, IOAction abortAction) throws IOException {
+        close(normalCloseAction, abortAction, false);
+    }
+
+    /// Cancels an adapter without waiting for an active graceful close to finish first.
+    ///
+    /// When another thread is active, its endpoint is closed before waiting for codec state to be released,
+    /// regardless of ordinary ownership. An open, idle adapter runs only the supplied cleanup action.
+    ///
+    /// @param abortAction the cleanup action that preserves cancellation on subsequent close attempts
+    /// @throws IOException if endpoint cancellation or codec cleanup fails
+    public void forceClose(IOAction abortAction) throws IOException {
+        close(abortAction, abortAction, true);
+    }
+
+    /// Selects graceful or abortive closure while preserving ordinary concurrent-close serialization.
+    private void close(IOAction normalCloseAction, IOAction abortAction, boolean force) throws IOException {
         Objects.requireNonNull(normalCloseAction, "normalCloseAction");
         Objects.requireNonNull(abortAction, "abortAction");
         CloseMode mode;
@@ -201,7 +217,9 @@ public final class InterruptibleChannelSupport {
         synchronized (lock) {
             while (activeThread != null
                     && activeThread != current
-                    && closeActionActive) {
+                    && closeActionActive
+                    && !force
+                    && termination == Termination.GRACEFUL) {
                 try {
                     lock.wait();
                 } catch (InterruptedException ignored) {
@@ -221,7 +239,14 @@ public final class InterruptibleChannelSupport {
                     mode = CloseMode.ABORT_ACTIVE;
                 }
             } else if (activeThread != null) {
-                mode = closeActionActive ? CloseMode.NONE : CloseMode.ABORT_ACTIVE;
+                if (activeThread != current && (force
+                        || termination == Termination.ASYNCHRONOUS
+                        || termination == Termination.INTERRUPTED)) {
+                    if (termination != Termination.INTERRUPTED) termination = Termination.ASYNCHRONOUS;
+                    mode = CloseMode.ABORT_ACTIVE;
+                } else {
+                    mode = closeActionActive ? CloseMode.NONE : CloseMode.ABORT_ACTIVE;
+                }
             } else if (termination == Termination.GRACEFUL) {
                 activeThread = current;
                 closeActionActive = true;

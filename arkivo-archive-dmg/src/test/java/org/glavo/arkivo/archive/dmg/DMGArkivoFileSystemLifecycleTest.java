@@ -4,9 +4,13 @@
 package org.glavo.arkivo.archive.dmg;
 
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
@@ -14,7 +18,10 @@ import java.nio.file.ClosedFileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Arrays;
+import java.util.Objects;
 
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.createHFSPlusDisk;
 import static org.glavo.arkivo.archive.dmg.DMGTestFixtures.writeRawImage;
@@ -52,18 +59,30 @@ final class DMGArkivoFileSystemLifecycleTest {
     }
 
     /// Closes channels owned by a file system and rejects subsequent path access.
-    @Test
-    void closesManagedResources() throws IOException {
+    @ParameterizedTest
+    @EnumSource(ArkivoFileSystemThreadSafety.class)
+    void closesManagedResources(ArkivoFileSystemThreadSafety threadSafety) throws IOException {
         Path imagePath = createImage("close.dmg");
-        DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(imagePath);
+        DMGArkivoFileSystem fileSystem = DMGArkivoFileSystem.open(imagePath,
+                DMGArchiveOptions.DEFAULT.withCommon(ArchiveReadOptions.DEFAULT.withThreadSafety(threadSafety)));
         Path file = fileSystem.getPath("/hello.txt");
         SeekableByteChannel channel = Files.newByteChannel(file);
+        var view = Objects.requireNonNull(Files.getFileAttributeView(file, BasicFileAttributeView.class));
+        BasicFileAttributes snapshot = view.readAttributes();
+        if (threadSafety == ArkivoFileSystemThreadSafety.NONE) {
+            channel.close();
+        }
 
         fileSystem.close();
         fileSystem.close();
         assertFalse(fileSystem.isOpen());
         assertFalse(channel.isOpen());
         assertThrows(ClosedFileSystemException.class, () -> Files.size(file));
+        assertThrows(ClosedFileSystemException.class, () -> Files.readAttributes(file, BasicFileAttributes.class));
+        assertThrows(ClosedFileSystemException.class, () -> Files.readAttributes(file, "basic:size"));
+        assertThrows(ClosedFileSystemException.class, view::readAttributes);
+        assertThrows(ClosedFileSystemException.class, () -> fileSystem.provider().checkAccess(file));
+        assertEquals(5, snapshot.size());
     }
 
     /// Verifies a failed source close makes the file system terminal while allowing cleanup to be retried.

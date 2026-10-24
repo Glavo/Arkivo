@@ -44,6 +44,7 @@ configurations[fuzzTestSourceSet.runtimeOnlyConfigurationName].extendsFrom(
 )
 
 dependencies {
+    testImplementation(project(":arkivo-base"))
     api(project(":arkivo-archive"))
     api(project(":arkivo-archive-all"))
     api(project(":arkivo-checksum"))

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.internal;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -13,7 +14,7 @@ import java.util.Objects;
 
 /// Replays archive probe bytes before continuing from and owning a forward-only source.
 @NotNullByDefault
-public final class PrefixReplayReadableByteChannel implements ReadableByteChannel {
+public final class PrefixReplayReadableByteChannel implements ReadableByteChannel, ForceCloseable {
     /// Bytes consumed during archive probing.
     private final ByteBuffer prefix;
 
@@ -21,7 +22,10 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
     private final ReadableByteChannel source;
 
     /// Whether this replay channel remains open.
-    private boolean open = true;
+    private volatile boolean open = true;
+
+    /// Whether further reads and graceful source cleanup have been disabled.
+    private volatile boolean abortRequested;
 
     /// Creates a replay channel that owns its source.
     ///
@@ -54,20 +58,35 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
         return source.read(target);
     }
 
-    /// Returns whether this replay channel and its source remain open.
+    /// Returns whether this replay channel and its source remain open and cancellation has not been requested.
     @Override
     public boolean isOpen() {
-        return open && source.isOpen();
+        return open && !abortRequested && source.isOpen();
     }
 
-    /// Closes the source and commits closure only after success.
+    /// Closes the source and commits closure only after success, retrying cancellation if it was requested.
     @Override
     public void close() throws IOException {
         if (!open) {
             return;
         }
+        if (abortRequested) {
+            forceClose();
+            return;
+        }
         source.close();
-        open = false;
+        if (!abortRequested) open = false;
+    }
+
+    /// Cancels the owned source without consuming the prefix or finishing unread content.
+    /// Failed cancellation remains retryable through either close method; reads remain disabled.
+    @Override
+    public void forceClose() throws IOException {
+        abortRequested = true;
+        if (open) {
+            ForceCloseable.forceClose(source);
+            open = false;
+        }
     }
 
     /// Requires this replay channel and its source to remain open.

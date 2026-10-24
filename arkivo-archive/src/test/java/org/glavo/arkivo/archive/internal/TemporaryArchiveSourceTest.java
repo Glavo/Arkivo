@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -40,12 +41,100 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies temporary archive materialization, ownership transfer, and cleanup failures.
 @NotNullByDefault
 final class TemporaryArchiveSourceTest {
+    /// Ensures a rejected materialization aborts unread content through each archive wrapper.
+    @ParameterizedTest
+    @CsvSource({"false,false", "true,false", "false,true", "true,true"})
+    void abortsUnreadContentAfterLimitFailure(boolean prefix, boolean limited) {
+        DrainingChannel input = new DrainingChannel();
+        ReadableByteChannel source = input;
+        if (limited) source = ArchiveSizeLimitChannel.wrap(source, 100);
+        if (prefix) source = new PrefixReplayReadableByteChannel(ByteBuffer.allocate(0), source);
+        ReadableByteChannel owned = source;
+        assertThrows(ArkivoReadLimitException.class, () -> TemporaryArchiveSource.materialize(owned, 0));
+        assertEquals(1, input.readCalls);
+        assertEquals(0, input.closeCalls);
+        assertEquals(1, input.abortCalls);
+        assertFalse(owned.isOpen());
+    }
+
+    /// Ensures normal close retries failed cancellation without switching back to draining.
+    @ParameterizedTest
+    @CsvSource({"false,false", "true,false", "false,true", "true,true"})
+    void retriesAbortedWrapperCleanup(boolean prefix, boolean limited) throws IOException {
+        DrainingChannel input = new DrainingChannel();
+        input.failAbort = true;
+        ReadableByteChannel source = input;
+        if (limited) source = ArchiveSizeLimitChannel.wrap(source, 100);
+        if (prefix) source = new PrefixReplayReadableByteChannel(ByteBuffer.wrap(new byte[]{1}), source);
+        ReadableByteChannel owned = source;
+        IOException failure = assertThrows(IOException.class, () -> ForceCloseable.forceClose(owned));
+        assertEquals("abort failure", failure.getMessage());
+        if (prefix || limited) {
+            assertFalse(owned.isOpen());
+            assertThrows(ClosedChannelException.class, () -> owned.read(ByteBuffer.allocate(1)));
+        }
+        input.failAbort = false;
+        if (prefix || limited) owned.close();
+        else ForceCloseable.forceClose(owned);
+        assertEquals(0, input.readCalls);
+        assertEquals(0, input.closeCalls);
+        assertEquals(2, input.abortCalls);
+        assertFalse(input.isOpen());
+    }
+
+    /// Models an entry whose normal close consumes its unread body while cancellation releases it directly.
+    @NotNullByDefault
+    private static final class DrainingChannel implements ReadableByteChannel, ForceCloseable {
+        /// Number of body reads, including reads caused by graceful closure.
+        private int readCalls;
+        /// Number of graceful close attempts.
+        private int closeCalls;
+        /// Number of abort attempts.
+        private int abortCalls;
+        /// Whether cancellation fails before releasing the source.
+        private boolean failAbort;
+        /// Whether body access remains available.
+        private boolean open = true;
+
+        /// Supplies one byte per read.
+        @Override
+        public int read(ByteBuffer target) {
+            readCalls++;
+            target.put((byte) 1);
+            return 1;
+        }
+
+        /// Returns whether cleanup has completed.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Simulates draining unread content on ordinary close.
+        @Override
+        public void close() {
+            closeCalls++;
+            read(ByteBuffer.allocate(1));
+            open = false;
+        }
+
+        /// Releases the source without reading its body.
+        @Override
+        public void forceClose() throws IOException {
+            abortCalls++;
+            if (failAbort) throw new IOException("abort failure");
+            open = false;
+        }
+    }
+
     /// Runs deletion fault injection with an isolated JVM temporary directory.
     @Test
     void preservesFailureWhenTemporaryDeletionFails(@TempDir Path directory) throws Exception {
         String classPath = Path.of(TemporaryArchiveSourceTest.class.getProtectionDomain()
                 .getCodeSource().getLocation().toURI()) + File.pathSeparator
                 + Path.of(TemporaryArchiveSource.class.getProtectionDomain()
+                .getCodeSource().getLocation().toURI()) + File.pathSeparator
+                + Path.of(ForceCloseable.class.getProtectionDomain()
                 .getCodeSource().getLocation().toURI());
         Path log = directory.resolve("probe.log");
         Process process = new ProcessBuilder(

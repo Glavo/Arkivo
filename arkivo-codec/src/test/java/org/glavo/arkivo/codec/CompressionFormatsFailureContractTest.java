@@ -3,9 +3,12 @@
 
 package org.glavo.arkivo.codec;
 
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
@@ -21,6 +24,67 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies compression-format probing preserves primary and cleanup failures.
 @NotNullByDefault
 final class CompressionFormatsFailureContractTest {
+    /// Verifies failed probing and format lookup abort owned sources but leave borrowed sources untouched.
+    @ParameterizedTest
+    @CsvSource({
+            "probe,true,true", "probe,true,false", "probe,false,true", "probe,false,false",
+            "named,true,true", "named,true,false", "named,false,true", "named,false,false",
+            "detected,true,true", "detected,true,false", "detected,false,true", "detected,false,false"
+    })
+    void abortsOwnedSourcesAfterFailedOpen(String operation, boolean owned, boolean failAbort) {
+        IOException primary = new IOException("probe failure");
+        IOException cleanup = new IOException("abort failure");
+        AbortTrackingChannel source = new AbortTrackingChannel(primary, failAbort ? cleanup : null);
+        ResourceOwnership ownership = owned ? ResourceOwnership.OWNED : ResourceOwnership.BORROWED;
+        Class<? extends Exception> expected = operation.equals("named")
+                ? IllegalArgumentException.class : IOException.class;
+        Throwable failure = assertThrows(expected, () -> {
+            switch (operation) {
+                case "probe" -> CompressionFormats.probe(source, 1L, ownership);
+                case "named" -> CompressionFormats.newReadableByteChannel("missing-test-format", source, ownership);
+                case "detected" -> CompressionFormats.newReadableByteChannel(source, ownership);
+                default -> throw new AssertionError(operation);
+            }
+        });
+        if (operation.equals("probe")) assertSame(primary, failure);
+        assertEquals(0, source.closeCount());
+        assertEquals(owned ? 1 : 0, source.abortCount);
+        assertEquals(owned && failAbort ? 1 : 0, failure.getSuppressed().length);
+        if (owned && failAbort) assertSame(cleanup, failure.getSuppressed()[0]);
+        assertEquals(!owned || failAbort, source.isOpen());
+    }
+
+    /// Makes graceful cleanup observable separately from cancellation.
+    @NotNullByDefault
+    private static final class AbortTrackingChannel extends FailingReadableByteChannel implements ForceCloseable {
+        /// Failure delivered by cancellation, or `null` for successful cleanup.
+        private final @Nullable IOException abortFailure;
+        /// Number of cancellation attempts.
+        private int abortCount;
+        /// Whether cancellation completed successfully.
+        private boolean aborted;
+
+        /// Creates a source with independent operation and cancellation failures.
+        private AbortTrackingChannel(IOException readFailure, @Nullable IOException abortFailure) {
+            super(readFailure, new IOException("unexpected graceful close"));
+            this.abortFailure = abortFailure;
+        }
+
+        /// Reports cancellation without invoking ordinary close.
+        @Override
+        public void forceClose() throws IOException {
+            abortCount++;
+            if (abortFailure != null) throw abortFailure;
+            aborted = true;
+        }
+
+        /// Returns whether cancellation remains incomplete.
+        @Override
+        public boolean isOpen() {
+            return !aborted;
+        }
+    }
+
     /// Creates fresh failures so suppressed exceptions cannot leak between invocations.
     private static Stream<Throwable> failures() {
         return Stream.of(new IOException("I/O failure"), new IllegalStateException("runtime failure"),
@@ -117,7 +181,7 @@ final class CompressionFormatsFailureContractTest {
 
     /// Implements a source that reports configured failures from reads and closure.
     @NotNullByDefault
-    private static final class FailingReadableByteChannel implements ReadableByteChannel {
+    private static class FailingReadableByteChannel implements ReadableByteChannel {
         /// The read failure.
         private final Throwable readFailure;
 
@@ -188,7 +252,7 @@ final class CompressionFormatsFailureContractTest {
         }
 
         /// Returns the number of close attempts.
-        private int closeCount() {
+        final int closeCount() {
             return closeCount;
         }
     }

@@ -56,6 +56,9 @@ import java.util.Objects;
 /// with the configured output compression, filter chain, solid file-count policy, password, and header-encryption
 /// policy.
 ///
+/// Creating or renaming an entry to a path containing NUL throws [java.nio.file.FileSystemException].
+/// NUL terminates each name in the 7z names property and cannot occur within a name.
+///
 /// Entry creation accepts `posix:permissions` and `basic:lastModifiedTime` initial attributes. Modification times
 /// are [java.nio.file.attribute.FileTime] values, serialized as unsigned 64-bit counts of 100-nanosecond intervals
 /// since 1601-01-01T00:00:00Z. Fractional intervals are truncated toward the past; out-of-range values are rejected

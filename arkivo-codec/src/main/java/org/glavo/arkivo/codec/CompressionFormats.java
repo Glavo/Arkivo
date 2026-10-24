@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec;
 
 import org.glavo.arkivo.codec.internal.PrefixReplayReadableByteChannel;
+import org.glavo.arkivo.internal.ForceCloseable;
 import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.internal.CompressionOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -125,6 +126,7 @@ public final class CompressionFormats {
     /// allows a container parser to reject signature collisions without reading the original channel twice. Call
     /// `takeChannel()` to transfer the replay channel; otherwise close the result. With OWNED, the source is closed when
     /// the owning result or transferred replay channel closes, or when probing fails after argument validation.
+    /// Failed probing cancels owned sources that support abortive closure rather than finishing unread content.
     ///
     /// Leading skippable frames are shared by LZ4 and Zstandard. To distinguish them, probing may retain up to
     /// 64 KiB, or `minimumPrefixSize` if larger. If no format-specific signature fits within that budget, the format
@@ -170,7 +172,7 @@ public final class CompressionFormats {
             );
         } catch (IOException | RuntimeException | Error exception) {
             if (ownership == ResourceOwnership.OWNED) {
-                closeAfterProbeFailure(source, exception);
+                closeAfterOpenFailure(source, exception, true);
             }
             throw exception;
         }
@@ -309,7 +311,7 @@ public final class CompressionFormats {
             if (failure == null) {
                 channel.close();
             } else {
-                closeAfterOpenFailure(channel, failure);
+                closeAfterOpenFailure(channel, failure, true);
             }
         }
     }
@@ -358,7 +360,7 @@ public final class CompressionFormats {
             return requireDefaultCodec(formatName).newWritableByteChannel(target, options, ownership);
         } catch (IOException | RuntimeException | Error exception) {
             if (ownership == ResourceOwnership.OWNED) {
-                closeAfterOpenFailure(target, exception);
+                closeAfterOpenFailure(target, exception, true);
             }
             throw exception;
         }
@@ -401,7 +403,7 @@ public final class CompressionFormats {
             return requireDefaultCodec(formatName).newReadableByteChannel(source, ownership);
         } catch (IOException | RuntimeException | Error exception) {
             if (ownership == ResourceOwnership.OWNED) {
-                closeAfterOpenFailure(source, exception);
+                closeAfterOpenFailure(source, exception, true);
             }
             throw exception;
         }
@@ -421,8 +423,8 @@ public final class CompressionFormats {
     /// Detects the compression format and creates a decompressing channel with explicit source ownership.
     ///
     /// The decoder receives every byte consumed by detection. Formats without a reliable signature must be opened by
-    /// name. Closing the decoder closes its replay channel; that channel applies the requested ownership to the original
-    /// source.
+    /// name. With OWNED, closing the decoder closes the replay channel and the original source. With BORROWED,
+    /// ordinary decoder closure and setup cleanup do not close the original source.
     ///
     /// @param source    the channel supplying compressed bytes with a recognizable signature
     /// @param ownership whether closing the returned channel also closes `source`
@@ -442,9 +444,9 @@ public final class CompressionFormats {
             if (format == null) {
                 throw new IOException("Unrecognized compression format");
             }
-            return format.defaultCodec().newReadableByteChannel(replay, ResourceOwnership.OWNED);
+            return format.defaultCodec().newReadableByteChannel(replay, ownership);
         } catch (IOException | RuntimeException | Error exception) {
-            closeAfterOpenFailure(replay, exception);
+            closeAfterOpenFailure(replay, exception, ownership == ResourceOwnership.OWNED);
             throw exception;
         }
     }
@@ -641,21 +643,11 @@ public final class CompressionFormats {
         return require(formatName).defaultCodec();
     }
 
-    /// Attempts owned-channel cleanup after setup fails without hiding the primary failure.
-    private static void closeAfterOpenFailure(Channel channel, Throwable failure) {
+    /// Aborts an owned endpoint after setup fails, or only closes a replay wrapper over a borrowed endpoint.
+    private static void closeAfterOpenFailure(Channel channel, Throwable failure, boolean abort) {
         try {
-            channel.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            if (failure != exception) {
-                failure.addSuppressed(exception);
-            }
-        }
-    }
-
-    /// Closes an owned source after probe failure without hiding the primary exception.
-    private static void closeAfterProbeFailure(ReadableByteChannel source, Throwable failure) {
-        try {
-            source.close();
+            if (abort) ForceCloseable.forceClose(channel);
+            else channel.close();
         } catch (IOException | RuntimeException | Error exception) {
             if (failure != exception) {
                 failure.addSuppressed(exception);

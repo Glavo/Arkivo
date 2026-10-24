@@ -27,6 +27,9 @@ public interface ArkivoEditStorage extends AutoCloseable {
 
     /// Returns an edit storage that keeps staged content in temporary files under the given directory.
     ///
+    /// The directory's symbolic links are resolved when each content object is created; subsequent changes to those
+    /// links do not redirect access to that object's temporary file.
+    ///
     /// @param directory the directory in which temporary content files are created
     /// @return a new temporary-file-backed storage
     static ArkivoEditStorage temporaryFiles(Path directory) {
@@ -38,6 +41,7 @@ public interface ArkivoEditStorage extends AutoCloseable {
     /// Content with a known expected size at or below `memoryThreshold` is stored in memory. Larger or unknown
     /// expected sizes select temporary files. The choice is made by [#createContent(String, long)] and does not change
     /// as content grows; the threshold is not a limit on actual memory use.
+    /// Temporary files use the same directory resolution as [#temporaryFiles(Path)].
     ///
     /// @param memoryThreshold the non-negative maximum expected size, in bytes, that selects memory storage
     /// @param directory the directory in which file-backed content is created

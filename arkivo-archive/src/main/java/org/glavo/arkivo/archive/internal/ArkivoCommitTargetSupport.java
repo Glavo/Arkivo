@@ -258,7 +258,7 @@ public final class ArkivoCommitTargetSupport {
                 );
             }
             Files.createDirectories(directory);
-            Path temporaryPath = Files.createTempFile(directory, "arkivo-archive-", ".tmp");
+            Path temporaryPath = Files.createTempFile(directory.toRealPath(), "arkivo-archive-", ".tmp");
             return new PathCommitOutput(temporaryPath, sourcePath);
         }
     }

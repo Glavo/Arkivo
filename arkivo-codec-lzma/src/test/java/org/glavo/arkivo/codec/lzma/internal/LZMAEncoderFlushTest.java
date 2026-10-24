@@ -32,6 +32,22 @@ final class LZMAEncoderFlushTest {
     /// Shared model properties used by encoders and independent public decoders.
     private static final LZMAProperties PROPERTIES = new LZMAProperties(3, 0, 2, 1 << 16);
 
+    /// A pending terminal header cannot be drained through a nonterminal flush.
+    @Test
+    void rejectsFlushAfterTerminalHeaderStarts() throws IOException {
+        try (var encoder = new LZMAEncoder(PROPERTIES, CompressionCodec.UNKNOWN_SIZE)) {
+            ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+            ByteBuffer first = ByteBuffer.allocate(1);
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.finish(first));
+            drain(first, encoded);
+            ByteBuffer rejected = ByteBuffer.allocate(32);
+            assertThrows(IllegalStateException.class, () -> encoder.flush(rejected));
+            assertEquals(0, rejected.position());
+            drain(encoder::finish, CodecOutcome.FINISHED, encoded, 2);
+            assertArrayEquals(new byte[0], decode(new LZMACodec(PROPERTIES), encoded.toByteArray()));
+        }
+    }
+
     /// Verifies a partial LZMA2 chunk can be flushed, independently terminated, and followed by more input.
     @Test
     void flushesLzma2ChunkAndContinues() throws IOException {
@@ -174,6 +190,7 @@ final class LZMAEncoderFlushTest {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         encode(encoder, ByteBuffer.wrap(first), encoded, 5);
         assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.flush(ByteBuffer.allocate(0)));
+        assertThrows(IllegalStateException.class, () -> encoder.finish(ByteBuffer.allocate(1)));
         drain(encoder::flush, CodecOutcome.FLUSHED, encoded, 3);
         encode(encoder, ByteBuffer.wrap(second), encoded, 7);
         drain(encoder::finish, CodecOutcome.FINISHED, encoded, 2);

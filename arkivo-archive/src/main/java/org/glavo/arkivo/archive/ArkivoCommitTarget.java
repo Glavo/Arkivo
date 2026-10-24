@@ -29,6 +29,8 @@ public interface ArkivoCommitTarget {
     /// The output requires a non-null source path. Commit requires the file system to support an atomic move from the
     /// temporary directory to that path; it does not fall back to a non-atomic replacement. Rollback deletes the
     /// temporary file without modifying the original archive.
+    /// The temporary directory's symbolic links are resolved when output is opened; subsequent changes to those
+    /// links do not redirect access to the temporary file.
     ///
     /// @param directory the directory in which to create the temporary archive
     /// @return an atomic replacement target using {@code directory}

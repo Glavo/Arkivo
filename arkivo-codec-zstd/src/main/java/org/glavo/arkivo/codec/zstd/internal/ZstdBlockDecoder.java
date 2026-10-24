@@ -364,7 +364,7 @@ final class ZstdBlockDecoder {
             table.decode(source, offset, limit, literals, 0, outputSize);
             return;
         }
-        if (outputSize < 4) {
+        if (outputSize < 6) {
             throw new IOException("Four-stream Zstandard Huffman literals are too short");
         }
         requireAvailable(source, offset, 6);
