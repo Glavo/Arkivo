@@ -8,12 +8,14 @@ import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -86,6 +88,7 @@ import static org.glavo.arkivo.archive.zip.ZipCompressionTestFixtures.xz;
 import static org.glavo.arkivo.archive.zip.ZipCompressionTestFixtures.zstandard;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -3813,8 +3816,9 @@ public final class ZipArchiveIntegrationTest {
     }
 
     /// Verifies that decoded seekable ZIP channels validate inflated entry sizes against actual data.
-    @Test
-    public void rejectsSeekableDeflatedEntryUncompressedSizeMismatch() throws IOException {
+    @ParameterizedTest
+    @ValueSource(longs = {0L, 1L, 12L, 14L})
+    public void rejectsSeekableDeflatedEntryUncompressedSizeMismatch(long declaredSize) throws IOException {
         byte[] name = "deflated-size.txt".getBytes(StandardCharsets.UTF_8);
         byte[] content = "deflated data".getBytes(StandardCharsets.UTF_8);
         byte[] compressed = deflateRaw(content);
@@ -3824,7 +3828,7 @@ public final class ZipArchiveIntegrationTest {
                 ZipMethod.DEFLATED.id(),
                 crc32(content),
                 compressed.length,
-                content.length + 1L
+                declaredSize
         ));
 
         try {
@@ -3833,9 +3837,42 @@ public final class ZipArchiveIntegrationTest {
                         IOException.class,
                         () -> Files.newByteChannel(fileSystem.getPath("/deflated-size.txt"))
                 );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP entry data does not match central directory"
-                ));
+                if (declaredSize < content.length) {
+                    assertEquals(declaredSize,
+                            assertInstanceOf(DecompressionOutputLimitException.class, exception).maximumOutputSize());
+                } else {
+                    assertEquals(true, exception.getMessage().contains(
+                            "ZIP entry data does not match central directory"
+                    ));
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies staged reads reach the stream boundary and validate CRC at transfer-buffer boundaries.
+    @ParameterizedTest
+    @CsvSource({"0, false", "1, false", "4096, false", "65535, false", "65536, false", "65537, false",
+            "0, true", "1, true", "4096, true", "65536, true"})
+    public void validatesStagedDeflatedEntryAtTransferBoundary(int size, boolean corruptCrc) throws IOException {
+        byte[] content = new byte[size];
+        new java.util.Random(42).nextBytes(content);
+        byte[] compressed = deflateRaw(content);
+        Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
+                "sized.bin".getBytes(StandardCharsets.UTF_8), compressed, ZipMethod.DEFLATED.id(),
+                crc32(content) ^ (corruptCrc ? 1L : 0L), compressed.length, content.length));
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path entry = fileSystem.getPath("/sized.bin");
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    if (corruptCrc) {
+                        IOException failure = assertThrows(IOException.class, () -> Files.readAllBytes(entry));
+                        assertEquals("ZIP entry data does not match central directory", failure.getMessage());
+                    } else {
+                        assertArrayEquals(content, Files.readAllBytes(entry));
+                    }
+                }
             }
         } finally {
             deleteTemporaryArchive(archivePath);

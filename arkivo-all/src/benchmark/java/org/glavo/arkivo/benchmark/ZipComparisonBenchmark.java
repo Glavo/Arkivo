@@ -8,6 +8,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.openjdk.jmh.annotations.*;
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +36,10 @@ public class ZipComparisonBenchmark {
     @Param({"4096"}) public int entrySize = 4096;
     /// The number of implicit parent directories traversed before each data entry.
     @Param({"0"}) public int pathDepth = 0;
+    /// The read entry point: stream, channel, Files.readAllBytes, or InputStream.readAllBytes.
+    @Param({"stream"}) public String access = "stream";
+    /// The reused caller buffer size for stream and channel read loops, in bytes.
+    @Param({"8192"}) public int readBufferSize = 8192;
     /// The common relative directory prefix, including its trailing separator when nonempty.
     private String directoryPrefix = "";
     /// The generated archive.
@@ -47,7 +53,9 @@ public class ZipComparisonBenchmark {
     /// The next deterministic pseudo-random entry index.
     private int cursor;
     /// Reusable read storage shared by all implementations.
-    private final byte[] buffer = new byte[8192];
+    private byte[] buffer = new byte[0];
+    /// A view of the reusable read storage for seekable-channel reads.
+    private ByteBuffer channelBuffer = ByteBuffer.allocate(0);
     /// Cached entry names, excluding name formatting from entry-read timing.
     private @Nullable String[] names = new String[0];
     /// Cached NIO paths, excluding path parsing from entry-read timing.
@@ -56,9 +64,18 @@ public class ZipComparisonBenchmark {
     /// Creates a common JDK-produced archive and verifies one decoded entry.
     @Setup
     public void setup() throws IOException {
-        if (entryCount <= 0 || entrySize < 0 || pathDepth < 0) {
+        if (entryCount <= 0 || entrySize < 0 || pathDepth < 0 || readBufferSize <= 0) {
             throw new IllegalArgumentException("Invalid archive dimensions");
         }
+        if (!Set.of("stream", "channel", "allBytes", "streamAllBytes").contains(access)) {
+            throw new IllegalArgumentException(access);
+        }
+        if ((access.equals("channel") || access.equals("allBytes"))
+                && !Set.of("arkivo", "arkivo-channel", "zipfs").contains(api)) {
+            throw new IllegalArgumentException("This access mode requires a NIO file system");
+        }
+        buffer = new byte[readBufferSize];
+        channelBuffer = ByteBuffer.wrap(buffer);
         directoryPrefix = "parent/".repeat(pathDepth);
         names = new String[entryCount];
         paths = new Path[entryCount];
@@ -109,6 +126,12 @@ public class ZipComparisonBenchmark {
     }
     /// Reads setup validation bytes outside the measurement.
     private byte[] readOne(int i) throws IOException {
+        if (access.equals("allBytes")) return Files.readAllBytes(Objects.requireNonNull(paths[i]));
+        if (access.equals("channel")) {
+            try (InputStream in = Channels.newInputStream(Files.newByteChannel(Objects.requireNonNull(paths[i])))) {
+                return in.readAllBytes();
+            }
+        }
         try (InputStream in = input(i)) { return in.readAllBytes(); }
     }
     /// Releases a pre-opened index.
@@ -137,13 +160,34 @@ public class ZipComparisonBenchmark {
             }
         }
         cursor = (int) (((long) cursor + 509) % entryCount);
+        if (access.equals("allBytes")) {
+            return checkSize(Files.readAllBytes(Objects.requireNonNull(paths[cursor])).length);
+        }
+        if (access.equals("channel")) {
+            try (var channel = Files.newByteChannel(Objects.requireNonNull(paths[cursor]))) {
+                long size = 0;
+                while (true) {
+                    channelBuffer.clear();
+                    int n = channel.read(channelBuffer);
+                    if (n < 0) break;
+                    if (n == 0) throw new AssertionError("Channel read made no progress");
+                    size += n;
+                }
+                return checkSize(size);
+            }
+        }
         try (InputStream in = input(cursor)) {
+            if (access.equals("streamAllBytes")) return checkSize(in.readAllBytes().length);
             long size = 0;
             int n;
             while ((n = in.read(buffer)) >= 0) size += n;
-            if (size != entrySize) throw new AssertionError(size);
-            return size;
+            return checkSize(size);
         }
+    }
+    /// Checks the complete decoded size without adding content hashing to the measured read loop.
+    private long checkSize(long size) {
+        if (size != entrySize) throw new AssertionError(size);
+        return size;
     }
     /// Forces lazy index initialization and counts every data entry in the common directory.
     private long count(FileSystem fs) throws IOException {

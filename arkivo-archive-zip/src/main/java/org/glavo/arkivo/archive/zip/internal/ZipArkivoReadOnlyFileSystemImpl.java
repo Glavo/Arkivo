@@ -1501,7 +1501,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                          StandardOpenOption.TRUNCATE_EXISTING,
                          StandardOpenOption.WRITE
                  ))) {
-                StoredContentSupport.copyInput(input, output);
+                StoredContentSupport.copyInput(input, output, entry.uncompressedSize);
             }
             return decodedEntryStorage.openReadChannel(content);
         } catch (IOException | RuntimeException | Error exception) {

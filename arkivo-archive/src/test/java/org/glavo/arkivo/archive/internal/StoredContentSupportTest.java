@@ -12,12 +12,14 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
@@ -41,6 +43,70 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared indexed-content transfer and lifecycle behavior.
 @NotNullByDefault
 final class StoredContentSupportTest {
+    /// Verifies known small content does not require a full-sized transfer array.
+    @Test
+    void sizesStoredInputTransferBuffer() throws IOException {
+        byte[] content = new byte[4096];
+        new java.util.Random(42).nextBytes(content);
+        RecordingInputStream input = new RecordingInputStream(content);
+        try (StoredContentPool pool = new StoredContentPool(ArkivoEditStorage.memory());
+             ArkivoStoredContent stored = StoredContentSupport.storeInput(pool, "small", content.length, input);
+             InputStream actual = StoredContentSupport.openInputStream(stored)) {
+            assertArrayEquals(content, actual.readAllBytes());
+            assertEquals(content.length, input.maximumBufferSize);
+            assertEquals(1, input.eofReads);
+            assertFalse(input.closed);
+        }
+    }
+
+    /// Verifies exact, unknown, excessive, and underestimated hints preserve full transfer and EOF checks.
+    @ParameterizedTest
+    @CsvSource({"-1, 7, 65536", "0, 0, 1", "1, 1, 1", "4096, 4096, 4096", "4096, 7, 4096",
+            "65535, 65535, 65535", "65536, 65536, 65536", "65537, 65537, 65536",
+            "9223372036854775807, 7, 65536", "0, 65537, 65536", "1, 65537, 65536", "3, 5, 65536"})
+    void copiesWithSizeHints(long expectedSize, int actualSize, int maximumBufferSize) throws IOException {
+        byte[] content = new byte[actualSize];
+        new java.util.Random(42).nextBytes(content);
+        RecordingInputStream input = new RecordingInputStream(content);
+        try (ShortWriteChannel output = new ShortWriteChannel()) {
+            StoredContentSupport.copyInput(input, output, expectedSize);
+            assertArrayEquals(content, output.bytes.toByteArray());
+            assertEquals(maximumBufferSize, input.maximumBufferSize);
+            assertEquals(1, input.eofReads);
+            assertFalse(input.closed);
+            assertTrue(output.isOpen());
+        }
+    }
+
+    /// Verifies invalid hints are rejected before either endpoint is used or closed.
+    @Test
+    void rejectsInvalidSizeHint() throws IOException {
+        RecordingInputStream input = new RecordingInputStream(new byte[]{1});
+        try (ShortWriteChannel output = new ShortWriteChannel()) {
+            assertThrows(IllegalArgumentException.class, () -> StoredContentSupport.copyInput(input, output, -2L));
+            assertEquals(0, input.maximumBufferSize);
+            assertEquals(1, input.available());
+            assertEquals(0, output.bytes.size());
+            assertFalse(input.closed);
+            assertTrue(output.isOpen());
+        }
+    }
+
+    /// Verifies reaching the size hint does not hide a subsequent read failure or discard completed writes.
+    @ParameterizedTest
+    @ValueSource(longs = {-1L, 0L, 1L, 3L, 4L})
+    void preservesWrittenBytesWhenInputFailsAfterHint(long expectedSize) throws IOException {
+        byte[] content = {1, 2, 3};
+        try (InputStream input = new SequenceInputStream(new ByteArrayInputStream(content), new FailingInputStream());
+             ShortWriteChannel output = new ShortWriteChannel()) {
+            IOException failure = assertThrows(IOException.class,
+                    () -> StoredContentSupport.copyInput(input, output, expectedSize));
+            assertEquals("input failed", failure.getMessage());
+            assertArrayEquals(content, output.bytes.toByteArray());
+            assertTrue(output.isOpen());
+        }
+    }
+
     /// Verifies default storage can allocate empty content.
     @Test
     void selectsDefaultStorage() throws IOException {
@@ -236,12 +302,14 @@ final class StoredContentSupportTest {
     }
 
     /// Verifies nonempty transfers reject writable channels that make no progress.
-    @Test
-    void rejectsZeroProgressOutput() {
+    @ParameterizedTest
+    @ValueSource(longs = {-1L, 0L, 1L, 65536L})
+    void rejectsZeroProgressOutput(long expectedSize) {
         ZeroProgressChannel output = new ZeroProgressChannel();
         IOException exception = assertThrows(IOException.class, () -> StoredContentSupport.copyInput(
                 new ByteArrayInputStream(new byte[]{1}),
-                output
+                output,
+                expectedSize
         ));
         assertEquals("Stored content channel made no write progress", exception.getMessage());
         output.close();
@@ -281,17 +349,18 @@ final class StoredContentSupportTest {
     }
 
     /// Verifies a transient zero-length stream read falls back to one byte and physical EOF remains empty.
-    @Test
-    void handlesZeroProgressInputStreams() throws IOException {
+    @ParameterizedTest
+    @ValueSource(longs = {-1L, 0L, 1L, 65536L})
+    void handlesZeroProgressInputStreams(long expectedSize) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (WritableByteChannel channel = Channels.newChannel(output)) {
-            StoredContentSupport.copyInput(new ZeroThenDataInputStream(new byte[]{1, 2, 3}), channel);
+            StoredContentSupport.copyInput(new ZeroThenDataInputStream(new byte[]{1, 2, 3}), channel, expectedSize);
         }
         assertArrayEquals(new byte[]{1, 2, 3}, output.toByteArray());
 
         ByteArrayOutputStream emptyOutput = new ByteArrayOutputStream();
         try (WritableByteChannel channel = Channels.newChannel(emptyOutput)) {
-            StoredContentSupport.copyInput(new ZeroThenDataInputStream(new byte[0]), channel);
+            StoredContentSupport.copyInput(new ZeroThenDataInputStream(new byte[0]), channel, expectedSize);
         }
         assertEquals(0, emptyOutput.size());
     }
@@ -381,6 +450,8 @@ final class StoredContentSupportTest {
             );
             assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(null, output));
             assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(input, null));
+            assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(null, output, 0L));
+            assertThrows(NullPointerException.class, () -> StoredContentSupport.copyInput(input, null, 0L));
             assertThrows(NullPointerException.class, () -> StoredContentSupport.copyContent(null, null));
         }
     }
@@ -470,6 +541,74 @@ final class StoredContentSupportTest {
         @Override
         public void close() {
             open = false;
+        }
+    }
+
+    /// Captures output while consuming at most three bytes from each source buffer.
+    @NotNullByDefault
+    private static final class ShortWriteChannel implements WritableByteChannel {
+        /// Bytes accepted by completed writes.
+        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+        /// Whether cleanup has closed the channel.
+        private boolean open = true;
+
+        /// Creates an empty short-write destination.
+        private ShortWriteChannel() {
+        }
+
+        /// Accepts a bounded prefix while advancing the supplied buffer.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            if (!open) throw new ClosedChannelException();
+            int count = Math.min(3, source.remaining());
+            for (int index = 0; index < count; index++) bytes.write(source.get());
+            return count;
+        }
+
+        /// Returns whether the caller has closed this destination.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Records closure.
+        @Override
+        public void close() {
+            open = false;
+        }
+    }
+
+    /// Records transfer array sizes, EOF checks, and close propagation without changing input data.
+    @NotNullByDefault
+    private static final class RecordingInputStream extends ByteArrayInputStream {
+        /// The largest array supplied to a bulk read, including the EOF check.
+        private int maximumBufferSize;
+
+        /// The number of bulk reads that observed physical EOF.
+        private int eofReads;
+
+        /// Whether the caller closed this input.
+        private boolean closed;
+
+        /// Creates a reader over the test data.
+        private RecordingInputStream(byte[] content) {
+            super(content);
+        }
+
+        /// Records the transfer array and reads through the actual input boundary.
+        @Override
+        public int read(byte[] target, int offset, int length) {
+            maximumBufferSize = Math.max(maximumBufferSize, target.length);
+            int count = super.read(target, offset, length);
+            if (count < 0) eofReads++;
+            return count;
+        }
+
+        /// Records closure without invalidating the inherited byte-array storage.
+        @Override
+        public void close() {
+            closed = true;
         }
     }
 

@@ -24,7 +24,7 @@ import java.util.Set;
 /// Provides shared transfer and lifecycle operations for indexed archive content.
 @NotNullByDefault
 public final class StoredContentSupport {
-    /// The bounded transfer buffer size.
+    /// The maximum transfer buffer size, also used when the expected size is unknown.
     private static final int TRANSFER_BUFFER_SIZE = 64 * 1024;
 
     /// Creates stored-content support operations.
@@ -83,7 +83,7 @@ public final class StoredContentSupport {
             ));
             @Nullable Throwable failure = null;
             try {
-                copyInput(input, output);
+                copyInput(input, output, expectedSize);
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
                 throw exception;
@@ -107,10 +107,32 @@ public final class StoredContentSupport {
     /// @param output the borrowed writable channel that receives every byte
     /// @throws IOException if either endpoint fails or a nonempty channel write makes no progress
     public static void copyInput(InputStream input, WritableByteChannel output) throws IOException {
+        copyInput(input, output, ArkivoEditStorage.UNKNOWN_SIZE);
+    }
+
+    /// Copies all input bytes using the expected size as a transfer-buffer sizing hint.
+    ///
+    /// The expected size does not limit or validate the number of bytes copied. Reading continues through EOF,
+    /// including when the expected size is zero. If the input exceeds a small size hint, the transfer buffer grows
+    /// to the usual bounded capacity. Neither endpoint is closed. Bytes already written are not rolled back if
+    /// the transfer fails. An output failure may leave input consumed beyond the bytes successfully written.
+    ///
+    /// @param input the borrowed input stream read through end of input
+    /// @param output the borrowed writable channel that receives every byte
+    /// @param expectedSize the expected non-negative byte count, or [ArkivoEditStorage#UNKNOWN_SIZE]
+    /// @throws IOException if either endpoint fails or a nonempty channel write makes no progress
+    /// @throws IllegalArgumentException if the expected size is less than [ArkivoEditStorage#UNKNOWN_SIZE]
+    public static void copyInput(InputStream input, WritableByteChannel output, long expectedSize) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(output, "output");
-        byte[] buffer = new byte[TRANSFER_BUFFER_SIZE];
+        if (expectedSize < ArkivoEditStorage.UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("expectedSize must be non-negative or UNKNOWN_SIZE");
+        }
+        int capacity = expectedSize == ArkivoEditStorage.UNKNOWN_SIZE
+                ? TRANSFER_BUFFER_SIZE : (int) Math.max(1L, Math.min(expectedSize, TRANSFER_BUFFER_SIZE));
+        byte[] buffer = new byte[capacity];
         ByteBuffer bytes = ByteBuffer.wrap(buffer);
+        long remainingExpected = expectedSize;
         while (true) {
             int count = input.read(buffer);
             if (count < 0) {
@@ -129,6 +151,14 @@ public final class StoredContentSupport {
             while (bytes.hasRemaining()) {
                 if (output.write(bytes) == 0) {
                     throw new IOException("Stored content channel made no write progress");
+                }
+            }
+            if (buffer.length < TRANSFER_BUFFER_SIZE) {
+                remainingExpected -= count;
+                if (remainingExpected < 0L) {
+                    // Grow only after extra data arrives; exact-sized input needs no larger EOF-check buffer.
+                    buffer = new byte[TRANSFER_BUFFER_SIZE];
+                    bytes = ByteBuffer.wrap(buffer);
                 }
             }
         }
