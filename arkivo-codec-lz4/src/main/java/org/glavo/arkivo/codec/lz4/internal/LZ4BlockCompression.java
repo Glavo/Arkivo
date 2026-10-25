@@ -5,11 +5,12 @@ package org.glavo.arkivo.codec.lz4.internal;
 
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Implements bounded one-shot LZ4 block compression with optional prefix history.
+/// Compresses LZ4 blocks with optional prefix history and a reusable match table.
 @NotNullByDefault
 final class LZ4BlockCompression {
     /// Hash width for a 64 KiB table of match positions.
@@ -33,8 +34,14 @@ final class LZ4BlockCompression {
     /// Empty prefix history.
     private static final byte[] EMPTY_DICTIONARY = new byte[0];
 
-    /// Creates no instances.
-    private LZ4BlockCompression() {
+    /// Empty workspace used before a match search and after workspace release.
+    private static final int @Unmodifiable [] EMPTY_HASH_TABLE = new int[0];
+
+    /// Match positions, reinitialized before every block that can contain a match.
+    private int[] hashTable = EMPTY_HASH_TABLE;
+
+    /// Creates a compressor without allocating its match table.
+    LZ4BlockCompression() {
     }
 
     /// Compresses a complete block without prefix history.
@@ -48,7 +55,7 @@ final class LZ4BlockCompression {
         int capacity = source.length < REQUIRED_LAST_MATCH_DISTANCE
                 ? 1 + source.length : Math.toIntExact(maxCompressedLength(source.length));
         byte[] encoded = new byte[capacity];
-        int length = compress(source, source.length, dictionary, encoded, 0);
+        int length = new LZ4BlockCompression().compressInto(source, source.length, dictionary, encoded, 0);
         return length == encoded.length ? encoded : Arrays.copyOf(encoded, length);
     }
 
@@ -56,7 +63,8 @@ final class LZ4BlockCompression {
     /// Neither input is modified or retained; the destination must be distinct from both inputs.
     /// The destination must accommodate [#maxCompressedLength(long)], or `sourceLength + 1` for blocks
     /// shorter than 12 bytes. Bytes outside the returned range are unchanged.
-    static int compress(byte[] source, int sourceLength, byte[] dictionary, byte[] encoded, int outputOffset) {
+    /// Calls on the same compressor must not overlap.
+    int compressInto(byte[] source, int sourceLength, byte[] dictionary, byte[] encoded, int outputOffset) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(dictionary, "dictionary");
         Objects.checkFromIndexSize(0, sourceLength, source.length);
@@ -77,7 +85,10 @@ final class LZ4BlockCompression {
             System.arraycopy(source, 0, input, dictionaryLength, sourceLength);
         }
 
-        int[] hashTable = new int[1 << HASH_BITS];
+        int[] hashTable = this.hashTable;
+        if (hashTable.length == 0) {
+            this.hashTable = hashTable = new int[1 << HASH_BITS];
+        }
         Arrays.fill(hashTable, -1);
         int inputEnd = dictionaryLength + sourceLength;
         for (int position = 0; position + MINIMUM_MATCH_LENGTH <= dictionaryLength; position++) {
@@ -145,6 +156,11 @@ final class LZ4BlockCompression {
                 inputEnd - anchor
         );
         return outputPosition - outputOffset;
+    }
+
+    /// Releases the match table; the next block that needs it allocates a new table.
+    void releaseWorkspace() {
+        hashTable = EMPTY_HASH_TABLE;
     }
 
     /// Returns the standard LZ4 maximum encoded block length.

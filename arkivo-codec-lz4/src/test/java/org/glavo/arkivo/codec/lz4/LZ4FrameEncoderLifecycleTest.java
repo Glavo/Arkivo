@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -30,6 +31,53 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies LZ4 frame boundaries, size pledges, and owned workspace lifecycle.
 @NotNullByDefault
 final class LZ4FrameEncoderLifecycleTest {
+    /// Leaves pending output untouched until drained or explicitly abandoned by reset.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void reusesBlockWorkspaceOnlyAfterDraining(boolean abandon) throws Exception {
+        int blockSize = LZ4BlockSize.KIB_64.byteSize();
+        var codec = LZ4Codec.DEFAULT.withBlockSize(LZ4BlockSize.KIB_64).withBlockChecksum(true);
+        byte[] first = new byte[blockSize];
+        Arrays.fill(first, (byte) 0x5a);
+        byte[] second = new byte[blockSize];
+        new Random(42).nextBytes(second);
+        try (var encoder = codec.newEncoder()) {
+            var workspaceField = encoder.getClass().getDeclaredField("encodedBlock");
+            workspaceField.setAccessible(true);
+            var encoded = new ByteArrayOutputStream();
+            ByteBuffer header = ByteBuffer.allocate(7);
+            ByteBuffer source = ByteBuffer.wrap(first).asReadOnlyBuffer();
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.encode(source, header));
+            assertEquals(first.length, source.position());
+            drain(header, encoded);
+            byte[] workspace = (byte[]) workspaceField.get(encoder);
+            byte[] pending = workspace.clone();
+            ByteBuffer next = ByteBuffer.wrap(second).asReadOnlyBuffer();
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.encode(next, ByteBuffer.allocate(0)));
+            assertEquals(0, next.position());
+            assertArrayEquals(pending, workspace);
+            codec.compress(ByteBuffer.wrap(second));
+            assertArrayEquals(pending, workspace);
+            if (abandon) {
+                encoder.reset();
+                encoded.reset();
+            }
+            encode(encoder, next, encoded, 31);
+            finish(encoder, encoded, 3);
+            assertSame(workspace, workspaceField.get(encoder));
+            byte[] expected;
+            if (abandon) {
+                expected = second;
+            } else {
+                expected = Arrays.copyOf(first, first.length + second.length);
+                System.arraycopy(second, 0, expected, first.length, second.length);
+            }
+            try (var input = new LZ4FrameInputStream(new ByteArrayInputStream(encoded.toByteArray()))) {
+                assertArrayEquals(expected, input.readAllBytes());
+            }
+        }
+    }
+
     /// Drains compressed, stored, and short final blocks without emitting unused input or output capacity.
     @ParameterizedTest
     @CsvSource({"true, true", "true, false", "false, true", "false, false"})
@@ -102,7 +150,7 @@ final class LZ4FrameEncoderLifecycleTest {
         }
     }
 
-    /// Keeps the block allocation across reset but releases owned block and dictionary storage on close.
+    /// Allocates workspaces on demand, keeps them across reset, and releases all owned arrays on close.
     @ParameterizedTest
     @EnumSource(LZ4BlockSize.class)
     void releasesBuffersOnClose(LZ4BlockSize blockSize) throws Exception {
@@ -110,18 +158,38 @@ final class LZ4FrameEncoderLifecycleTest {
                 .withDictionary(LZ4Dictionary.rawContent(new byte[128])).newEncoder()) {
             var blockField = encoder.getClass().getDeclaredField("block");
             var dictionaryField = encoder.getClass().getDeclaredField("dictionaryHistory");
+            var encodedField = encoder.getClass().getDeclaredField("encodedBlock");
+            var compressorField = encoder.getClass().getDeclaredField("blockCompressor");
             blockField.setAccessible(true);
             dictionaryField.setAccessible(true);
+            encodedField.setAccessible(true);
+            compressorField.setAccessible(true);
+            Object compressor = compressorField.get(encoder);
+            var tableField = compressor.getClass().getDeclaredField("hashTable");
+            tableField.setAccessible(true);
             byte[] block = (byte[]) blockField.get(encoder);
             byte[] dictionary = (byte[]) dictionaryField.get(encoder);
             assertEquals(blockSize.byteSize(), block.length);
             assertEquals(128, dictionary.length);
+            assertEquals(0, ((byte[]) encodedField.get(encoder)).length);
+            assertEquals(0, ((int[]) tableField.get(compressor)).length);
+            var discarded = new ByteArrayOutputStream();
+            encode(encoder, ByteBuffer.wrap(new byte[128]), discarded, 32);
+            finish(encoder, discarded, 32);
+            byte[] encoded = (byte[]) encodedField.get(encoder);
+            int[] table = (int[]) tableField.get(compressor);
+            assertTrue(encoded.length > 128 && encoded.length < 256);
+            assertEquals(16384, table.length);
             encoder.reset();
             assertSame(block, blockField.get(encoder));
             assertSame(dictionary, dictionaryField.get(encoder));
+            assertSame(encoded, encodedField.get(encoder));
+            assertSame(table, tableField.get(compressor));
             encoder.close();
             assertEquals(0, ((byte[]) blockField.get(encoder)).length);
             assertEquals(0, ((byte[]) dictionaryField.get(encoder)).length);
+            assertEquals(0, ((byte[]) encodedField.get(encoder)).length);
+            assertEquals(0, ((int[]) tableField.get(compressor)).length);
             encoder.close();
             assertEquals(0, ((byte[]) blockField.get(encoder)).length);
             assertThrows(IllegalStateException.class, encoder::reset);

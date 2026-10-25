@@ -57,6 +57,12 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     /// Owned decoded bytes collected for the current block, or empty after closure.
     private byte[] block;
 
+    /// Block compressor whose match table is reused within this encoder.
+    private final LZ4BlockCompression blockCompressor = new LZ4BlockCompression();
+
+    /// Encoded block workspace, retained across frames and reset but released on close.
+    private byte[] encodedBlock = EMPTY_BYTES;
+
     /// Exact source size restored for the initial frame by reset, or the unknown-size sentinel.
     private final long initialSourceSize;
 
@@ -264,6 +270,8 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         output = EMPTY_OUTPUT;
         clearFrameState();
         block = EMPTY_BYTES;
+        encodedBlock = EMPTY_BYTES;
+        blockCompressor.releaseWorkspace();
         dictionaryHistory = EMPTY_BYTES;
         state = State.CLOSED;
     }
@@ -347,9 +355,16 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
 
     /// Compresses and queues one complete physical frame block.
     private void emitBlock() throws IOException {
+        if (output.hasRemaining()) {
+            throw new AssertionError("LZ4 block output must be drained before workspace reuse");
+        }
         int overhead = Integer.BYTES + (blockChecksum ? Integer.BYTES : 0);
-        byte[] encoded = new byte[Math.toIntExact(LZ4BlockCompression.maxCompressedLength(blockLength)) + overhead];
-        int payloadLength = LZ4BlockCompression.compress(block, blockLength,
+        int capacity = Math.toIntExact(LZ4BlockCompression.maxCompressedLength(blockLength)) + overhead;
+        if (encodedBlock.length < capacity) {
+            encodedBlock = new byte[capacity];
+        }
+        byte[] encoded = encodedBlock;
+        int payloadLength = blockCompressor.compressInto(block, blockLength,
                 independentBlocks ? dictionaryHistory : history, encoded, Integer.BYTES);
         boolean uncompressed = payloadLength >= blockLength;
         if (uncompressed) {

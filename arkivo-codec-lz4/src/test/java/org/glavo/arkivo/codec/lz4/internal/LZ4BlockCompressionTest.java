@@ -19,16 +19,52 @@ import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies greedy match selection, tail boundaries, and dictionary truncation.
 @NotNullByDefault
 final class LZ4BlockCompressionTest {
+    /// Reinitializes one match table across unrelated blocks and dictionaries, and releases it on request.
+    @Test
+    void reusesAndReleasesMatchTable() throws Exception {
+        var compressor = new LZ4BlockCompression();
+        var tableField = LZ4BlockCompression.class.getDeclaredField("hashTable");
+        tableField.setAccessible(true);
+        assertEquals(0, ((int[]) tableField.get(compressor)).length);
+        byte[] output = new byte[Math.toIntExact(LZ4BlockCompression.maxCompressedLength(65536))];
+        compressor.compressInto(new byte[11], 11, new byte[0], output, 0);
+        assertEquals(0, ((int[]) tableField.get(compressor)).length);
+        compressor.compressInto(new byte[12], 12, new byte[0], output, 0);
+        int[] table = (int[]) tableField.get(compressor);
+        assertEquals(16384, table.length);
+        var other = new LZ4BlockCompression();
+        other.compressInto(new byte[12], 12, new byte[0], output, 0);
+        assertNotSame(table, tableField.get(other));
+        for (int dictionarySize : new int[]{65536, 0, 17, 0}) {
+            for (int size : new int[]{65536, 12, 4096, 0, 1, 65535}) {
+                byte[] dictionary = content(dictionarySize, 7, 0);
+                byte[] source = content(size, dictionarySize == 0 ? 0 : 7, dictionarySize);
+                int length = compressor.compressInto(source, size, dictionary, output, 0);
+                assertArrayEquals(LZ4BlockCompression.compress(source, dictionary), Arrays.copyOf(output, length));
+                assertSame(table, tableField.get(compressor));
+            }
+        }
+        compressor.releaseWorkspace();
+        compressor.releaseWorkspace();
+        assertEquals(0, ((int[]) tableField.get(compressor)).length);
+        int length = compressor.compressInto(new byte[12], 12, new byte[0], output, 0);
+        assertNotSame(table, tableField.get(compressor));
+        assertArrayEquals(LZ4BlockCompression.compress(new byte[12]), Arrays.copyOf(output, length));
+    }
+
     /// Encodes only the occupied input prefix and leaves both destination guard regions unchanged.
     @ParameterizedTest
     @ValueSource(ints = {0, 17, 65536})
     void compressesIntoDestinationRange(int dictionarySize) {
+        var compressor = new LZ4BlockCompression();
         for (int period : new int[]{0, 7}) {
             byte[] dictionary = content(dictionarySize, period, 0);
             byte[] originalDictionary = dictionary.clone();
@@ -42,7 +78,7 @@ final class LZ4BlockCompressionTest {
                     int capacity = Math.toIntExact(LZ4BlockCompression.maxCompressedLength(size));
                     byte[] output = new byte[offset + capacity + 17];
                     Arrays.fill(output, (byte) 0x6b);
-                    int length = LZ4BlockCompression.compress(padded, size, dictionary, output, offset);
+                    int length = compressor.compressInto(padded, size, dictionary, output, offset);
                     assertEquals(expected.length, length);
                     assertArrayEquals(expected, Arrays.copyOfRange(output, offset, offset + length));
                     for (int index = 0; index < offset; index++) assertEquals((byte) 0x6b, output[index]);
@@ -59,23 +95,24 @@ final class LZ4BlockCompressionTest {
     /// Rejects invalid ranges before writing any bytes and accepts exact literal-only capacity.
     @Test
     void validatesDestinationRanges() {
+        var compressor = new LZ4BlockCompression();
         byte[] source = content(32, 7, 0);
         byte[] dictionary = new byte[0];
         byte[] output = new byte[64];
         Arrays.fill(output, (byte) 0x5a);
         byte[] original = output.clone();
         assertThrows(IndexOutOfBoundsException.class,
-                () -> LZ4BlockCompression.compress(source, -1, dictionary, output, 0));
+                () -> compressor.compressInto(source, -1, dictionary, output, 0));
         assertThrows(IndexOutOfBoundsException.class,
-                () -> LZ4BlockCompression.compress(source, 33, dictionary, output, 0));
+                () -> compressor.compressInto(source, 33, dictionary, output, 0));
         assertThrows(IndexOutOfBoundsException.class,
-                () -> LZ4BlockCompression.compress(source, 32, dictionary, output, -1));
+                () -> compressor.compressInto(source, 32, dictionary, output, -1));
         assertThrows(IndexOutOfBoundsException.class,
-                () -> LZ4BlockCompression.compress(source, 32, dictionary, output, 17));
+                () -> compressor.compressInto(source, 32, dictionary, output, 17));
         assertArrayEquals(original, output);
         for (int size = 0; size < 12; size++) {
             byte[] literals = new byte[size + 1];
-            assertEquals(literals.length, LZ4BlockCompression.compress(source, size, dictionary, literals, 0));
+            assertEquals(literals.length, compressor.compressInto(source, size, dictionary, literals, 0));
             assertArrayEquals(LZ4BlockCompression.compress(Arrays.copyOf(source, size)), literals);
         }
     }
