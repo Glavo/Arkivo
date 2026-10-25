@@ -40,15 +40,19 @@ final class LZ4BlockCompression {
     }
 
     /// Compresses a complete block using at most the final 65,535 dictionary bytes as prefix history.
+    /// Neither input array is modified or retained.
     static byte[] compress(byte[] source, byte[] dictionary) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(dictionary, "dictionary");
 
         int dictionaryLength = Math.min(dictionary.length, MAXIMUM_OFFSET);
-        int dictionaryOffset = dictionary.length - dictionaryLength;
-        byte[] input = new byte[Math.addExact(dictionaryLength, source.length)];
-        System.arraycopy(dictionary, dictionaryOffset, input, 0, dictionaryLength);
-        System.arraycopy(source, 0, input, dictionaryLength, source.length);
+        byte[] input = source;
+        if (dictionaryLength != 0) {
+            int dictionaryOffset = dictionary.length - dictionaryLength;
+            input = new byte[Math.addExact(dictionaryLength, source.length)];
+            System.arraycopy(dictionary, dictionaryOffset, input, 0, dictionaryLength);
+            System.arraycopy(source, 0, input, dictionaryLength, source.length);
+        }
 
         int[] hashTable = new int[HASH_SIZE];
         Arrays.fill(hashTable, -1);
@@ -78,11 +82,10 @@ final class LZ4BlockCompression {
             }
 
             int matchEnd = position + MINIMUM_MATCH_LENGTH;
-            int candidatePosition = candidate + MINIMUM_MATCH_LENGTH;
-            while (matchEnd < matchLimit && input[candidatePosition] == input[matchEnd]) {
-                candidatePosition++;
-                matchEnd++;
-            }
+            // Compare equal-length ranges, excluding the mandatory final literals from the match.
+            int mismatch = Arrays.mismatch(input, candidate + MINIMUM_MATCH_LENGTH, matchLimit - offset,
+                    input, matchEnd, matchLimit);
+            matchEnd = mismatch < 0 ? matchLimit : matchEnd + mismatch;
             int matchLength = matchEnd - position;
             outputPosition = writeSequence(
                     encoded,
