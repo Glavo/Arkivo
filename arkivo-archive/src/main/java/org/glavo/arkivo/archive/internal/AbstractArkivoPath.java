@@ -355,14 +355,17 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
         if (sourceUri == null) {
             throw new UnsupportedOperationException("Archive paths without a source URI cannot be converted to URIs");
         }
-        AbstractArkivoPath<F> absolutePath = requireCompatiblePath(toAbsolutePath());
         String sourceText = sourceUri.toASCIIString();
         if (sourceUri.isOpaque()) {
             // Preserve existing escapes while quoting the source URI's own archive delimiters.
             sourceText = sourceText.replace("%", "%25");
         }
-        return URI.create(uriScheme() + ":" + sourceText.replace("!", "%21")
-                + "!/" + uriPath(absolutePath.names));
+        try {
+            String rawPath = new URI(null, null, absolute ? text : "/" + text, null).getRawPath();
+            return URI.create(uriScheme() + ":" + sourceText.replace("!", "%21") + "!" + rawPath);
+        } catch (URISyntaxException exception) {
+            throw new IllegalArgumentException("Invalid archive path", exception);
+        }
     }
 
     /// Returns this path as an absolute path.
@@ -611,31 +614,6 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             start = end + 1;
         }
         return List.copyOf(names);
-    }
-
-    /// Returns an encoded URI path for the given names.
-    private static String uriPath(List<String> names) {
-        if (names.isEmpty()) {
-            return "";
-        }
-        StringBuilder builder = new StringBuilder();
-        for (String name : names) {
-            if (!builder.isEmpty()) {
-                builder.append('/');
-            }
-            builder.append(uriPathSegment(name));
-        }
-        return builder.toString();
-    }
-
-    /// Returns an encoded URI path segment.
-    private static String uriPathSegment(String name) {
-        try {
-            String rawPath = new URI(null, null, "/" + name, null).getRawPath();
-            return rawPath != null ? rawPath.substring(1) : "";
-        } catch (URISyntaxException exception) {
-            throw new IllegalArgumentException("Invalid archive path segment", exception);
-        }
     }
 
     /// Returns path text for parsed components.

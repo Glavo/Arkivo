@@ -12,6 +12,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessMode;
 import java.nio.file.CopyOption;
@@ -422,6 +423,36 @@ final class AbstractArkivoPathTest {
         assertEquals("arkivo+test:file:///tmp/archive%20name.zip!/alias/.././a%20b/%23hash/%C3%A9",
                 fileSystem.getPath("alias/.././a b/#hash/é").toUri().toASCIIString());
         assertThrows(UnsupportedOperationException.class, () -> new TestFileSystem(null).getPath("entry").toUri());
+    }
+
+    /// Checks whole-path quoting against independent segment quoting, without resolving dot elements.
+    @ParameterizedTest
+    @ValueSource(strings = {"file:///tmp/archive.zip", "file:///tmp/bang!/archive%20name.zip",
+            "arkivo+zip:file:///tmp/outer.zip!/inner%20name.zip"})
+    void preservesUriSegmentEscaping(String source) throws URISyntaxException {
+        URI sourceUri = URI.create(source);
+        TestFileSystem fileSystem = new TestFileSystem(sourceUri);
+        ArrayList<String> inputs = new ArrayList<>(List.of("", "/", "//", "a//b/", ".././a",
+                "/alias/.././value", "a:b/c:d", "!/a%20b/#?", "\\server\\name", "é/e\u0301/\ud83d\ude42"));
+        for (int character = 0; character < 128; character++) {
+            inputs.add("a" + (char) character + "b/c" + (char) character + "d");
+        }
+        String quotedSource = sourceUri.isOpaque() ? source.replace("%", "%25") : source;
+        for (String input : inputs) {
+            for (String prefix : List.of("", "/")) {
+                Path path = fileSystem.getPath(prefix + input);
+                StringBuilder quotedNames = new StringBuilder();
+                for (Path name : path) {
+                    if (!quotedNames.isEmpty()) quotedNames.append('/');
+                    quotedNames.append(new URI(null, null, "/" + name, null).getRawPath().substring(1));
+                }
+                URI expected = URI.create("arkivo+test:" + quotedSource.replace("!", "%21") + "!/" + quotedNames);
+                URI actual = path.toUri();
+                assertEquals(expected.toString(), actual.toString(), input);
+                assertEquals(expected.toASCIIString(), actual.toASCIIString(), input);
+                assertEquals(path.toAbsolutePath().toUri(), actual, input);
+            }
+        }
     }
 
     /// Resolving ordinary paths checks each component once without attempting symbolic-link reads.

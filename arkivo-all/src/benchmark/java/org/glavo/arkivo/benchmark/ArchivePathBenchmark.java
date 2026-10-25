@@ -21,13 +21,14 @@ import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipOutputStream;
 
-/// Measures archive path iteration, comparisons, and repeated hashing without entry I/O.
+/// Measures archive path iteration, comparisons, hashing, and URI conversion without entry I/O.
 @NotNullByDefault
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -58,7 +59,10 @@ public class ArchivePathBenchmark {
     /// Independently parsed relative suffix excluding the first component.
     private @Nullable Path suffix;
 
-    /// Creates an empty archive and verifies iteration over the generated path.
+    /// Relative path with two components per repetition containing characters that require URI escaping.
+    private @Nullable Path escapedPath;
+
+    /// Creates an empty archive and verifies operations on the generated paths.
     @Setup
     public void setUp() throws IOException {
         if (depth < 2) throw new IllegalArgumentException("Path depth must be at least two");
@@ -71,6 +75,12 @@ public class ArchivePathBenchmark {
         equalPath = fileSystem.getPath(path.toString());
         prefix = fileSystem.getPath("/" + "component/".repeat(depth - 1));
         suffix = fileSystem.getPath("component/".repeat(depth - 1));
+        escapedPath = fileSystem.getPath("a b/#?%/".repeat(depth));
+        if (!path.toUri().getRawSchemeSpecificPart().endsWith("!" + path)
+                || !escapedPath.toUri().getRawSchemeSpecificPart().endsWith("!/" + "a%20b/%23%3F%25/".repeat(depth - 1)
+                + "a%20b/%23%3F%25")) {
+            throw new IllegalStateException("Unexpected path URI");
+        }
         if (!path.equals(equalPath) || path.hashCode() != equalPath.hashCode()
                 || !path.startsWith(prefix) || !path.endsWith(suffix)) {
             throw new IllegalStateException("Unexpected path comparison result");
@@ -137,5 +147,17 @@ public class ArchivePathBenchmark {
     @Benchmark
     public boolean endsWithPath() {
         return Objects.requireNonNull(path).endsWith(Objects.requireNonNull(suffix));
+    }
+
+    /// Converts an absolute ASCII path to an archive URI.
+    @Benchmark
+    public URI toUri() {
+        return Objects.requireNonNull(path).toUri();
+    }
+
+    /// Converts a relative path containing reserved characters to an archive URI.
+    @Benchmark
+    public URI escapedUri() {
+        return Objects.requireNonNull(escapedPath).toUri();
     }
 }
