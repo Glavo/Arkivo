@@ -14,6 +14,7 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
@@ -186,7 +187,7 @@ public final class StoredContentSupport {
             }
             SeekableByteChannel input = source.openChannel(Set.of(StandardOpenOption.READ));
             try {
-                copyInput(StreamChannelAdapters.inputStream(input), output);
+                copyChannels(input, output);
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
                 throw exception;
@@ -220,7 +221,7 @@ public final class StoredContentSupport {
             SeekableByteChannel destination = output.openChannel(Set.of(
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE));
             try {
-                copyInput(StreamChannelAdapters.inputStream(source), destination);
+                copyChannels(source, destination);
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
                 throw exception;
@@ -232,6 +233,27 @@ public final class StoredContentSupport {
             throw exception;
         } finally {
             closeAfterTransfer(source, failure);
+        }
+    }
+
+    /// Copies through EOF with one reusable buffer, rejecting stalled reads and writes without closing either channel.
+    private static void copyChannels(ReadableByteChannel input, WritableByteChannel output) throws IOException {
+        ByteBuffer buffer = ByteBuffer.allocate(TRANSFER_BUFFER_SIZE);
+        while (true) {
+            buffer.clear();
+            int count = input.read(buffer);
+            if (count < 0) {
+                return;
+            }
+            if (count == 0) {
+                throw new IOException("Readable channel made no progress");
+            }
+            buffer.flip();
+            while (buffer.hasRemaining()) {
+                if (output.write(buffer) == 0) {
+                    throw new IOException("Stored content channel made no write progress");
+                }
+            }
         }
     }
 

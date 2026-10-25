@@ -43,6 +43,64 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared indexed-content transfer and lifecycle behavior.
 @NotNullByDefault
 final class StoredContentSupportTest {
+    /// Drains partial writes and preserves completed output if a later write stalls.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void copiesToShortWritingChannels(boolean stall) throws IOException {
+        byte[] expected = {1, 2, 3, 4, 5};
+        ShortWriteChannel output = new ShortWriteChannel();
+        output.stallAfterFirstWrite = stall;
+        ChunkedReadChannel input = new ChunkedReadChannel(expected);
+        try (ArkivoStoredContent source = new ChannelContent(input);
+             ArkivoStoredContent destination = new ChannelContent(output, true)) {
+            if (stall) {
+                IOException failure = assertThrows(IOException.class,
+                        () -> StoredContentSupport.copyContent(source, destination));
+                assertEquals("Stored content channel made no write progress", failure.getMessage());
+                assertArrayEquals(new byte[]{1, 2, 3}, output.bytes.toByteArray());
+            } else {
+                StoredContentSupport.copyContent(source, destination);
+                assertArrayEquals(expected, output.bytes.toByteArray());
+            }
+            assertFalse(input.isOpen());
+            assertFalse(output.isOpen());
+        }
+    }
+
+    /// Reuses one read buffer across short reads without querying the source size or repositioning it.
+    @ParameterizedTest
+    @CsvSource({"copy, 0", "copy, 1", "copy, 65535", "copy, 65536", "copy, 65537",
+            "commit, 0", "commit, 1", "commit, 65535", "commit, 65536", "commit, 65537"})
+    void copiesFragmentedChannels(String operation, int size, @TempDir Path directory) throws IOException {
+        byte[] expected = new byte[size];
+        new java.util.Random(42).nextBytes(expected);
+        ChunkedReadChannel channel = new ChunkedReadChannel(expected);
+        Path committed = directory.resolve("archive");
+        try (ArkivoStoredContent source = new ChannelContent(channel);
+             ArkivoEditStorage storage = ArkivoEditStorage.memory();
+             ArkivoStoredContent destination = storage.createContent("destination", size + 7L)) {
+            try (var writer = destination.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                ByteBuffer previous = ByteBuffer.allocate(size + 7);
+                while (previous.hasRemaining()) writer.write(previous);
+            }
+            if (operation.equals("copy")) {
+                StoredContentSupport.copyContent(source, destination);
+                try (InputStream input = StoredContentSupport.openInputStream(destination)) {
+                    assertArrayEquals(expected, input.readAllBytes());
+                }
+            } else {
+                Files.write(committed, new byte[size + 7]);
+                try (var output = ArkivoCommitTarget.writeTo(committed).openOutput(null)) {
+                    StoredContentSupport.copyToCommitOutput(source, output);
+                }
+                assertArrayEquals(expected, Files.readAllBytes(committed));
+            }
+            assertEquals(size, channel.transferred);
+            assertEquals(1, channel.eofReads);
+            assertFalse(channel.isOpen());
+        }
+    }
+
     /// Verifies known small content does not require a full-sized transfer array.
     @Test
     void sizesStoredInputTransferBuffer() throws IOException {
@@ -458,23 +516,30 @@ final class StoredContentSupportTest {
 
     /// Supplies one channel for a single stored-content transfer.
     ///
-    /// @param channel the test-owned source channel
+    /// @param channel the test-owned channel
+    /// @param writable whether this content expects a truncating write open
     @NotNullByDefault
-    private record ChannelContent(SeekableByteChannel channel) implements ArkivoStoredContent {
-        /// Returns the source channel for the tested read operation.
+    private record ChannelContent(SeekableByteChannel channel, boolean writable) implements ArkivoStoredContent {
+        /// Creates content that expects a read-only open.
+        private ChannelContent(SeekableByteChannel channel) {
+            this(channel, false);
+        }
+
+        /// Returns the test channel after checking the requested access mode.
         @Override
         public SeekableByteChannel openChannel(Set<? extends OpenOption> options) {
-            assertEquals(Set.of(StandardOpenOption.READ), options);
+            assertEquals(writable ? Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+                    : Set.of(StandardOpenOption.READ), options);
             return channel;
         }
 
-        /// Returns the source channel's declared size.
+        /// Returns the test channel's declared size.
         @Override
         public long size() throws IOException {
             return channel.size();
         }
 
-        /// Releases the test-owned source channel.
+        /// Releases the test-owned channel.
         @Override
         public void close() throws IOException {
             channel.close();
@@ -544,14 +609,76 @@ final class StoredContentSupportTest {
         }
     }
 
+    /// Supplies short reads and rejects size or position queries that a forward transfer does not need.
+    @NotNullByDefault
+    private static final class ChunkedReadChannel implements SeekableByteChannel {
+        /// Content supplying the requested byte sequence.
+        private final ReadOnlyByteArrayChannel content;
+        /// Read buffer retained solely to check reuse in this test.
+        private @Nullable ByteBuffer previous;
+        /// Successfully transferred byte count.
+        private int transferred;
+        /// Number of reads observing physical EOF.
+        private int eofReads;
+
+        /// Creates deterministic source content.
+        private ChunkedReadChannel(byte[] bytes) {
+            content = new ReadOnlyByteArrayChannel(bytes);
+        }
+
+        /// Verifies reset state and reads at most 997 bytes.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            if (previous != null) assertSame(previous, target);
+            previous = target;
+            assertEquals(0, target.position());
+            assertEquals(65536, target.remaining());
+            int count = content.read(target.limit(997));
+            if (count < 0) eofReads++;
+            else transferred += count;
+            return count;
+        }
+
+        /// Rejects writes to this read-only source.
+        @Override
+        public int write(ByteBuffer source) { throw new NonWritableChannelException(); }
+
+        /// Rejects unnecessary source-position queries.
+        @Override
+        public long position() { throw new AssertionError("Unexpected position query"); }
+
+        /// Rejects unnecessary source repositioning.
+        @Override
+        public SeekableByteChannel position(long position) { throw new AssertionError("Unexpected seek"); }
+
+        /// Rejects unnecessary source-size queries.
+        @Override
+        public long size() { throw new AssertionError("Unexpected size query"); }
+
+        /// Rejects truncation of this read-only source.
+        @Override
+        public SeekableByteChannel truncate(long size) { throw new NonWritableChannelException(); }
+
+        /// Returns whether transfer cleanup has closed the source.
+        @Override
+        public boolean isOpen() { return content.isOpen(); }
+
+        /// Closes the underlying test content.
+        @Override
+        public void close() { content.close(); }
+    }
+
     /// Captures output while consuming at most three bytes from each source buffer.
     @NotNullByDefault
-    private static final class ShortWriteChannel implements WritableByteChannel {
+    private static final class ShortWriteChannel implements SeekableByteChannel {
         /// Bytes accepted by completed writes.
         private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
         /// Whether cleanup has closed the channel.
         private boolean open = true;
+
+        /// Whether writes after the first successful write report zero progress.
+        private boolean stallAfterFirstWrite;
 
         /// Creates an empty short-write destination.
         private ShortWriteChannel() {
@@ -561,10 +688,31 @@ final class StoredContentSupportTest {
         @Override
         public int write(ByteBuffer source) throws IOException {
             if (!open) throw new ClosedChannelException();
+            if (stallAfterFirstWrite && bytes.size() > 0) return 0;
             int count = Math.min(3, source.remaining());
             for (int index = 0; index < count; index++) bytes.write(source.get());
             return count;
         }
+
+        /// Rejects reads from this output-only fixture.
+        @Override
+        public int read(ByteBuffer target) { throw new UnsupportedOperationException(); }
+
+        /// Returns the completed-write byte count.
+        @Override
+        public long position() { return bytes.size(); }
+
+        /// Rejects repositioning, which the tested copy operations do not request.
+        @Override
+        public SeekableByteChannel position(long position) { throw new AssertionError("Unexpected seek"); }
+
+        /// Returns the captured content length.
+        @Override
+        public long size() { return bytes.size(); }
+
+        /// Rejects explicit truncation; the fixture starts empty when opened for writing.
+        @Override
+        public SeekableByteChannel truncate(long size) { throw new AssertionError("Unexpected truncate"); }
 
         /// Returns whether the caller has closed this destination.
         @Override
