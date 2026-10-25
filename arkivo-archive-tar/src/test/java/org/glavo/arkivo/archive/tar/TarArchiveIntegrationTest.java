@@ -1531,6 +1531,61 @@ public final class TarArchiveIntegrationTest {
         }
     }
 
+    /// Entry names and hard-link targets normalize identically through reading, shared writes and moves.
+    @ParameterizedTest
+    @CsvSource({
+            "dir/value, dir/value", "./dir/value, dir/value", "dir//value, dir/value",
+            "dir/./value, dir/value", "dir\\value, dir/value", ".\\dir\\\\.\\value, dir/value",
+            "dir/value/., dir/value", "dir//value//., dir/value", "dir/.../value, dir/.../value",
+            "dir/x:y, dir/x:y", "dir/.hidden, dir/.hidden", "./\u03b4/./\u00e9, \u03b4/\u00e9"
+    })
+    void normalizesIndexedNamesAndHardLinkTargets(String name, String key, @TempDir Path directory)
+            throws IOException {
+        var output = new ByteArrayOutputStream();
+        writeEntry(output, name, "old".getBytes(StandardCharsets.UTF_8));
+        writeHeader(output, "alias", 0644, 0, 0, 0, '1', name, "", "");
+        output.write(new byte[1024]);
+        Path archive = directory.resolve("normalized.tar");
+        Files.write(archive, output.toByteArray());
+        try (var fileSystem = TarArkivoFileSystem.open(archive)) {
+            assertEquals("old", Files.readString(fileSystem.getPath(key)));
+            assertEquals("old", Files.readString(fileSystem.getPath("alias")));
+            assertEquals(name, Files.readAttributes(fileSystem.getPath("alias"), TarArkivoEntryAttributes.class)
+                    .linkName());
+        }
+        try (var fileSystem = TarArkivoFileSystem.update(archive)) {
+            Files.writeString(fileSystem.getPath("alias"), "new");
+            assertEquals("new", Files.readString(fileSystem.getPath(key)));
+            Files.move(fileSystem.getPath(key), fileSystem.getPath("moved"));
+            assertEquals("new", Files.readString(fileSystem.getPath("alias")));
+        }
+        try (var fileSystem = TarArkivoFileSystem.open(archive)) {
+            assertEquals("new", Files.readString(fileSystem.getPath("moved")));
+            assertEquals("new", Files.readString(fileSystem.getPath("alias")));
+            assertEquals("moved", Files.readAttributes(fileSystem.getPath("alias"), TarArkivoEntryAttributes.class)
+                    .linkName());
+        }
+    }
+
+    /// Hard-link targets retain their path-specific diagnostics when normalization rejects them.
+    @ParameterizedTest
+    @CsvSource({"., is missing a path", "././, is missing a path", "dir/../value, must not contain ..",
+            "dir\\..\\value, must not contain ..", "/dir/value, must be relative", "\\dir\\value, must be relative"})
+    void rejectsInvalidNormalizedHardLinkTargets(String target, String reason, @TempDir Path directory)
+            throws IOException {
+        var output = new ByteArrayOutputStream();
+        writeHeader(output, "alias", 0644, 0, 0, 0, '1', target, "", "");
+        output.write(new byte[1024]);
+        byte[] bytes = output.toByteArray();
+        Path archive = directory.resolve("invalid-target.tar");
+        Files.write(archive, bytes);
+        assertEquals("TAR hard link target " + reason,
+                assertThrows(IOException.class, () -> TarArkivoFileSystem.open(archive).close()).getMessage());
+        assertEquals("TAR hard link target " + reason,
+                assertThrows(IOException.class, () -> TarArkivoFileSystem.update(archive).close()).getMessage());
+        assertArrayEquals(bytes, Files.readAllBytes(archive));
+    }
+
     /// Rejects stored entry and hard-link paths whose normalization would expose a drive prefix.
     @Test
     public void rejectsDrivePrefixesExposedByFileSystemNormalization() throws IOException {

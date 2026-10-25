@@ -1956,8 +1956,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 if (!attributes.isHardLink() || linkName == null) {
                     continue;
                 }
-                requireArchiveLocalPath(linkName, "TAR hard link target", false);
-                if (!normalizeEntryPath(linkName, false).equals(targetPath)) {
+                if (!normalizeArchiveLocalPath(linkName, "TAR hard link target", false).equals(targetPath)) {
                     continue;
                 }
                 Node replacement = replaceNodeAttributes(
@@ -2106,8 +2105,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (!attributes.isHardLink() || linkName == null) {
             return linkName;
         }
-        requireArchiveLocalPath(linkName, "TAR hard link target", false);
-        return movedPaths.getOrDefault(normalizeEntryPath(linkName, false), linkName);
+        return movedPaths.getOrDefault(normalizeArchiveLocalPath(linkName, "TAR hard link target", false), linkName);
     }
 
     /// Requires a path's parent to exist as a directory.
@@ -2813,7 +2811,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         try (TarArkivoStreamingReaderImpl reader = new TarArkivoStreamingReaderImpl(input, options.readOptions())) {
             while (reader.next()) {
                 TarEntryAttributes attributes = reader.readAttributes(TarEntryAttributes.class);
-                String path = normalizeEntryPath(attributes.path(), attributes.isDirectory());
+                String path = normalizeArchiveLocalPath(attributes.path(), "TAR entry path", attributes.isDirectory());
                 ensureParents(nodes, path);
                 TarEntryAttributes nodeAttributes = attributes;
                 @Nullable ArkivoStoredContent content = null;
@@ -2865,8 +2863,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (linkName == null) {
             throw new IOException("TAR hard link entry is missing a link target: " + attributes.path());
         }
-        requireArchiveLocalPath(linkName, "TAR hard link target", false);
-        return normalizeEntryPath(linkName, false);
+        return normalizeArchiveLocalPath(linkName, "TAR hard link target", false);
     }
 
     /// Returns an attribute snapshot with a resolved regular file size.
@@ -2937,63 +2934,50 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
-    /// Normalizes an entry path into node map form, mapping explicit dot-root directories to the empty key.
-    private static String normalizeEntryPath(String path, boolean directory) throws IOException {
-        requireArchiveLocalPath(path, "TAR entry path", directory);
-        StringBuilder normalized = new StringBuilder(path.length());
-        int start = 0;
-        while (start <= path.length()) {
-            int end = nextPathSeparator(path, start);
-            String name = path.substring(start, end);
-            if (!name.isEmpty() && !".".equals(name)) {
-                if (!normalized.isEmpty()) {
-                    normalized.append('/');
-                }
-                normalized.append(name);
-            }
-            start = end + 1;
-        }
-        return normalized.toString();
-    }
-
-    /// Requires an archive-local path, optionally accepting a nonempty dot-only root directory path.
-    private static void requireArchiveLocalPath(String path, String description, boolean directory) throws IOException {
+    /// Validates and normalizes an archive-local path, mapping nonempty dot-only directory paths to the root key.
+    private static String normalizeArchiveLocalPath(String path, String description, boolean directory)
+            throws IOException {
         if (path.startsWith("/") || path.startsWith("\\") || path.length() >= 2 && path.charAt(1) == ':') {
             throw new IOException(description + " must be relative");
         }
+        @Nullable StringBuilder normalized = null;
         boolean hasName = false;
         int start = 0;
         while (start <= path.length()) {
-            int end = nextPathSeparator(path, start);
-            String name = path.substring(start, end);
-            if (!name.isEmpty() && !".".equals(name)) {
-                if ("..".equals(name)) {
-                    throw new IOException(description + " must not contain ..");
+            int end = start;
+            while (end < path.length() && path.charAt(end) != '/' && path.charAt(end) != '\\') {
+                end++;
+            }
+            int length = end - start;
+            if (length == 2 && path.charAt(start) == '.' && path.charAt(start + 1) == '.') {
+                throw new IOException(description + " must not contain ..");
+            }
+            if (length == 0 || length == 1 && path.charAt(start) == '.') {
+                if (normalized == null) {
+                    normalized = new StringBuilder(path.length());
+                    if (start > 0) normalized.append(path, 0, start - 1);
                 }
+            } else {
                 // Leading dot components must not hide a drive-qualified first name.
-                if (!hasName && name.length() >= 2 && name.charAt(1) == ':') {
+                if (!hasName && length >= 2 && path.charAt(start + 1) == ':') {
                     throw new IOException(description + " must be relative");
                 }
                 hasName = true;
+                if (normalized != null) {
+                    if (!normalized.isEmpty()) normalized.append('/');
+                    normalized.append(path, start, end);
+                }
+            }
+            // Retain canonical text; allocate only when a separator or component needs normalization.
+            if (normalized == null && end < path.length() && path.charAt(end) == '\\') {
+                normalized = new StringBuilder(path.length()).append(path, 0, end);
             }
             start = end + 1;
         }
         if (!hasName && (!directory || path.isEmpty())) {
             throw new IOException(description + " is missing a path");
         }
-    }
-
-    /// Returns the index of the next archive path separator, or the path length.
-    private static int nextPathSeparator(String path, int start) {
-        int forwardSlash = path.indexOf('/', start);
-        int backslash = path.indexOf('\\', start);
-        if (forwardSlash < 0) {
-            return backslash >= 0 ? backslash : path.length();
-        }
-        if (backslash < 0) {
-            return forwardSlash;
-        }
-        return Math.min(forwardSlash, backslash);
+        return normalized != null ? normalized.toString() : path;
     }
 
     /// Returns the parent path for a normalized node path.
