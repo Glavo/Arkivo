@@ -27,7 +27,7 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipOutputStream;
 
-/// Measures complete and early-terminating traversal of archive path components without entry I/O.
+/// Measures archive path iteration, comparisons, and repeated hashing without entry I/O.
 @NotNullByDefault
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -35,8 +35,8 @@ import java.util.zip.ZipOutputStream;
 @Warmup(iterations = 3, time = 1)
 @Measurement(iterations = 5, time = 1)
 @Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
-public class ArchivePathIterationBenchmark {
-    /// Number of components in the path.
+public class ArchivePathBenchmark {
+    /// Number of components in the path; at least two.
     @Param({"8", "64"})
     public int depth;
 
@@ -49,15 +49,32 @@ public class ArchivePathIterationBenchmark {
     /// Immutable path reused by all invocations.
     private @Nullable Path path;
 
+    /// Independently parsed path with the same components.
+    private @Nullable Path equalPath;
+
+    /// Independently parsed absolute prefix excluding the final component.
+    private @Nullable Path prefix;
+
+    /// Independently parsed relative suffix excluding the first component.
+    private @Nullable Path suffix;
+
     /// Creates an empty archive and verifies iteration over the generated path.
     @Setup
     public void setUp() throws IOException {
+        if (depth < 2) throw new IllegalArgumentException("Path depth must be at least two");
         archive = Files.createTempFile("arkivo-path-jmh-", ".zip");
         try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(archive))) {
             output.finish();
         }
         fileSystem = ZipArkivoFileSystem.open(archive);
         path = fileSystem.getPath("/" + "component/".repeat(depth));
+        equalPath = fileSystem.getPath(path.toString());
+        prefix = fileSystem.getPath("/" + "component/".repeat(depth - 1));
+        suffix = fileSystem.getPath("component/".repeat(depth - 1));
+        if (!path.equals(equalPath) || path.hashCode() != equalPath.hashCode()
+                || !path.startsWith(prefix) || !path.endsWith(suffix)) {
+            throw new IllegalStateException("Unexpected path comparison result");
+        }
         int count = 0;
         for (Path component : path) {
             if (!component.toString().equals("component") || component.isAbsolute()) {
@@ -96,5 +113,29 @@ public class ArchivePathIterationBenchmark {
         for (Path component : Objects.requireNonNull(path)) {
             blackhole.consume(component);
         }
+    }
+
+    /// Hashes a path whose immutable content has already been hashed during setup.
+    @Benchmark
+    public int repeatedHash() {
+        return Objects.requireNonNull(path).hashCode();
+    }
+
+    /// Compares distinct paths with equal text and independently parsed component strings.
+    @Benchmark
+    public boolean equalPaths() {
+        return Objects.requireNonNull(path).equals(equalPath);
+    }
+
+    /// Matches a prefix ending at a component boundary.
+    @Benchmark
+    public boolean startsWithPath() {
+        return Objects.requireNonNull(path).startsWith(Objects.requireNonNull(prefix));
+    }
+
+    /// Matches a relative suffix beginning at a component boundary.
+    @Benchmark
+    public boolean endsWithPath() {
+        return Objects.requireNonNull(path).endsWith(Objects.requireNonNull(suffix));
     }
 }

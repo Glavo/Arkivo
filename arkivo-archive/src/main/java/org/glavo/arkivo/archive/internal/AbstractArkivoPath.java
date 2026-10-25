@@ -50,7 +50,7 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     ///
     /// @param fileSystem the file system that owns the path
     /// @param absolute whether the path begins at the archive root
-    /// @param names the parsed name elements to copy
+    /// @param names the parsed name elements to copy, each nonempty and containing no `/`
     protected AbstractArkivoPath(F fileSystem, boolean absolute, List<String> names) {
         this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
         this.absolute = absolute;
@@ -211,7 +211,9 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
         if (that == null || absolute != that.absolute || names.size() < that.names.size()) {
             return false;
         }
-        return names.subList(0, that.names.size()).equals(that.names);
+        int end = that.text.length();
+        return text.startsWith(that.text)
+                && (end == text.length() || that.names.isEmpty() || text.charAt(end) == '/');
     }
 
     /// Returns whether this path starts with parsed path text.
@@ -231,9 +233,10 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             return false;
         }
         if (that.absolute) {
-            return absolute && names.size() == that.names.size() && names.equals(that.names);
+            return text.equals(that.text);
         }
-        return names.subList(names.size() - that.names.size(), names.size()).equals(that.names);
+        int start = text.length() - that.text.length();
+        return text.endsWith(that.text) && (start == 0 || text.charAt(start - 1) == '/');
     }
 
     /// Returns whether this path ends with parsed path text.
@@ -531,15 +534,13 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             return false;
         }
         AbstractArkivoPath<?> that = (AbstractArkivoPath<?>) object;
-        return fileSystem == that.fileSystem
-                && absolute == that.absolute
-                && names.equals(that.names);
+        return fileSystem == that.fileSystem && text.equals(that.text);
     }
 
     /// Returns the path hash code.
     @Override
     public final int hashCode() {
-        return Objects.hash(System.identityHashCode(fileSystem), absolute, names);
+        return 31 * System.identityHashCode(fileSystem) + text.hashCode();
     }
 
     /// Returns slash-separated path text.

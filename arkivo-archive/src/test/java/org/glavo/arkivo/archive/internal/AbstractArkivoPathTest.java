@@ -54,6 +54,62 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared archive path parsing, composition, comparison, and URI behavior.
 @NotNullByDefault
 final class AbstractArkivoPathTest {
+    /// Checks lexical comparisons against component lists, including separators, roots, dots and Unicode text.
+    @Test
+    void comparesPathsAtComponentBoundaries() {
+        TestFileSystem fs = new TestFileSystem(null);
+        TestFileSystem otherFs = new TestFileSystem(null);
+        @Unmodifiable List<String> texts = List.of("", "/", "//", ".", "..", "./", "/.", "/..", "a", "ab", "abc",
+                "a/b", "a//b/", "a/bc", "ab/c", "/a", "/ab", "/a/b", "//a//b//", "/a/bc", "/ab/c",
+                "a/./b", "a/../b", "./a", "../a", "a\\b", "a/\\b", "Aa", "BB", "/Aa", "/BB",
+                "\u00e9", "e\u0301", "a/\u00e9", "\u03b4/\ud83d\ude42", "/\u03b4/\ud83d\ude42");
+        Set<Path> uniquePaths = new HashSet<>();
+        Set<String> uniqueTexts = new HashSet<>();
+        for (String leftText : texts) {
+            Path left = fs.getPath(leftText);
+            @Unmodifiable List<String> leftNames = comparisonNames(left);
+            uniquePaths.add(left);
+            uniqueTexts.add(left.toString());
+            assertThrows(NullPointerException.class, () -> left.startsWith((Path) null));
+            assertThrows(NullPointerException.class, () -> left.endsWith((Path) null));
+            for (String rightText : texts) {
+                Path right = fs.getPath(rightText);
+                @Unmodifiable List<String> rightNames = comparisonNames(right);
+                int offset = leftNames.size() - rightNames.size();
+                boolean equal = left.isAbsolute() == right.isAbsolute() && leftNames.equals(rightNames);
+                boolean starts = rightText.isEmpty() ? left.toString().isEmpty()
+                        : left.isAbsolute() == right.isAbsolute() && offset >= 0
+                        && leftNames.subList(0, rightNames.size()).equals(rightNames);
+                boolean ends = rightText.isEmpty() ? left.toString().isEmpty()
+                        : offset >= 0 && (!right.isAbsolute() || left.isAbsolute() && offset == 0)
+                        && leftNames.subList(offset, leftNames.size()).equals(rightNames);
+                String context = leftText + " vs " + rightText;
+                assertEquals(equal, left.equals(right), context);
+                assertEquals(starts, left.startsWith(right), context);
+                assertEquals(starts, left.startsWith(rightText), context);
+                assertEquals(ends, left.endsWith(right), context);
+                assertEquals(ends, left.endsWith(rightText), context);
+                assertEquals(equal, left.compareTo(right) == 0, context);
+                if (equal) assertEquals(left.hashCode(), right.hashCode(), context);
+                Path foreign = otherFs.getPath(rightText);
+                assertFalse(left.equals(foreign), context);
+                assertFalse(left.startsWith(foreign), context);
+                assertFalse(left.endsWith(foreign), context);
+            }
+        }
+        assertEquals(uniqueTexts.size(), uniquePaths.size());
+        for (Path path : uniquePaths) assertTrue(uniquePaths.contains(fs.getPath(path.toString())));
+    }
+
+    /// Returns component text for the comparison reference, treating the empty path separately from its empty name.
+    private static @Unmodifiable List<String> comparisonNames(Path path) {
+        ArrayList<String> names = new ArrayList<>();
+        if (!path.toString().isEmpty()) {
+            for (Path name : path) names.add(name.toString());
+        }
+        return List.copyOf(names);
+    }
+
     /// Iterators create only requested components and retain literal names and file-system identity.
     @ParameterizedTest
     @ValueSource(strings = {"", "/", "single", "a/b/c", "/a/./../b", "/\u03b4/\ud83d\ude42"})
