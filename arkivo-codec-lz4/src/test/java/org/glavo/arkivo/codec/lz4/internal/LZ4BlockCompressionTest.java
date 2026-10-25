@@ -19,11 +19,67 @@ import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies greedy match selection, tail boundaries, and dictionary truncation.
 @NotNullByDefault
 final class LZ4BlockCompressionTest {
+    /// Encodes only the occupied input prefix and leaves both destination guard regions unchanged.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 17, 65536})
+    void compressesIntoDestinationRange(int dictionarySize) {
+        for (int period : new int[]{0, 7}) {
+            byte[] dictionary = content(dictionarySize, period, 0);
+            byte[] originalDictionary = dictionary.clone();
+            for (int size : new int[]{0, 1, 4, 11, 12, 13, 15, 16, 255, 256, 4095, 65535, 65536}) {
+                byte[] source = content(size, period, dictionarySize);
+                byte[] padded = Arrays.copyOf(source, size + 137);
+                Arrays.fill(padded, size, padded.length, (byte) 0x5a);
+                byte[] original = padded.clone();
+                byte[] expected = LZ4BlockCompression.compress(source, dictionary);
+                for (int offset : new int[]{0, 1, 4, 7}) {
+                    int capacity = Math.toIntExact(LZ4BlockCompression.maxCompressedLength(size));
+                    byte[] output = new byte[offset + capacity + 17];
+                    Arrays.fill(output, (byte) 0x6b);
+                    int length = LZ4BlockCompression.compress(padded, size, dictionary, output, offset);
+                    assertEquals(expected.length, length);
+                    assertArrayEquals(expected, Arrays.copyOfRange(output, offset, offset + length));
+                    for (int index = 0; index < offset; index++) assertEquals((byte) 0x6b, output[index]);
+                    for (int index = offset + length; index < output.length; index++) {
+                        assertEquals((byte) 0x6b, output[index]);
+                    }
+                    assertArrayEquals(original, padded);
+                    assertArrayEquals(originalDictionary, dictionary);
+                }
+            }
+        }
+    }
+
+    /// Rejects invalid ranges before writing any bytes and accepts exact literal-only capacity.
+    @Test
+    void validatesDestinationRanges() {
+        byte[] source = content(32, 7, 0);
+        byte[] dictionary = new byte[0];
+        byte[] output = new byte[64];
+        Arrays.fill(output, (byte) 0x5a);
+        byte[] original = output.clone();
+        assertThrows(IndexOutOfBoundsException.class,
+                () -> LZ4BlockCompression.compress(source, -1, dictionary, output, 0));
+        assertThrows(IndexOutOfBoundsException.class,
+                () -> LZ4BlockCompression.compress(source, 33, dictionary, output, 0));
+        assertThrows(IndexOutOfBoundsException.class,
+                () -> LZ4BlockCompression.compress(source, 32, dictionary, output, -1));
+        assertThrows(IndexOutOfBoundsException.class,
+                () -> LZ4BlockCompression.compress(source, 32, dictionary, output, 17));
+        assertArrayEquals(original, output);
+        for (int size = 0; size < 12; size++) {
+            byte[] literals = new byte[size + 1];
+            assertEquals(literals.length, LZ4BlockCompression.compress(source, size, dictionary, literals, 0));
+            assertArrayEquals(LZ4BlockCompression.compress(Arrays.copyOf(source, size)), literals);
+        }
+    }
+
     /// Checks encoded-byte stability and input immutability for literals and overlapping matches.
     @ParameterizedTest
     @CsvSource({

@@ -347,27 +347,27 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
 
     /// Compresses and queues one complete physical frame block.
     private void emitBlock() throws IOException {
-        byte[] decoded = Arrays.copyOf(block, blockLength);
-        byte[] compressed = independentBlocks
-                ? LZ4BlockCompression.compress(decoded, dictionaryHistory)
-                : LZ4BlockCompression.compress(decoded, history);
-        boolean uncompressed = compressed.length >= decoded.length;
-        byte[] payload = uncompressed ? decoded : compressed;
-        int encodedLength = Integer.BYTES + payload.length + (blockChecksum ? Integer.BYTES : 0);
-        byte[] encoded = new byte[encodedLength];
-        int blockHeader = payload.length | (uncompressed ? 0x8000_0000 : 0);
+        int overhead = Integer.BYTES + (blockChecksum ? Integer.BYTES : 0);
+        byte[] encoded = new byte[Math.toIntExact(LZ4BlockCompression.maxCompressedLength(blockLength)) + overhead];
+        int payloadLength = LZ4BlockCompression.compress(block, blockLength,
+                independentBlocks ? dictionaryHistory : history, encoded, Integer.BYTES);
+        boolean uncompressed = payloadLength >= blockLength;
+        if (uncompressed) {
+            payloadLength = blockLength;
+            System.arraycopy(block, 0, encoded, Integer.BYTES, blockLength);
+        }
+        int blockHeader = payloadLength | (uncompressed ? 0x8000_0000 : 0);
         ByteArrayAccess.writeIntLittleEndian(encoded, 0, blockHeader);
-        System.arraycopy(payload, 0, encoded, Integer.BYTES, payload.length);
         if (blockChecksum) {
             ByteArrayAccess.writeIntLittleEndian(
                     encoded,
-                    Integer.BYTES + payload.length,
-                    XXHash32.computeInt(payload)
+                    Integer.BYTES + payloadLength,
+                    XXHash32.computeInt(encoded, Integer.BYTES, payloadLength)
             );
         }
-        queue(encoded);
+        queue(encoded, payloadLength + overhead);
         if (!independentBlocks) {
-            appendHistory(decoded);
+            appendHistory();
         }
         blockLength = 0;
     }
@@ -381,29 +381,34 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
         queue(trailer);
     }
 
-    /// Appends decoded bytes to the retained linked-block history window.
-    private void appendHistory(byte[] decoded) {
-        if (decoded.length >= MAXIMUM_HISTORY_SIZE) {
+    /// Appends the occupied prefix of the current block to the retained linked-block history window.
+    private void appendHistory() {
+        if (blockLength >= MAXIMUM_HISTORY_SIZE) {
             history = Arrays.copyOfRange(
-                    decoded,
-                    decoded.length - MAXIMUM_HISTORY_SIZE,
-                    decoded.length
+                    block,
+                    blockLength - MAXIMUM_HISTORY_SIZE,
+                    blockLength
             );
             return;
         }
-        int retained = Math.min(history.length, MAXIMUM_HISTORY_SIZE - decoded.length);
-        byte[] updated = new byte[retained + decoded.length];
+        int retained = Math.min(history.length, MAXIMUM_HISTORY_SIZE - blockLength);
+        byte[] updated = new byte[retained + blockLength];
         System.arraycopy(history, history.length - retained, updated, 0, retained);
-        System.arraycopy(decoded, 0, updated, retained, decoded.length);
+        System.arraycopy(block, 0, updated, retained, blockLength);
         history = updated;
     }
 
     /// Installs one owned encoded range after verifying the previous range was drained.
     private void queue(byte[] encoded) {
+        queue(encoded, encoded.length);
+    }
+
+    /// Installs an occupied prefix without copying or exposing unused output capacity.
+    private void queue(byte[] encoded, int length) {
         if (output.hasRemaining()) {
             throw new AssertionError("LZ4 output queue already contains pending bytes");
         }
-        output = ByteBuffer.wrap(encoded).asReadOnlyBuffer();
+        output = ByteBuffer.wrap(encoded, 0, length).asReadOnlyBuffer();
     }
 
     /// Copies pending encoded bytes into a caller-owned target.

@@ -45,33 +45,46 @@ final class LZ4BlockCompression {
     /// Compresses a complete block using at most the final 65,535 dictionary bytes as prefix history.
     /// Neither input array is modified or retained.
     static byte[] compress(byte[] source, byte[] dictionary) {
+        int capacity = source.length < REQUIRED_LAST_MATCH_DISTANCE
+                ? 1 + source.length : Math.toIntExact(maxCompressedLength(source.length));
+        byte[] encoded = new byte[capacity];
+        int length = compress(source, source.length, dictionary, encoded, 0);
+        return length == encoded.length ? encoded : Arrays.copyOf(encoded, length);
+    }
+
+    /// Compresses the first `sourceLength` bytes into `encoded` at `outputOffset` and returns the encoded length.
+    /// Neither input is modified or retained; the destination must be distinct from both inputs.
+    /// The destination must accommodate [#maxCompressedLength(long)], or `sourceLength + 1` for blocks
+    /// shorter than 12 bytes. Bytes outside the returned range are unchanged.
+    static int compress(byte[] source, int sourceLength, byte[] dictionary, byte[] encoded, int outputOffset) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(dictionary, "dictionary");
+        Objects.checkFromIndexSize(0, sourceLength, source.length);
+        int capacity = sourceLength < REQUIRED_LAST_MATCH_DISTANCE
+                ? 1 + sourceLength : Math.toIntExact(maxCompressedLength(sourceLength));
+        Objects.checkFromIndexSize(outputOffset, capacity, encoded.length);
 
-        if (source.length < REQUIRED_LAST_MATCH_DISTANCE) {
-            byte[] encoded = new byte[1 + source.length];
-            writeFinalLiterals(encoded, 0, source, 0, source.length);
-            return encoded;
+        if (sourceLength < REQUIRED_LAST_MATCH_DISTANCE) {
+            return writeFinalLiterals(encoded, outputOffset, source, 0, sourceLength) - outputOffset;
         }
 
         int dictionaryLength = Math.min(dictionary.length, MAXIMUM_OFFSET);
         byte[] input = source;
         if (dictionaryLength != 0) {
             int dictionaryOffset = dictionary.length - dictionaryLength;
-            input = new byte[Math.addExact(dictionaryLength, source.length)];
+            input = new byte[Math.addExact(dictionaryLength, sourceLength)];
             System.arraycopy(dictionary, dictionaryOffset, input, 0, dictionaryLength);
-            System.arraycopy(source, 0, input, dictionaryLength, source.length);
+            System.arraycopy(source, 0, input, dictionaryLength, sourceLength);
         }
 
         int[] hashTable = new int[1 << HASH_BITS];
         Arrays.fill(hashTable, -1);
-        int inputEnd = input.length;
+        int inputEnd = dictionaryLength + sourceLength;
         for (int position = 0; position + MINIMUM_MATCH_LENGTH <= dictionaryLength; position++) {
             hashTable[hash(ByteArrayAccess.readIntLittleEndian(input, position))] = position;
         }
 
-        byte[] encoded = new byte[Math.toIntExact(maxCompressedLength(source.length))];
-        int outputPosition = 0;
+        int outputPosition = outputOffset;
         int anchor = dictionaryLength;
         int position = dictionaryLength;
         int searchLimit = inputEnd - REQUIRED_LAST_MATCH_DISTANCE;
@@ -131,7 +144,7 @@ final class LZ4BlockCompression {
                 anchor,
                 inputEnd - anchor
         );
-        return Arrays.copyOf(encoded, outputPosition);
+        return outputPosition - outputOffset;
     }
 
     /// Returns the standard LZ4 maximum encoded block length.
