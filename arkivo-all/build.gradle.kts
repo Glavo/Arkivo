@@ -63,6 +63,7 @@ dependencies {
     add(benchmarkSourceSet.implementationConfigurationName, "org.openjdk.jmh:jmh-core:1.37")
     add(benchmarkSourceSet.implementationConfigurationName, "org.apache.commons:commons-compress:1.28.0")
     add(benchmarkSourceSet.implementationConfigurationName, "org.tukaani:xz:1.12")
+    add(benchmarkSourceSet.implementationConfigurationName, "org.lz4:lz4-pure-java:1.8.0")
     add(
         benchmarkSourceSet.annotationProcessorConfigurationName,
         "org.openjdk.jmh:jmh-generator-annprocess:1.37"

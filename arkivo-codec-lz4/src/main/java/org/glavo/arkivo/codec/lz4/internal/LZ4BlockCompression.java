@@ -12,8 +12,11 @@ import java.util.Objects;
 /// Implements bounded one-shot LZ4 block compression with optional prefix history.
 @NotNullByDefault
 final class LZ4BlockCompression {
-    /// Number of hash-table entries used by the greedy match finder.
-    private static final int HASH_SIZE = 1 << 16;
+    /// Hash width for a 64 KiB table of match positions.
+    private static final int HASH_BITS = 14;
+
+    /// Number of failed probes before the search stride increases by one byte.
+    private static final int PROBES_PER_STRIDE = 64;
 
     /// Maximum representable match distance.
     private static final int MAXIMUM_OFFSET = 65_535;
@@ -45,6 +48,12 @@ final class LZ4BlockCompression {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(dictionary, "dictionary");
 
+        if (source.length < REQUIRED_LAST_MATCH_DISTANCE) {
+            byte[] encoded = new byte[1 + source.length];
+            writeFinalLiterals(encoded, 0, source, 0, source.length);
+            return encoded;
+        }
+
         int dictionaryLength = Math.min(dictionary.length, MAXIMUM_OFFSET);
         byte[] input = source;
         if (dictionaryLength != 0) {
@@ -54,11 +63,11 @@ final class LZ4BlockCompression {
             System.arraycopy(source, 0, input, dictionaryLength, source.length);
         }
 
-        int[] hashTable = new int[HASH_SIZE];
+        int[] hashTable = new int[1 << HASH_BITS];
         Arrays.fill(hashTable, -1);
         int inputEnd = input.length;
         for (int position = 0; position + MINIMUM_MATCH_LENGTH <= dictionaryLength; position++) {
-            hashTable[hash(input, position)] = position;
+            hashTable[hash(ByteArrayAccess.readIntLittleEndian(input, position))] = position;
         }
 
         byte[] encoded = new byte[Math.toIntExact(maxCompressedLength(source.length))];
@@ -67,20 +76,29 @@ final class LZ4BlockCompression {
         int position = dictionaryLength;
         int searchLimit = inputEnd - REQUIRED_LAST_MATCH_DISTANCE;
         int matchLimit = inputEnd - REQUIRED_LAST_LITERALS;
+        int searchAttempts = PROBES_PER_STRIDE;
 
         while (position <= searchLimit) {
-            int hash = hash(input, position);
+            int sequence = ByteArrayAccess.readIntLittleEndian(input, position);
+            int hash = hash(sequence);
             int candidate = hashTable[hash];
             hashTable[hash] = position;
             int offset = position - candidate;
             if (candidate < 0
                     || offset <= 0
                     || offset > MAXIMUM_OFFSET
-                    || !equalFourBytes(input, candidate, position)) {
-                position++;
+                    || ByteArrayAccess.readIntLittleEndian(input, candidate) != sequence) {
+                int step = searchAttempts++ / PROBES_PER_STRIDE;
+                if (step > searchLimit - position) break;
+                position += step;
                 continue;
             }
 
+            // Recover matching bytes skipped during the search, without crossing the last sequence.
+            while (position > anchor && candidate > 0 && input[position - 1] == input[candidate - 1]) {
+                position--;
+                candidate--;
+            }
             int matchEnd = position + MINIMUM_MATCH_LENGTH;
             // Compare equal-length ranges, excluding the mandatory final literals from the match.
             int mismatch = Arrays.mismatch(input, candidate + MINIMUM_MATCH_LENGTH, matchLimit - offset,
@@ -97,13 +115,13 @@ final class LZ4BlockCompression {
                     matchLength
             );
 
-            for (int indexed = position + 1;
-                 indexed < matchEnd && indexed + MINIMUM_MATCH_LENGTH <= inputEnd;
-                 indexed++) {
-                hashTable[hash(input, indexed)] = indexed;
+            // Keep boundary matches discoverable without indexing every byte of a long repetition.
+            for (int indexed = matchEnd - 2; indexed < matchEnd; indexed++) {
+                hashTable[hash(ByteArrayAccess.readIntLittleEndian(input, indexed))] = indexed;
             }
             position = matchEnd;
             anchor = matchEnd;
+            searchAttempts = PROBES_PER_STRIDE;
         }
 
         outputPosition = writeFinalLiterals(
@@ -179,17 +197,8 @@ final class LZ4BlockCompression {
         return outputPosition;
     }
 
-    /// Returns a 16-bit hash of four bytes starting at the supplied position.
-    private static int hash(byte[] input, int position) {
-        int value = ByteArrayAccess.readIntLittleEndian(input, position);
-        return value * -1_640_531_535 >>> 16;
-    }
-
-    /// Returns whether two four-byte ranges contain identical bytes.
-    private static boolean equalFourBytes(byte[] input, int first, int second) {
-        return input[first] == input[second]
-                && input[first + 1] == input[second + 1]
-                && input[first + 2] == input[second + 2]
-                && input[first + 3] == input[second + 3];
+    /// Maps a four-byte sequence to a match-table index.
+    private static int hash(int sequence) {
+        return sequence * -1_640_531_535 >>> (Integer.SIZE - HASH_BITS);
     }
 }

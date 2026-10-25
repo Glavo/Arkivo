@@ -3,9 +3,12 @@
 
 package org.glavo.arkivo.codec.lz4.internal;
 
+import net.jpountz.lz4.LZ4Factory;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.security.MessageDigest;
@@ -16,6 +19,7 @@ import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies greedy match selection, tail boundaries, and dictionary truncation.
 @NotNullByDefault
@@ -23,11 +27,11 @@ final class LZ4BlockCompressionTest {
     /// Checks encoded-byte stability and input immutability for literals and overlapping matches.
     @ParameterizedTest
     @CsvSource({
-            "0, 21c2af72d4800669d576dde07b272873cb2cb93a2a13f9a10cbd08f82ea819c7",
-            "1, 99a5fa6a965bb39eb2875ea2100c67ebcd3b305e4a0daa00aa00e9736f954f7e",
-            "17, 579c275d70aff8c470afd744b022cad7c9f0bedb913d0c006970643b36dbd764",
-            "65535, 05451867bb57594068e4f238d6550b675332cdd756466248c2880daab9a139f6",
-            "65536, 9a8fa2aa244c0cbc6ff562e1bc56b168124846a24e5124d9a43585e121c479a0"
+            "0, 0498c3721fba4af28c967496cad90b076fa7b0cbf88fdd3382233a0533e9caf1",
+            "1, 71b35e05f24157edb37054e9353e61a2de2b39aa35f1d5ab1dc4ac604b9568fb",
+            "17, e22c65e142675041c273ac4869d420ccfa76a715732375c3376cb7f30806931c",
+            "65535, 5f6880655766f770bb6af2436347ea0f3adfa7cd21d1e85c94228c5942f5c04d",
+            "65536, e34186a96f9609a571c51f678a29f7239d9f1744692e91e657212cc8cac06335"
     })
     void preservesBlockEncoding(int dictionarySize, String expectedDigest)
             throws IOException, NoSuchAlgorithmException {
@@ -52,9 +56,45 @@ final class LZ4BlockCompressionTest {
                 assertArrayEquals(originalSource, Arrays.copyOf(decoded.bytes(), decoded.length()));
                 assertArrayEquals(originalSource, source);
                 assertArrayEquals(originalDictionary, dictionary);
+                if (dictionarySize == 0) {
+                    assertArrayEquals(originalSource, LZ4Factory.safeInstance().safeDecompressor()
+                            .decompress(encoded, size));
+                }
             }
         }
         assertEquals(expectedDigest, HexFormat.of().formatHex(digest.digest()));
+    }
+
+    /// Finds repetitive regions after an incompressible prefix without retaining the enlarged search stride.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 63, 64, 65, 4095, 65535, 131071})
+    void findsMatchesAfterLongLiteralRuns(int prefixLength) throws IOException {
+        byte[] source = content(prefixLength + 3 * 4096 + 5, 0, 0);
+        for (int offset = prefixLength; offset < source.length - 5; offset++) {
+            int relative = offset - prefixLength;
+            source[offset] = (byte) (relative / 4096 * 64 + relative % 31);
+        }
+        byte[] encoded = LZ4BlockCompression.compress(source);
+        // At least two thirds of the repetitive suffix must be saved despite the skipped prefix probes.
+        assertTrue(encoded.length <= prefixLength + prefixLength / 255 + 4096,
+                "encoded=" + encoded.length);
+        assertArrayEquals(source, LZ4Factory.safeInstance().safeDecompressor().decompress(encoded, source.length));
+        var decoded = LZ4BlockDecompression.decompress(encoded, source.length, -1, -1);
+        assertArrayEquals(source, Arrays.copyOf(decoded.bytes(), decoded.length()));
+    }
+
+    /// Allows a dictionary match at the minimum block size while shorter blocks remain literal-only.
+    @Test
+    void preservesLastLegalMatchStart() {
+        byte[] source = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+        byte[] dictionary = Arrays.copyOf(source, 7);
+        assertArrayEquals(new byte[]{3, 7, 0, 0x50, 7, 8, 9, 10, 11},
+                LZ4BlockCompression.compress(source, dictionary));
+        byte[] shorter = Arrays.copyOf(source, 11);
+        byte[] literals = new byte[12];
+        literals[0] = (byte) 0xb0;
+        System.arraycopy(shorter, 0, literals, 1, shorter.length);
+        assertArrayEquals(literals, LZ4BlockCompression.compress(shorter, dictionary));
     }
 
     /// Creates random literals or a periodic sequence continuing from the dictionary offset.
