@@ -10,6 +10,8 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
@@ -48,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -63,6 +66,64 @@ final class TarArkivoFileSystemContractTest {
     /// Temporary directory used for path-backed TAR archives.
     @TempDir
     private Path temporaryDirectory;
+
+    /// Combines shared parent depths with directory headers before or after their descendants.
+    private static Stream<Arguments> parentLayouts() {
+        return Stream.of(1, 8, 64).flatMap(depth ->
+                Stream.of(false, true).map(directoryFirst -> Arguments.of(depth, directoryFirst)));
+    }
+
+    /// Missing ancestors are linked once, and replacing a synthetic directory preserves all its children.
+    @ParameterizedTest
+    @MethodSource("parentLayouts")
+    void indexesAndUpdatesSharedParents(int depth, boolean directoryFirst) throws IOException {
+        Path archive = temporaryDirectory.resolve("parents.tar");
+        String prefix = "parent/".repeat(depth);
+        try (var writer = TarArkivoStreamingWriter.create(archive)) {
+            if (directoryFirst) writer.beginDirectory(prefix).close();
+            for (String name : List.of("first/value", "second/value")) {
+                try (var output = writer.beginFile(prefix + name).openOutputStream()) {
+                    output.write(name.getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            if (!directoryFirst) writer.beginDirectory(prefix).close();
+            writer.beginDirectory(prefix + "empty").close();
+        }
+        try (var fileSystem = TarArkivoFileSystem.open(archive)) {
+            Path directory = fileSystem.getPath("/");
+            for (int index = 0; index < depth; index++) {
+                try (var children = Files.list(directory)) {
+                    assertEquals(List.of(directory.resolve("parent")), children.toList());
+                }
+                directory = directory.resolve("parent");
+            }
+            try (var children = Files.list(directory)) {
+                assertEquals(List.of("first", "second", "empty"),
+                        children.map(child -> child.getFileName().toString()).toList());
+            }
+            for (String name : List.of("first/value", "second/value")) {
+                assertEquals(name, Files.readString(directory.resolve(name)));
+            }
+            assertEquals(0755, Files.readAttributes(directory, TarArkivoEntryAttributes.class).mode());
+        }
+        try (var fileSystem = TarArkivoFileSystem.update(archive)) {
+            Path directory = fileSystem.getPath(prefix);
+            Files.delete(directory.resolve("empty"));
+            Files.createDirectories(directory.resolve("new/deep"));
+            Files.writeString(directory.resolve("new/deep/value"), "new body");
+            Files.move(directory.resolve("first"), directory.resolve("moved"));
+            Files.writeString(directory.resolve("moved/added"), "added body");
+        }
+        try (var fileSystem = TarArkivoFileSystem.open(archive)) {
+            Path directory = fileSystem.getPath(prefix);
+            assertFalse(Files.exists(directory.resolve("empty")));
+            assertFalse(Files.exists(directory.resolve("first")));
+            assertEquals("first/value", Files.readString(directory.resolve("moved/value")));
+            assertEquals("second/value", Files.readString(directory.resolve("second/value")));
+            assertEquals("new body", Files.readString(directory.resolve("new/deep/value")));
+            assertEquals("added body", Files.readString(directory.resolve("moved/added")));
+        }
+    }
 
     /// Content writes must not turn device nodes, FIFOs, or unknown entry types into regular files.
     @ParameterizedTest
@@ -1019,7 +1080,9 @@ final class TarArkivoFileSystemContractTest {
         String[][] cases = {
                 {"duplicate.txt", "duplicate.txt"},
                 {"dir", "dir/file.txt"},
-                {"dir/file.txt", "dir"}
+                {"dir/file.txt", "dir"},
+                {"dir/sub", "dir/sub/nested/file.txt"},
+                {"dir/sub/nested/file.txt", "dir/sub"}
         };
 
         for (int index = 0; index < cases.length; index++) {

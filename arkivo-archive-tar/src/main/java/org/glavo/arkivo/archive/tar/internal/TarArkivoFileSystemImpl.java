@@ -2891,20 +2891,26 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         );
     }
 
-    /// Adds implicit parent directory nodes.
+    /// Adds missing parent directories below the nearest indexed ancestor.
     private static void ensureParents(Map<String, Node> nodes, String path) throws IOException {
-        int separator = path.indexOf('/');
+        int separator = path.lastIndexOf('/');
         while (separator >= 0) {
             String parent = path.substring(0, separator);
-            if (!parent.isEmpty()) {
-                @Nullable Node existing = nodes.get(parent);
-                if (existing == null) {
-                    ensureParents(nodes, parent);
-                    putNode(nodes, new Node(parent, syntheticDirectoryAttributes(parent), true, null, true));
-                } else if (!existing.directory()) {
+            @Nullable Node existing = nodes.get(parent);
+            if (existing != null) {
+                if (!existing.directory()) {
                     throw new IOException("TAR parent entry is not a directory: " + parent);
                 }
+                break;
             }
+            separator = path.lastIndexOf('/', separator - 1);
+        }
+
+        // Indexed nodes already have directory ancestors; add only the missing suffix, from root to leaf.
+        separator = path.indexOf('/', separator + 1);
+        while (separator >= 0) {
+            String parent = path.substring(0, separator);
+            putNode(nodes, new Node(parent, syntheticDirectoryAttributes(parent), true, null, true));
             separator = path.indexOf('/', separator + 1);
         }
     }
