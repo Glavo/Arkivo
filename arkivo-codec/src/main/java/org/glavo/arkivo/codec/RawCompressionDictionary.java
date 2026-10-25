@@ -16,9 +16,9 @@ public final class RawCompressionDictionary implements CompressionDictionary {
     /// The immutable raw history bytes.
     private final byte @Unmodifiable [] bytes;
 
-    /// Copies raw history bytes into an immutable dictionary.
+    /// Takes ownership of an array isolated from caller mutation by the factory.
     private RawCompressionDictionary(byte[] bytes) {
-        this.bytes = Objects.requireNonNull(bytes, "bytes").clone();
+        this.bytes = bytes;
     }
 
     /// Creates a raw dictionary by copying the supplied bytes.
@@ -26,7 +26,7 @@ public final class RawCompressionDictionary implements CompressionDictionary {
     /// @param bytes the raw history bytes to copy
     /// @return an immutable raw dictionary
     public static RawCompressionDictionary of(byte[] bytes) {
-        return new RawCompressionDictionary(bytes);
+        return new RawCompressionDictionary(Objects.requireNonNull(bytes, "bytes").clone());
     }
 
     /// Creates a raw dictionary by copying the buffer's remaining bytes without changing its state.
@@ -35,9 +35,8 @@ public final class RawCompressionDictionary implements CompressionDictionary {
     /// @return an immutable raw dictionary
     public static RawCompressionDictionary of(ByteBuffer buffer) {
         Objects.requireNonNull(buffer, "buffer");
-        ByteBuffer source = buffer.slice();
-        byte[] bytes = new byte[source.remaining()];
-        source.get(bytes);
+        byte[] bytes = new byte[buffer.remaining()];
+        buffer.get(buffer.position(), bytes);
         return new RawCompressionDictionary(bytes);
     }
 

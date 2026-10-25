@@ -61,7 +61,7 @@ final class DictionaryContentContractTest {
 
     /// Omits empty content only for Zstandard, whose factories require at least eight bytes.
     private static Stream<Integer> sizes(DictionaryCase<?> test) {
-        return Stream.of(0, 8, 256).filter(size -> size != 0 || !test.name().startsWith("zstd-"));
+        return Stream.of(0, 8, 256, 32768).filter(size -> size != 0 || !test.name().startsWith("zstd-"));
     }
 
     /// Exercises sliced heap and direct buffers, with and without write access.

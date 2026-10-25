@@ -59,6 +59,7 @@ dependencies {
     add("tier2TestImplementation", "net.lingala.zip4j:zip4j:2.11.5")
     add("tier3TestImplementation", testFixtures(project()))
     add(benchmarkSourceSet.compileOnlyConfigurationName, "org.jetbrains:annotations:26.1.0")
+    add(benchmarkSourceSet.implementationConfigurationName, project(":arkivo-base"))
     add(benchmarkSourceSet.implementationConfigurationName, "org.openjdk.jmh:jmh-core:1.37")
     add(benchmarkSourceSet.implementationConfigurationName, "org.apache.commons:commons-compress:1.28.0")
     add(benchmarkSourceSet.implementationConfigurationName, "org.tukaani:xz:1.12")

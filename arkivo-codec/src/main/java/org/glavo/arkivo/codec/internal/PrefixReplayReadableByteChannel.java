@@ -91,7 +91,7 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
             ReadableByteChannel source,
             ResourceOwnership ownership
     ) {
-        this.prefix = Objects.requireNonNull(prefix, "prefix").slice().asReadOnlyBuffer();
+        this.prefix = Objects.requireNonNull(prefix, "prefix").asReadOnlyBuffer();
         this.source = Objects.requireNonNull(source, "source");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
     }
@@ -116,9 +116,8 @@ public class PrefixReplayReadableByteChannel implements ReadableByteChannel, For
         }
         if (prefix.hasRemaining()) {
             int count = Math.min(prefix.remaining(), target.remaining());
-            ByteBuffer chunk = prefix.slice();
-            chunk.limit(count);
-            target.put(chunk);
+            target.put(target.position(), prefix, prefix.position(), count);
+            target.position(target.position() + count);
             prefix.position(prefix.position() + count);
             return count;
         }

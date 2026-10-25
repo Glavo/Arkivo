@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -264,8 +265,9 @@ final class PrefixReplayReadableByteChannelTest {
     }
 
     /// Verifies replay owns its cursor and does not read the source until the complete selected prefix is delivered.
-    @Test
-    void replaysSelectedPrefixWithoutChangingCallerCursor() throws IOException {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void replaysSelectedPrefixWithoutChangingCallerCursor(boolean directTarget) throws IOException {
         for (boolean interruptible : new boolean[]{false, true}) {
             for (boolean direct : new boolean[]{false, true}) {
                 TrackingReadableByteChannel source = interruptible
@@ -281,7 +283,7 @@ final class PrefixReplayReadableByteChannelTest {
                     prefix.position(3).limit(4);
                     assertEquals(0, replay.read(ByteBuffer.allocate(0)));
                     assertEquals(0, source.readCalls());
-                    ByteBuffer target = direct ? ByteBuffer.allocateDirect(9) : ByteBuffer.allocate(9);
+                    ByteBuffer target = directTarget ? ByteBuffer.allocateDirect(9) : ByteBuffer.allocate(9);
                     target.put(new byte[]{9, 8, 8, 8, 8, 8, 8, 7, 6}).position(1).limit(3).mark();
                     assertEquals(2, replay.read(target));
                     assertEquals(0, source.readCalls());

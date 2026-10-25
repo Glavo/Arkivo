@@ -77,6 +77,9 @@ public final class BufferedChannelOutput {
 
     /// Stages every remaining source byte.
     ///
+    /// The source limit and mark are unchanged. Its position advances by the bytes staged, including when a
+    /// subsequent automatic flush fails. Staged bytes do not share storage with the source.
+    ///
     /// @param source the source buffer, advanced to its limit on success
     /// @return the number of staged bytes
     /// @throws IOException if staged bytes cannot be flushed as necessary
@@ -89,9 +92,8 @@ public final class BufferedChannelOutput {
                 flush();
             }
             int copied = Math.min(source.remaining(), buffer.remaining());
-            ByteBuffer chunk = source.slice();
-            chunk.limit(copied);
-            buffer.put(chunk);
+            buffer.put(buffer.position(), source, source.position(), copied);
+            buffer.position(buffer.position() + copied);
             source.position(source.position() + copied);
         }
         return source.position() - start;

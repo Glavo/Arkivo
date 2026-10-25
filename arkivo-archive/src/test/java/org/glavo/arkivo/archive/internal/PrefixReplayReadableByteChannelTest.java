@@ -8,6 +8,7 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -30,8 +31,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class PrefixReplayReadableByteChannelTest {
     /// Verifies sliced prefixes and target windows survive fragmented replay without reading the source early.
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void replaysLargeSlicedPrefixIntoGuardedWindows(boolean direct) throws IOException {
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void replaysLargeSlicedPrefixIntoGuardedWindows(boolean direct, boolean directTarget) throws IOException {
         byte[] expected = new byte[8193];
         for (int index = 0; index < expected.length; index++) {
             expected[index] = (byte) (index * 31 + (index >>> 8));
@@ -46,7 +47,7 @@ final class PrefixReplayReadableByteChannelTest {
             assertEquals(expected.length + 2, prefix.limit());
             assertEquals(2, prefix.reset().position());
             prefix.clear();
-            ByteBuffer target = direct ? ByteBuffer.allocateDirect(17) : ByteBuffer.allocate(17);
+            ByteBuffer target = directTarget ? ByteBuffer.allocateDirect(17) : ByteBuffer.allocate(17);
             ByteArrayOutputStream actual = new ByteArrayOutputStream();
             while (actual.size() < expected.length) {
                 assertThrows(IllegalArgumentException.class,

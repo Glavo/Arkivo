@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.internal;
 
 import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -16,7 +17,7 @@ import java.util.Objects;
 @NotNullByDefault
 public final class PrefixReplayReadableByteChannel implements ReadableByteChannel, ForceCloseable {
     /// Bytes consumed during archive probing.
-    private final ByteBuffer prefix;
+    private final @UnmodifiableView ByteBuffer prefix;
 
     /// Source positioned after the probe prefix.
     private final ReadableByteChannel source;
@@ -32,7 +33,7 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
     /// @param prefix the remaining probe bytes to replay through an independent buffer view
     /// @param source the channel, positioned after the probe bytes, whose ownership is transferred to this channel
     public PrefixReplayReadableByteChannel(ByteBuffer prefix, ReadableByteChannel source) {
-        this.prefix = Objects.requireNonNull(prefix, "prefix").slice().asReadOnlyBuffer();
+        this.prefix = Objects.requireNonNull(prefix, "prefix").asReadOnlyBuffer();
         this.source = Objects.requireNonNull(source, "source");
     }
 
@@ -49,9 +50,8 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
         }
         if (prefix.hasRemaining()) {
             int count = Math.min(prefix.remaining(), target.remaining());
-            ByteBuffer chunk = prefix.slice();
-            chunk.limit(count);
-            target.put(chunk);
+            target.put(target.position(), prefix, prefix.position(), count);
+            target.position(target.position() + count);
             prefix.position(prefix.position() + count);
             return count;
         }

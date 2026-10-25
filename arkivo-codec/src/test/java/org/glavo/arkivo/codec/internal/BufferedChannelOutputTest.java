@@ -6,6 +6,8 @@ package org.glavo.arkivo.codec.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -24,6 +26,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies buffered encoded output across staging boundaries and recoverable target failures.
 @NotNullByDefault
 final class BufferedChannelOutputTest {
+    /// Copies buffer windows across staging boundaries without changing source limits, marks, or backing bytes.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 8191, 8192, 8193, 16385})
+    void copiesBufferWindowsAcrossStagingBoundaries(int size) throws IOException {
+        byte[] expected = sequence(size, 17);
+        for (boolean direct : new boolean[]{false, true}) {
+            for (boolean readOnly : new boolean[]{false, true}) {
+                ByteBuffer storage = direct ? ByteBuffer.allocateDirect(size + 7) : ByteBuffer.allocate(size + 7);
+                storage.put(0, (byte) 0x55).put(size + 6, (byte) 0x66).position(4).put(expected);
+                ByteBuffer source = storage.slice(2, size + 4).position(1).mark().position(2).limit(size + 2);
+                if (readOnly) source = source.asReadOnlyBuffer();
+                FragmentingWritableByteChannel target = new FragmentingWritableByteChannel(7);
+                BufferedChannelOutput output = new BufferedChannelOutput(target);
+                assertEquals(size, output.write(source));
+                assertEquals(size + 2, source.position());
+                assertEquals(size + 2, source.limit());
+                assertEquals(1, source.reset().position());
+                output.flush();
+                assertArrayEquals(expected, target.bytes());
+                byte[] unchanged = new byte[size];
+                storage.get(4, unchanged);
+                assertArrayEquals(expected, unchanged);
+                assertEquals(0x55, storage.get(0));
+                assertEquals(0x66, storage.get(size + 6));
+                assertEquals(size + 4, storage.position());
+                assertTrue(target.isOpen());
+            }
+        }
+    }
+
     /// Verifies every write form preserves byte order across automatic and explicit flushes.
     @Test
     void stagesEveryWriteFormInOrder() throws IOException {
