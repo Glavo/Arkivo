@@ -280,7 +280,7 @@ final class StreamChannelAdaptersTest {
 
     /// Keeps a previously delivered endpoint failure primary when automatic closure reports the same object.
     @ParameterizedTest
-    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "bulk-input-stream", "output-stream", "seekable-skip", "streaming-skip"})
     void preservesRepeatedFailureIdentity(String kind) throws IOException {
         for (boolean failOperation : new boolean[]{false, true}) {
             for (Throwable failure : List.of(new IOException("endpoint failed"),
@@ -312,7 +312,7 @@ final class StreamChannelAdaptersTest {
 
     /// Preserves an older exception even when another endpoint failure was reported before cleanup reuses it.
     @ParameterizedTest
-    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "bulk-input-stream", "output-stream", "seekable-skip", "streaming-skip"})
     void preservesEarlierFailureAcrossInterveningFailures(String kind) throws IOException {
         for (Throwable first : List.of(new IOException("first failure"),
                 new IllegalStateException("first failure"), new AssertionError("first failure"))) {
@@ -345,7 +345,7 @@ final class StreamChannelAdaptersTest {
 
     /// Invalid arguments and empty transfers do not change the identity of the first endpoint cleanup failure.
     @ParameterizedTest
-    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream"})
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "bulk-input-stream", "output-stream"})
     void preservesFirstCloseFailureAfterRejectedArguments(String kind) throws IOException {
         for (Throwable failure : List.of(new IOException("first close failure"),
                 new IllegalStateException("first close failure"), new AssertionError("first close failure"))) {
@@ -379,7 +379,7 @@ final class StreamChannelAdaptersTest {
 
     /// A new cleanup failure retains its subtype and identity after an unrelated data failure.
     @ParameterizedTest
-    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "bulk-input-stream", "output-stream", "seekable-skip", "streaming-skip"})
     void preservesDistinctCleanupFailure(String kind) throws IOException {
         for (Throwable cleanup : List.of(new EOFException("cleanup failure"), new ClosedChannelException(),
                 new IllegalStateException("cleanup failure"), new AssertionError("cleanup failure"),
@@ -400,7 +400,7 @@ final class StreamChannelAdaptersTest {
 
     /// Cleanup also protects a previously delivered wrapper if the endpoint later reuses that wrapper itself.
     @ParameterizedTest
-    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "bulk-input-stream", "output-stream", "seekable-skip", "streaming-skip"})
     void preservesReusedCleanupWrapper(String kind) throws IOException {
         IOException first = new IOException("endpoint failure");
         var endpoint = new RepeatedFailureChannel(first, 2);
@@ -453,7 +453,7 @@ final class StreamChannelAdaptersTest {
 
     /// Retains both failures when cancelling an in-flight operation, without holding the history lock during I/O.
     @ParameterizedTest
-    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "bulk-input-stream", "output-stream", "seekable-skip", "streaming-skip"})
     void preservesConcurrentOperationAndCloseFailures(String kind) throws Exception {
         var executor = Executors.newSingleThreadExecutor();
         try {
@@ -478,7 +478,7 @@ final class StreamChannelAdaptersTest {
 
     /// A read or write released by successful closure does not recreate the closed adapter's failure history.
     @ParameterizedTest
-    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "output-stream", "seekable-skip"})
+    @ValueSource(strings = {"readable-channel", "writable-channel", "input-stream", "bulk-input-stream", "output-stream", "seekable-skip", "streaming-skip"})
     void releasesHistoryWhenConcurrentOperationFailsAfterClose(String kind) throws Exception {
         var endpoint = new ConcurrentFailureChannel(false);
         AdaptedOperation operation = adaptedOperation(kind, endpoint);
@@ -805,6 +805,26 @@ final class StreamChannelAdaptersTest {
                 var stream = StreamChannelAdapters.inputStream(endpoint);
                 yield new AdaptedOperation(stream, stream::read);
             }
+            case "bulk-input-stream" -> {
+                var stream = StreamChannelAdapters.inputStream(endpoint);
+                yield new AdaptedOperation(stream, () -> stream.read(new byte[3]));
+            }
+            case "streaming-skip" -> {
+                var stream = StreamChannelAdapters.inputStream(new ReadableByteChannel() {
+                    /// Reads without exposing the endpoint's positioning capability.
+                    @Override
+                    public int read(ByteBuffer target) throws IOException { return endpoint.read(target); }
+
+                    /// Returns the endpoint's open state.
+                    @Override
+                    public boolean isOpen() { return endpoint.isOpen(); }
+
+                    /// Preserves the endpoint's close failures and retry behavior.
+                    @Override
+                    public void close() throws IOException { endpoint.close(); }
+                });
+                yield new AdaptedOperation(stream, () -> stream.skip(1));
+            }
             case "seekable-skip" -> {
                 var stream = StreamChannelAdapters.inputStream(endpoint);
                 yield new AdaptedOperation(stream, () -> stream.skip(1));
@@ -1005,6 +1025,8 @@ final class StreamChannelAdaptersTest {
         try (InputStream input = StreamChannelAdapters.inputStream(new ZeroProgressReadableChannel())) {
             IOException failure = assertThrows(IOException.class, () -> input.read(new byte[1]));
             assertEquals("Readable channel made no progress", failure.getMessage());
+            assertEquals(failure.getMessage(), assertThrows(IOException.class, input::read).getMessage());
+            assertEquals(failure.getMessage(), assertThrows(IOException.class, () -> input.skip(1)).getMessage());
         }
 
         try (OutputStream output = StreamChannelAdapters.outputStream(new ZeroProgressWritableChannel())) {
@@ -1058,6 +1080,93 @@ final class StreamChannelAdaptersTest {
         );
     }
 
+    /// Allocates scalar and skip workspaces independently, without allocating either for bulk or empty reads.
+    @Test
+    void allocatesInputWorkspacesOnlyWhenNeeded() throws Exception {
+        var source = StreamChannelAdapters.readableChannel(new ByteArrayInputStream(new byte[]{1, 2, 3, 4, 5, 6}));
+        try (InputStream input = StreamChannelAdapters.inputStream(source)) {
+            var scalar = input.getClass().getDeclaredField("singleByte");
+            var skip = input.getClass().getDeclaredField("skipBuffer");
+            scalar.setAccessible(true);
+            skip.setAccessible(true);
+            assertNull(scalar.get(input));
+            assertNull(skip.get(input));
+            assertEquals(0, input.read(new byte[0]));
+            assertEquals(0, input.skip(0));
+            assertEquals(0, input.skip(-1));
+            assertEquals(1, input.read(new byte[1]));
+            assertNull(scalar.get(input));
+            assertNull(skip.get(input));
+            assertEquals(2, input.read());
+            @Nullable Object scalarStorage = scalar.get(input);
+            assertTrue(scalarStorage instanceof ByteBuffer);
+            assertNull(skip.get(input));
+            assertEquals(3, input.read());
+            assertSame(scalarStorage, scalar.get(input));
+            assertEquals(1, input.skip(1));
+            @Nullable Object skipStorage = skip.get(input);
+            assertTrue(skipStorage instanceof ByteBuffer);
+            assertEquals(5, input.read());
+            assertEquals(1, input.skip(Long.MAX_VALUE));
+            assertEquals(0, input.skip(1));
+            assertEquals(-1, input.read());
+            assertSame(scalarStorage, scalar.get(input));
+            assertSame(skipStorage, skip.get(input));
+        }
+    }
+
+    /// Rejects reads after closure before allocating a scalar or skip workspace.
+    @Test
+    void closedInputDoesNotAllocateWorkspaces() throws Exception {
+        InputStream input = StreamChannelAdapters.inputStream(new ZeroProgressReadableChannel());
+        input.close();
+        assertThrows(IOException.class, input::read);
+        assertThrows(IOException.class, () -> input.skip(1));
+        for (String name : new String[]{"singleByte", "skipBuffer"}) {
+            var field = input.getClass().getDeclaredField(name);
+            field.setAccessible(true);
+            assertNull(field.get(input));
+        }
+    }
+
+    /// Bounds each skip independently and resets the reusable target after a smaller request.
+    @Test
+    void resetsSkipWindowForEachRequest() throws Exception {
+        byte[] bytes = new byte[16_385];
+        for (int index = 0; index < bytes.length; index++) bytes[index] = (byte) index;
+        try (InputStream input = StreamChannelAdapters.inputStream(
+                StreamChannelAdapters.readableChannel(new ByteArrayInputStream(bytes)))) {
+            assertEquals(1, input.skip(1));
+            assertEquals(1, input.read());
+            assertEquals(8192, input.skip(Long.MAX_VALUE));
+            assertEquals(2, input.read());
+            assertEquals(8189, input.skip(8189));
+            assertEquals(0, input.read());
+            assertEquals(0, input.skip(Long.MAX_VALUE));
+            assertEquals(-1, input.read());
+        }
+    }
+
+    /// Resets a reused scalar target after a failure that advances its position.
+    @Test
+    void retriesScalarReadsAfterPartialFailures() throws IOException {
+        for (Throwable failure : List.of(new IOException("read failed"),
+                new IllegalStateException("read failed"), new AssertionError("read failed"))) {
+            var source = new FragmentedFailingReadableChannel(failure);
+            try (InputStream input = StreamChannelAdapters.inputStream(source)) {
+                assertEquals(1, input.read());
+                @Nullable ByteBuffer target = source.lastTarget;
+                assertNotNull(target);
+                assertSame(failure, assertThrows(failure.getClass(), input::read));
+                assertSame(target, source.lastTarget);
+                assertEquals(2, input.read());
+                assertEquals(3, input.read());
+                assertEquals(-1, input.read());
+                assertSame(target, source.lastTarget);
+            }
+        }
+    }
+
     /// Verifies skip uses channel positioning when available and bounded reads otherwise.
     @Test
     void skipsSeekableAndStreamingSources() throws IOException {
@@ -1098,10 +1207,14 @@ final class StreamChannelAdaptersTest {
                 assertEquals(0, input.skip(-1));
                 assertEquals(0, source.readCalls);
                 assertEquals(1, input.skip(Long.MAX_VALUE));
+                @Nullable ByteBuffer target = source.lastTarget;
+                assertNotNull(target);
                 assertEquals(1, source.readCalls);
                 assertSame(failure, assertThrows(failure.getClass(), () -> input.skip(Long.MAX_VALUE)));
+                assertSame(target, source.lastTarget);
                 assertEquals(2, source.readCalls);
                 assertEquals(1, input.skip(Long.MAX_VALUE));
+                assertSame(target, source.lastTarget);
                 assertEquals(3, input.read());
                 assertEquals(0, input.skip(Long.MAX_VALUE));
                 assertEquals(-1, input.read());
@@ -1146,7 +1259,7 @@ final class StreamChannelAdaptersTest {
         assertEquals(2, writableChannel.closeCount());
     }
 
-    /// Supplies three bytes one at a time and fails its second physical read.
+    /// Supplies three bytes one at a time and advances the target before failing its second physical read.
     @NotNullByDefault
     private static final class FragmentedFailingReadableChannel implements ReadableByteChannel {
         /// Failure emitted by the second read attempt.
@@ -1154,6 +1267,9 @@ final class StreamChannelAdaptersTest {
 
         /// Number of physical read attempts.
         private int readCalls;
+
+        /// Most recent target, retained only to verify adapter-owned buffer reuse.
+        private @Nullable ByteBuffer lastTarget;
 
         /// Next unsigned byte value to return.
         private int nextValue = 1;
@@ -1166,14 +1282,17 @@ final class StreamChannelAdaptersTest {
             this.failure = failure;
         }
 
-        /// Returns one byte or reports the injected failure without consuming that byte.
+        /// Returns one byte or changes the target before failing without advancing the input sequence.
         @Override
         public int read(ByteBuffer target) throws IOException {
             if (!open) {
                 throw new ClosedChannelException();
             }
+            assertEquals(0, target.position());
+            lastTarget = target;
             readCalls++;
             if (readCalls == 2) {
+                target.put((byte) 0x7f);
                 if (failure instanceof IOException exception) {
                     throw exception;
                 }

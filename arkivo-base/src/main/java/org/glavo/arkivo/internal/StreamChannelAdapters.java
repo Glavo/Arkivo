@@ -378,11 +378,11 @@ public final class StreamChannelAdapters {
         /// The backing readable channel.
         private final ReadableByteChannel source;
 
-        /// The reusable single-byte target.
-        private final byte[] singleByte = new byte[1];
+        /// Single-byte storage and its channel view, allocated on the first scalar read.
+        private @Nullable ByteBuffer singleByte;
 
         /// Lazily allocated storage for one bounded skip from a non-seekable source.
-        private byte @Nullable [] skipBuffer;
+        private @Nullable ByteBuffer skipBuffer;
 
         /// Whether this adapter remains open.
         private volatile boolean open = true;
@@ -395,8 +395,12 @@ public final class StreamChannelAdapters {
         /// Reads one byte from the channel.
         @Override
         public int read() throws IOException {
-            int read = read(singleByte, 0, 1);
-            return read < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
+            ensureOpen();
+            @Nullable ByteBuffer target = singleByte;
+            if (target == null) singleByte = target = ByteBuffer.allocate(1);
+            target.clear();
+            int read = readOnce(target);
+            return read < 0 ? -1 : Byte.toUnsignedInt(target.get(0));
         }
 
         /// Performs one channel read and rejects zero progress for a nonempty request.
@@ -407,8 +411,13 @@ public final class StreamChannelAdapters {
             if (length == 0) {
                 return 0;
             }
+            return readOnce(ByteBuffer.wrap(bytes, offset, length));
+        }
+
+        /// Reads into a nonempty target, retaining endpoint failure identities and rejecting zero progress.
+        private int readOnce(ByteBuffer target) throws IOException {
             try {
-                int read = source.read(ByteBuffer.wrap(bytes, offset, length));
+                int read = source.read(target);
                 if (read == 0) {
                     throw new IOException("Readable channel made no progress");
                 }
@@ -439,10 +448,10 @@ public final class StreamChannelAdapters {
                     throw failure;
                 }
             }
-            if (skipBuffer == null) {
-                skipBuffer = new byte[TRANSFER_SIZE];
-            }
-            int read = read(skipBuffer, 0, (int) Math.min(count, skipBuffer.length));
+            @Nullable ByteBuffer target = skipBuffer;
+            if (target == null) skipBuffer = target = ByteBuffer.allocate(TRANSFER_SIZE);
+            target.clear().limit((int) Math.min(count, target.capacity()));
+            int read = readOnce(target);
             return Math.max(0, read);
         }
 

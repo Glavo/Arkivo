@@ -24,6 +24,8 @@ public class CodecStreamBenchmark {
     @Param({"arkivo", "commons"}) public String api = "arkivo";
     /// The compressed stream format.
     @Param({"gzip", "bzip2", "xz", "lz4-framed"}) public String format = "gzip";
+    /// Reads decoded data in bulk, one byte at a time, or through the stream's skip operation.
+    @Param({"bulk"}) public String access = "bulk";
     /// One MiB of moderately compressible deterministic input.
     private final byte[] body = new byte[1024 * 1024];
     /// The common Commons-produced compressed input.
@@ -35,6 +37,7 @@ public class CodecStreamBenchmark {
     /// Prepares input with repeated 4 KiB regions and validates each selected implementation.
     @Setup
     public void setup() throws Exception {
+        if (!Set.of("bulk", "scalar", "skip").contains(access)) throw new IllegalArgumentException(access);
         new Random(42).nextBytes(body);
         for (int i = 0; i < body.length; i += 8192) System.arraycopy(body, i, body, i + 4096, 4096);
         String selected = api;
@@ -46,6 +49,7 @@ public class CodecStreamBenchmark {
         try (InputStream in = input()) {
             if (!Arrays.equals(body, in.readAllBytes())) throw new AssertionError("Decoded data mismatch");
         }
+        decode();
         System.out.println("SURVEY_CODEC_BYTES " + api + " " + format + " " + output.length);
     }
     /// Maps the public format names used by each library.
@@ -62,8 +66,24 @@ public class CodecStreamBenchmark {
     @Benchmark
     public long decode() throws Exception {
         try (InputStream in = input()) {
-            long size = 0; int n;
-            while ((n = in.read(buffer)) >= 0) size += n;
+            long size = 0;
+            if (access.equals("scalar")) {
+                while (in.read() >= 0) size++;
+            } else if (access.equals("skip")) {
+                while (true) {
+                    long skipped = in.skip(body.length);
+                    if (skipped > 0) {
+                        size += skipped;
+                    } else if (in.read() < 0) {
+                        break;
+                    } else {
+                        size++;
+                    }
+                }
+            } else {
+                int n;
+                while ((n = in.read(buffer)) >= 0) size += n;
+            }
             if (size != body.length) throw new AssertionError(size);
             return size;
         }
