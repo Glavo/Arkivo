@@ -13,6 +13,8 @@ import org.glavo.arkivo.codec.deflate.ZlibDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -70,6 +72,36 @@ public final class JdkDeflateAlignmentTest {
                     verify(input, level, strategy, false, null, new int[0], 257, 8192, true);
                 }
             }
+        }
+    }
+
+    /// Preserves candidate ordering when similar prefixes differ near the current match boundary.
+    ///
+    /// @param length the repeated prefix length, including both sides of word and maximum-match boundaries
+    @ParameterizedTest
+    @ValueSource(ints = {3, 4, 7, 8, 15, 16, 31, 32, 127, 128, 257, 258})
+    void matchesJdkWithCompetingMatchPrefixes(int length) throws Exception {
+        byte[] input = new byte[70_013];
+        byte[] pattern = new byte[length + 2];
+        new Random(1951 + length).nextBytes(pattern);
+        for (int position = 0, record = 0; position < input.length; record++) {
+            int count = Math.min(pattern.length, input.length - position);
+            System.arraycopy(pattern, 0, input, position, count);
+            // Alternate the first, interior, and last bytes without removing all equal candidates.
+            int changed = switch (record & 3) {
+                case 0 -> 0;
+                case 1 -> length / 2;
+                default -> length - 1;
+            };
+            if (changed < count) input[position + changed] ^= (byte) (record & 7);
+            position += count;
+        }
+        byte[] dictionary = Arrays.copyOf(input, 32768);
+        for (int level : new int[]{1, 3, 4, 6, 9}) {
+            verify(input, level, DeflateStrategy.DEFAULT, true, null,
+                    new int[0], 257, 7, false);
+            verify(input, level, DeflateStrategy.FILTERED, false, dictionary,
+                    new int[]{1, 32769, 65537}, 8192, 257, true);
         }
     }
 

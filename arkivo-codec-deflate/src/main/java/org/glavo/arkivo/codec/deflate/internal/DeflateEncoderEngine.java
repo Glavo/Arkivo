@@ -9,6 +9,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.DeflateStrategy;
 import org.glavo.arkivo.codec.internal.CodecBuffers;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -351,12 +352,15 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         if (previousLength >= configuration[0]) chain >>>= 2;
         int best = previousLength;
         int maximum = Math.min(258, lookahead);
+        if (best >= maximum) return maximum;
         int nice = Math.min(configuration[2], lookahead);
         int limit = Math.max(0, strstart - (WINDOW_SIZE - MINIMUM_LOOKAHEAD));
+        short prefix = ByteArrayAccess.readShortLittleEndian(window, strstart);
+        short suffix = ByteArrayAccess.readShortLittleEndian(window, strstart + best - 1);
         do {
-            if (best < maximum && window[candidate + best] == window[strstart + best]
-                    && window[candidate + best - 1] == window[strstart + best - 1]
-                    && window[candidate] == window[strstart] && window[candidate + 1] == window[strstart + 1]) {
+            // Reject candidates that cannot improve the current match before scanning their interior.
+            if (ByteArrayAccess.readShortLittleEndian(window, candidate + best - 1) == suffix
+                    && ByteArrayAccess.readShortLittleEndian(window, candidate) == prefix) {
                 int mismatch = Arrays.mismatch(window, candidate + 2, candidate + maximum,
                         window, strstart + 2, strstart + maximum);
                 int length = mismatch < 0 ? maximum : mismatch + 2;
@@ -364,6 +368,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
                     matchStart = candidate;
                     best = length;
                     if (length >= nice) break;
+                    suffix = ByteArrayAccess.readShortLittleEndian(window, strstart + best - 1);
                 }
             }
             candidate = previous[candidate & (WINDOW_SIZE - 1)];
