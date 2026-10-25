@@ -23,7 +23,6 @@ import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 
@@ -512,19 +511,6 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
             WatchEvent.Modifier... modifiers
     ) {
         throw new UnsupportedOperationException("Archive watch services are not supported");
-    }
-
-    /// Returns an iterator over name elements.
-    @Override
-    public final Iterator<Path> iterator() {
-        if (text.isEmpty()) {
-            return List.<Path>of(this).iterator();
-        }
-        ArrayList<Path> paths = new ArrayList<>(names.size());
-        for (String name : names) {
-            paths.add(createPath(false, List.of(name)));
-        }
-        return List.copyOf(paths).iterator();
     }
 
     /// Compares this path with another compatible path.

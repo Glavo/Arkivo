@@ -41,6 +41,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -53,6 +54,44 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared archive path parsing, composition, comparison, and URI behavior.
 @NotNullByDefault
 final class AbstractArkivoPathTest {
+    /// Iterators create only requested components and retain literal names and file-system identity.
+    @ParameterizedTest
+    @ValueSource(strings = {"", "/", "single", "a/b/c", "/a/./../b", "/\u03b4/\ud83d\ude42"})
+    void iteratesComponentsLazily(String name) {
+        TestFileSystem fs = new TestFileSystem(null);
+        Path path = fs.getPath(name);
+        Iterator<Path> iterator = path.iterator();
+        Iterator<Path> independent = path.iterator();
+        assertEquals(0, fs.pathCreations);
+        assertThrows(UnsupportedOperationException.class, iterator::remove);
+        for (int index = 0; index < path.getNameCount(); index++) {
+            int creations = fs.pathCreations;
+            assertTrue(iterator.hasNext());
+            assertTrue(iterator.hasNext());
+            assertEquals(creations, fs.pathCreations);
+            Path component = iterator.next();
+            assertEquals(creations + (name.isEmpty() ? 0 : 1), fs.pathCreations);
+            assertFalse(component.isAbsolute());
+            assertSame(fs, component.getFileSystem());
+            assertEquals(path.getName(index), component);
+            assertThrows(UnsupportedOperationException.class, iterator::remove);
+        }
+        assertFalse(iterator.hasNext());
+        assertThrows(NoSuchElementException.class, iterator::next);
+        assertThrows(NoSuchElementException.class, iterator::next);
+        assertEquals(path.getNameCount() != 0, independent.hasNext());
+        if (independent.hasNext()) {
+            assertEquals(path.getName(0), independent.next());
+        }
+        ArrayList<Path> remaining = new ArrayList<>();
+        independent.forEachRemaining(remaining::add);
+        assertEquals(Math.max(0, path.getNameCount() - 1), remaining.size());
+        for (int index = 0; index < remaining.size(); index++) {
+            assertEquals(path.getName(index + 1), remaining.get(index));
+        }
+        assertFalse(independent.hasNext());
+    }
+
     /// Sibling resolution rejects null operands even when the base has no parent.
     @ParameterizedTest
     @ValueSource(strings = {"", "/", "single", ".", "a/b", "/a/b"})
