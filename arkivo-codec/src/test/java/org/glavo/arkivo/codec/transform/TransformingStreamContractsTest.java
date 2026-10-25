@@ -41,6 +41,128 @@ public final class TransformingStreamContractsTest {
         return committed;
     };
 
+    /// Mixed skips and reads preserve stateful block processing, including an unchanged incomplete suffix.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 3, 4, 8191, 8192, 8193, 16385})
+    public void mixedInputAccessPreservesTransformState(int length) throws IOException {
+        byte[] plain = new byte[length];
+        for (int index = 0; index < length; index++) plain[index] = (byte) (index * 29 + (index >>> 8));
+        byte[] expected = plain.clone();
+        int sum = 0;
+        for (int index = 0; index < (length & ~3); index++) {
+            sum += Byte.toUnsignedInt(plain[index]);
+            expected[index] = (byte) sum;
+        }
+        for (int readSize : new int[]{1, 7, 8191, Integer.MAX_VALUE}) {
+            TrackingInputStream source = new TrackingInputStream(plain);
+            source.maximumReadSize = readSize;
+            int[] state = {0};
+            ByteTransform transform = (bytes, offset, count) -> {
+                int committed = count & ~3;
+                for (int index = 0; index < committed; index++) {
+                    state[0] += Byte.toUnsignedInt(bytes[offset + index]);
+                    bytes[offset + index] = (byte) state[0];
+                }
+                return committed;
+            };
+            try (var input = new TransformingInputStream(source, transform)) {
+                int position = 0;
+                int[] skips = {1, 3, 8191, 2, 8193};
+                int step = 0;
+                while (position < length) {
+                    int requested = skips[step++ % skips.length];
+                    int skipped = Math.min(requested, length - position);
+                    assertEquals(skipped, input.skip(requested));
+                    position += skipped;
+                    if (position < length) {
+                        assertEquals(Byte.toUnsignedInt(expected[position++]), input.read());
+                    }
+                    byte[] target = new byte[5];
+                    Arrays.fill(target, (byte) 0x55);
+                    int copied = Math.min(3, length - position);
+                    assertEquals(copied == 0 ? -1 : copied, input.read(target, 1, 3));
+                    assertArrayEquals(Arrays.copyOfRange(expected, position, position + copied),
+                            Arrays.copyOfRange(target, 1, 1 + copied));
+                    assertEquals(0x55, target[0]);
+                    assertEquals(0x55, target[4]);
+                    position += copied;
+                }
+                assertEquals(0, input.skip(Long.MAX_VALUE));
+                assertEquals(-1, input.read());
+                assertEquals(0, input.available());
+                assertEquals(sum, state[0]);
+            }
+            assertTrue(source.isClosed());
+        }
+    }
+
+    /// Skipping buffered bytes avoids upstream reads, and large counts stop at the unchanged final suffix.
+    @Test
+    public void skipsBufferedBytesAndFinalSuffix() throws IOException {
+        TrackingInputStream source = new TrackingInputStream(new byte[]{1, 2, 3, 4, 5, 6, 7});
+        TransformingInputStream input = new TransformingInputStream(source, BLOCK_XOR);
+        assertEquals(0, input.skip(0));
+        assertEquals(0, input.skip(Long.MIN_VALUE));
+        assertEquals(0, source.readCount);
+        assertEquals(1 ^ 0x5a, input.read());
+        assertEquals(1, source.readCount);
+        assertEquals(2, input.skip(2));
+        assertEquals(1, source.readCount);
+        assertEquals(4 ^ 0x5a, input.read());
+        assertEquals(3, input.skip(Long.MAX_VALUE));
+        assertEquals(2, source.readCount);
+        assertEquals(0, input.skip(Long.MAX_VALUE));
+        assertEquals(-1, input.read());
+        assertEquals(2, source.readCount);
+        input.close();
+        assertEquals(0, input.skip(0));
+        assertEquals(0, input.skip(-1));
+        assertThrows(ClosedChannelException.class, () -> input.skip(1));
+        assertThrows(ClosedChannelException.class, input::read);
+    }
+
+    /// Scalar reads and skips retain the bulk-read fallback when the source reports zero progress.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 3, 4, 8193})
+    public void scalarAndSkipHandleZeroProgress(int length) throws IOException {
+        byte[] plain = new byte[length];
+        Arrays.fill(plain, (byte) 0x80);
+        try (var input = new TransformingInputStream(new ZeroFirstBulkInputStream(plain), BLOCK_XOR)) {
+            for (int index = 0; index < length; index++) {
+                assertEquals(index < (length & ~3) ? 0xda : 0x80, input.read());
+            }
+            assertEquals(-1, input.read());
+        }
+        try (var input = new TransformingInputStream(new ZeroFirstBulkInputStream(plain), BLOCK_XOR)) {
+            assertEquals(length, input.skip(Long.MAX_VALUE));
+            assertEquals(-1, input.read());
+        }
+    }
+
+    /// A skip failure retains consumed source progress and prevents all later nonempty operations.
+    @Test
+    public void partialSkipFailuresAreTerminal() throws IOException {
+        for (Throwable failure : List.of(new IOException("partial skip failure"),
+                new IllegalStateException("partial skip failure"), new AssertionError("partial skip failure"))) {
+            TrackingInputStream source = new TrackingInputStream(new byte[]{1, 2, 3});
+            source.maximumReadSize = 1;
+            source.readFailure = failure;
+            source.failingRead = 2;
+            try (var input = new TransformingInputStream(source, IDENTITY)) {
+                assertSame(failure, assertThrows(failure.getClass(), () -> input.skip(3)));
+                assertSame(failure, assertThrows(failure.getClass(), () -> input.skip(1)));
+                assertSame(failure, assertThrows(failure.getClass(), input::read));
+                assertSame(failure, assertThrows(failure.getClass(), () -> input.read(new byte[1])));
+                assertSame(failure, assertThrows(failure.getClass(), input::available));
+                assertEquals(0, input.skip(0));
+                assertEquals(0, input.skip(-1));
+                assertEquals(2, source.readCount);
+                assertEquals(1, source.delegate.available());
+            }
+            assertTrue(source.isClosed());
+        }
+    }
+
     /// Verifies an incomplete block at the buffer end can reclaim a consumed prefix instead of failing for no progress.
     @ParameterizedTest
     @ValueSource(ints = {16385, 16386, 16387, 24577, 24578, 24579})
@@ -361,8 +483,9 @@ public final class TransformingStreamContractsTest {
     }
 
     /// Verifies failed input transforms cannot publish mutated bytes or be invoked again.
-    @Test
-    public void inputRetainsUncheckedTransformFailures() throws IOException {
+    @ParameterizedTest
+    @ValueSource(strings = {"bulk", "scalar", "skip"})
+    public void inputRetainsUncheckedTransformFailures(String access) throws IOException {
         for (Throwable failure : List.of(new IllegalStateException("transform failed"), new AssertionError("transform failed"))) {
             int[] calls = {0};
             TrackingInputStream source = new TrackingInputStream(new byte[]{1, 2});
@@ -375,8 +498,16 @@ public final class TransformingStreamContractsTest {
                 throw (Error) failure;
             });
             byte[] target = {9, 8, 7, 6};
+            assertSame(failure, assertThrows(failure.getClass(), () -> {
+                switch (access) {
+                    case "bulk" -> input.read(target, 1, 2);
+                    case "scalar" -> input.read();
+                    case "skip" -> input.skip(1);
+                    default -> throw new AssertionError(access);
+                }
+            }));
             assertSame(failure, assertThrows(failure.getClass(), () -> input.read(target, 1, 2)));
-            assertSame(failure, assertThrows(failure.getClass(), () -> input.read(target, 1, 2)));
+            assertSame(failure, assertThrows(failure.getClass(), () -> input.skip(1)));
             assertSame(failure, assertThrows(failure.getClass(), input::read));
             assertSame(failure, assertThrows(failure.getClass(), input::available));
             assertEquals(0, input.read(target, 1, 0));
@@ -605,6 +736,12 @@ public final class TransformingStreamContractsTest {
                 throw (Error) failure;
             }
             return count;
+        }
+
+        /// Rejects raw skips, which would bypass transform state updates.
+        @Override
+        public long skip(long count) {
+            throw new AssertionError("Transform input must read skipped bytes");
         }
 
         /// Marks this stream closed.

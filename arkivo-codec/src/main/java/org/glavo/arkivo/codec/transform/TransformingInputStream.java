@@ -19,8 +19,8 @@ import java.util.Objects;
 /// stream reports `-1`.
 ///
 /// An input or transform failure (`IOException`, `RuntimeException`, or `Error`) is retained and rethrown by later
-/// nonempty reads and [#available()] without reading or transforming more data. Bytes already delivered to a destination
-/// array remain there. Rejected arguments do not put this stream into a failed state. Closing
+/// nonempty reads, positive skips, and [#available()] without reading or transforming more data. Bytes already delivered
+/// to a destination array remain there. Rejected arguments do not put this stream into a failed state. Closing
 /// does not drain input; it marks this stream closed and closes the upstream stream. If upstream close fails, a later
 /// [#close()] retries it.
 @NotNullByDefault
@@ -30,9 +30,6 @@ public final class TransformingInputStream extends InputStream {
 
     /// The committed-prefix and lookahead state shared by all transform adapters.
     private final TransformBuffer buffer;
-
-    /// The reusable single-byte read buffer.
-    private final byte[] singleByte = new byte[1];
 
     /// A deferred source or filter failure.
     private volatile @Nullable Throwable failure;
@@ -61,8 +58,9 @@ public final class TransformingInputStream extends InputStream {
     /// Reads one filtered byte.
     @Override
     public int read() throws IOException {
-        int count = read(singleByte, 0, 1);
-        return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
+        ensureOpen();
+        rethrowFailure();
+        return fill() ? Byte.toUnsignedInt(buffer.output().get()) : -1;
     }
 
     /// Reads filtered bytes into the destination array.
@@ -78,20 +76,50 @@ public final class TransformingInputStream extends InputStream {
         }
         rethrowFailure();
 
+        int total = 0;
+        while (length > 0 && fill()) {
+            ByteBuffer ready = buffer.output();
+            int copied = Math.min(ready.remaining(), length);
+            ready.get(bytes, offset, copied);
+            offset += copied;
+            length -= copied;
+            total += copied;
+        }
+        return total == 0 ? -1 : total;
+    }
+
+    /// Skips filtered bytes without copying them into a discard array.
+    ///
+    /// Skipped input still passes through the transform, preserving its state for subsequent reads.
+    /// A nonpositive count returns zero even after failure or closure. If a positive skip fails, bytes already
+    /// skipped remain consumed, and later nonempty reads and positive skips rethrow the retained failure.
+    ///
+    /// @param count the maximum number of filtered bytes to skip
+    /// @return the number of bytes skipped, possibly fewer than requested at end-of-input
+    /// @throws IOException if `count` is positive and the stream is closed, or reading or transforming input fails
+    @Override
+    public long skip(long count) throws IOException {
+        if (count <= 0) {
+            return 0;
+        }
+        ensureOpen();
+        rethrowFailure();
+        long remaining = count;
+        while (remaining > 0 && fill()) {
+            ByteBuffer ready = buffer.output();
+            int skipped = (int) Math.min(ready.remaining(), remaining);
+            ready.position(ready.position() + skipped);
+            remaining -= skipped;
+        }
+        return count - remaining;
+    }
+
+    /// Obtains a committed prefix or final suffix, retaining any source or transform failure.
+    ///
+    /// Buffered output is returned without reading upstream. The caller checks open and failure state first.
+    private boolean fill() throws IOException {
         try {
-            int total = 0;
-            while (true) {
-                ByteBuffer ready = buffer.output();
-                int copied = Math.min(ready.remaining(), length);
-                ready.get(bytes, offset, copied);
-                offset += copied;
-                length -= copied;
-                total += copied;
-
-                if (length == 0 || endReached) {
-                    return total == 0 && endReached ? -1 : total;
-                }
-
+            while (!buffer.output().hasRemaining() && !endReached) {
                 ByteBuffer writable = buffer.input();
                 int count = input.read(writable.array(), writable.position(), writable.remaining());
                 if (count < 0) {
@@ -111,6 +139,7 @@ public final class TransformingInputStream extends InputStream {
                     buffer.transform();
                 }
             }
+            return buffer.output().hasRemaining();
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
