@@ -55,6 +55,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies shared archive path parsing, composition, comparison, and URI behavior.
 @NotNullByDefault
 final class AbstractArkivoPathTest {
+    /// Retains canonical immutable input text without joining its parsed components again.
+    @ParameterizedTest
+    @ValueSource(strings = {"", "/", "a", "a/b", "/a/b", ".", "..", "../a", "/a/.././b",
+            "a\\b", "a:b/!/%20", "\u03b4/\u00e9/\ud83d\ude42"})
+    void reusesCanonicalPathText(String text) {
+        TestFileSystem fs = new TestFileSystem(null);
+        String input = new String(text.toCharArray());
+        assertSame(input, fs.getPath(input).toString());
+    }
+
     /// Checks lexical comparisons against component lists, including separators, roots, dots and Unicode text.
     @Test
     void comparesPathsAtComponentBoundaries() {

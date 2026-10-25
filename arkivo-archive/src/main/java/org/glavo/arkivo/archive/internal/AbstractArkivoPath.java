@@ -69,7 +69,12 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
 
     /// Creates a path from joined path text.
     private AbstractArkivoPath(F fileSystem, String value) {
-        this(fileSystem, value.startsWith("/"), pathNames(value));
+        this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+        this.absolute = value.startsWith("/");
+        this.names = pathNames(value);
+        // Dots are literal components; only redundant separators require rebuilding the text.
+        this.text = value.length() <= 1 || !value.endsWith("/") && value.indexOf("//") < 0
+                ? value : pathText(absolute, names);
     }
 
     /// Creates another path of the concrete format-specific type.

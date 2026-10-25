@@ -28,7 +28,7 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipOutputStream;
 
-/// Measures archive path iteration, comparisons, hashing, and URI conversion without entry I/O.
+/// Measures archive path parsing, iteration, comparisons, hashing, and URI conversion without entry I/O.
 @NotNullByDefault
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -62,6 +62,15 @@ public class ArchivePathBenchmark {
     /// Relative path with two components per repetition containing characters that require URI escaping.
     private @Nullable Path escapedPath;
 
+    /// Canonical absolute ASCII path text parsed by each invocation.
+    private String parseText = "";
+
+    /// Equivalent ASCII path text with redundant separators.
+    private String redundantText = "";
+
+    /// Canonical absolute Unicode path text parsed by each invocation.
+    private String unicodeText = "";
+
     /// Creates an empty archive and verifies operations on the generated paths.
     @Setup
     public void setUp() throws IOException {
@@ -72,6 +81,13 @@ public class ArchivePathBenchmark {
         }
         fileSystem = ZipArkivoFileSystem.open(archive);
         path = fileSystem.getPath("/" + "component/".repeat(depth));
+        parseText = path.toString();
+        redundantText = "//" + "component//".repeat(depth);
+        unicodeText = "/" + "\u03b4\ud83d\ude42/".repeat(depth - 1) + "\u03b4\ud83d\ude42";
+        if (!fileSystem.getPath(redundantText).equals(path)
+                || !fileSystem.getPath(unicodeText).toString().equals(unicodeText)) {
+            throw new IllegalStateException("Unexpected parsed path");
+        }
         equalPath = fileSystem.getPath(path.toString());
         prefix = fileSystem.getPath("/" + "component/".repeat(depth - 1));
         suffix = fileSystem.getPath("component/".repeat(depth - 1));
@@ -115,6 +131,24 @@ public class ArchivePathBenchmark {
     @Benchmark
     public Path firstComponent() {
         return Objects.requireNonNull(path).iterator().next();
+    }
+
+    /// Parses canonical ASCII path text into a new path.
+    @Benchmark
+    public Path parse() {
+        return Objects.requireNonNull(fileSystem).getPath(parseText);
+    }
+
+    /// Parses text whose repeated and trailing separators must be collapsed.
+    @Benchmark
+    public Path parseRedundant() {
+        return Objects.requireNonNull(fileSystem).getPath(redundantText);
+    }
+
+    /// Parses canonical Unicode path text into a new path.
+    @Benchmark
+    public Path parseUnicode() {
+        return Objects.requireNonNull(fileSystem).getPath(unicodeText);
     }
 
     /// Consumes each component so component-path allocations remain observable.
