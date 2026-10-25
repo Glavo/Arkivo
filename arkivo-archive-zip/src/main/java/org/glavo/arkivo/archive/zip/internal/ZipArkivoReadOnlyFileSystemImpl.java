@@ -910,7 +910,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             HashMap<String, ZipEntryRecord> entries = new HashMap<>();
             ArrayList<ZipEntryRecord> storageEntries = new ArrayList<>();
             HashSet<String> directories = new HashSet<>();
-            HashMap<String, HashSet<String>> children = new HashMap<>();
+            HashMap<String, ArrayList<String>> children = new HashMap<>();
             directories.add("");
 
             ByteBuffer centralDirectory = ByteBuffer.allocate(centralDirectoryIndexSize(endRecord.centralDirectorySize))
@@ -1804,36 +1804,36 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
     }
 
-    /// Adds an entry or directory key to the directory tree.
+    /// Adds a unique entry key and any missing ancestors to the directory tree.
     private static void addTreePath(
             String key,
             boolean directory,
             HashSet<String> directories,
-            HashMap<String, HashSet<String>> children
+            HashMap<String, ArrayList<String>> children
     ) {
         String current = key;
-        if (directory) {
-            directories.add(current);
+        if (directory && !directories.add(current)) {
+            // An earlier descendant already linked this directory into the tree.
+            return;
         }
 
         while (true) {
             int separator = current.lastIndexOf('/');
             String parent = separator >= 0 ? current.substring(0, separator) : "";
-            String child = current;
-            children.computeIfAbsent(parent, ignored -> new HashSet<>()).add(child);
-            if (parent.isEmpty()) {
+            children.computeIfAbsent(parent, ignored -> new ArrayList<>()).add(current);
+            // Every known directory, including the root, already has its ancestors linked.
+            if (!directories.add(parent)) {
                 break;
             }
-            directories.add(parent);
             current = parent;
         }
     }
 
-    /// Returns immutable child path lists sorted by path text.
-    private static Map<String, List<String>> freezeChildren(HashMap<String, HashSet<String>> children) {
+    /// Sorts the construction lists and returns immutable child path snapshots.
+    private static Map<String, List<String>> freezeChildren(HashMap<String, ArrayList<String>> children) {
         HashMap<String, List<String>> frozenChildren = new HashMap<>();
-        for (Map.Entry<String, HashSet<String>> entry : children.entrySet()) {
-            ArrayList<String> values = new ArrayList<>(entry.getValue());
+        for (Map.Entry<String, ArrayList<String>> entry : children.entrySet()) {
+            ArrayList<String> values = entry.getValue();
             values.sort(String::compareTo);
             frozenChildren.put(entry.getKey(), List.copyOf(values));
         }

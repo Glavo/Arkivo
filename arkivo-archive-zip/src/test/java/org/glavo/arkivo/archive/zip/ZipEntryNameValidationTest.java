@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -18,7 +19,12 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -41,6 +47,64 @@ final class ZipEntryNameValidationTest {
 
     /// The general-purpose flag declaring UTF-8 entry metadata.
     private static final int UTF8_FLAG = 1 << 11;
+
+    /// Explicit directories and their descendants produce the same sorted, duplicate-free tree in any order.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
+    void indexesSharedAncestorsIndependentlyOfEntryOrder(int seed) throws IOException {
+        var names = new ArrayList<>(List.of("a/", "a/b/", "a/b/z", "a/b/a", "a/c/value", "a/empty/",
+                "a/top", "other/deep/value", "other/", "root-file"));
+        Collections.shuffle(names, new Random(seed));
+        @Unmodifiable Map<String, @Unmodifiable List<String>> expectedChildren = Map.of(
+                "/", List.of("a", "other", "root-file"),
+                "/a", List.of("b", "c", "empty", "top"),
+                "/a/b", List.of("a", "z"),
+                "/a/c", List.of("value"),
+                "/a/empty", List.<String>of(),
+                "/other", List.of("deep"),
+                "/other/deep", List.of("value"));
+        try (var fileSystem = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(
+                archive(UTF8_FLAG, names.stream().map(ZipEntryNameValidationTest::bytes).toList())))) {
+            for (var entry : expectedChildren.entrySet()) {
+                var path = fileSystem.getPath(entry.getKey());
+                assertTrue(Files.isDirectory(path), entry.getKey());
+                try (var children = Files.list(path)) {
+                    assertEquals(entry.getValue(), children.map(child -> child.getFileName().toString()).toList(),
+                            entry.getKey());
+                }
+            }
+            for (String name : names) {
+                var attributes = Files.readAttributes(fileSystem.getPath(name), ZipArkivoEntryAttributes.class);
+                assertArrayEquals(bytes(name), attributes.rawPath());
+                assertEquals(name.endsWith("/"), attributes.isDirectory());
+            }
+        }
+    }
+
+    /// Shared deep prefixes remain connected without adding an ancestor repeatedly for each sibling.
+    @Test
+    void indexesDeepSharedAncestors() throws IOException {
+        String prefix = "parent/".repeat(32);
+        @Unmodifiable List<String> files = IntStream.range(0, 64)
+                .mapToObj(index -> prefix + "entry-" + index).toList();
+        var names = new ArrayList<>(files);
+        names.add(prefix);
+        names.add("parent/");
+        try (var fileSystem = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(
+                archive(UTF8_FLAG, names.stream().map(ZipEntryNameValidationTest::bytes).toList())))) {
+            var path = fileSystem.getPath("/");
+            for (int depth = 0; depth < 32; depth++) {
+                try (var children = Files.list(path)) {
+                    assertEquals(List.of(path.resolve("parent")), children.toList());
+                }
+                path = path.resolve("parent");
+            }
+            try (var children = Files.list(path)) {
+                assertEquals(files.stream().map(name -> "/" + name).sorted().toList(),
+                        children.map(Object::toString).toList());
+            }
+        }
+    }
 
     /// Verifies streaming and indexed readers enforce the same unsafe-name boundary.
     ///
@@ -271,6 +335,12 @@ final class ZipEntryNameValidationTest {
                 Arguments.of("regular file used as parent", bytes("dir"), bytes("dir/file.txt"),
                         "ZIP entry path conflicts with directory"),
                 Arguments.of("implicit directory replaced by regular file", bytes("dir/file.txt"), bytes("dir"),
+                        "ZIP entry path conflicts with directory"),
+                Arguments.of("duplicate explicit directory", bytes("dir/"), bytes("dir//./"),
+                        "Duplicate ZIP entry path"),
+                Arguments.of("deep implicit ancestor replaced by file", bytes("dir/sub/nested/file"), bytes("dir/sub"),
+                        "ZIP entry path conflicts with directory"),
+                Arguments.of("file becomes a deep ancestor", bytes("dir/sub"), bytes("dir/sub/nested/file"),
                         "ZIP entry path conflicts with directory")
         );
     }
