@@ -8,6 +8,8 @@ import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.file.attribute.FileTime;
@@ -220,6 +222,128 @@ final class ZipExtraFieldMetadataTest {
         assertEquals(4L, metadata.groupId());
     }
 
+    /// Does not parse later duplicate payloads or a central payload shadowed by a local field.
+    @ParameterizedTest
+    @ValueSource(ints = {0x5455, 0x000a, 0x000d, 0x5855, 0x7875})
+    void ignoresShadowedMalformedPayloads(int id) throws IOException {
+        byte[] valid = validField(id);
+        byte[] malformed = extraField(id, new byte[0]);
+        FileTime fallback = FileTime.fromMillis(0);
+        var expected = ZipExtraFieldMetadata.resolve(valid, new byte[0], fallback);
+        assertEquals(expected, ZipExtraFieldMetadata.resolve(concatenate(valid, malformed), malformed, fallback));
+        assertThrows(IOException.class, () -> ZipExtraFieldMetadata.resolve(
+                concatenate(malformed, valid), valid, fallback));
+    }
+
+    /// Uses the first central timestamp field when no local field of that type exists.
+    @ParameterizedTest
+    @ValueSource(ints = {0x5455, 0x000a, 0x000d, 0x5855})
+    void ignoresMalformedCentralDuplicates(int id) throws IOException {
+        byte[] valid = validField(id);
+        byte[] malformed = extraField(id, new byte[0]);
+        FileTime fallback = FileTime.fromMillis(0);
+        var expected = ZipExtraFieldMetadata.resolve(valid, new byte[0], fallback);
+        assertEquals(expected, ZipExtraFieldMetadata.resolve(new byte[0], concatenate(valid, malformed), fallback));
+        assertThrows(IOException.class, () -> ZipExtraFieldMetadata.resolve(
+                new byte[0], concatenate(malformed, valid), fallback));
+    }
+
+    /// Field presence, rather than a non-null parsed timestamp, suppresses the central field of the same type.
+    @Test
+    void emptyLocalTimestampsSuppressCentralTimestamps() throws IOException {
+        byte[] local = concatenate(extraField(0x5455, new byte[]{0}), extraField(0x000a, new byte[4]));
+        byte[] central = concatenate(validField(0x5455), validField(0x000a));
+        FileTime fallback = FileTime.fromMillis(987);
+        var result = ZipExtraFieldMetadata.resolve(local, central, fallback);
+        assertSame(fallback, result.lastModifiedTime());
+        assertSame(fallback, result.lastAccessTime());
+        assertSame(fallback, result.creationTime());
+    }
+
+    /// Keeps timestamp precedence independent of record order and the header containing each distinct field.
+    @Test
+    void resolvesEveryTimestampOrderAndHeaderPartition() throws IOException {
+        byte @Unmodifiable [] @Unmodifiable [] fields = {
+                extraField(0x5855, new byte[]{1, 0, 0, 0, 2, 0, 0, 0}),
+                extraField(0x000d, new byte[]{3, 0, 0, 0, 4, 0, 0, 0}),
+                extraField(0x5455, new byte[]{3, 5, 0, 0, 0, 6, 0, 0, 0}),
+                ntfsField(0, 0, 116_444_736_000_000_001L)
+        };
+        FileTime fallback = FileTime.fromMillis(0);
+        for (int a = 0; a < 4; a++) {
+            for (int b = 0; b < 4; b++) {
+                if (b == a) continue;
+                for (int c = 0; c < 4; c++) {
+                    if (c == a || c == b) continue;
+                    int d = 6 - a - b - c;
+                    for (int mask = 0; mask < 16; mask++) {
+                        byte[] local = new byte[0];
+                        byte[] central = new byte[0];
+                        for (int index : new int[]{a, b, c, d}) {
+                            if ((mask & (1 << index)) != 0) local = concatenate(local, fields[index]);
+                            else central = concatenate(central, fields[index]);
+                        }
+                        var result = ZipExtraFieldMetadata.resolve(local, central, fallback);
+                        assertEquals(Instant.ofEpochSecond(5), result.lastModifiedTime().toInstant());
+                        assertEquals(Instant.ofEpochSecond(6), result.lastAccessTime().toInstant());
+                        assertEquals(Instant.ofEpochSecond(0, 100), result.creationTime().toInstant());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Continues validating selected low-priority payloads even when NTFS supplies every timestamp.
+    @ParameterizedTest
+    @ValueSource(ints = {0x5455, 0x000d, 0x5855, 0x7875})
+    void rejectsMalformedLowerPriorityFields(int id) {
+        byte[] local = concatenate(validField(0x000a), extraField(id, new byte[0]));
+        assertThrows(IOException.class, () -> ZipExtraFieldMetadata.resolve(local, new byte[0], FileTime.fromMillis(0)));
+    }
+
+    /// Stops searching after all relevant fields have been found; full record validation belongs to the caller.
+    @Test
+    void doesNotScanPastAllSelectedFields() throws IOException {
+        byte[] local = concatenate(validField(0x000a), validField(0x5455), validField(0x000d),
+                validField(0x5855), validField(0x7875));
+        byte[] central = concatenate(validField(0x000a), validField(0x5455), validField(0x000d), validField(0x5855));
+        byte[] malformedTail = {1};
+        FileTime fallback = FileTime.fromMillis(0);
+        assertEquals(ZipExtraFieldMetadata.resolve(local, new byte[0], fallback),
+                ZipExtraFieldMetadata.resolve(concatenate(local, malformedTail), malformedTail, fallback));
+        assertEquals(ZipExtraFieldMetadata.resolve(new byte[0], central, fallback),
+                ZipExtraFieldMetadata.resolve(new byte[0], concatenate(central, malformedTail), fallback));
+    }
+
+    /// Tolerates padding and opaque unknown tails while rejecting truncated recognized records before a search ends.
+    @Test
+    void preservesTrailingRecordValidation() throws IOException {
+        byte[] valid = validField(0x5455);
+        FileTime fallback = FileTime.fromMillis(0);
+        var expected = ZipExtraFieldMetadata.resolve(valid, new byte[0], fallback);
+        for (byte[] tail : new byte[][]{new byte[3], {(byte) 0xfe, (byte) 0xca, 10, 0, 1}}) {
+            assertEquals(expected, ZipExtraFieldMetadata.resolve(concatenate(valid, tail), new byte[0], fallback));
+            assertEquals(expected, ZipExtraFieldMetadata.resolve(new byte[0], concatenate(valid, tail), fallback));
+        }
+        for (byte[] tail : new byte[][]{{1}, {0x55, 0x54, 10, 0, 1}}) {
+            assertThrows(IOException.class, () -> ZipExtraFieldMetadata.resolve(
+                    concatenate(valid, tail), new byte[0], fallback));
+            assertThrows(IOException.class, () -> ZipExtraFieldMetadata.resolve(
+                    new byte[0], concatenate(valid, tail), fallback));
+        }
+    }
+
+    /// Builds a valid payload for each metadata type used by precedence and duplicate tests.
+    private static byte @Unmodifiable [] validField(int id) {
+        return switch (id) {
+            case 0x5455 -> extraField(id, extendedTimestamp(123));
+            case 0x000a -> ntfsField(1, 2, 3);
+            case 0x000d, 0x5855 -> extraField(id, new byte[]{4, 0, 0, 0, 5, 0, 0, 0});
+            case 0x7875 -> extraField(id, new byte[]{1, 1, 42, 1, 43});
+            default -> throw new IllegalArgumentException("Unknown test field: " + id);
+        };
+    }
+
     /// Preserves 100-nanosecond ticks across the full unsigned FILETIME range.
     @Test
     void preservesNtfsPrecisionAndUnsignedRange() throws IOException {
@@ -233,6 +357,75 @@ final class ZipExtraFieldMetadataTest {
             assertEquals(expected, metadata.lastAccessTime());
             assertEquals(expected, metadata.creationTime());
         }
+    }
+
+    /// Preserves every timestamp component when FILETIME values repeat, differ, or denote absent values.
+    @Test
+    void resolvesRepeatedAndDistinctNtfsTimes() throws IOException {
+        long @Unmodifiable [] values = {0, 1, 116_444_736_000_000_001L, Long.MIN_VALUE, -1L};
+        FileTime fallback = FileTime.fromMillis(12_345);
+        for (long modified : values) {
+            for (long accessed : values) {
+                for (long created : values) {
+                    var result = ZipExtraFieldMetadata.resolve(ntfsField(modified, accessed, created),
+                            new byte[0], fallback);
+                    FileTime expectedModified = expectedNtfsTime(modified, fallback);
+                    assertEquals(expectedModified, result.lastModifiedTime());
+                    assertEquals(expectedNtfsTime(accessed, expectedModified), result.lastAccessTime());
+                    assertEquals(expectedNtfsTime(created, expectedModified), result.creationTime());
+                }
+            }
+        }
+    }
+
+    /// Checks both sides of the signed-nanosecond range and the unsigned FILETIME range without losing a tick.
+    @ParameterizedTest
+    @ValueSource(longs = {
+            24_211_015_631_452_241L, 24_211_015_631_452_242L, 24_211_015_631_452_243L,
+            116_444_735_999_999_999L, 116_444_736_000_000_000L, 116_444_736_000_000_001L,
+            208_678_456_368_547_757L, 208_678_456_368_547_758L, 208_678_456_368_547_759L,
+            Long.MAX_VALUE, Long.MIN_VALUE, -1L
+    })
+    void preservesNtfsNanosecondRangeBoundaries(long ticks) throws IOException {
+        FileTime fallback = FileTime.fromMillis(0);
+        FileTime expected = expectedNtfsTime(ticks, fallback);
+        var result = ZipExtraFieldMetadata.resolve(ntfsField(ticks, ticks, ticks), new byte[0], fallback);
+        for (FileTime actual : new FileTime[]{result.lastModifiedTime(), result.lastAccessTime(), result.creationTime()}) {
+            assertEquals(expected, actual);
+            assertEquals(expected.toMillis(), actual.toMillis());
+            assertEquals(expected.to(java.util.concurrent.TimeUnit.NANOSECONDS), actual.to(java.util.concurrent.TimeUnit.NANOSECONDS));
+            assertEquals(expected.toInstant(), actual.toInstant());
+            assertEquals(expected.toString(), actual.toString());
+            assertEquals(expected.hashCode(), actual.hashCode());
+        }
+    }
+
+    /// Keeps signed extended timestamps distinct from unsigned legacy Unix timestamps at the same encoded value.
+    @ParameterizedTest
+    @ValueSource(ints = {Integer.MIN_VALUE, -1, 0, 1, Integer.MAX_VALUE})
+    void preservesUnixTimestampSignedness(int seconds) throws IOException {
+        FileTime fallback = FileTime.fromMillis(0);
+        var extended = ZipExtraFieldMetadata.resolve(extraField(0x5455, extendedTimestamp(seconds)), new byte[0], fallback);
+        assertEquals(FileTime.from(Instant.ofEpochSecond(seconds)), extended.lastModifiedTime());
+        byte[] legacy = new byte[8];
+        ByteArrayAccess.writeIntLittleEndian(legacy, 0, seconds);
+        ByteArrayAccess.writeIntLittleEndian(legacy, 4, seconds);
+        FileTime expected = FileTime.from(Instant.ofEpochSecond(Integer.toUnsignedLong(seconds)));
+        for (int id : new int[]{0x000d, 0x5855}) {
+            var result = ZipExtraFieldMetadata.resolve(extraField(id, legacy), new byte[0], fallback);
+            assertEquals(expected, result.lastModifiedTime());
+            assertEquals(expected, result.lastAccessTime());
+            assertEquals(expected, result.creationTime());
+        }
+    }
+
+    /// Converts an unsigned FILETIME using an independent arbitrary-precision reference calculation.
+    private static FileTime expectedNtfsTime(long ticks, FileTime fallback) {
+        if (ticks == 0) return fallback;
+        var parts = new java.math.BigInteger(Long.toUnsignedString(ticks))
+                .divideAndRemainder(java.math.BigInteger.valueOf(10_000_000));
+        return FileTime.from(Instant.ofEpochSecond(parts[0].longValueExact() - 11_644_473_600L,
+                parts[1].longValueExact() * 100));
     }
 
     /// Uses local NTFS values, falls back from absent values, and gives NTFS precision priority over Unix seconds.

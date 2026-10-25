@@ -42,6 +42,8 @@ public class ZipComparisonBenchmark {
     @Param({"8192"}) public int readBufferSize = 8192;
     /// Uses repeated random prefixes or incompressible random contents for each entry.
     @Param({"repeated"}) public String contentPattern = "repeated";
+    /// Uses only DOS timestamps, an extended Unix time, or NTFS times beyond the Unix field's range.
+    @Param({"dos"}) public String timestamps = "dos";
     /// The common relative directory prefix, including its trailing separator when nonempty.
     private String directoryPrefix = "";
     /// The generated archive.
@@ -87,6 +89,9 @@ public class ZipComparisonBenchmark {
         if (!Set.of("repeated", "random").contains(contentPattern)) {
             throw new IllegalArgumentException(contentPattern);
         }
+        if (!Set.of("dos", "unix", "ntfs").contains(timestamps)) {
+            throw new IllegalArgumentException(timestamps);
+        }
         directoryPrefix = "parent/".repeat(pathDepth);
         names = new String[entryCount];
         paths = new Path[entryCount];
@@ -107,6 +112,12 @@ public class ZipComparisonBenchmark {
                 ZipEntry e = new ZipEntry(Objects.requireNonNull(names[i]));
                 e.setMethod(method.equals("stored") ? ZipEntry.STORED : ZipEntry.DEFLATED);
                 e.setTimeLocal(java.time.LocalDateTime.of(2020, 1, 2, 3, 4, 6));
+                if (timestamps.equals("unix")) {
+                    e.setLastModifiedTime(java.nio.file.attribute.FileTime.fromMillis(1_577_934_246_000L));
+                } else if (timestamps.equals("ntfs")) {
+                    var time = java.nio.file.attribute.FileTime.fromMillis(7_258_118_400_000L);
+                    e.setLastModifiedTime(time).setLastAccessTime(time).setCreationTime(time);
+                }
                 e.setSize(entrySize); e.setCrc(crc.getValue());
                 out.putNextEntry(e); out.write(body); out.closeEntry();
             }
@@ -115,6 +126,16 @@ public class ZipComparisonBenchmark {
                 entryCount, entrySize, Files.size(archive));
         openShared();
         if (!Arrays.equals(body, readOne(0))) throw new AssertionError("Decoded entry differs");
+        if (fs != null && !timestamps.equals("dos")) {
+            var attributes = Files.readAttributes(Objects.requireNonNull(paths[0]),
+                    java.nio.file.attribute.BasicFileAttributes.class);
+            long expectedTime = timestamps.equals("unix") ? 1_577_934_246_000L : 7_258_118_400_000L;
+            if (attributes.lastModifiedTime().toMillis() != expectedTime
+                    || (timestamps.equals("ntfs") && (attributes.lastAccessTime().toMillis() != expectedTime
+                    || attributes.creationTime().toMillis() != expectedTime))) {
+                throw new AssertionError("Decoded timestamp differs");
+            }
+        }
         if (!operation.equals("read")) closeShared();
     }
     /// Opens exactly one implementation; no second JDK ZipFile keeps its shared index cached.

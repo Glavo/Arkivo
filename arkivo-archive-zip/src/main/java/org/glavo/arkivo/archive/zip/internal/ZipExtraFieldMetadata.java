@@ -15,6 +15,7 @@ import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.concurrent.TimeUnit;
 
 /// Parses entry metadata carried by recognized ZIP extra fields.
 @NotNullByDefault
@@ -33,6 +34,9 @@ final class ZipExtraFieldMetadata {
 
     /// The number of seconds from the Windows epoch to the Unix epoch.
     private static final long WINDOWS_EPOCH_OFFSET = 11_644_473_600L;
+
+    /// The last FILETIME tick whose Unix-epoch nanosecond value fits in a signed long.
+    private static final long MAX_NANO_FILETIME = WINDOWS_EPOCH_OFFSET * FILETIME_TICKS_PER_SECOND + Long.MAX_VALUE / 100;
 
     /// Prevents instantiation.
     private ZipExtraFieldMetadata() {
@@ -103,8 +107,8 @@ final class ZipExtraFieldMetadata {
 
     /// Resolves recognized metadata from local and central-directory extra fields.
     ///
-    /// A local extended timestamp field replaces the corresponding central-directory field because the central form
-    /// can carry only the modification time. NTFS timestamps take precedence over extended Unix timestamps, followed
+    /// For each timestamp field type, the first local field takes precedence over the first central field, even when
+    /// the local field supplies no timestamps. NTFS timestamps take precedence over extended Unix timestamps, followed
     /// by the older Unix fields and the DOS fallback. The new Unix ID field is defined only for local file headers.
     static EntryMetadata resolve(
             byte @Unmodifiable [] localExtraData,
@@ -172,8 +176,8 @@ final class ZipExtraFieldMetadata {
         }
         int offset = field.dataOffset();
         return new TimestampMetadata(
-                FileTime.from(Instant.ofEpochSecond(Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(source, offset + 4)))),
-                FileTime.from(Instant.ofEpochSecond(Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(source, offset)))),
+                FileTime.from(Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(source, offset + 4)), TimeUnit.SECONDS),
+                FileTime.from(Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(source, offset)), TimeUnit.SECONDS),
                 null);
     }
 
@@ -233,6 +237,10 @@ final class ZipExtraFieldMetadata {
         if (ticks == 0) {
             return null;
         }
+        // Keep Instant-based conversion before 1970: TimeUnit truncates negative fractions toward zero.
+        if (ticks >= WINDOWS_EPOCH_OFFSET * FILETIME_TICKS_PER_SECOND && ticks <= MAX_NANO_FILETIME) {
+            return FileTime.from((ticks - WINDOWS_EPOCH_OFFSET * FILETIME_TICKS_PER_SECOND) * 100, TimeUnit.NANOSECONDS);
+        }
         long seconds = Long.divideUnsigned(ticks, FILETIME_TICKS_PER_SECOND) - WINDOWS_EPOCH_OFFSET;
         long nanos = Long.remainderUnsigned(ticks, FILETIME_TICKS_PER_SECOND) * 100L;
         return FileTime.from(Instant.ofEpochSecond(seconds, nanos));
@@ -286,7 +294,7 @@ final class ZipExtraFieldMetadata {
 
     /// Converts one signed 32-bit Unix timestamp to a file time.
     private static FileTime unixTime(byte @Unmodifiable [] extraData, int offset) {
-        return FileTime.from(Instant.ofEpochSecond(ByteArrayAccess.readIntLittleEndian(extraData, offset)));
+        return FileTime.from(ByteArrayAccess.readIntLittleEndian(extraData, offset), TimeUnit.SECONDS);
     }
 
     /// Parses an Info-ZIP new Unix extra field payload.
@@ -357,7 +365,7 @@ final class ZipExtraFieldMetadata {
     ) {
     }
 
-    /// Stores the optional timestamps parsed from one extended timestamp field.
+    /// Stores optional timestamps parsed from a timestamp field or merged from fields of different types.
     ///
     /// @param lastModifiedTime the parsed last modification time, or `null` when absent
     /// @param lastAccessTime   the parsed last access time, or `null` when absent
