@@ -7,7 +7,10 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.PosixFilePermission;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
@@ -26,6 +29,13 @@ public final class PosixModes {
     /// The POSIX file type bits for a symbolic link.
     public static final int SYMBOLIC_LINK_FILE_TYPE = 0120000;
 
+    /// The nine permission bits, excluding file type and special mode bits.
+    private static final int PERMISSION_MASK = 0777;
+
+    /// Immutable permission sets indexed by the low nine mode bits.
+    private static final @Unmodifiable List<@Unmodifiable Set<PosixFilePermission>> PERMISSION_SETS =
+            createPermissionSets();
+
     /// Prevents instantiation.
     private PosixModes() {
     }
@@ -35,35 +45,21 @@ public final class PosixModes {
     /// @param mode the integral POSIX mode whose low nine bits are decoded
     /// @return the immutable decoded permission set
     public static @Unmodifiable Set<PosixFilePermission> permissions(long mode) {
-        EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-        if ((mode & 0400L) != 0) {
-            permissions.add(PosixFilePermission.OWNER_READ);
+        return PERMISSION_SETS.get((int) mode & PERMISSION_MASK);
+    }
+
+    /// Builds the bounded lookup table without exposing its mutable construction sets.
+    private static @Unmodifiable List<@Unmodifiable Set<PosixFilePermission>> createPermissionSets() {
+        var result = new ArrayList<@Unmodifiable Set<PosixFilePermission>>(PERMISSION_MASK + 1);
+        PosixFilePermission @Unmodifiable [] values = PosixFilePermission.values();
+        for (int mode = 0; mode <= PERMISSION_MASK; mode++) {
+            EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
+            for (PosixFilePermission permission : values) {
+                if ((mode & permissionBit(permission)) != 0) permissions.add(permission);
+            }
+            result.add(Collections.unmodifiableSet(permissions));
         }
-        if ((mode & 0200L) != 0) {
-            permissions.add(PosixFilePermission.OWNER_WRITE);
-        }
-        if ((mode & 0100L) != 0) {
-            permissions.add(PosixFilePermission.OWNER_EXECUTE);
-        }
-        if ((mode & 0040L) != 0) {
-            permissions.add(PosixFilePermission.GROUP_READ);
-        }
-        if ((mode & 0020L) != 0) {
-            permissions.add(PosixFilePermission.GROUP_WRITE);
-        }
-        if ((mode & 0010L) != 0) {
-            permissions.add(PosixFilePermission.GROUP_EXECUTE);
-        }
-        if ((mode & 0004L) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_READ);
-        }
-        if ((mode & 0002L) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_WRITE);
-        }
-        if ((mode & 0001L) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_EXECUTE);
-        }
-        return Set.copyOf(permissions);
+        return List.copyOf(result);
     }
 
     /// Encodes POSIX permissions as the low nine mode bits.
@@ -74,19 +70,24 @@ public final class PosixModes {
         Objects.requireNonNull(permissions, "permissions");
         int mode = 0;
         for (PosixFilePermission permission : permissions) {
-            mode |= switch (permission) {
-                case OWNER_READ -> 0400;
-                case OWNER_WRITE -> 0200;
-                case OWNER_EXECUTE -> 0100;
-                case GROUP_READ -> 0040;
-                case GROUP_WRITE -> 0020;
-                case GROUP_EXECUTE -> 0010;
-                case OTHERS_READ -> 0004;
-                case OTHERS_WRITE -> 0002;
-                case OTHERS_EXECUTE -> 0001;
-            };
+            mode |= permissionBit(permission);
         }
         return mode;
+    }
+
+    /// Returns the POSIX bit corresponding to one non-null permission.
+    static int permissionBit(PosixFilePermission permission) {
+        return switch (permission) {
+            case OWNER_READ -> 0400;
+            case OWNER_WRITE -> 0200;
+            case OWNER_EXECUTE -> 0100;
+            case GROUP_READ -> 0040;
+            case GROUP_WRITE -> 0020;
+            case GROUP_EXECUTE -> 0010;
+            case OTHERS_READ -> 0004;
+            case OTHERS_WRITE -> 0002;
+            case OTHERS_EXECUTE -> 0001;
+        };
     }
 
     /// Returns whether a mode value has regular-file type bits or no type bits.

@@ -4,11 +4,16 @@
 package org.glavo.arkivo.archive.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
+import java.util.EnumSet;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -21,6 +26,59 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests shared POSIX mode and principal support.
 @NotNullByDefault
 final class PosixSupportTest {
+    /// Checks every permission combination against the JDK parser, independently of Arkivo's reverse mapping.
+    @Test
+    void decodesEveryPermissionCombination() {
+        for (int bits = 0; bits <= 0777; bits++) {
+            StringBuilder text = new StringBuilder(9);
+            for (int index = 0; index < 9; index++) {
+                text.append((bits & (0400 >> index)) != 0 ? "rwxrwxrwx".charAt(index) : '-');
+            }
+            Set<PosixFilePermission> expected = PosixFilePermissions.fromString(text.toString());
+            Set<PosixFilePermission> actual = PosixModes.permissions(bits);
+            assertEquals(expected, actual, text.toString());
+            assertEquals(expected.hashCode(), actual.hashCode());
+            assertEquals(bits, PosixModes.permissionBits(actual));
+            for (long highBits : new long[]{0, 07000, 0100000, 0040000, 0120000, 0060000,
+                    1L << 32, Long.MIN_VALUE, ~0777L}) {
+                assertSame(actual, PosixModes.permissions(highBits | bits));
+            }
+            assertSame(actual, PosixPermissions.copyOf(expected, "permissions"));
+            expected.clear();
+            assertEquals(Integer.bitCount(bits), actual.size());
+            assertThrows(UnsupportedOperationException.class, actual::clear);
+            assertThrows(UnsupportedOperationException.class, () -> actual.add(PosixFilePermission.OWNER_READ));
+            assertThrows(UnsupportedOperationException.class, () -> actual.remove(PosixFilePermission.OWNER_READ));
+            if (!actual.isEmpty()) {
+                var iterator = actual.iterator();
+                iterator.next();
+                assertThrows(UnsupportedOperationException.class, iterator::remove);
+            }
+        }
+    }
+
+    /// Rejects invalid dynamic attributes and isolates a validated snapshot from later caller changes.
+    @Test
+    void rejectsInvalidPermissionValuesWithoutChangingSnapshots() {
+        EnumSet<PosixFilePermission> source = EnumSet.of(PosixFilePermission.OWNER_READ);
+        Set<PosixFilePermission> snapshot = PosixPermissions.copyOf(source, "permissions");
+        source.clear();
+        assertEquals(Set.of(PosixFilePermission.OWNER_READ), snapshot);
+        Set<@Nullable Object> withNull = new HashSet<>();
+        withNull.add(null);
+        withNull.add(PosixFilePermission.OWNER_READ);
+        for (Object invalid : List.of(withNull, Set.of(PosixFilePermission.OWNER_READ, "OWNER_WRITE"), 0644)) {
+            assertThrows(IllegalArgumentException.class, () -> PosixPermissions.copyOf(invalid, "permissions"));
+        }
+        assertThrows(IllegalArgumentException.class, () -> PosixPermissions.copyOf(null, "permissions"));
+        assertThrows(NullPointerException.class, () -> PosixPermissions.copyOf(source, null));
+        assertThrows(NullPointerException.class, () -> PosixModes.permissionBits(null));
+        Set<@Nullable PosixFilePermission> typedWithNull = new HashSet<>();
+        typedWithNull.add(null);
+        assertThrows(NullPointerException.class, () -> PosixModes.permissionBits(typedWithNull));
+        assertEquals(Set.of(PosixFilePermission.OWNER_READ), snapshot);
+    }
+
     /// Verifies all POSIX permission bits round-trip without retaining file type bits.
     @Test
     void roundTripsPermissionBits() {

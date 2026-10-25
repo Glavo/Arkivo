@@ -8,11 +8,10 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.PosixFilePermission;
-import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
 
-/// Validates and copies dynamically typed POSIX permission sets.
+/// Validates dynamically typed POSIX permission sets.
 @NotNullByDefault
 public final class PosixPermissions {
     /// Prevents instantiation.
@@ -34,13 +33,13 @@ public final class PosixPermissions {
             throw new IllegalArgumentException(description + " value must be a Set");
         }
 
-        EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
+        int mode = 0;
         for (Object element : values) {
             if (!(element instanceof PosixFilePermission permission)) {
                 throw new IllegalArgumentException(description + " contains a non-POSIX permission value");
             }
-            permissions.add(permission);
+            mode |= PosixModes.permissionBit(permission);
         }
-        return Set.copyOf(permissions);
+        return PosixModes.permissions(mode);
     }
 }
