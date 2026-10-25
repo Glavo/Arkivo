@@ -990,12 +990,12 @@ public final class CodecChannelAdapters {
                 return 0;
             }
             int start = target.position();
-            CodecResult result = decode(target);
+            CodecResult.Status status = decodeStatus(target, false);
             int produced = target.position() - start;
             if (produced != 0) {
                 return produced;
             }
-            return result.status() == CodecResult.Status.END_OF_INPUT ? -1 : 0;
+            return status == CodecResult.Status.END_OF_INPUT ? -1 : 0;
         }
 
         /// Decodes bytes and continues across frame boundaries when supported.
@@ -1016,20 +1016,26 @@ public final class CodecChannelAdapters {
             }
             long inputStart = inputBytes;
             long outputStart = outputBytes;
+            CodecResult.Status status = decodeStatus(target, stopAtFrame);
+            return new CodecResult(inputBytes - inputStart, outputBytes - outputStart, status);
+        }
+
+        /// Drives the engine under the operation monitor with an already validated target.
+        /// Ordinary reads use only the status; incremental decoding adds per-call counters at its entry point.
+        private CodecResult.Status decodeStatus(ByteBuffer target, boolean stopAtFrame) throws IOException {
             if (streamFinished) {
-                return new CodecResult(0L, 0L, CodecResult.Status.END_OF_INPUT);
+                return CodecResult.Status.END_OF_INPUT;
             }
             if (frameFinished) {
-                CodecResult.Status status = stopAtFrame
+                return stopAtFrame
                         ? CodecResult.Status.FRAME_FINISHED
                         : CodecResult.Status.END_OF_INPUT;
-                return new CodecResult(0L, 0L, status);
             }
             if (!target.hasRemaining()) {
-                return new CodecResult(0L, 0L, CodecResult.Status.ACTIVE);
+                return CodecResult.Status.ACTIVE;
             }
             if (betweenFrames && !beginNextFrame()) {
-                return new CodecResult(0L, 0L, CodecResult.Status.END_OF_INPUT);
+                return CodecResult.Status.END_OF_INPUT;
             }
 
             while (true) {
@@ -1039,7 +1045,7 @@ public final class CodecChannelAdapters {
                 ensureOpen();
                 if (concatenatedFrames && endOfInput && !input.hasRemaining() && inputBytes == 0L) {
                     streamFinished = true;
-                    return new CodecResult(0L, 0L, CodecResult.Status.END_OF_INPUT);
+                    return CodecResult.Status.END_OF_INPUT;
                 }
                 int inputPosition = input.position();
                 int outputPosition = target.position();
@@ -1059,32 +1065,19 @@ public final class CodecChannelAdapters {
                 if (outcome == CodecOutcome.FINISHED) {
                     if (!concatenatedFrames) {
                         frameFinished = true;
-                        CodecResult.Status status = stopAtFrame
+                        return stopAtFrame
                                 ? CodecResult.Status.FRAME_FINISHED
                                 : CodecResult.Status.END_OF_INPUT;
-                        return new CodecResult(inputBytes - inputStart, outputBytes - outputStart, status);
                     }
                     betweenFrames = true;
                     if (stopAtFrame) {
-                        return new CodecResult(
-                                inputBytes - inputStart,
-                                outputBytes - outputStart,
-                                CodecResult.Status.FRAME_FINISHED
-                        );
+                        return CodecResult.Status.FRAME_FINISHED;
                     }
                     if (!target.hasRemaining()) {
-                        return new CodecResult(
-                                inputBytes - inputStart,
-                                outputBytes - outputStart,
-                                CodecResult.Status.ACTIVE
-                        );
+                        return CodecResult.Status.ACTIVE;
                     }
                     if (!beginNextFrame()) {
-                        return new CodecResult(
-                                inputBytes - inputStart,
-                                outputBytes - outputStart,
-                                CodecResult.Status.END_OF_INPUT
-                        );
+                        return CodecResult.Status.END_OF_INPUT;
                     }
                     continue;
                 }
@@ -1098,11 +1091,7 @@ public final class CodecChannelAdapters {
                     if (target.position() == outputPosition && target.hasRemaining()) {
                         throw new IOException("Compression decoder requested output without filling its target buffer");
                     }
-                    return new CodecResult(
-                            inputBytes - inputStart,
-                            outputBytes - outputStart,
-                            CodecResult.Status.ACTIVE
-                    );
+                    return CodecResult.Status.ACTIVE;
                 }
                 if (outcome != CodecOutcome.NEEDS_INPUT) {
                     throw new IOException("Unexpected compression decode outcome: " + outcome);
@@ -1111,11 +1100,7 @@ public final class CodecChannelAdapters {
                     throw new IOException("Compression decoder requested input after end of input");
                 }
                 if (target.position() != outputPosition) {
-                    return new CodecResult(
-                            inputBytes - inputStart,
-                            outputBytes - outputStart,
-                            CodecResult.Status.ACTIVE
-                    );
+                    return CodecResult.Status.ACTIVE;
                 }
                 readInput();
             }

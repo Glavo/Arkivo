@@ -1492,6 +1492,59 @@ final class CodecChannelAdaptersTest {
         single.close();
     }
 
+    /// Keeps per-call counters independent when ordinary reads alternate with both decoding entry points.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void interleavesReadAndDecodeAcrossFrameBoundaries(boolean interruptible) throws IOException {
+        byte[] content = {10, 20, 30, 40, 50, 60};
+        for (boolean direct : new boolean[]{false, true}) {
+            ReadableByteChannel source = interruptible
+                    ? new ImmediateInterruptibleReadableChannel(content) : new ChunkedReadableChannel(content);
+            var engine = new FrameByteDecoder();
+            try (var channel = CodecChannelAdapters.newFramedReadableByteChannel(
+                    source, ResourceOwnership.OWNED, () -> engine)) {
+                ByteBuffer target = direct ? ByteBuffer.allocateDirect(3) : ByteBuffer.allocate(3);
+                for (int index = 0; index < content.length; index++) {
+                    target.clear().position(1).limit(2);
+                    if (index % 3 == 0) {
+                        assertEquals(1, channel.read(target));
+                    } else {
+                        boolean stopAtFrame = index % 3 == 2;
+                        CodecResult result = stopAtFrame ? channel.decodeFrame(target) : channel.decode(target);
+                        assertEquals(new CodecResult(1, 1, stopAtFrame
+                                ? CodecResult.Status.FRAME_FINISHED : CodecResult.Status.ACTIVE), result);
+                    }
+                    assertEquals(content[index], target.get(1));
+                    assertEquals(2, target.position());
+                    assertEquals(2, target.limit());
+                    assertEquals(index + 1, channel.inputBytes());
+                    assertEquals(index + 1, channel.outputBytes());
+                    assertEquals(index, engine.resetCalls());
+                    assertEquals(0, channel.read(target));
+                    assertEquals(new CodecResult(0, 0, CodecResult.Status.ACTIVE), channel.decode(target));
+                    assertEquals(new CodecResult(0, 0, CodecResult.Status.ACTIVE), channel.decodeFrame(target));
+                    assertEquals(index, engine.resetCalls());
+                }
+                target.clear();
+                assertEquals(-1, channel.read(target));
+                assertEquals(0, target.position());
+                for (int repeat = 0; repeat < 2; repeat++) {
+                    assertEquals(new CodecResult(0, 0, CodecResult.Status.END_OF_INPUT), channel.decode(target));
+                    assertEquals(new CodecResult(0, 0, CodecResult.Status.END_OF_INPUT), channel.decodeFrame(target));
+                    assertEquals(-1, channel.read(target));
+                    target.limit(0);
+                    assertEquals(0, channel.read(target));
+                    assertEquals(new CodecResult(0, 0, CodecResult.Status.END_OF_INPUT), channel.decode(target));
+                    target.clear();
+                }
+                assertEquals(content.length - 1, engine.resetCalls());
+                assertEquals(content.length, channel.sourceBytes());
+            }
+            assertFalse(source.isOpen());
+            assertEquals(1, engine.closeCalls());
+        }
+    }
+
     /// Verifies framed decoding reports each boundary and resets only before a following frame.
     @Test
     void reportsFramedBoundariesAndResetsBetweenFrames() throws IOException {
@@ -1679,8 +1732,9 @@ final class CodecChannelAdaptersTest {
     }
 
     /// Verifies decoder input obtained before a source exception remains observable and can be resumed.
-    @Test
-    void preservesPartiallyReadInputAfterSourceFailure() throws IOException {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesPartiallyReadInputAfterSourceFailure(boolean readFirst) throws IOException {
         PartiallyFailingReadableChannel source = new PartiallyFailingReadableChannel(new byte[]{1, 2});
         CopyDecoder decoder = new CopyDecoder();
         DecompressingReadableByteChannel channel = CodecChannelAdapters.newReadableByteChannel(
@@ -1689,17 +1743,22 @@ final class CodecChannelAdaptersTest {
                 () -> decoder
         );
 
-        IOException failure = assertThrows(IOException.class, () -> channel.decode(ByteBuffer.allocate(4)));
+        ByteBuffer target = ByteBuffer.allocate(4);
+        IOException failure = assertThrows(IOException.class, () -> {
+            if (readFirst) channel.read(target);
+            else channel.decode(target);
+        });
         assertEquals("source read failed", failure.getMessage());
         assertEquals(2, channel.sourceBytes());
         assertEquals(0, channel.inputBytes());
+        assertEquals(0, channel.outputBytes());
+        assertEquals(0, target.position());
         assertArrayEquals(new byte[]{1, 2}, remainingBytes(channel.unconsumedInput()));
 
-        ByteBuffer target = ByteBuffer.allocate(4);
         CodecResult resumed = channel.decode(target);
-        assertEquals(CodecResult.Status.ACTIVE, resumed.status());
+        assertEquals(new CodecResult(2, 2, CodecResult.Status.ACTIVE), resumed);
         CodecResult end = channel.decode(target);
-        assertEquals(CodecResult.Status.END_OF_INPUT, end.status());
+        assertEquals(new CodecResult(0, 0, CodecResult.Status.END_OF_INPUT), end);
         target.flip();
         assertArrayEquals(new byte[]{1, 2}, remainingBytes(target));
         channel.close();

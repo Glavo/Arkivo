@@ -143,6 +143,66 @@ final class CodecChannelContractTest {
         }
     }
 
+    /// Alternates ordinary reads and incremental decoding without mixing per-call and cumulative progress.
+    @Test
+    void interleavesReadsAndDecodingAcrossAllCodecs() throws IOException {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec<?> codec = format.defaultCodec();
+            for (byte[] content : new byte[][]{new byte[0],
+                    "Alternating read and decode operations".getBytes(StandardCharsets.UTF_8)}) {
+                byte[] compressed = compressFrame(codec, content);
+                for (boolean direct : new boolean[]{false, true}) {
+                    for (long maximum : new long[]{-1L, content.length}) {
+                        CompressionCodec<?> configured = CodecContractConfigurations
+                                .decoderCodec(codec, content.length).withMaximumOutputSize(maximum);
+                        try (var channel = configured.newReadableByteChannel(
+                                Channels.newChannel(new ByteArrayInputStream(compressed)))) {
+                            ByteBuffer target = direct ? ByteBuffer.allocateDirect(7) : ByteBuffer.allocate(7);
+                            var decoded = new ByteArrayOutputStream();
+                            int calls = 0;
+                            while (true) {
+                                assertTrue(calls < content.length + 10, format.name());
+                                target.clear();
+                                for (int i = 0; i < target.capacity(); i++) target.put(i, BUFFER_GUARD);
+                                target.position(2).limit(5);
+                                long inputBefore = channel.inputBytes();
+                                long outputBefore = channel.outputBytes();
+                                boolean finished;
+                                if (calls++ % 2 == 0) {
+                                    int read = channel.read(target);
+                                    assertEquals(Math.max(read, 0), target.position() - 2, format.name());
+                                    assertTrue(read != 0, format.name());
+                                    finished = read < 0;
+                                } else {
+                                    CodecResult result = channel.decode(target);
+                                    assertEquals(channel.inputBytes() - inputBefore, result.inputBytes(), format.name());
+                                    assertEquals(channel.outputBytes() - outputBefore, result.outputBytes(), format.name());
+                                    finished = result.status() == CodecResult.Status.END_OF_INPUT;
+                                }
+                                int produced = target.position() - 2;
+                                assertEquals(produced, channel.outputBytes() - outputBefore, format.name());
+                                assertEquals(5, target.limit(), format.name());
+                                int end = target.position();
+                                target.clear();
+                                for (int i = 0; i < target.capacity(); i++) {
+                                    if (i >= 2 && i < end) decoded.write(target.get(i));
+                                    else assertEquals(BUFFER_GUARD, target.get(i), format.name());
+                                }
+                                if (finished) break;
+                            }
+                            assertArrayEquals(content, decoded.toByteArray(), format.name());
+                            assertEquals(content.length, channel.outputBytes(), format.name());
+                            assertEquals(new CodecResult(0, 0, CodecResult.Status.END_OF_INPUT),
+                                    channel.decode(target.clear()), format.name());
+                            assertEquals(-1, channel.read(target), format.name());
+                            assertEquals(0, channel.read(target.limit(0)), format.name());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Rejects read-only output before reading compressed data, including zero-limit completion probes.
     @Test
     void rejectsReadOnlyTargetsAcrossAllCodecs() throws IOException {
