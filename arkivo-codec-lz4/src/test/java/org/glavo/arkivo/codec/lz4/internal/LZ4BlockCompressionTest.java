@@ -27,6 +27,32 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies greedy match selection, tail boundaries, and dictionary truncation.
 @NotNullByDefault
 final class LZ4BlockCompressionTest {
+    /// Preserves match endings at each byte and bit of a word, including the mandatory literal tail.
+    @Test
+    void preservesMatchScanBoundaries() throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        var compressor = new LZ4BlockCompression();
+        for (int alignment = 0; alignment < Long.BYTES; alignment++) {
+            byte[] dictionary = content(64 + alignment, 0, alignment);
+            for (int length = 4; length <= 12; length++) {
+                for (int tail = 5; tail <= 9; tail++) {
+                    for (int bit = 0; bit < Byte.SIZE; bit++) {
+                        byte[] source = Arrays.copyOfRange(dictionary, alignment, alignment + length + tail);
+                        source[length] ^= (byte) (1 << bit);
+                        byte[] encoded = new byte[Math.toIntExact(LZ4BlockCompression.maxCompressedLength(source.length))];
+                        int encodedLength = compressor.compressInto(source, source.length, dictionary, encoded, 0);
+                        byte[] result = Arrays.copyOf(encoded, encodedLength);
+                        digest.update(result);
+                        var decoded = LZ4BlockDecompression.decompress(result, dictionary, source.length, -1, -1);
+                        assertArrayEquals(source, Arrays.copyOf(decoded.bytes(), decoded.length()));
+                    }
+                }
+            }
+        }
+        assertEquals("a7a124cef9cac6611d4c26531d005782c5ab0870dbd4da4641a04a5a6a111e57",
+                HexFormat.of().formatHex(digest.digest()));
+    }
+
     /// Reinitializes one match table across unrelated blocks and dictionaries, and releases it on request.
     @Test
     void reusesAndReleasesMatchTable() throws Exception {
@@ -48,7 +74,7 @@ final class LZ4BlockCompressionTest {
                 byte[] dictionary = content(dictionarySize, 7, 0);
                 byte[] source = content(size, dictionarySize == 0 ? 0 : 7, dictionarySize);
                 int length = compressor.compressInto(source, size, dictionary, output, 0);
-                assertArrayEquals(LZ4BlockCompression.compress(source, dictionary), Arrays.copyOf(output, length));
+                assertArrayEquals(compress(source, dictionary), Arrays.copyOf(output, length));
                 assertSame(table, tableField.get(compressor));
             }
         }
@@ -57,7 +83,7 @@ final class LZ4BlockCompressionTest {
         assertEquals(0, ((int[]) tableField.get(compressor)).length);
         int length = compressor.compressInto(new byte[12], 12, new byte[0], output, 0);
         assertNotSame(table, tableField.get(compressor));
-        assertArrayEquals(LZ4BlockCompression.compress(new byte[12]), Arrays.copyOf(output, length));
+        assertArrayEquals(compress(new byte[12]), Arrays.copyOf(output, length));
     }
 
     /// Encodes only the occupied input prefix and leaves both destination guard regions unchanged.
@@ -73,7 +99,7 @@ final class LZ4BlockCompressionTest {
                 byte[] padded = Arrays.copyOf(source, size + 137);
                 Arrays.fill(padded, size, padded.length, (byte) 0x5a);
                 byte[] original = padded.clone();
-                byte[] expected = LZ4BlockCompression.compress(source, dictionary);
+                byte[] expected = compress(source, dictionary);
                 for (int offset : new int[]{0, 1, 4, 7}) {
                     int capacity = Math.toIntExact(LZ4BlockCompression.maxCompressedLength(size));
                     byte[] output = new byte[offset + capacity + 17];
@@ -113,7 +139,7 @@ final class LZ4BlockCompressionTest {
         for (int size = 0; size < 12; size++) {
             byte[] literals = new byte[size + 1];
             assertEquals(literals.length, compressor.compressInto(source, size, dictionary, literals, 0));
-            assertArrayEquals(LZ4BlockCompression.compress(Arrays.copyOf(source, size)), literals);
+            assertArrayEquals(compress(Arrays.copyOf(source, size)), literals);
         }
     }
 
@@ -143,7 +169,7 @@ final class LZ4BlockCompressionTest {
                     }
                 }
                 byte[] originalSource = source.clone();
-                byte[] encoded = LZ4BlockCompression.compress(source, dictionary);
+                byte[] encoded = compress(source, dictionary);
                 digest.update(encoded);
                 var decoded = LZ4BlockDecompression.decompress(encoded, dictionary, size, -1, -1);
                 assertArrayEquals(originalSource, Arrays.copyOf(decoded.bytes(), decoded.length()));
@@ -167,7 +193,7 @@ final class LZ4BlockCompressionTest {
             int relative = offset - prefixLength;
             source[offset] = (byte) (relative / 4096 * 64 + relative % 31);
         }
-        byte[] encoded = LZ4BlockCompression.compress(source);
+        byte[] encoded = compress(source);
         // At least two thirds of the repetitive suffix must be saved despite the skipped prefix probes.
         assertTrue(encoded.length <= prefixLength + prefixLength / 255 + 4096,
                 "encoded=" + encoded.length);
@@ -182,12 +208,24 @@ final class LZ4BlockCompressionTest {
         byte[] source = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
         byte[] dictionary = Arrays.copyOf(source, 7);
         assertArrayEquals(new byte[]{3, 7, 0, 0x50, 7, 8, 9, 10, 11},
-                LZ4BlockCompression.compress(source, dictionary));
+                compress(source, dictionary));
         byte[] shorter = Arrays.copyOf(source, 11);
         byte[] literals = new byte[12];
         literals[0] = (byte) 0xb0;
         System.arraycopy(shorter, 0, literals, 1, shorter.length);
-        assertArrayEquals(literals, LZ4BlockCompression.compress(shorter, dictionary));
+        assertArrayEquals(literals, compress(shorter, dictionary));
+    }
+
+    /// Compresses a complete fixture without prefix history.
+    private static byte[] compress(byte[] source) {
+        return compress(source, new byte[0]);
+    }
+
+    /// Returns the occupied encoded prefix for a fixture with optional history.
+    private static byte[] compress(byte[] source, byte[] dictionary) {
+        byte[] output = new byte[Math.toIntExact(LZ4BlockCompression.maxCompressedLength(source.length))];
+        int length = new LZ4BlockCompression().compressInto(source, source.length, dictionary, output, 0);
+        return Arrays.copyOf(output, length);
     }
 
     /// Creates random literals or a periodic sequence continuing from the dictionary offset.

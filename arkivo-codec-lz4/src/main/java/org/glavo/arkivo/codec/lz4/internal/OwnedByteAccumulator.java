@@ -54,8 +54,15 @@ final class OwnedByteAccumulator {
     /// Transfers the collected bytes into an exact owned array and releases retained capacity.
     byte[] takeBytes() {
         byte[] result = size == bytes.length ? bytes : Arrays.copyOf(bytes, size);
-        bytes = new byte[0];
-        size = 0;
+        clear();
+        return result;
+    }
+
+    /// Transfers the backing array, including unused capacity, and empties this accumulator.
+    /// The caller must obtain [#size()] before the transfer to identify the occupied prefix.
+    byte[] takeStorage() {
+        byte[] result = bytes;
+        clear();
         return result;
     }
 

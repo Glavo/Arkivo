@@ -3,23 +3,100 @@
 
 package org.glavo.arkivo.codec.lz4.internal;
 
+import net.jpountz.lz4.LZ4Factory;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.lz4.LZ4BlockCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies raw LZ4 block encoder reset, backpressure, and terminal-state behavior.
 @NotNullByDefault
 final class LZ4BlockEncoderLifecycleTest {
+    /// Ignores spare input capacity, retains output capacity without emitting it, and survives output backpressure.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 11, 12, 8191, 8192, 8193, 65537})
+    void respectsOccupiedBufferPrefixes(int size) throws Exception {
+        var outputField = LZ4BlockEncoder.class.getDeclaredField("output");
+        outputField.setAccessible(true);
+        for (boolean periodic : new boolean[]{false, true}) {
+            byte[] expected = new byte[size];
+            new Random(42).nextBytes(expected);
+            if (periodic) {
+                for (int index = 7; index < size; index++) expected[index] = expected[index % 7];
+            }
+            byte[] inputBytes = Arrays.copyOf(expected, size + 17);
+            Arrays.fill(inputBytes, size, inputBytes.length, (byte) 0x5a);
+            try (var encoder = new LZ4BlockEncoder(size + 8192)) {
+                ByteBuffer input = ByteBuffer.wrap(inputBytes);
+                input.limit(Math.min(size, 1));
+                encoder.encode(input, ByteBuffer.allocate(0));
+                input.limit(size);
+                encoder.encode(input, ByteBuffer.allocate(0));
+                assertEquals(size, input.position());
+                Arrays.fill(inputBytes, (byte) 0x6b);
+
+                assertEquals(CodecOutcome.NEEDS_OUTPUT, encoder.finish(ByteBuffer.allocate(0)));
+                ByteBuffer pending = (ByteBuffer) outputField.get(encoder);
+                assertEquals(LZ4BlockCompression.maxCompressedLength(size), pending.capacity());
+                assertEquals(0, pending.position());
+                assertThrows(ReadOnlyBufferException.class,
+                        () -> encoder.finish(ByteBuffer.allocate(1).asReadOnlyBuffer()));
+                assertEquals(0, pending.position());
+
+                var encoded = new ByteArrayOutputStream();
+                CodecOutcome outcome;
+                do {
+                    byte[] targetBytes = new byte[1031];
+                    Arrays.fill(targetBytes, (byte) 0x7c);
+                    ByteBuffer target = ByteBuffer.wrap(targetBytes);
+                    target.position(3).limit(1027);
+                    outcome = encoder.finish(target);
+                    encoded.write(targetBytes, 3, target.position() - 3);
+                    for (int index = 0; index < 3; index++) assertEquals((byte) 0x7c, targetBytes[index]);
+                    for (int index = target.position(); index < targetBytes.length; index++) {
+                        assertEquals((byte) 0x7c, targetBytes[index]);
+                    }
+                } while (outcome != CodecOutcome.FINISHED);
+                assertArrayEquals(expected, LZ4Factory.safeInstance().safeDecompressor()
+                        .decompress(encoded.toByteArray(), size));
+                assertEquals(0, ((ByteBuffer) outputField.get(encoder)).capacity());
+            }
+        }
+    }
+
+    /// Transfers the owned array without trimming it and leaves the accumulator ready for reuse.
+    @Test
+    void transfersCollectedStorageWithoutCopying() throws Exception {
+        var accumulator = new OwnedByteAccumulator(16384);
+        var bytesField = OwnedByteAccumulator.class.getDeclaredField("bytes");
+        bytesField.setAccessible(true);
+        accumulator.append(ByteBuffer.wrap(new byte[]{1, 2, 3}), "Overflow");
+        byte[] storage = (byte[]) bytesField.get(accumulator);
+        assertEquals(3, accumulator.size());
+        assertSame(storage, accumulator.takeStorage());
+        assertEquals(0, accumulator.size());
+        assertEquals(0, ((byte[]) bytesField.get(accumulator)).length);
+        accumulator.append(ByteBuffer.wrap(new byte[]{4}), "Overflow");
+        assertArrayEquals(new byte[]{4}, accumulator.takeBytes());
+        assertArrayEquals(new byte[]{1, 2, 3}, Arrays.copyOf(storage, 3));
+        assertEquals(0, accumulator.size());
+    }
+
     /// Verifies reset discards both collected input and encoded bytes awaiting target space.
     @Test
     void resetsCollectedInputAndPendingOutput() throws IOException {

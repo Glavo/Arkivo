@@ -31,9 +31,6 @@ final class LZ4BlockCompression {
     /// Minimum distance from the final match start to the decoded block end.
     private static final int REQUIRED_LAST_MATCH_DISTANCE = 12;
 
-    /// Empty prefix history.
-    private static final byte[] EMPTY_DICTIONARY = new byte[0];
-
     /// Empty workspace used before a match search and after workspace release.
     private static final int @Unmodifiable [] EMPTY_HASH_TABLE = new int[0];
 
@@ -42,21 +39,6 @@ final class LZ4BlockCompression {
 
     /// Creates a compressor without allocating its match table.
     LZ4BlockCompression() {
-    }
-
-    /// Compresses a complete block without prefix history.
-    static byte[] compress(byte[] source) {
-        return compress(source, EMPTY_DICTIONARY);
-    }
-
-    /// Compresses a complete block using at most the final 65,535 dictionary bytes as prefix history.
-    /// Neither input array is modified or retained.
-    static byte[] compress(byte[] source, byte[] dictionary) {
-        int capacity = source.length < REQUIRED_LAST_MATCH_DISTANCE
-                ? 1 + source.length : Math.toIntExact(maxCompressedLength(source.length));
-        byte[] encoded = new byte[capacity];
-        int length = new LZ4BlockCompression().compressInto(source, source.length, dictionary, encoded, 0);
-        return length == encoded.length ? encoded : Arrays.copyOf(encoded, length);
     }
 
     /// Compresses the first `sourceLength` bytes into `encoded` at `outputOffset` and returns the encoded length.

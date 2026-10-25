@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.lz4.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -14,6 +15,9 @@ import java.util.Objects;
 /// Encodes one bounded raw LZ4 block without retaining caller-owned buffers.
 @NotNullByDefault
 public final class LZ4BlockEncoder implements CompressionEncoder {
+    /// Empty prefix history for standalone blocks.
+    private static final byte @Unmodifiable [] EMPTY_DICTIONARY = new byte[0];
+
     /// Empty pending output.
     private static final ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0).asReadOnlyBuffer();
 
@@ -54,7 +58,12 @@ public final class LZ4BlockEncoder implements CompressionEncoder {
             return CodecOutcome.FINISHED;
         }
         if (state == State.COLLECTING) {
-            output = ByteBuffer.wrap(LZ4BlockCompression.compress(source.takeBytes())).asReadOnlyBuffer();
+            int sourceLength = source.size();
+            byte[] input = source.takeStorage();
+            byte[] encoded = new byte[Math.toIntExact(LZ4BlockCompression.maxCompressedLength(sourceLength))];
+            int encodedLength = new LZ4BlockCompression().compressInto(
+                    input, sourceLength, EMPTY_DICTIONARY, encoded, 0);
+            output = ByteBuffer.wrap(encoded, 0, encodedLength).asReadOnlyBuffer();
             state = State.DRAINING;
         } else if (state != State.DRAINING) {
             throw new IllegalStateException("Cannot finish while raw LZ4 encoder state is " + state);
