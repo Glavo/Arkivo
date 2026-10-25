@@ -194,6 +194,14 @@ final class LZ4BlockDecompression {
             Arrays.fill(output, position, position + length, output[source]);
             return;
         }
+        if (length >= Integer.BYTES && length <= 2 * Integer.BYTES && distance >= length) {
+            // The two word ranges may overlap each other, but stay entirely within the match.
+            int first = ByteArrayAccess.readIntLittleEndian(output, source);
+            int last = ByteArrayAccess.readIntLittleEndian(output, source + length - Integer.BYTES);
+            ByteArrayAccess.writeIntLittleEndian(output, position, first);
+            ByteArrayAccess.writeIntLittleEndian(output, position + length - Integer.BYTES, last);
+            return;
+        }
         int copied = Math.min(length, distance);
         System.arraycopy(output, source, output, position, copied);
         while (copied < length) {
@@ -240,7 +248,8 @@ final class LZ4BlockDecompression {
         }
         int capacity = Math.max(1, output.length);
         while (capacity < requiredLength) {
-            capacity = (int) Math.min(maximumOutputSize, Math.max((long) capacity * 2, requiredLength));
+            // Keep geometric headroom when a long match is followed by a short literal sequence.
+            capacity = (int) Math.min(maximumOutputSize, (long) capacity * 2);
         }
         if (maximumMemorySize >= 0L) {
             long available = maximumMemorySize - compressedLength - dictionaryLength;
