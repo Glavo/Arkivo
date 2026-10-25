@@ -21,6 +21,8 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -28,6 +30,71 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies terminal archive-output failures, exact body transfers, and independent close retries.
 @NotNullByDefault
 final class ArchiveOutputStreamTest {
+    /// Reuses bounded scratch storage across exact transfers, growing only when a later body needs more space.
+    @Test
+    void reusesBodyStorageAcrossDifferentSizes() throws IOException {
+        byte[] content = new byte[131079];
+        for (int index = 0; index < content.length; index++) content[index] = (byte) (index * 31);
+        ByteArrayOutputStream expected = new ByteArrayOutputStream();
+        Target target = new Target();
+        try (ArchiveOutputStream output = new ArchiveOutputStream(target);
+             InspectingSource source = new InspectingSource(content)) {
+            @Nullable ByteBuffer previous = null;
+            int maximumCapacity = 0;
+            for (int size : new int[]{0, 1, 1, 0, 4096, 7, 65536, 3, 131075, 0, 65537}) {
+                source.content.position(0L);
+                int calls = source.calls;
+                output.writeBody(source, size);
+                expected.write(content, 0, size);
+                assertEquals(size, source.content.position());
+                assertEquals(expected.size(), output.bytesWritten());
+                if (size == 0) {
+                    assertEquals(calls, source.calls);
+                    assertSame(previous, source.lastBuffer);
+                    continue;
+                }
+                @Nullable ByteBuffer current = source.lastBuffer;
+                assertTrue(current != null);
+                int requiredCapacity = Math.min(size, 65536);
+                if (requiredCapacity > maximumCapacity) {
+                    assertNotSame(previous, current);
+                    maximumCapacity = requiredCapacity;
+                } else {
+                    assertSame(previous, current);
+                }
+                assertEquals(maximumCapacity, current.capacity());
+                previous = current;
+            }
+            assertArrayEquals(expected.toByteArray(), target.bytes.toByteArray());
+        }
+    }
+
+    /// Releases scratch storage before target cleanup, even when that cleanup must be retried.
+    @Test
+    void releasesBodyStorageOnFailureAndClose() throws Exception {
+        var field = ArchiveOutputStream.class.getDeclaredField("transferBuffer");
+        field.setAccessible(true);
+        for (boolean fail : new boolean[]{false, true}) {
+            Target target = new Target();
+            ArchiveOutputStream output = new ArchiveOutputStream(target);
+            try (ReadOnlyByteArrayChannel source = new ReadOnlyByteArrayChannel(new byte[]{1})) {
+                output.writeBody(source, 0L);
+                assertNull(field.get(output));
+                output.writeBody(source, 1L);
+                assertTrue(field.get(output) instanceof ByteBuffer);
+                if (fail) {
+                    output.fail(new IOException("Transfer failure"));
+                    assertNull(field.get(output));
+                }
+                target.closeFailure = new IOException("Close failure");
+                assertThrows(IOException.class, output::close);
+                assertNull(field.get(output));
+                output.close();
+                assertTrue(output.isClosed());
+            }
+        }
+    }
+
     /// Verifies target write and flush failures stop all further output without losing the first cause.
     @ParameterizedTest
     @MethodSource("targetFailures")
@@ -345,6 +412,45 @@ final class ArchiveOutputStreamTest {
         @Override
         public void close() {
             open = false;
+        }
+    }
+
+    /// Checks that each read receives reset scratch storage and deliberately returns short reads.
+    @NotNullByDefault
+    private static final class InspectingSource implements ReadableByteChannel {
+        /// Rewindable content with bytes beyond the declared body size.
+        private final ReadOnlyByteArrayChannel content;
+        /// Last supplied buffer, retained only to verify internal storage reuse.
+        private @Nullable ByteBuffer lastBuffer;
+        /// Number of read attempts.
+        private int calls;
+
+        /// Copies deterministic source bytes.
+        private InspectingSource(byte[] bytes) {
+            content = new ReadOnlyByteArrayChannel(bytes);
+        }
+
+        /// Checks reset state and fills at most 997 bytes per call.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            calls++;
+            lastBuffer = destination;
+            assertEquals(0, destination.position());
+            assertTrue(destination.remaining() <= 65536);
+            destination.limit(Math.min(destination.limit(), 997));
+            return content.read(destination);
+        }
+
+        /// Returns whether the test source remains open.
+        @Override
+        public boolean isOpen() {
+            return content.isOpen();
+        }
+
+        /// Closes the test source.
+        @Override
+        public void close() {
+            content.close();
         }
     }
 }

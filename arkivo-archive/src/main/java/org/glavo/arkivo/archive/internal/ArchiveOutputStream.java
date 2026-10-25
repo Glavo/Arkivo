@@ -24,8 +24,14 @@ import java.util.Set;
 /// may be retried, but no writes are permitted once closing begins. This stream is not safe for concurrent use.
 @NotNullByDefault
 public final class ArchiveOutputStream extends OutputStream {
+    /// Maximum scratch capacity used for exact body transfers.
+    private static final int TRANSFER_SIZE = 64 * 1024;
+
     /// The owned output stream.
     private final OutputStream target;
+
+    /// Scratch storage reused by body transfers and released when output fails or closing begins.
+    private @Nullable ByteBuffer transferBuffer;
 
     /// The first failure that left the archive incomplete, or `null` before any such failure.
     private @Nullable Throwable failure;
@@ -78,6 +84,7 @@ public final class ArchiveOutputStream extends OutputStream {
         if (failure == null) {
             failure = exception;
         }
+        transferBuffer = null;
     }
 
     /// Writes one byte and accounts for it only if the target write succeeds.
@@ -126,8 +133,15 @@ public final class ArchiveOutputStream extends OutputStream {
             throw new IllegalArgumentException("Negative body size");
         }
         ensureWritable();
+        if (size == 0L) {
+            return;
+        }
         try {
-            ByteBuffer buffer = ByteBuffer.allocate((int) Math.min(size, 64 * 1024L));
+            int capacity = (int) Math.min(size, TRANSFER_SIZE);
+            @Nullable ByteBuffer buffer = transferBuffer;
+            if (buffer == null || buffer.capacity() < capacity) {
+                transferBuffer = buffer = ByteBuffer.allocate(capacity);
+            }
             long remaining = size;
             while (remaining > 0L) {
                 buffer.clear();
@@ -177,6 +191,7 @@ public final class ArchiveOutputStream extends OutputStream {
     public void close() throws IOException {
         if (!closed) {
             closing = true;
+            transferBuffer = null;
             try {
                 target.close();
                 closed = true;
