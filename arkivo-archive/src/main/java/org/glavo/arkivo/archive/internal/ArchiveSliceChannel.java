@@ -21,8 +21,8 @@ import java.util.Set;
 
 /// Reads a fixed archive range through an owned seekable channel.
 ///
-/// Positions are relative to the range. Each non-empty read within the range repositions the source; its initial
-/// position is ignored. The declared size does not change when the source grows or shrinks. Reaching physical EOF
+/// Positions are relative to the range. The source's initial position is ignored; subsequent sequential reads may
+/// reuse its position. The declared size does not change when the source grows or shrinks. Reaching physical EOF
 /// before the range ends throws [EOFException]. Creating a slice does not read or query the source.
 ///
 /// The caller must not otherwise use the source after transferring ownership. Reads and position changes must be
@@ -41,6 +41,9 @@ public class ArchiveSliceChannel implements SeekableByteChannel {
 
     /// The current range-relative position.
     private long position;
+
+    /// Whether the source cursor corresponds to this slice's position after the last successful I/O operation.
+    private boolean sourcePositioned;
 
     /// Whether close has not yet been requested.
     private volatile boolean open = true;
@@ -122,13 +125,18 @@ public class ArchiveSliceChannel implements SeekableByteChannel {
         ByteBuffer target = destination.slice();
         target.limit((int) Math.min(destination.remaining(), size - position));
         try {
-            source.position(absolutePosition);
+            if (!sourcePositioned) {
+                source.position(absolutePosition);
+                sourcePositioned = true;
+            }
             int count = source.read(target);
             if (count < 0) {
                 throw new EOFException("Archive source ended inside a declared range");
             }
             return count;
         } catch (IOException | RuntimeException | Error failure) {
+            // Failed I/O need not leave the source cursor consistent with the bytes delivered to the buffer.
+            sourcePositioned = false;
             recordFailure(failure);
             throw failure;
         } finally {
@@ -161,7 +169,10 @@ public class ArchiveSliceChannel implements SeekableByteChannel {
         if (newPosition < 0L) {
             throw new IllegalArgumentException("newPosition must not be negative");
         }
-        position = newPosition;
+        if (position != newPosition) {
+            position = newPosition;
+            sourcePositioned = false;
+        }
         return this;
     }
 

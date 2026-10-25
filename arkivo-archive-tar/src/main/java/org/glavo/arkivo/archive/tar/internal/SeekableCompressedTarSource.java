@@ -32,13 +32,20 @@ final class SeekableCompressedTarSource {
     /// The immutable parsed compression index.
     private final CompressionCodec.Seekable.Index index;
 
-    /// Parses an available index from a borrowed channel that already represents this archive source.
-    private static @Nullable SeekableCompressedTarSource open(
+    /// Detects and parses an index from a borrowed already-open archive channel.
+    static @Nullable SeekableCompressedTarSource open(
             ArkivoSeekableChannelSource source,
             SeekableByteChannel channel,
-            CompressionCodec.Seekable<?> seekable,
+            @Nullable CompressionCodec<?> compressionCodec,
             ArchiveReadLimits readLimits
     ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(channel, "channel");
+        Objects.requireNonNull(readLimits, "readLimits");
+        if (!(compressionCodec instanceof CompressionCodec.Seekable<?> seekable)
+                || !seekable.supportsSeekableEncoding()) {
+            return null;
+        }
         channel.position(0L);
         CompressionCodec<?> configured = TarCompressionStreams.withReadLimits(seekable, readLimits);
         CompressionCodec.Seekable<?> configuredSeekable = (CompressionCodec.Seekable<?>) configured;
@@ -55,23 +62,6 @@ final class SeekableCompressedTarSource {
             }
         }
         return index != null ? new SeekableCompressedTarSource(source, index) : null;
-    }
-
-    /// Detects and parses an index from a borrowed already-open archive channel.
-    static @Nullable SeekableCompressedTarSource open(
-            ArkivoSeekableChannelSource source,
-            SeekableByteChannel channel,
-            @Nullable CompressionCodec<?> compressionCodec,
-            ArchiveReadLimits readLimits
-    ) throws IOException {
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(channel, "channel");
-        Objects.requireNonNull(readLimits, "readLimits");
-        if (!(compressionCodec instanceof CompressionCodec.Seekable<?> seekable)
-                || !seekable.supportsSeekableEncoding()) {
-            return null;
-        }
-        return open(source, channel, seekable, readLimits);
     }
 
     /// Creates reusable access from a borrowed source and immutable parsed index.

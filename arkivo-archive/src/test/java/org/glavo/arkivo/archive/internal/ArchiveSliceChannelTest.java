@@ -102,6 +102,106 @@ public final class ArchiveSliceChannelTest {
         assertEquals(1, source.closeCount());
     }
 
+    /// Sequential and zero-progress reads share one source positioning, including through nested slices.
+    @ParameterizedTest
+    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+    public void positionsOnlyWhenNeeded(boolean nested, boolean direct) throws IOException {
+        TestChannel source = new TestChannel(new byte[]{9, 8, 1, 2, 3, 4, 5, 7, 6});
+        source.position(8);
+        source.seekCount = 0;
+        SeekableByteChannel owned = nested ? ArchiveSliceChannel.open(source, 1, 7) : source;
+        try (SeekableByteChannel channel = ArchiveSliceChannel.open(owned, nested ? 1 : 2, 5)) {
+            ByteBuffer target = direct ? ByteBuffer.allocateDirect(2) : ByteBuffer.allocate(2);
+            source.zeroRead = true;
+            assertEquals(0, channel.read(target));
+            assertEquals(1, source.seekCount);
+            int expected = 1;
+            while (channel.read(target) >= 0) {
+                target.flip();
+                while (target.hasRemaining()) assertEquals(expected++, Byte.toUnsignedInt(target.get()));
+                target.clear();
+                channel.position(channel.position());
+            }
+            assertEquals(6, expected);
+            assertEquals(1, source.seekCount);
+            channel.position(0);
+            assertEquals(2, channel.read(target));
+            assertEquals(2, source.seekCount);
+            channel.position(100);
+            target.clear();
+            assertEquals(-1, channel.read(target));
+            assertEquals(2, source.seekCount);
+            channel.position(3);
+            assertEquals(2, channel.read(target));
+            assertEquals(3, source.seekCount);
+            assertEquals(4, target.get(0));
+            assertEquals(5, target.get(1));
+        }
+        assertEquals(1, source.closeCount());
+    }
+
+    /// A one-mebibyte sequential transfer needs one positioning rather than one for each eight-kibibyte read.
+    @Test
+    public void positionsOnceForLargeSequentialTransfer() throws IOException {
+        int size = 1024 * 1024;
+        TestChannel source = new TestChannel(new byte[size + 2]);
+        try (SeekableByteChannel channel = ArchiveSliceChannel.open(source, 1, size)) {
+            ByteBuffer buffer = ByteBuffer.allocate(8192);
+            int transferred = 0;
+            int count;
+            while ((count = channel.read(buffer)) >= 0) {
+                transferred += count;
+                buffer.clear();
+            }
+            assertEquals(size, transferred);
+            assertEquals(128, source.readCount);
+            assertEquals(1, source.seekCount);
+        }
+    }
+
+    /// Independent logical sources still reposition their shared physical channel when slices interleave.
+    @Test
+    public void preservesInterleavedSharedSourcePositions() throws IOException {
+        TestChannel physical = new TestChannel(new byte[]{9, 8, 1, 2, 3, 4, 5, 7, 6});
+        try (var source = SharedSeekableChannelSource.open(physical);
+             var first = ArchiveSliceChannel.open(source.openChannel(), 2, 3);
+             var second = ArchiveSliceChannel.open(source.openChannel(), 5, 2)) {
+            ByteBuffer firstBytes = ByteBuffer.allocate(3).limit(1);
+            ByteBuffer secondBytes = ByteBuffer.allocate(2).limit(1);
+            assertEquals(1, first.read(firstBytes));
+            assertEquals(1, second.read(secondBytes));
+            firstBytes.limit(3);
+            secondBytes.limit(2);
+            assertEquals(2, first.read(firstBytes));
+            assertEquals(1, second.read(secondBytes));
+            assertArrayEquals(new byte[]{1, 2, 3}, firstBytes.array());
+            assertArrayEquals(new byte[]{4, 5}, secondBytes.array());
+            assertEquals(4, physical.seekCount);
+        }
+        assertEquals(1, physical.closeCount());
+    }
+
+    /// A failed source read can leave its position uncertain even when it delivered bytes.
+    @ParameterizedTest
+    @MethodSource("failures")
+    public void repositionsAfterFailedSequentialRead(Throwable failure) throws IOException {
+        TestChannel source = new TestChannel(new byte[]{9, 8, 1, 2, 3, 4, 5});
+        try (SeekableByteChannel channel = ArchiveSliceChannel.open(source, 2, 5)) {
+            assertEquals(1, channel.read(ByteBuffer.allocate(1)));
+            source.readFailure = failure;
+            source.bytesBeforeFailure = 2;
+            source.rewindOnReadFailure = true;
+            ByteBuffer target = ByteBuffer.allocate(4);
+            assertSame(failure, assertThrows(failure.getClass(), () -> channel.read(target)));
+            assertEquals(3, channel.position());
+            assertEquals(0, source.position());
+            assertEquals(1, source.seekCount);
+            assertEquals(2, channel.read(target));
+            assertEquals(2, source.seekCount);
+            assertArrayEquals(new byte[]{2, 3, 4, 5}, target.array());
+        }
+    }
+
     /// Verifies failed physical reads retain exactly the bytes already delivered, including a complete slice.
     @ParameterizedTest
     @MethodSource("readFailures")
@@ -546,6 +646,9 @@ public final class ArchiveSliceChannelTest {
         /// The number of bytes delivered by a failing read.
         private int bytesBeforeFailure;
 
+        /// Whether a failed read also discards the source cursor, making repositioning necessary for retry.
+        private boolean rewindOnReadFailure;
+
         /// The next seek failure, cleared before it is thrown.
         private @Nullable Throwable seekFailure;
 
@@ -557,6 +660,9 @@ public final class ArchiveSliceChannelTest {
 
         /// The number of source read attempts.
         private int readCount;
+
+        /// The number of explicit source positioning attempts.
+        private int seekCount;
 
         /// The number of close calls.
         private int closeCount;
@@ -592,6 +698,7 @@ public final class ArchiveSliceChannelTest {
             destination.put(content, position, count);
             position += count;
             if (failure != null) {
+                if (rewindOnReadFailure) position = 0;
                 throwFailure(failure);
             }
             return count;
@@ -615,6 +722,7 @@ public final class ArchiveSliceChannelTest {
         @Override
         public SeekableByteChannel position(long newPosition) throws IOException {
             ensureOpen();
+            seekCount++;
             if (seekFailure != null) {
                 Throwable failure = seekFailure;
                 seekFailure = null;
