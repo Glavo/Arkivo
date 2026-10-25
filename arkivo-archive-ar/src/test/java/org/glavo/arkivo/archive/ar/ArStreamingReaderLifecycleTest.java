@@ -4,8 +4,12 @@
 package org.glavo.arkivo.archive.ar;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -16,6 +20,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.DosFileAttributes;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -52,10 +57,18 @@ final class ArStreamingReaderLifecycleTest {
     }
 
     /// Verifies body-close retries retain successful drain progress and preserve the following member header.
-    @Test
-    void retriesBodyDrainWithoutSkippingFollowingMember() throws IOException {
-        byte[] archive = twoFileArchive();
-        for (int failureOffset : new int[]{69, 70, 71}) {
+    @ParameterizedTest
+    @ValueSource(ints = {3, 16385})
+    void retriesBodyDrainWithoutSkippingFollowingMember(int bodySize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var writer = ArArkivoStreamingWriter.open(output)) {
+            writeFile(writer, "first", new byte[bodySize]);
+            writeFile(writer, "second", new byte[]{4});
+        }
+        byte[] archive = output.toByteArray();
+        for (int consumed : new int[]{1, 2, 8192, 8193, bodySize - 1, bodySize}) {
+            if (consumed > bodySize) continue;
+            int failureOffset = 68 + consumed;
             for (Throwable failure : List.of(new IOException("drain failed"),
                     new IllegalStateException("drain failed"), new AssertionError("drain failed"))) {
                 FailOnceInputStream source = new FailOnceInputStream(archive, failureOffset, failure);
@@ -66,9 +79,9 @@ final class ArStreamingReaderLifecycleTest {
                     assertSame(failure, assertThrows(failure.getClass(), body::close));
                     assertEquals(failureOffset, source.position);
                     body.close();
-                    assertEquals(72, source.position);
+                    assertEquals(68 + bodySize + 1, source.position);
                     body.close();
-                    assertEquals(72, source.position);
+                    assertEquals(68 + bodySize + 1, source.position);
                     assertTrue(reader.next());
                     assertEquals("second", reader.readAttributes(ArArkivoEntryAttributes.class).path());
                     try (InputStream second = reader.openInputStream()) {
@@ -78,6 +91,36 @@ final class ArStreamingReaderLifecycleTest {
                     assertFalse(reader.next());
                 }
             }
+        }
+    }
+
+    /// Reuses one bounded buffer across symbol tables, unread bodies, entry closes, and alignment padding.
+    @ParameterizedTest
+    @CsvSource({"0,false", "1,false", "8192,false", "8193,false", "16385,false",
+            "0,true", "1,true", "8192,true", "8193,true", "16385,true"})
+    void reusesDiscardBufferAcrossMembers(int firstSize, boolean symbolTable) throws IOException {
+        int[] sizes = {firstSize, 0, 1, 8193, 2};
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var writer = ArArkivoStreamingWriter.open(output)) {
+            for (int index = 0; index < sizes.length; index++) {
+                writeFile(writer, "entry" + index, new byte[sizes[index]]);
+            }
+        }
+        byte[] archive = output.toByteArray();
+        if (symbolTable) {
+            Arrays.fill(archive, 8, 24, (byte) ' ');
+            archive[8] = '/';
+        }
+        DiscardTrackingInputStream source = new DiscardTrackingInputStream(archive, sizes);
+        try (var reader = ArArkivoStreamingReader.open(source)) {
+            for (int index = symbolTable ? 1 : 0; index < sizes.length; index++) {
+                assertTrue(reader.next());
+                assertEquals("entry" + index, reader.readAttributes(ArArkivoEntryAttributes.class).path());
+                if ((index & 1) != 0) reader.openInputStream().close();
+            }
+            assertFalse(reader.next());
+            assertTrue(source.discardReads >= 6);
+            assertEquals(archive.length, source.position());
         }
     }
 
@@ -167,6 +210,57 @@ final class ArStreamingReaderLifecycleTest {
     private static void writeFile(ArArkivoStreamingWriter writer, String path, byte[] content) throws IOException {
         try (OutputStream body = writer.beginFile(path).openOutputStream()) {
             body.write(content);
+        }
+    }
+
+    /// Checks that discarding member data and padding uses the same bounded array throughout enumeration.
+    @NotNullByDefault
+    private static final class DiscardTrackingInputStream extends ByteArrayInputStream {
+        /// Inclusive physical start of each member body.
+        private final int @Unmodifiable [] starts;
+
+        /// Exclusive physical end of each member, including padding.
+        private final int @Unmodifiable [] ends;
+
+        /// First destination used to discard member data or padding.
+        private byte @Nullable [] discardBuffer;
+
+        /// Number of reads into the discard buffer.
+        private int discardReads;
+
+        /// Creates a source containing short-name members with the supplied body sizes.
+        private DiscardTrackingInputStream(byte[] archive, int[] sizes) {
+            super(archive);
+            starts = new int[sizes.length];
+            ends = new int[sizes.length];
+            int offset = 8;
+            for (int index = 0; index < sizes.length; index++) {
+                starts[index] = offset + 60;
+                offset = starts[index] + sizes[index] + (sizes[index] & 1);
+                ends[index] = offset;
+            }
+            assertEquals(archive.length, offset);
+        }
+
+        /// Returns the current physical source offset.
+        private int position() {
+            return pos;
+        }
+
+        /// Checks body and padding reads without including header reads in the buffer comparison.
+        @Override
+        public int read(byte[] target, int offset, int length) {
+            for (int index = 0; index < starts.length; index++) {
+                if (pos >= starts[index] && pos < ends[index]) {
+                    assertTrue(length > 0 && length <= 8192);
+                    assertTrue(pos + length <= ends[index]);
+                    if (discardBuffer == null) discardBuffer = target;
+                    else assertSame(discardBuffer, target);
+                    discardReads++;
+                    break;
+                }
+            }
+            return super.read(target, offset, length);
         }
     }
 

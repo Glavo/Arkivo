@@ -69,6 +69,9 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// Whether the current member body has already been opened.
     private boolean currentBodyOpened;
 
+    /// Scratch space allocated on the first discard and released when this reader closes.
+    private byte @Nullable [] discardBuffer;
+
     /// The GNU long filename table, or `null` until such a table is read.
     private byte @Nullable @Unmodifiable [] gnuNameTable;
 
@@ -182,6 +185,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         remainingEntryBytes = 0L;
         pendingEntryPadding = false;
         currentBodyOpened = false;
+        discardBuffer = null;
         source.close();
         sourceClosed = true;
     }
@@ -397,15 +401,8 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// Skips any unread bytes from the current member and its alignment padding.
     /// Successful reads are accounted for immediately so a later call can resume after a source failure.
     private void skipCurrentEntry() throws IOException {
-        if (remainingEntryBytes > 0) {
-            byte[] discard = new byte[8192];
-            while (remainingEntryBytes > 0) {
-                int read = source.read(discard, 0, (int) Math.min(discard.length, remainingEntryBytes));
-                if (read < 0) {
-                    throw new EOFException("Unexpected end of AR member body");
-                }
-                remainingEntryBytes -= read;
-            }
+        while (remainingEntryBytes > 0) {
+            remainingEntryBytes -= readDiscard(remainingEntryBytes);
         }
         if (pendingEntryPadding) {
             skipBytes(1L);
@@ -440,15 +437,22 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
 
     /// Skips exactly the requested byte count.
     private void skipBytes(long count) throws IOException {
-        byte[] discard = new byte[8192];
         long remaining = count;
         while (remaining > 0) {
-            int read = source.read(discard, 0, (int) Math.min(discard.length, remaining));
-            if (read < 0) {
-                throw new EOFException("Unexpected end of AR member body");
-            }
-            remaining -= read;
+            remaining -= readDiscard(remaining);
         }
+    }
+
+    /// Discards at most the positive remaining byte count in one bounded read, rejecting premature EOF.
+    private int readDiscard(long remaining) throws IOException {
+        if (discardBuffer == null) {
+            discardBuffer = new byte[8192];
+        }
+        int read = source.read(discardBuffer, 0, (int) Math.min(discardBuffer.length, remaining));
+        if (read < 0) {
+            throw new EOFException("Unexpected end of AR member body");
+        }
+        return read;
     }
 
     /// Returns one US-ASCII field from a member header.
