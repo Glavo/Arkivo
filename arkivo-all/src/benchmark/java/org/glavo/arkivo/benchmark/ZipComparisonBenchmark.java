@@ -40,6 +40,8 @@ public class ZipComparisonBenchmark {
     @Param({"stream"}) public String access = "stream";
     /// The reused caller buffer size for stream and channel read loops, in bytes.
     @Param({"8192"}) public int readBufferSize = 8192;
+    /// Uses repeated random prefixes or incompressible random contents for each entry.
+    @Param({"repeated"}) public String contentPattern = "repeated";
     /// The common relative directory prefix, including its trailing separator when nonempty.
     private String directoryPrefix = "";
     /// The generated archive.
@@ -76,6 +78,9 @@ public class ZipComparisonBenchmark {
         }
         buffer = new byte[readBufferSize];
         channelBuffer = ByteBuffer.wrap(buffer);
+        if (!Set.of("repeated", "random").contains(contentPattern)) {
+            throw new IllegalArgumentException(contentPattern);
+        }
         directoryPrefix = "parent/".repeat(pathDepth);
         names = new String[entryCount];
         paths = new Path[entryCount];
@@ -83,8 +88,10 @@ public class ZipComparisonBenchmark {
         byte[] body = new byte[entrySize];
         new Random(42).nextBytes(body);
         int period = Math.max(1, Math.min(entrySize / 2, 16_384));
-        for (int offset = period; offset < entrySize; offset += period) {
-            System.arraycopy(body, 0, body, offset, Math.min(period, entrySize - offset));
+        if (contentPattern.equals("repeated")) {
+            for (int offset = period; offset < entrySize; offset += period) {
+                System.arraycopy(body, 0, body, offset, Math.min(period, entrySize - offset));
+            }
         }
         CRC32 crc = new CRC32(); crc.update(body);
         try (ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(archive))) {

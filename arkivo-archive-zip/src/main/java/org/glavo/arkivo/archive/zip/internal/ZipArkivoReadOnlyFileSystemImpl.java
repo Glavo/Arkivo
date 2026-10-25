@@ -1541,7 +1541,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         : openTraditionalDecryptingStream(path, entry, input);
             }
             if (entry.compressionMethod() == ZipMethod.DEFLATED.id()) {
-                deflateDecoder = deflateDecoders.open(input, entry.uncompressedSize, config.readLimits());
+                deflateDecoder = deflateDecoders.open(
+                        input, entry.uncompressedSize, entry.compressedSize, config.readLimits());
                 input = StreamChannelAdapters.inputStream(deflateDecoder);
             } else if (entry.compressionMethod() == ZipMethod.DEFLATE64.id()) {
                 input = ZipCompressionFormats.newInputStream("deflate64", input, entry.uncompressedSize, config.readLimits());

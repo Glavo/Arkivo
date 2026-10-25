@@ -9,9 +9,13 @@ import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.UnmodifiableView;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -60,6 +64,9 @@ final class ZipDeflateDecoderPoolTest {
             }
             assertTrue(members(pool, "active").isEmpty());
             assertEquals(4, members(pool, "idle").size());
+            for (Object workspace : members(pool, "idle")) {
+                assertEquals(65_536, input(workspace).capacity());
+            }
             var retained = new HashSet<>(members(pool, "idle"));
             assertArrayEquals(body, Files.readAllBytes(fs.getPath("b")));
             assertEquals(retained, new HashSet<>(members(pool, "idle")));
@@ -117,6 +124,107 @@ final class ZipDeflateDecoderPoolTest {
         }
     }
 
+    /// Size hints select bounded capacity without limiting input or narrowing large sizes to an int.
+    @ParameterizedTest
+    @CsvSource({"-1,8192", "0,8192", "8192,8192", "8193,16384", "16384,16384",
+            "16385,32768", "32768,32768", "32769,65536", "65536,65536",
+            "65537,65536", "9223372036854775807,65536"})
+    void sizesInputAndReducesSourceReads(long compressedSize, int capacity) throws Exception {
+        byte[] body = new byte[70_000];
+        new Random(42).nextBytes(body);
+        byte[] compressed = compress(body);
+        try (var pool = new ZipDeflateDecoderPool(1)) {
+            var source = new CountingSource(compressed, Integer.MAX_VALUE);
+            var lease = pool.open(source, body.length, compressedSize, ArchiveReadLimits.UNLIMITED);
+            assertEquals(capacity, input(workspace(lease)).capacity());
+            assertArrayEquals(body, read(lease, body.length));
+            assertEquals((compressed.length + capacity - 1) / capacity, source.reads);
+            assertEquals(capacity, source.maximumRequest);
+            lease.verified();
+            lease.close();
+        }
+    }
+
+    /// Healthy workspaces grow only when needed and retain enlarged storage for subsequent small entries.
+    @Test
+    void reusesGrowingInputStorage() throws Exception {
+        try (var pool = new ZipDeflateDecoderPool(1)) {
+            @Nullable Object previous = null;
+            @Nullable ByteBuffer previousInput = null;
+            for (int size : new int[]{0, 9000, 10_000, 17_000, 18_000, 33_000, 70_000, 1, 0}) {
+                byte[] body = new byte[size];
+                new Random(size).nextBytes(body);
+                byte[] compressed = compress(body);
+                var lease = pool.open(new ByteArrayInputStream(compressed), size, compressed.length,
+                        ArchiveReadLimits.UNLIMITED);
+                Object workspace = workspace(lease);
+                ByteBuffer input = input(workspace);
+                if (previous != null) assertSame(previous, workspace);
+                if (previousInput != null && previousInput.capacity() >= Math.min(compressed.length, 65_536)) {
+                    assertSame(previousInput, input);
+                }
+                previous = workspace;
+                previousInput = input;
+                assertArrayEquals(body, read(lease, size));
+                lease.verified();
+                lease.close();
+            }
+            assertNotNull(previousInput);
+            assertEquals(65_536, previousInput.capacity());
+        }
+    }
+
+    /// Enlarged input storage still handles short source reads and rejects truncated compressed data.
+    @Test
+    void handlesFragmentedAndTruncatedLargeEntries() throws Exception {
+        byte[] body = new byte[70_000];
+        new Random(42).nextBytes(body);
+        byte[] compressed = compress(body);
+        try (var pool = new ZipDeflateDecoderPool(1)) {
+            var complete = pool.open(new CountingSource(compressed, 7), body.length, compressed.length,
+                    ArchiveReadLimits.UNLIMITED);
+            assertArrayEquals(body, read(complete, body.length));
+            complete.verified();
+            complete.close();
+            var truncated = pool.open(new CountingSource(Arrays.copyOf(compressed, compressed.length - 1), 7),
+                    body.length, compressed.length, ArchiveReadLimits.UNLIMITED);
+            assertSame(workspace(complete), workspace(truncated));
+            assertThrows(IOException.class, () -> read(truncated, body.length));
+            truncated.close();
+            assertTrue(members(pool, "idle").isEmpty());
+        }
+    }
+
+    /// Unhinted streaming pools keep their original read-ahead bound and preserve following-record bytes.
+    @Test
+    void preservesStreamingReadAhead() throws Exception {
+        byte[] body = new byte[70_000];
+        new Random(42).nextBytes(body);
+        byte[] compressed = compress(body);
+        byte[] following = new byte[8192];
+        new Random(43).nextBytes(following);
+        byte[] bytes = Arrays.copyOf(compressed, compressed.length + following.length);
+        System.arraycopy(following, 0, bytes, compressed.length, following.length);
+        try (var pool = new ZipDeflateDecoderPool(1)) {
+            for (int i = 0; i < 2; i++) {
+                var source = new CountingSource(bytes, Integer.MAX_VALUE);
+                var lease = pool.open(source, body.length, ArchiveReadLimits.UNLIMITED);
+                assertArrayEquals(body, read(lease, body.length));
+                assertEquals(8192, input(workspace(lease)).capacity());
+                assertEquals(8192, source.maximumRequest);
+                @UnmodifiableView ByteBuffer remainder = lease.unconsumedInput();
+                int count = remainder.remaining();
+                assertTrue(count <= 8192);
+                byte[] recovered = new byte[following.length];
+                remainder.get(recovered, 0, count);
+                assertEquals(following.length - count, source.read(recovered, count, following.length - count));
+                assertArrayEquals(following, recovered);
+                lease.verified();
+                lease.close();
+            }
+        }
+    }
+
     /// Engine completion alone is insufficient when CRC, descriptor, or authentication checks did not succeed.
     @Test
     void destroysUnverifiedAndUnfinishedWorkspaces() throws Exception {
@@ -136,20 +244,24 @@ final class ZipDeflateDecoderPoolTest {
     }
 
     /// A borrowed engine receives a new output limiter for every entry, including after a limiting failure.
-    @Test
-    void enforcesFreshEntryLimits() throws Exception {
+    @ParameterizedTest
+    @ValueSource(longs = {-1, 65_536})
+    void enforcesFreshEntryLimits(long compressedSize) throws Exception {
         byte[] body = {1, 2, 3, 4, 5, 6, 7};
         try (var pool = new ZipDeflateDecoderPool(1)) {
-            var first = pool.open(new ByteArrayInputStream(compress(body)), body.length, ArchiveReadLimits.UNLIMITED);
+            var first = pool.open(new ByteArrayInputStream(compress(body)), body.length, compressedSize,
+                    ArchiveReadLimits.UNLIMITED);
             assertArrayEquals(body, read(first, body.length));
             first.verified();
             first.close();
-            var limited = pool.open(new ByteArrayInputStream(compress(body)), 3, ArchiveReadLimits.UNLIMITED);
+            var limited = pool.open(new ByteArrayInputStream(compress(body)), 3, compressedSize,
+                    ArchiveReadLimits.UNLIMITED);
             assertSame(workspace(first), workspace(limited));
             assertThrows(DecompressionOutputLimitException.class, () -> read(limited, body.length));
             limited.close();
             assertTrue(members(pool, "idle").isEmpty());
-            var next = pool.open(new ByteArrayInputStream(compress(body)), body.length, ArchiveReadLimits.UNLIMITED);
+            var next = pool.open(new ByteArrayInputStream(compress(body)), body.length, compressedSize,
+                    ArchiveReadLimits.UNLIMITED);
             assertNotSame(workspace(limited), workspace(next));
             assertArrayEquals(body, read(next, body.length));
             next.verified();
@@ -202,12 +314,13 @@ final class ZipDeflateDecoderPoolTest {
     }
 
     /// A recoverable source failure does not change adapter recovery, but still disqualifies its workspace.
-    @Test
-    void discardsWorkspaceAfterRecoveredSourceFailure() throws Exception {
+    @ParameterizedTest
+    @ValueSource(longs = {-1, 65_536})
+    void discardsWorkspaceAfterRecoveredSourceFailure(long compressedSize) throws Exception {
         byte[] body = {8, 9, 10};
         try (var pool = new ZipDeflateDecoderPool(1)) {
             var source = new FailingSource(compress(body), true, false);
-            var lease = pool.open(source, body.length, ArchiveReadLimits.UNLIMITED);
+            var lease = pool.open(source, body.length, compressedSize, ArchiveReadLimits.UNLIMITED);
             assertSame(source.failure, assertThrows(IOException.class, () -> lease.read(ByteBuffer.allocate(4))));
             assertArrayEquals(body, read(lease, body.length));
             lease.verified();
@@ -218,11 +331,12 @@ final class ZipDeflateDecoderPoolTest {
     }
 
     /// Owner closure retains a failed source close for retry without retaining its damaged engine for reuse.
-    @Test
-    void retriesFailedOwnerClosure() throws Exception {
+    @ParameterizedTest
+    @ValueSource(longs = {-1, 65_536})
+    void retriesFailedOwnerClosure(long compressedSize) throws Exception {
         var pool = new ZipDeflateDecoderPool(1);
         var source = new FailingSource(compress(new byte[]{1}), false, true);
-        var lease = pool.open(source, 1, ArchiveReadLimits.UNLIMITED);
+        var lease = pool.open(source, 1, compressedSize, ArchiveReadLimits.UNLIMITED);
         assertArrayEquals(new byte[]{1}, read(lease, 1));
         lease.verified();
         assertSame(source.failure, assertThrows(IOException.class, pool::close));
@@ -239,11 +353,12 @@ final class ZipDeflateDecoderPoolTest {
     }
 
     /// Defers engine disposal after failed source cleanup until a successful retry releases the lease.
-    @Test
-    void retainsWorkspaceUntilSourceCleanupSucceeds() throws Exception {
+    @ParameterizedTest
+    @ValueSource(longs = {-1, 65_536})
+    void retainsWorkspaceUntilSourceCleanupSucceeds(long compressedSize) throws Exception {
         try (var pool = new ZipDeflateDecoderPool(1)) {
             var source = new FailingSource(compress(new byte[]{1}), false, true);
-            var lease = pool.open(source, 1, ArchiveReadLimits.UNLIMITED);
+            var lease = pool.open(source, 1, compressedSize, ArchiveReadLimits.UNLIMITED);
             Object workspace = workspace(lease);
             var closed = workspace.getClass().getDeclaredField("closed");
             closed.setAccessible(true);
@@ -260,10 +375,12 @@ final class ZipDeflateDecoderPoolTest {
     }
 
     /// Interrupt-driven cleanup never returns an otherwise completed engine to the idle cache.
-    @Test
-    void discardsWorkspaceOnInterruptedCleanup() throws Exception {
+    @ParameterizedTest
+    @ValueSource(longs = {-1, 65_536})
+    void discardsWorkspaceOnInterruptedCleanup(long compressedSize) throws Exception {
         try (var pool = new ZipDeflateDecoderPool(1)) {
-            var lease = pool.open(new ByteArrayInputStream(compress(new byte[]{1})), 1, ArchiveReadLimits.UNLIMITED);
+            var lease = pool.open(new ByteArrayInputStream(compress(new byte[]{1})), 1, compressedSize,
+                    ArchiveReadLimits.UNLIMITED);
             assertArrayEquals(new byte[]{1}, read(lease, 1));
             lease.verified();
             Thread.currentThread().interrupt();
@@ -339,11 +456,43 @@ final class ZipDeflateDecoderPoolTest {
         return value;
     }
 
+    /// Obtains the retained input storage without exposing workspace internals in production APIs.
+    private static ByteBuffer input(Object workspace) throws ReflectiveOperationException {
+        var field = workspace.getClass().getDeclaredField("input");
+        field.setAccessible(true);
+        return assertInstanceOf(ByteBuffer.class, field.get(workspace));
+    }
+
     /// Obtains an internal collection for count-based lifecycle assertions.
     private static Collection<?> members(ZipDeflateDecoderPool pool, String name) throws ReflectiveOperationException {
         var field = ZipDeflateDecoderPool.class.getDeclaredField(name);
         field.setAccessible(true);
         return assertInstanceOf(Collection.class, field.get(pool));
+    }
+
+    /// Counts compressed-source reads and optionally fragments each response.
+    @NotNullByDefault
+    private static final class CountingSource extends ByteArrayInputStream {
+        /// The maximum number of bytes returned by one read.
+        private final int maximumChunk;
+        /// The number of bulk read requests.
+        private int reads;
+        /// The largest requested buffer range.
+        private int maximumRequest;
+
+        /// Creates a source with the specified response-size bound.
+        private CountingSource(byte[] bytes, int maximumChunk) {
+            super(bytes);
+            this.maximumChunk = maximumChunk;
+        }
+
+        /// Records the requested range before applying the response-size bound.
+        @Override
+        public int read(byte[] bytes, int offset, int length) {
+            reads++;
+            maximumRequest = Math.max(maximumRequest, length);
+            return super.read(bytes, offset, Math.min(length, maximumChunk));
+        }
     }
 
     /// Fails one selected transport operation, then delegates all subsequent operations normally.

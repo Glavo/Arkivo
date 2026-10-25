@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -32,6 +33,12 @@ import java.util.Set;
 /// Retains bounded Deflate workspaces while giving each active ZIP entry an independent adapter and limits.
 @NotNullByDefault
 final class ZipDeflateDecoderPool implements AutoCloseable {
+    /// The initial input capacity used when no compressed-size hint is supplied.
+    private static final int DEFAULT_INPUT_CAPACITY = 8192;
+
+    /// The largest compressed-input buffer retained by one workspace.
+    private static final int MAXIMUM_INPUT_CAPACITY = 65_536;
+
     /// The maximum number of idle workspaces retained by this owner.
     private final int maximumIdle;
 
@@ -49,10 +56,35 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         this.maximumIdle = maximumIdle;
     }
 
+    /// Opens a lease without requesting larger input storage. Previously enlarged storage remains reusable.
+    /// Streaming readers use only this overload to keep read-ahead within their pushback capacity.
+    Lease open(InputStream source, long decodedSize, ArchiveReadLimits limits) throws IOException {
+        return open(source, decodedSize, ZipArkivoEntryAttributes.UNKNOWN_SIZE, limits);
+    }
+
     /// Opens an owning decoder lease with a fresh output limiter and independent counters.
-    synchronized Lease open(InputStream source, long decodedSize, ArchiveReadLimits limits) throws IOException {
+    /// The compressed size selects reusable input storage between 8 and 64 KiB; it does not bound source reads.
+    /// Sources that must not read beyond an entry must already be bounded by the caller.
+    ///
+    /// @param source compressed entry data
+    /// @param decodedSize expected output size, or [ZipArkivoEntryAttributes#UNKNOWN_SIZE]
+    /// @param compressedSize input size hint, or [ZipArkivoEntryAttributes#UNKNOWN_SIZE]
+    /// @param limits per-entry decompression limits
+    /// @return an independent lease on an exclusive workspace
+    /// @throws IllegalArgumentException if the input size hint is less than `UNKNOWN_SIZE`
+    /// @throws IOException if decoder setup or source cleanup fails
+    synchronized Lease open(InputStream source, long decodedSize, long compressedSize, ArchiveReadLimits limits)
+            throws IOException {
         if (closed) {
             throw new IllegalStateException("ZIP decoder workspace owner is closed");
+        }
+        if (compressedSize < ZipArkivoEntryAttributes.UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("Invalid compressed size: " + compressedSize);
+        }
+        int inputCapacity = DEFAULT_INPUT_CAPACITY;
+        // Grow geometrically so a sequence of slightly larger entries does not repeatedly replace storage.
+        while (inputCapacity < compressedSize && inputCapacity < MAXIMUM_INPUT_CAPACITY) {
+            inputCapacity *= 2;
         }
         CompressionCodec<?> configured = ZipCompressionFormats.withDecodingLimits(
                 DeflateCodec.DEFAULT, decodedSize, limits);
@@ -72,9 +104,12 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         }
         @Nullable Workspace workspace = idle.pollFirst();
         if (workspace == null) {
-            workspace = new Workspace();
+            workspace = new Workspace(inputCapacity);
         }
         try {
+            if (workspace.input.capacity() < inputCapacity) {
+                workspace.input = ByteBuffer.allocate(inputCapacity);
+            }
             workspace.engine.reset();
             Lease lease = new Lease(workspace, source, configured.maximumOutputSize());
             active.add(lease);
@@ -141,13 +176,14 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         private final CompressionDecoder engine = DeflateCodec.DEFAULT.newDecoder();
 
         /// The heap input buffer, exclusive to the active lease.
-        private final ByteBuffer input = ByteBuffer.allocate(8192);
+        private ByteBuffer input;
 
         /// Whether the algorithm state has been disposed.
         private boolean closed;
 
         /// Creates the engine and its bounded staging buffer.
-        private Workspace() throws IOException {
+        private Workspace(int inputCapacity) throws IOException {
+            input = ByteBuffer.allocate(inputCapacity);
         }
 
         /// Releases algorithm state once without producing or consuming bytes.
