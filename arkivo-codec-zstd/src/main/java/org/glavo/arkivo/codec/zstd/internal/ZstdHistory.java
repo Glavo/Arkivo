@@ -70,53 +70,67 @@ final class ZstdHistory {
         return size;
     }
 
-    /// Appends one byte to the sliding window.
-    void append(byte value) throws IOException {
+    /// Appends a block, splitting copies at the ring and segment boundaries.
+    void append(byte[] block) throws IOException {
+        if (block.length == 0) return;
         if (capacity == 0L) {
             throw new IOException("Zstandard frame with a zero window produced output");
         }
-        if (contiguous != null) {
-            contiguous[(int) position] = value;
-        } else {
-            long segmentIndex = position >>> SEGMENT_SHIFT;
-            Map<Long, byte[]> storage = Objects.requireNonNull(segments);
-            byte[] segment = storage.get(segmentIndex);
-            if (segment == null) {
-                try {
-                    segment = new byte[SEGMENT_SIZE];
-                    storage.put(segmentIndex, segment);
-                } catch (OutOfMemoryError error) {
-                    throw new IOException("Unable to grow the Zstandard history window", error);
+        for (int offset = 0; offset < block.length;) {
+            int copied = (int) Math.min(block.length - offset, capacity - position);
+            if (contiguous != null) {
+                System.arraycopy(block, offset, contiguous, (int) position, copied);
+            } else {
+                long segmentIndex = position >>> SEGMENT_SHIFT;
+                Map<Long, byte[]> storage = Objects.requireNonNull(segments);
+                byte[] segment = storage.get(segmentIndex);
+                if (segment == null) {
+                    try {
+                        segment = new byte[SEGMENT_SIZE];
+                        storage.put(segmentIndex, segment);
+                    } catch (OutOfMemoryError error) {
+                        throw new IOException("Unable to grow the Zstandard history window", error);
+                    }
                 }
+                int segmentOffset = (int) position & SEGMENT_MASK;
+                copied = Math.min(copied, SEGMENT_SIZE - segmentOffset);
+                System.arraycopy(block, offset, segment, segmentOffset, copied);
             }
-            segment[(int) position & SEGMENT_MASK] = value;
-        }
-        position++;
-        if (position == capacity) {
-            position = 0L;
-        }
-        if (size < capacity) {
-            size++;
+            offset += copied;
+            position += copied;
+            if (position == capacity) position = 0L;
+            size += Math.min(copied, capacity - size);
         }
     }
 
-    /// Reads a byte at the requested positive distance behind the write position.
-    byte get(long distance) throws IOException {
-        if (distance <= 0L || distance > size) {
+    /// Copies prior bytes without changing history; the range must end at or before the write position.
+    void copy(long distance, byte[] target, int offset, int length) throws IOException {
+        Objects.checkFromIndexSize(offset, length, target.length);
+        if (distance <= 0L || distance > size || length > distance) {
             throw new IOException("Zstandard match offset exceeds available history");
         }
         long sourcePosition = position - distance;
         if (sourcePosition < 0L) {
             sourcePosition += capacity;
         }
-        if (contiguous != null) {
-            return contiguous[(int) sourcePosition];
+        while (length > 0) {
+            int copied = (int) Math.min(length, capacity - sourcePosition);
+            if (contiguous != null) {
+                System.arraycopy(contiguous, (int) sourcePosition, target, offset, copied);
+            } else {
+                Map<Long, byte[]> storage = Objects.requireNonNull(segments);
+                byte[] segment = storage.get(sourcePosition >>> SEGMENT_SHIFT);
+                if (segment == null) {
+                    throw new IOException("Zstandard history segment is unavailable");
+                }
+                int segmentOffset = (int) sourcePosition & SEGMENT_MASK;
+                copied = Math.min(copied, SEGMENT_SIZE - segmentOffset);
+                System.arraycopy(segment, segmentOffset, target, offset, copied);
+            }
+            offset += copied;
+            length -= copied;
+            sourcePosition += copied;
+            if (sourcePosition == capacity) sourcePosition = 0L;
         }
-        Map<Long, byte[]> storage = Objects.requireNonNull(segments);
-        byte[] segment = storage.get(sourcePosition >>> SEGMENT_SHIFT);
-        if (segment == null) {
-            throw new IOException("Zstandard history segment is unavailable");
-        }
-        return segment[(int) sourcePosition & SEGMENT_MASK];
     }
 }

@@ -475,34 +475,49 @@ final class ZstdBlockDecoder {
 
     /// Copies one potentially overlapping match from block, frame history, or dictionary content.
     private void copyMatch(byte[] output, int outputPosition, int length, long distance) throws IOException {
-        for (int index = 0; index < length; index++) {
-            int current = outputPosition + index;
-            if (distance <= current) {
-                output[current] = output[(int) (current - distance)];
-                continue;
-            }
-            long beforeBlock = distance - current;
+        while (distance > outputPosition && length > 0) {
+            long beforeBlock = distance - outputPosition;
+            int copied;
             if (beforeBlock <= history.size()) {
-                output[current] = history.get(beforeBlock);
-                continue;
+                copied = (int) Math.min(length, beforeBlock);
+                history.copy(beforeBlock, output, outputPosition, copied);
+            } else {
+                long absolutePosition = frameSize + outputPosition;
+                long dictionaryDistance = distance - absolutePosition;
+                byte[] dictionaryContent = dictionary.content();
+                if (dictionaryDistance <= 0L
+                        || absolutePosition > history.capacity()
+                        || dictionaryDistance > dictionaryContent.length) {
+                    throw new IOException("Zstandard match offset exceeds available history");
+                }
+                copied = (int) Math.min(length, dictionaryDistance);
+                if (copied - 1L > history.capacity() - absolutePosition) {
+                    throw new IOException("Zstandard match offset exceeds available history");
+                }
+                System.arraycopy(dictionaryContent, dictionaryContent.length - (int) dictionaryDistance,
+                        output, outputPosition, copied);
             }
-
-            long absolutePosition = frameSize + current;
-            long dictionaryDistance = distance - absolutePosition;
-            byte[] dictionaryContent = dictionary.content();
-            if (dictionaryDistance <= 0L
-                    || absolutePosition > history.capacity()
-                    || dictionaryDistance > dictionaryContent.length) {
-                throw new IOException("Zstandard match offset exceeds available history");
-            }
-            output[current] = dictionaryContent[dictionaryContent.length - (int) dictionaryDistance];
+            outputPosition += copied;
+            length -= copied;
+        }
+        if (length == 0) return;
+        if (distance == 1) {
+            Arrays.fill(output, outputPosition, outputPosition + length, output[outputPosition - 1]);
+            return;
+        }
+        int copied = Math.min(length, (int) distance);
+        System.arraycopy(output, outputPosition - (int) distance, output, outputPosition, copied);
+        // Each copied range becomes a complete, nonoverlapping source for the next range.
+        while (copied < length) {
+            int extension = Math.min(copied, length - copied);
+            System.arraycopy(output, outputPosition, output, outputPosition + copied, extension);
+            copied += extension;
         }
     }
+
     /// Appends a completed block to frame history.
     private void appendHistory(byte[] block) throws IOException {
-        for (byte value : block) {
-            history.append(value);
-        }
+        history.append(block);
         frameSize += block.length;
     }
 
