@@ -1528,32 +1528,38 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     private InputStream entryInputStream(Path path, ZipEntryRecord entry, long dataOffset) throws IOException {
         SeekableByteChannel archive = openArchiveChannel();
         boolean completed = false;
-        Throwable failure = null;
+        @Nullable Throwable failure = null;
         try {
             validateEntryDataDescriptor(archive, dataOffset, entry);
             SeekableByteChannel compressed = ArchiveSliceChannel.open(archive, dataOffset, entry.compressedSize);
-            InputStream input = StreamChannelAdapters.inputStream(compressed);
             @Nullable ZipDeflateDecoderPool.Lease deflateDecoder = null;
-            ZipAesExtraField aes = entry.aesExtraField();
+            @Nullable ZipAesExtraField aes = entry.aesExtraField();
+            @Nullable InputStream decrypted = null;
             if (entry.encrypted()) {
-                input = aes != null
-                        ? openAesDecryptingStream(path, entry, aes, input)
-                        : openTraditionalDecryptingStream(path, entry, input);
+                InputStream encrypted = StreamChannelAdapters.inputStream(compressed);
+                decrypted = aes != null
+                        ? openAesDecryptingStream(path, entry, aes, encrypted)
+                        : openTraditionalDecryptingStream(path, entry, encrypted);
             }
+            InputStream input;
             if (entry.compressionMethod() == ZipMethod.DEFLATED.id()) {
                 deflateDecoder = deflateDecoders.open(
-                        input, entry.uncompressedSize, entry.compressedSize, config.readLimits());
+                        decrypted == null ? compressed : StreamChannelAdapters.readableChannel(decrypted),
+                        entry.uncompressedSize, entry.compressedSize, config.readLimits());
                 input = StreamChannelAdapters.inputStream(deflateDecoder);
-            } else if (entry.compressionMethod() == ZipMethod.DEFLATE64.id()) {
-                input = ZipCompressionFormats.newInputStream("deflate64", input, entry.uncompressedSize, config.readLimits());
-            } else if (entry.compressionMethod() == ZipMethod.BZIP2.id()) {
-                input = ZipCompressionFormats.newInputStream("bzip2", input, entry.uncompressedSize, config.readLimits());
-            } else if (isZstandardMethod(entry.compressionMethod())) {
-                input = ZipCompressionFormats.newInputStream("zstd", input, entry.uncompressedSize, config.readLimits());
-            } else if (entry.compressionMethod() == ZipMethod.LZMA.id()) {
-                input = openLzmaInputStream(input, entry.uncompressedSize, entry.generalPurposeFlags);
-            } else if (entry.compressionMethod() == ZipMethod.XZ.id()) {
-                input = ZipCompressionFormats.newInputStream("xz", input, entry.uncompressedSize, config.readLimits());
+            } else {
+                input = decrypted != null ? decrypted : StreamChannelAdapters.inputStream(compressed);
+                if (entry.compressionMethod() == ZipMethod.DEFLATE64.id()) {
+                    input = ZipCompressionFormats.newInputStream("deflate64", input, entry.uncompressedSize, config.readLimits());
+                } else if (entry.compressionMethod() == ZipMethod.BZIP2.id()) {
+                    input = ZipCompressionFormats.newInputStream("bzip2", input, entry.uncompressedSize, config.readLimits());
+                } else if (isZstandardMethod(entry.compressionMethod())) {
+                    input = ZipCompressionFormats.newInputStream("zstd", input, entry.uncompressedSize, config.readLimits());
+                } else if (entry.compressionMethod() == ZipMethod.LZMA.id()) {
+                    input = openLzmaInputStream(input, entry.uncompressedSize, entry.generalPurposeFlags);
+                } else if (entry.compressionMethod() == ZipMethod.XZ.id()) {
+                    input = ZipCompressionFormats.newInputStream("xz", input, entry.uncompressedSize, config.readLimits());
+                }
             }
             long expectedCrc32 = aes != null && !aes.usesCrc32() ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : entry.crc32;
             input = new ValidatingEntryInputStream(input, expectedCrc32, entry.uncompressedSize, deflateDecoder);

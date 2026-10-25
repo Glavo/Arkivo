@@ -7,7 +7,6 @@ import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.ResourceOwnership;
@@ -59,7 +58,8 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
     /// Opens a lease without requesting larger input storage. Previously enlarged storage remains reusable.
     /// Streaming readers use only this overload to keep read-ahead within their pushback capacity.
     Lease open(InputStream source, long decodedSize, ArchiveReadLimits limits) throws IOException {
-        return open(source, decodedSize, ZipArkivoEntryAttributes.UNKNOWN_SIZE, limits);
+        return open(StreamChannelAdapters.readableChannel(source), decodedSize,
+                ZipArkivoEntryAttributes.UNKNOWN_SIZE, limits);
     }
 
     /// Opens an owning decoder lease with a fresh output limiter and independent counters.
@@ -71,9 +71,9 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
     /// @param compressedSize input size hint, or [ZipArkivoEntryAttributes#UNKNOWN_SIZE]
     /// @param limits per-entry decompression limits
     /// @return an independent lease on an exclusive workspace
-    /// @throws IllegalArgumentException if the input size hint is less than `UNKNOWN_SIZE`
+    /// @throws IllegalArgumentException if either size is less than `UNKNOWN_SIZE`
     /// @throws IOException if decoder setup or source cleanup fails
-    synchronized Lease open(InputStream source, long decodedSize, long compressedSize, ArchiveReadLimits limits)
+    synchronized Lease open(ReadableByteChannel source, long decodedSize, long compressedSize, ArchiveReadLimits limits)
             throws IOException {
         if (closed) {
             throw new IllegalStateException("ZIP decoder workspace owner is closed");
@@ -86,12 +86,9 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         while (inputCapacity < compressedSize && inputCapacity < MAXIMUM_INPUT_CAPACITY) {
             inputCapacity *= 2;
         }
-        CompressionCodec<?> configured = ZipCompressionFormats.withDecodingLimits(
-                DeflateCodec.DEFAULT, decodedSize, limits);
+        CompressionDecoderSupport.validateLimit(decodedSize, "decodedSize");
         try {
-            CompressionDecoderSupport.requireWindowSize(
-                    CompressionDecoderSupport.effectiveMaximumWindowSize(
-                            configured.maximumWindowSize(), configured.maximumMemorySize()), 32768);
+            CompressionDecoderSupport.requireWindowSize(limits.effectiveCompressionWindowSize(), 32768);
         } catch (IOException failure) {
             try {
                 ForceCloseable.forceClose(source);
@@ -111,7 +108,7 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
                 workspace.input = ByteBuffer.allocate(inputCapacity);
             }
             workspace.engine.reset();
-            Lease lease = new Lease(workspace, source, configured.maximumOutputSize());
+            Lease lease = new Lease(workspace, source, decodedSize);
             active.add(lease);
             return lease;
         } catch (IOException | RuntimeException | Error failure) {
@@ -223,12 +220,12 @@ final class ZipDeflateDecoderPool implements AutoCloseable {
         private boolean released;
 
         /// Binds one source and a fresh output limiter to the exclusive workspace.
-        private Lease(Workspace workspace, InputStream source, long maximumOutputSize) throws IOException {
+        private Lease(Workspace workspace, ReadableByteChannel source, long maximumOutputSize) throws IOException {
             this.workspace = workspace;
             CompressionDecoder limited = CompressionDecoderSupport.limitEngineOutput(
                     new EngineLease(this), maximumOutputSize);
             channel = CodecChannelAdapters.newReadableByteChannel(
-                    new Source(StreamChannelAdapters.readableChannel(source), this),
+                    new Source(source, this),
                     ResourceOwnership.OWNED, () -> limited, workspace.input);
         }
 

@@ -4,13 +4,16 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 import org.jetbrains.annotations.UnmodifiableView;
 import org.glavo.arkivo.internal.ByteArrayAccess;
+import org.glavo.arkivo.internal.StreamChannelAdapters;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -24,6 +27,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -135,7 +139,8 @@ final class ZipDeflateDecoderPoolTest {
         byte[] compressed = compress(body);
         try (var pool = new ZipDeflateDecoderPool(1)) {
             var source = new CountingSource(compressed, Integer.MAX_VALUE);
-            var lease = pool.open(source, body.length, compressedSize, ArchiveReadLimits.UNLIMITED);
+            var lease = pool.open(StreamChannelAdapters.readableChannel(source), body.length, compressedSize,
+                    ArchiveReadLimits.UNLIMITED);
             assertEquals(capacity, input(workspace(lease)).capacity());
             assertArrayEquals(body, read(lease, body.length));
             assertEquals((compressed.length + capacity - 1) / capacity, source.reads);
@@ -155,7 +160,7 @@ final class ZipDeflateDecoderPoolTest {
                 byte[] body = new byte[size];
                 new Random(size).nextBytes(body);
                 byte[] compressed = compress(body);
-                var lease = pool.open(new ByteArrayInputStream(compressed), size, compressed.length,
+                var lease = pool.open(new ReadOnlyByteArrayChannel(compressed), size, compressed.length,
                         ArchiveReadLimits.UNLIMITED);
                 Object workspace = workspace(lease);
                 ByteBuffer input = input(workspace);
@@ -181,12 +186,14 @@ final class ZipDeflateDecoderPoolTest {
         new Random(42).nextBytes(body);
         byte[] compressed = compress(body);
         try (var pool = new ZipDeflateDecoderPool(1)) {
-            var complete = pool.open(new CountingSource(compressed, 7), body.length, compressed.length,
+            var complete = pool.open(StreamChannelAdapters.readableChannel(new CountingSource(compressed, 7)),
+                    body.length, compressed.length,
                     ArchiveReadLimits.UNLIMITED);
             assertArrayEquals(body, read(complete, body.length));
             complete.verified();
             complete.close();
-            var truncated = pool.open(new CountingSource(Arrays.copyOf(compressed, compressed.length - 1), 7),
+            var truncated = pool.open(StreamChannelAdapters.readableChannel(
+                            new CountingSource(Arrays.copyOf(compressed, compressed.length - 1), 7)),
                     body.length, compressed.length, ArchiveReadLimits.UNLIMITED);
             assertSame(workspace(complete), workspace(truncated));
             assertThrows(IOException.class, () -> read(truncated, body.length));
@@ -249,18 +256,18 @@ final class ZipDeflateDecoderPoolTest {
     void enforcesFreshEntryLimits(long compressedSize) throws Exception {
         byte[] body = {1, 2, 3, 4, 5, 6, 7};
         try (var pool = new ZipDeflateDecoderPool(1)) {
-            var first = pool.open(new ByteArrayInputStream(compress(body)), body.length, compressedSize,
+            var first = pool.open(new ReadOnlyByteArrayChannel(compress(body)), body.length, compressedSize,
                     ArchiveReadLimits.UNLIMITED);
             assertArrayEquals(body, read(first, body.length));
             first.verified();
             first.close();
-            var limited = pool.open(new ByteArrayInputStream(compress(body)), 3, compressedSize,
+            var limited = pool.open(new ReadOnlyByteArrayChannel(compress(body)), 3, compressedSize,
                     ArchiveReadLimits.UNLIMITED);
             assertSame(workspace(first), workspace(limited));
             assertThrows(DecompressionOutputLimitException.class, () -> read(limited, body.length));
             limited.close();
             assertTrue(members(pool, "idle").isEmpty());
-            var next = pool.open(new ByteArrayInputStream(compress(body)), body.length, compressedSize,
+            var next = pool.open(new ReadOnlyByteArrayChannel(compress(body)), body.length, compressedSize,
                     ArchiveReadLimits.UNLIMITED);
             assertNotSame(workspace(limited), workspace(next));
             assertArrayEquals(body, read(next, body.length));
@@ -313,6 +320,55 @@ final class ZipDeflateDecoderPoolTest {
         }
     }
 
+    /// Both archive policy ceilings constrain the fixed Deflate window, including exact-boundary limits.
+    @ParameterizedTest
+    @CsvSource({"-1,-1,true", "32768,-1,true", "-1,32768,true", "32768,65536,true",
+            "65536,32768,true", "0,-1,false", "32767,-1,false", "-1,32767,false",
+            "16,65536,false", "65536,16,false"})
+    void appliesWindowAndMemoryLimits(long window, long memory, boolean accepted) throws Exception {
+        byte[] body = {1, 2, 3};
+        var limits = ArchiveReadLimits.builder().maximumCompressionWindowSize(window)
+                .maximumDecoderMemorySize(memory).build();
+        try (var pool = new ZipDeflateDecoderPool(1)) {
+            var source = new ReadOnlyByteArrayChannel(compress(body));
+            if (accepted) {
+                var lease = pool.open(source, body.length, source.size(), limits);
+                assertArrayEquals(body, read(lease, body.length));
+                lease.verified();
+                lease.close();
+            } else {
+                assertThrows(DecompressionWindowLimitException.class,
+                        () -> pool.open(source, body.length, source.size(), limits));
+                assertTrue(members(pool, "active").isEmpty());
+                assertTrue(members(pool, "idle").isEmpty());
+            }
+            assertFalse(source.isOpen());
+        }
+    }
+
+    /// Direct channels fill the retained input buffer and preserve progress delivered before a source failure.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void readsChannelsWithoutStreamRoundTrip(boolean partialFailure) throws Exception {
+        byte[] body = new byte[70_000];
+        new Random(42).nextBytes(body);
+        byte[] compressed = compress(body);
+        try (var pool = new ZipDeflateDecoderPool(1)) {
+            var source = new RecoverableChannel(compressed, partialFailure);
+            var lease = pool.open(source, body.length, compressed.length, ArchiveReadLimits.UNLIMITED);
+            IOException failure = assertThrows(IOException.class, () -> lease.read(ByteBuffer.allocate(1)));
+            if (partialFailure) assertSame(source.failure, failure);
+            assertSame(input(workspace(lease)), source.lastTarget);
+            assertEquals(partialFailure ? 7 : 0, lease.sourceBytes());
+            assertArrayEquals(body, read(lease, body.length));
+            assertEquals(compressed.length, lease.sourceBytes());
+            lease.verified();
+            lease.close();
+            assertFalse(source.isOpen());
+            assertTrue(members(pool, "idle").isEmpty());
+        }
+    }
+
     /// A recoverable source failure does not change adapter recovery, but still disqualifies its workspace.
     @ParameterizedTest
     @ValueSource(longs = {-1, 65_536})
@@ -320,7 +376,8 @@ final class ZipDeflateDecoderPoolTest {
         byte[] body = {8, 9, 10};
         try (var pool = new ZipDeflateDecoderPool(1)) {
             var source = new FailingSource(compress(body), true, false);
-            var lease = pool.open(source, body.length, compressedSize, ArchiveReadLimits.UNLIMITED);
+            var lease = pool.open(StreamChannelAdapters.readableChannel(source), body.length, compressedSize,
+                    ArchiveReadLimits.UNLIMITED);
             assertSame(source.failure, assertThrows(IOException.class, () -> lease.read(ByteBuffer.allocate(4))));
             assertArrayEquals(body, read(lease, body.length));
             lease.verified();
@@ -336,7 +393,7 @@ final class ZipDeflateDecoderPoolTest {
     void retriesFailedOwnerClosure(long compressedSize) throws Exception {
         var pool = new ZipDeflateDecoderPool(1);
         var source = new FailingSource(compress(new byte[]{1}), false, true);
-        var lease = pool.open(source, 1, compressedSize, ArchiveReadLimits.UNLIMITED);
+        var lease = pool.open(StreamChannelAdapters.readableChannel(source), 1, compressedSize, ArchiveReadLimits.UNLIMITED);
         assertArrayEquals(new byte[]{1}, read(lease, 1));
         lease.verified();
         assertSame(source.failure, assertThrows(IOException.class, pool::close));
@@ -358,7 +415,7 @@ final class ZipDeflateDecoderPoolTest {
     void retainsWorkspaceUntilSourceCleanupSucceeds(long compressedSize) throws Exception {
         try (var pool = new ZipDeflateDecoderPool(1)) {
             var source = new FailingSource(compress(new byte[]{1}), false, true);
-            var lease = pool.open(source, 1, compressedSize, ArchiveReadLimits.UNLIMITED);
+            var lease = pool.open(StreamChannelAdapters.readableChannel(source), 1, compressedSize, ArchiveReadLimits.UNLIMITED);
             Object workspace = workspace(lease);
             var closed = workspace.getClass().getDeclaredField("closed");
             closed.setAccessible(true);
@@ -379,7 +436,7 @@ final class ZipDeflateDecoderPoolTest {
     @ValueSource(longs = {-1, 65_536})
     void discardsWorkspaceOnInterruptedCleanup(long compressedSize) throws Exception {
         try (var pool = new ZipDeflateDecoderPool(1)) {
-            var lease = pool.open(new ByteArrayInputStream(compress(new byte[]{1})), 1, compressedSize,
+            var lease = pool.open(new ReadOnlyByteArrayChannel(compress(new byte[]{1})), 1, compressedSize,
                     ArchiveReadLimits.UNLIMITED);
             assertArrayEquals(new byte[]{1}, read(lease, 1));
             lease.verified();
@@ -468,6 +525,63 @@ final class ZipDeflateDecoderPoolTest {
         var field = ZipDeflateDecoderPool.class.getDeclaredField(name);
         field.setAccessible(true);
         return assertInstanceOf(Collection.class, field.get(pool));
+    }
+
+    /// Stalls once or delivers a prefix before failing, then resumes at the retained source position.
+    @NotNullByDefault
+    private static final class RecoverableChannel implements ReadableByteChannel {
+        /// The immutable compressed contents.
+        private final byte @Unmodifiable [] bytes;
+        /// Whether the initial read delivers bytes before throwing.
+        private final boolean partialFailure;
+        /// The failure delivered after the initial prefix.
+        private final IOException failure = new IOException("injected partial read failure");
+        /// The next compressed byte to deliver.
+        private int position;
+        /// Whether the initial stall or failure remains pending.
+        private boolean first = true;
+        /// Whether source cleanup has completed.
+        private boolean open = true;
+        /// The buffer supplied by the most recent decoder refill.
+        private @Nullable ByteBuffer lastTarget;
+
+        /// Copies compressed data and selects the first-read behavior.
+        private RecoverableChannel(byte[] bytes, boolean partialFailure) {
+            this.bytes = bytes.clone();
+            this.partialFailure = partialFailure;
+        }
+
+        /// Records buffer identity and advances its position even when the first read throws.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            if (!open) throw new ClosedChannelException();
+            lastTarget = target;
+            if (!target.hasRemaining()) return 0;
+            if (first) {
+                first = false;
+                if (!partialFailure) return 0;
+                position = Math.min(7, target.remaining());
+                target.put(bytes, 0, position);
+                throw failure;
+            }
+            if (position == bytes.length) return -1;
+            int count = Math.min(target.remaining(), bytes.length - position);
+            target.put(bytes, position, count);
+            position += count;
+            return count;
+        }
+
+        /// Returns whether source cleanup remains outstanding.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes the in-memory source without changing its delivered-byte count.
+        @Override
+        public void close() {
+            open = false;
+        }
     }
 
     /// Counts compressed-source reads and optionally fragments each response.
