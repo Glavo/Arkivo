@@ -301,6 +301,21 @@ final class ZipLazyReadTest {
         }
     }
 
+    /// Loading an entry without local extra fields does not seek to an empty metadata range.
+    @Test
+    void skipsEmptyLocalExtraRange(@TempDir Path directory) throws Exception {
+        Path path = directory.resolve("empty-extra.zip");
+        Files.write(path, archive());
+        try (var fs = ZipArkivoFileSystem.open(path)) {
+            try (var names = Files.list(fs.getPath("/"))) { assertEquals(2, names.count()); }
+            var attributes = Files.readAttributes(fs.getPath("a"), ZipArkivoEntryAttributes.class);
+            assertEquals(262144, attributes.size());
+            assertEquals(0, attributes.localExtraData().length);
+            var channel = (SeekableByteChannel) idleChannels(fs).iterator().next();
+            assertEquals(30, channel.position());
+        }
+    }
+
     /// SFX archives retain signature-based selection between relative and already-absolute local offsets.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})

@@ -3385,6 +3385,40 @@ public final class ZipArchiveIntegrationTest {
         }
     }
 
+    /// Preserves central timestamps without local metadata and lets a local timestamp override them.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 9})
+    public void resolvesTimestampWithEmptyOrPresentLocalExtra(int localLength) throws IOException {
+        int centralSeconds = 1_700_000_000;
+        int localSeconds = centralSeconds + 123;
+        byte[] centralExtra = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN)
+                .putShort((short) 0x5455).putShort((short) 5).put((byte) 1).putInt(centralSeconds).array();
+        byte[] localExtra = new byte[localLength];
+        if (localLength == 9) {
+            System.arraycopy(centralExtra, 0, localExtra, 0, centralExtra.length);
+            ByteBuffer.wrap(localExtra).order(ByteOrder.LITTLE_ENDIAN).putInt(5, localSeconds);
+        }
+        Path archive = createTemporaryArchiveContent(singleEntryZipWithRawExtraData(
+                "timestamp.txt".getBytes(StandardCharsets.UTF_8), localExtra, centralExtra));
+        FileTime expected = FileTime.fromMillis((localLength == 9 ? localSeconds : centralSeconds) * 1000L);
+        try {
+            try (var fs = ZipArkivoFileSystem.open(archive)) {
+                Path path = fs.getPath("/timestamp.txt");
+                for (int i = 0; i < 2; i++) {
+                    var attributes = Files.readAttributes(path, ZipArkivoEntryAttributes.class);
+                    assertEquals(expected, attributes.lastModifiedTime());
+                    assertEquals(expected, attributes.lastAccessTime());
+                    assertEquals(expected, attributes.creationTime());
+                    assertArrayEquals(localExtra, attributes.localExtraData());
+                    assertArrayEquals(centralExtra, attributes.centralDirectoryExtraData());
+                }
+                assertArrayEquals(new byte[0], Files.readAllBytes(path));
+            }
+        } finally {
+            deleteTemporaryArchive(archive);
+        }
+    }
+
     /// Verifies that malformed central directory extra field lengths are rejected.
     @Test
     public void rejectsMalformedCentralDirectoryExtraFieldLength() throws IOException {

@@ -95,6 +95,9 @@ import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.readUnsigned
 /// Implements ZIP archive file system state and operations.
 @NotNullByDefault
 public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem implements ZipFileSystemOperations {
+    /// Shared representation of absent local extra fields.
+    private static final byte @Unmodifiable [] EMPTY_EXTRA_DATA = new byte[0];
+
     /// The maximum decoded entry size retained in memory by default.
     private static final long DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD = 1024L * 1024L;
 
@@ -463,10 +466,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         requireReadOnlyOptions(options);
         ZipEntryRecord entry = requireReadableEntry(path);
         requireSupportedEncryption(path, entry);
-        long dataOffset = dataOffset(entry);
         int compressionMethod = entry.compressionMethod();
         if (compressionMethod == ZipMethod.STORED.id() && !entry.encrypted()) {
-            return openStoredEntryByteChannel(entry, dataOffset);
+            return openStoredEntryByteChannel(entry);
         }
         if (compressionMethod == ZipMethod.STORED.id()
                 || compressionMethod == ZipMethod.DEFLATED.id()
@@ -475,20 +477,20 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 || compressionMethod == ZipMethod.LZMA.id()
                 || compressionMethod == ZipMethod.XZ.id()
                 || isZstandardMethod(compressionMethod)) {
-            return newDecodedEntryByteChannel(path, entry, dataOffset);
+            return newDecodedEntryByteChannel(path, entry);
         }
         throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
     }
 
     /// Opens a validating stored-entry channel while preserving single-channel source lifecycle semantics.
-    private SeekableByteChannel openStoredEntryByteChannel(ZipEntryRecord entry, long dataOffset) throws IOException {
+    private SeekableByteChannel openStoredEntryByteChannel(ZipEntryRecord entry) throws IOException {
         SeekableByteChannel archive = openArchiveChannel();
         boolean completed = false;
-        Throwable failure = null;
+        @Nullable Throwable failure = null;
         try {
-            validateEntryDataDescriptor(archive, dataOffset, entry);
+            validateEntryDataDescriptor(archive, entry);
             SeekableByteChannel result = new ValidatingStoredEntryByteChannel(
-                    ArchiveSliceChannel.open(archive, dataOffset, entry.compressedSize),
+                    ArchiveSliceChannel.open(archive, entry.dataOffset, entry.compressedSize),
                     entry.crc32,
                     entry.uncompressedSize
             );
@@ -527,8 +529,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
         }
 
-        long dataOffset = dataOffset(entry);
-        return entryInputStream(path, entry, dataOffset);
+        return entryInputStream(path, entry);
     }
 
     /// Reads a symbolic link target from a ZIP archive path.
@@ -549,7 +550,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
     }
 
-    /// Returns a readable entry record for a path.
+    /// Returns a non-directory entry with validated local metadata and payload offset.
     private ZipEntryRecord requireReadableEntry(Path path) throws IOException {
         String key = pathKey(path);
         ZipEntryRecord entry = requireEntry(key);
@@ -1008,7 +1009,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 // Consecutive entries often share the same DOS timestamp; keep this cache local to one index load.
                 FileTime dosFallback = previousDosTime;
                 ZipExtraFieldMetadata.EntryMetadata entryMetadata = ZipExtraFieldMetadata.resolve(
-                        new byte[0], extraData, dosFallback);
+                        EMPTY_EXTRA_DATA, extraData, dosFallback);
                 ZipEntryRecord entry = new ZipEntryRecord(
                         key,
                         rawPath,
@@ -1023,7 +1024,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         externalAttributes,
                         method,
                         storedLocalHeaderOffset,
-                        new byte[0],
+                        EMPTY_EXTRA_DATA,
                         extraData,
                         rawComment.length > 0 ? rawComment : null,
                         lastModifiedTime,
@@ -1408,11 +1409,6 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         return entry;
     }
 
-    /// Returns the validated data offset without rereading a successfully loaded local header.
-    private long dataOffset(ZipEntryRecord entry) throws IOException {
-        return resolveEntry(entry).dataOffset;
-    }
-
     /// Loads complete local metadata only when an entry's attributes or body are requested.
     private ZipEntryRecord resolveEntry(ZipEntryRecord entry) throws IOException {
         @Nullable ZipEntryRecord cached = entry.localRecord;
@@ -1432,13 +1428,15 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             long offset = resolveLocalHeaderOffset(channel, entry.localHeaderOffset, end.offsetAdjustment);
             LocalHeaderMetadata local = readLocalHeaderMetadata(
                     channel, offset, entry, index.readLimits, false);
+            // Without local fields, no metadata can override the already parsed central-directory values.
+            ZipExtraFieldMetadata.EntryMetadata metadata = local.extraData.length == 0 ? entry.entryMetadata
+                    : ZipExtraFieldMetadata.resolve(local.extraData, entry.centralDirectoryExtraData, entry.dosFallback);
             ZipEntryRecord complete = new ZipEntryRecord(
                     entry.key, entry.rawPath, entry.path, entry.compressedSize, entry.uncompressedSize, entry.crc32,
                     entry.generalPurposeFlags, entry.versionMadeBy, entry.versionNeededToExtract,
                     entry.internalAttributes, entry.externalAttributes, entry.method, offset, local.extraData,
                     entry.centralDirectoryExtraData, entry.rawComment, entry.lastModifiedDosTime,
-                    ZipExtraFieldMetadata.resolve(local.extraData, entry.centralDirectoryExtraData,
-                            entry.dosFallback), entry.directory, local.usesDataDescriptor(), entry.dosFallback);
+                    metadata, entry.directory, local.usesDataDescriptor(), entry.dosFallback);
             long recordLimit = nextLocalRecordOffset(channel, index, offset, end.offsetAdjustment);
             if (end.offsetAdjustment != 0) {
                 recordLimit = Math.min(recordLimit, nextLocalRecordOffset(channel, index, offset, 0));
@@ -1483,12 +1481,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// Decodes a ZIP entry into staging storage and transfers its lifetime to a read-only channel.
     private SeekableByteChannel newDecodedEntryByteChannel(
             Path path,
-            ZipEntryRecord entry,
-            long dataOffset
+            ZipEntryRecord entry
     ) throws IOException {
         ArkivoStoredContent content = decodedEntryStorage.createContent(path.toString(), entry.uncompressedSize);
         try {
-            try (InputStream input = entryInputStream(path, entry, dataOffset);
+            try (InputStream input = entryInputStream(path, entry);
                  SeekableByteChannel output = content.openChannel(Set.of(
                          StandardOpenOption.TRUNCATE_EXISTING,
                          StandardOpenOption.WRITE
@@ -1517,13 +1514,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     }
 
     /// Opens a ZIP entry data stream.
-    private InputStream entryInputStream(Path path, ZipEntryRecord entry, long dataOffset) throws IOException {
+    private InputStream entryInputStream(Path path, ZipEntryRecord entry) throws IOException {
         SeekableByteChannel archive = openArchiveChannel();
         boolean completed = false;
         @Nullable Throwable failure = null;
         try {
-            validateEntryDataDescriptor(archive, dataOffset, entry);
-            SeekableByteChannel compressed = ArchiveSliceChannel.open(archive, dataOffset, entry.compressedSize);
+            validateEntryDataDescriptor(archive, entry);
+            SeekableByteChannel compressed = ArchiveSliceChannel.open(archive, entry.dataOffset, entry.compressedSize);
             @Nullable ZipDeflateDecoderPool.Lease deflateDecoder = null;
             @Nullable ZipAesExtraField aes = entry.aesExtraField();
             @Nullable InputStream decrypted = null;
@@ -1570,14 +1567,13 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     /// Validates the complete data descriptor for the entry currently being opened.
     private static void validateEntryDataDescriptor(
             SeekableByteChannel channel,
-            long dataOffset,
             ZipEntryRecord entry
     ) throws IOException {
         if (!entry.localDataDescriptor) {
             return;
         }
         long descriptorOffset = checkedZipOffsetAdd(
-                dataOffset,
+                entry.dataOffset,
                 entry.compressedSize,
                 "ZIP data descriptor offset"
         );
@@ -1943,10 +1939,15 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             }
         }
 
-        ByteBuffer extra = ByteBuffer.allocate(extraLength);
-        readFully(channel, extraOffset, extra);
-        byte[] extraData = extra.array();
-        ZipExtraFields.validateForReading(extraData);
+        byte[] extraData;
+        if (extraLength == 0) {
+            extraData = EMPTY_EXTRA_DATA;
+        } else {
+            ByteBuffer extra = ByteBuffer.allocate(extraLength);
+            readFully(channel, extraOffset, extra);
+            extraData = extra.array();
+            ZipExtraFields.validateForReading(extraData);
+        }
         validateLocalAesExtraData(flags, method, extraData, entry.centralDirectoryExtraData);
         if (requireConsistency && (flags & DATA_DESCRIPTOR_FLAG) == 0) {
             long crc32 = Integer.toUnsignedLong(header.getInt(ZIP_LOCAL_FILE_HEADER_CRC32_OFFSET));
