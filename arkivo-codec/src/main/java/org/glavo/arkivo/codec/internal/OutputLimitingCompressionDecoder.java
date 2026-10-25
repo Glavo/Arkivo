@@ -9,6 +9,7 @@ import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DictionaryRequest;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -23,8 +24,8 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
     /// Maximum decoded byte count.
     private final long maximumOutputSize;
 
-    /// Single-byte output used to distinguish an exact-size frame from excess output.
-    private final ByteBuffer probe = ByteBuffer.allocate(1);
+    /// Single-byte output allocated on the first probe for excess output and reused across resets.
+    private @Nullable ByteBuffer probe;
 
     /// Number of decoded bytes returned to callers.
     private long outputBytes;
@@ -150,7 +151,6 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
         decoder.reset();
         outputBytes = 0L;
         exceeded = false;
-        probe.clear();
     }
 
     /// Releases the underlying decoder engine.
@@ -162,14 +162,16 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
 
     /// Decodes one hidden byte to determine whether the configured limit is exceeded.
     private CodecOutcome probeForExcess(ByteBuffer source, boolean endOfInput) throws IOException {
-        probe.clear();
+        @Nullable ByteBuffer target = probe;
+        if (target == null) probe = target = ByteBuffer.allocate(1);
+        target.clear();
         CodecOutcome outcome;
         try {
             outcome = endOfInput
-                    ? decoder.finish(source, probe)
-                    : decoder.decode(source, probe);
+                    ? decoder.finish(source, target)
+                    : decoder.decode(source, target);
         } finally {
-            exceeded |= probe.position() != 0;
+            exceeded |= target.position() != 0;
         }
         if (exceeded) {
             throw limitException();

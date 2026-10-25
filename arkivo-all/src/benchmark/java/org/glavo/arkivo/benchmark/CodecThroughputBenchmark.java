@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.benchmark;
 
+import org.glavo.arkivo.codec.CodecResult;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -22,6 +24,7 @@ import org.openjdk.jmh.annotations.Warmup;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
@@ -42,6 +45,14 @@ public class CodecThroughputBenchmark {
     @Param({"deflate", "deflate64", "gzip", "zlib", "zstd"})
     public String formatName = "gzip";
 
+    /// Output limit used by incremental decoding: unlimited, exact, or larger than the decoded content.
+    @Param({"unlimited"})
+    public String outputLimit = "unlimited";
+
+    /// Writable bytes supplied to each incremental decoding operation.
+    @Param({"1024"})
+    public int outputChunk = 1024;
+
     /// The deterministic compressible source bytes.
     private byte @Unmodifiable [] source = new byte[0];
 
@@ -51,6 +62,10 @@ public class CodecThroughputBenchmark {
     /// Prepares deterministic source data and validates the selected codec round trip.
     @Setup
     public void setUp() throws IOException {
+        if (!Arrays.asList("unlimited", "exact", "larger").contains(outputLimit)) {
+            throw new IllegalArgumentException(outputLimit);
+        }
+        if (outputChunk <= 0) throw new IllegalArgumentException("Output chunk must be positive");
         byte[] content = new byte[SOURCE_SIZE];
         for (int index = 0; index < content.length; index++) {
             int offset = index & 0xffff;
@@ -62,6 +77,7 @@ public class CodecThroughputBenchmark {
         if (!Arrays.equals(source, restored)) {
             throw new AssertionError("Codec benchmark setup did not round trip " + formatName);
         }
+        decodeIncrementally();
     }
 
     /// Compresses one fixed-size source through the public channel adapter API.
@@ -76,6 +92,33 @@ public class CodecThroughputBenchmark {
     @OperationsPerInvocation(SOURCE_SIZE)
     public byte[] decompress() throws IOException {
         return decompress(formatName, compressed, source.length);
+    }
+
+    /// Decodes a complete channel session using bounded targets and per-call progress results.
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    public long decodeIncrementally() throws IOException {
+        long maximum = switch (outputLimit) {
+            case "unlimited" -> CompressionCodec.UNLIMITED_SIZE;
+            case "exact" -> SOURCE_SIZE;
+            case "larger" -> SOURCE_SIZE + 1L;
+            default -> throw new AssertionError(outputLimit);
+        };
+        var codec = CompressionFormats.require(formatName).defaultCodec().withMaximumOutputSize(maximum);
+        ByteBuffer target = ByteBuffer.allocate(outputChunk);
+        long produced = 0;
+        try (var decoder = codec.newReadableByteChannel(Channels.newChannel(new ByteArrayInputStream(compressed)))) {
+            while (true) {
+                target.clear();
+                CodecResult result = decoder.decode(target);
+                if (result.outputBytes() != target.position()) throw new AssertionError("Incorrect output count");
+                produced += result.outputBytes();
+                if (result.status() == CodecResult.Status.END_OF_INPUT) break;
+            }
+        }
+        if (produced != SOURCE_SIZE) throw new AssertionError("Incorrect decoded size: " + produced);
+        return produced;
     }
 
     /// Compresses the requested source and returns the resulting frame.

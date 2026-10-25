@@ -20,6 +20,7 @@ import java.util.Objects;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -27,6 +28,41 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies output limiting around buffer decoders with internally staged output.
 @NotNullByDefault
 final class OutputLimitingCompressionDecoderTest {
+    /// Lazily allocates the hidden probe and reuses it after reset, even after it observed excess output.
+    @Test
+    void reusesLazilyAllocatedProbeAfterReset() throws Exception {
+        var field = OutputLimitingCompressionDecoder.class.getDeclaredField("probe");
+        field.setAccessible(true);
+        for (boolean finish : new boolean[]{false, true}) {
+            try (var decoder = CompressionDecoderSupport.limitEngineOutput(new StagedDecoder(new byte[]{1, 2}), 1)) {
+                ByteBuffer source = ByteBuffer.allocate(0);
+                ByteBuffer target = ByteBuffer.allocate(1);
+                assertNull(field.get(decoder));
+                decoder.reset();
+                assertNull(field.get(decoder));
+                assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(source, target.limit(0)));
+                assertNull(field.get(decoder));
+                @Nullable ByteBuffer previousProbe = null;
+                for (int iteration = 0; iteration < 3; iteration++) {
+                    decoder.reset();
+                    assertEquals(CodecOutcome.NEEDS_OUTPUT, finish
+                            ? decoder.finish(source, target.clear()) : decoder.decode(source, target.clear()));
+                    assertSame(previousProbe, field.get(decoder));
+                    target.clear();
+                    assertThrows(DecompressionLimitException.class, () -> {
+                        if (finish) decoder.finish(source, target);
+                        else decoder.decode(source, target);
+                    });
+                    ByteBuffer probe = assertInstanceOf(ByteBuffer.class, field.get(decoder));
+                    if (previousProbe != null) assertSame(previousProbe, probe);
+                    previousProbe = probe;
+                    assertEquals(1, probe.position());
+                    assertEquals(0, target.position());
+                }
+            }
+        }
+    }
+
     /// Bytes produced before an exception count toward the limit, including a failed hidden probe.
     @Test
     void retainsLimitProgressAfterDelegateFailure() throws IOException {

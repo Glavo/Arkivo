@@ -12,6 +12,7 @@ import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.internal.ForceCloseable;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
@@ -238,8 +239,8 @@ public final class CompressionDecoderSupport {
         /// The maximum number of bytes that may be returned.
         private final long maximumOutputSize;
 
-        /// The single-byte buffer used to verify completion after the limit is reached.
-        private final ByteBuffer probe = ByteBuffer.allocate(1);
+        /// Single-byte storage allocated on the first check for excess decoded output.
+        private @Nullable ByteBuffer probe;
 
         /// The number of decoded bytes returned to callers.
         private volatile long outputBytes;
@@ -326,15 +327,13 @@ public final class CompressionDecoderSupport {
             if (target.remaining() > remaining) {
                 target.limit(target.position() + Math.toIntExact(remaining));
             }
-            CodecResult result;
             try {
-                result = decodeDelegate(target, stopAtFrame);
+                // Restricting the target does not change the delegate's per-call counts.
+                return decodeDelegate(target, stopAtFrame);
             } finally {
                 target.limit(originalLimit);
                 outputBytes += target.position() - start;
             }
-            int produced = target.position() - start;
-            return new CodecResult(result.inputBytes(), produced, result.status());
         }
 
         /// Returns compressed bytes consumed by the underlying decoder.
@@ -392,7 +391,7 @@ public final class CompressionDecoderSupport {
 
         /// Probes for one excess byte through the ordinary channel read contract.
         private int probeForExcessRead() throws IOException {
-            probe.clear();
+            ByteBuffer probe = prepareProbe();
             int read;
             try {
                 read = decoder.read(probe);
@@ -407,7 +406,7 @@ public final class CompressionDecoderSupport {
 
         /// Probes one decode operation after the output limit is reached.
         private CodecResult probeForExcessDecode(boolean stopAtFrame) throws IOException {
-            probe.clear();
+            ByteBuffer probe = prepareProbe();
             CodecResult result;
             try {
                 result = decodeDelegate(probe, stopAtFrame);
@@ -418,6 +417,13 @@ public final class CompressionDecoderSupport {
                 throw limitException();
             }
             return result;
+        }
+
+        /// Returns cleared single-byte probe storage while the caller holds the operation monitor.
+        private ByteBuffer prepareProbe() {
+            @Nullable ByteBuffer buffer = probe;
+            if (buffer == null) probe = buffer = ByteBuffer.allocate(1);
+            return buffer.clear();
         }
 
         /// Creates the stable configured decompression-limit failure.

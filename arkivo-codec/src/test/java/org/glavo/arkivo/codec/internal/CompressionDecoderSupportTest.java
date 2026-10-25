@@ -13,6 +13,7 @@ import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -29,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,6 +38,37 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies algorithm-independent decompression limit handling.
 @NotNullByDefault
 final class CompressionDecoderSupportTest {
+    /// Allocates a channel probe only when a nonempty operation reaches the configured output limit.
+    @Test
+    void allocatesProbeOnlyAtOutputLimit() throws Exception {
+        for (long maximum : new long[]{2, 3}) {
+            var delegate = new TestChannel(new byte[]{1, 2});
+            try (var channel = CompressionDecoderSupport.limitChannelOutput(delegate, maximum)) {
+                var field = channel.getClass().getDeclaredField("probe");
+                field.setAccessible(true);
+                assertNull(field.get(channel));
+                ByteBuffer target = ByteBuffer.allocate(1);
+                assertEquals(0, channel.read(target.limit(0)));
+                assertEquals(0, channel.decode(target).outputBytes());
+                assertNull(field.get(channel));
+                assertEquals(1, channel.read(target.clear()));
+                assertEquals(1, channel.decode(target.clear()).outputBytes());
+                assertNull(field.get(channel));
+                assertEquals(0, channel.read(target.limit(0)));
+                assertNull(field.get(channel));
+                assertEquals(CodecResult.Status.END_OF_INPUT, channel.decode(target.clear()).status());
+                @Nullable Object probe = field.get(channel);
+                if (maximum == 2) assertInstanceOf(ByteBuffer.class, probe);
+                else assertNull(probe);
+                assertEquals(-1, channel.read(target));
+                assertEquals(CodecResult.Status.END_OF_INPUT, channel.decode(target).status());
+                assertSame(probe, field.get(channel));
+                assertEquals(0, target.position());
+                assertEquals(2, channel.outputBytes());
+            }
+        }
+    }
+
     /// A queued operation must not clear the shared probe after the active decoder has populated it.
     @Test
     void retainsProbeProgressUntilLimitIsRecorded() throws Exception {
@@ -442,6 +475,7 @@ final class CompressionDecoderSupportTest {
         target.limit(4);
 
         CodecResult decoded = decoder.decode(target);
+        assertSame(delegate.lastResult, decoded);
         assertEquals(2L, decoded.inputBytes());
         assertEquals(2L, decoded.outputBytes());
         assertEquals(CodecResult.Status.ACTIVE, decoded.status());
@@ -455,6 +489,7 @@ final class CompressionDecoderSupportTest {
         assertTrue(decoder.isOpen());
 
         CodecResult end = decoder.decode(ByteBuffer.allocate(1));
+        assertSame(delegate.lastResult, end);
         assertEquals(0L, end.inputBytes());
         assertEquals(0L, end.outputBytes());
         assertEquals(CodecResult.Status.END_OF_INPUT, end.status());
@@ -492,6 +527,7 @@ final class CompressionDecoderSupportTest {
                 CompressionDecoderSupport.limitChannelOutput(delegate, 1L);
 
         CodecResult empty = decoder.decodeFrame(ByteBuffer.allocate(0));
+        assertSame(delegate.lastResult, empty);
         assertEquals(0L, empty.inputBytes());
         assertEquals(0L, empty.outputBytes());
         assertEquals(CodecResult.Status.ACTIVE, empty.status());
@@ -499,6 +535,7 @@ final class CompressionDecoderSupportTest {
         ByteBuffer target = ByteBuffer.allocate(4);
         target.limit(3);
         CodecResult decoded = decoder.decodeFrame(target);
+        assertSame(delegate.lastResult, decoded);
         assertEquals(1L, decoded.inputBytes());
         assertEquals(1L, decoded.outputBytes());
         assertEquals(CodecResult.Status.ACTIVE, decoded.status());
@@ -506,6 +543,7 @@ final class CompressionDecoderSupportTest {
         assertEquals(3, target.limit());
 
         CodecResult end = decoder.decodeFrame(ByteBuffer.allocate(1));
+        assertSame(delegate.lastResult, end);
         assertEquals(0L, end.inputBytes());
         assertEquals(0L, end.outputBytes());
         assertEquals(CodecResult.Status.END_OF_INPUT, end.status());
@@ -545,6 +583,9 @@ final class CompressionDecoderSupportTest {
     /// Supplies identity-decoded bytes with explicit counters and lifecycle state.
     @NotNullByDefault
     private static class TestChannel implements DecompressingReadableByteChannel {
+        /// Most recent incremental result, retained only to verify that a limiter does not copy it.
+        protected @Nullable CodecResult lastResult;
+
         /// The decoded bytes returned by this decoder.
         private final ByteBuffer content;
 
@@ -579,6 +620,14 @@ final class CompressionDecoderSupportTest {
             content.position(content.position() + count);
             outputBytes += count;
             return count;
+        }
+
+        /// Records the result produced by the interface's default incremental operation.
+        @Override
+        public CodecResult decode(ByteBuffer target) throws IOException {
+            CodecResult result = DecompressingReadableByteChannel.super.decode(target);
+            lastResult = result;
+            return result;
         }
 
         /// Returns the identity input byte count.
