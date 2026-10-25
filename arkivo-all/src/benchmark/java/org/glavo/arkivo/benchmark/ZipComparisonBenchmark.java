@@ -28,7 +28,7 @@ public class ZipComparisonBenchmark {
     @Param({"arkivo", "zipfs", "jdk", "commons"}) public String api = "arkivo";
     /// The ZIP storage method.
     @Param({"stored", "deflated"}) public String method = "deflated";
-    /// Opens and closes the index or reads one entry from an existing index.
+    /// Opens an index, loads every entry's attributes, or reads one entry from an existing index.
     @Param({"open", "read"}) public String operation = "read";
     /// The number of data entries in their common directory.
     @Param({"2048"}) public int entryCount = 2048;
@@ -68,6 +68,12 @@ public class ZipComparisonBenchmark {
     public void setup() throws IOException {
         if (entryCount <= 0 || entrySize < 0 || pathDepth < 0 || readBufferSize <= 0) {
             throw new IllegalArgumentException("Invalid archive dimensions");
+        }
+        if (!Set.of("open", "attributes", "read").contains(operation)) {
+            throw new IllegalArgumentException(operation);
+        }
+        if (operation.equals("attributes") && !Set.of("arkivo", "arkivo-channel", "zipfs").contains(api)) {
+            throw new IllegalArgumentException("Attribute access requires a NIO file system");
         }
         if (!Set.of("stream", "channel", "allBytes", "streamAllBytes").contains(access)) {
             throw new IllegalArgumentException(access);
@@ -109,7 +115,7 @@ public class ZipComparisonBenchmark {
                 entryCount, entrySize, Files.size(archive));
         openShared();
         if (!Arrays.equals(body, readOne(0))) throw new AssertionError("Decoded entry differs");
-        if (operation.equals("open")) closeShared();
+        if (!operation.equals("read")) closeShared();
     }
     /// Opens exactly one implementation; no second JDK ZipFile keeps its shared index cached.
     private void openShared() throws IOException {
@@ -155,7 +161,7 @@ public class ZipComparisonBenchmark {
     /// Measures one index lifecycle or one complete entry read of the configured size.
     @Benchmark
     public long run() throws IOException {
-        if (operation.equals("open")) {
+        if (!operation.equals("read")) {
             Path p = Objects.requireNonNull(archive);
             switch (api) {
                 case "arkivo": try (var x = ZipArkivoFileSystem.open(p)) { return count(x); }
@@ -196,9 +202,20 @@ public class ZipComparisonBenchmark {
         if (size != entrySize) throw new AssertionError(size);
         return size;
     }
-    /// Forces lazy index initialization and counts every data entry in the common directory.
+    /// Counts every indexed entry and optionally queries its attributes, triggering Arkivo's lazy metadata loading.
     private long count(FileSystem fs) throws IOException {
-        try (var files = Files.list(fs.getPath("/" + directoryPrefix))) { return files.count(); }
+        try (var files = Files.list(fs.getPath("/" + directoryPrefix))) {
+            if (!operation.equals("attributes")) return files.count();
+            long count = 0;
+            var iterator = files.iterator();
+            while (iterator.hasNext()) {
+                var attributes = Files.readAttributes(iterator.next(), java.nio.file.attribute.BasicFileAttributes.class);
+                checkSize(attributes.size());
+                count++;
+            }
+            if (count != entryCount) throw new AssertionError(count);
+            return count;
+        }
     }
     /// Counts every indexed ZIP entry, including entry-object materialization.
     private static long count(Enumeration<?> entries) {

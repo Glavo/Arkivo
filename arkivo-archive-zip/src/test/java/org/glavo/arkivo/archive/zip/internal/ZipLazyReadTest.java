@@ -9,6 +9,7 @@ import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
@@ -267,15 +268,18 @@ final class ZipLazyReadTest {
     }
 
     /// Enumerating a sufficiently large archive does not read its local header; attributes load it once.
-    @Test
-    void loadsLocalMetadataOnlyWhenRequested() throws IOException {
+    @ParameterizedTest
+    @ValueSource(ints = {1, 7, 30, 4096})
+    void loadsLocalMetadataOnlyWhenRequested(int chunk) throws IOException {
         CountingChannel source = new CountingChannel(archive());
         try (var fs = ZipArkivoFileSystem.open(source)) {
             try (var names = Files.list(fs.getPath("/"))) { assertEquals(2, names.count()); }
             assertEquals(0, source.headerReads);
+            source.maximumReadSize = chunk;
             var attributes = Files.readAttributes(fs.getPath("a"), ZipArkivoEntryAttributes.class);
             assertEquals(262144, attributes.size());
-            assertTrue(source.headerReads > 0);
+            assertEquals((30 + chunk - 1) / chunk, source.headerReads);
+            source.maximumReadSize = Integer.MAX_VALUE;
             int loadedReads = source.headerReads;
             assertEquals(attributes.size(), Files.readAttributes(fs.getPath("a"), ZipArkivoEntryAttributes.class).size());
             try (var input = Files.newInputStream(fs.getPath("a"))) { assertEquals(262144, input.readAllBytes().length); }
@@ -295,6 +299,59 @@ final class ZipLazyReadTest {
             assertThrows(IOException.class, () -> Files.newInputStream(fs.getPath("a")));
             assertEquals("valid", Files.readString(fs.getPath("b")));
         }
+    }
+
+    /// SFX archives retain signature-based selection between relative and already-absolute local offsets.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void resolvesPreambleOffsetsWithBothLocalConventions(boolean absoluteOffsets) throws IOException {
+        byte[] bytes = archive();
+        int prefixSize = 64;
+        if (absoluteOffsets) {
+            ByteBuffer records = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            int offset = records.getInt(bytes.length - 6);
+            while (records.getInt(offset) == 0x02014b50) {
+                records.putInt(offset + 42, records.getInt(offset + 42) + prefixSize);
+                offset += 46 + Short.toUnsignedInt(records.getShort(offset + 28))
+                        + Short.toUnsignedInt(records.getShort(offset + 30))
+                        + Short.toUnsignedInt(records.getShort(offset + 32));
+            }
+        }
+        byte[] prefixed = new byte[prefixSize + bytes.length];
+        Arrays.fill(prefixed, 0, prefixSize, (byte) 0x5a);
+        System.arraycopy(bytes, 0, prefixed, prefixSize, bytes.length);
+        try (var fs = ZipArkivoFileSystem.open(new ReadOnlyByteArrayChannel(prefixed))) {
+            assertEquals(262144, Files.size(fs.getPath("a")));
+            assertEquals("valid", Files.readString(fs.getPath("b")));
+        }
+    }
+
+    /// Update snapshots reuse their strictly validated local layout when calculating raw-copy ranges.
+    @Test
+    void updateSnapshotDoesNotReadLocalHeaderAgainForRange() throws IOException {
+        byte[] bytes = archive();
+        var opened = new ArrayList<CountingChannel>();
+        ArkivoVolumeSource source = index -> {
+            if (index != 0) return null;
+            var channel = new CountingChannel(bytes);
+            opened.add(channel);
+            return channel;
+        };
+        var snapshot = ZipArkivoReadOnlyFileSystemImpl.readCentralDirectorySnapshot(
+                source, ZipArkivoFileSystemConfig.DEFAULTS);
+        assertEquals(2, snapshot.entries().size());
+        var first = snapshot.entries().get(0);
+        assertEquals("a", first.entryName());
+        assertEquals(31, first.localHeaderSize());
+        assertEquals(31 + 262144, first.localRecordSize());
+        var second = snapshot.entries().get(1);
+        long centralOffset = Integer.toUnsignedLong(
+                ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt(bytes.length - 6));
+        assertEquals(31, second.localHeaderSize());
+        assertEquals(centralOffset - second.localHeaderOffset(), second.localRecordSize());
+        // Preamble discovery, lazy metadata resolution, and strict copy validation each inspect the header once.
+        assertEquals(3, opened.stream().mapToInt(channel -> channel.fullHeaderReads).sum());
+        assertTrue(opened.stream().noneMatch(CountingChannel::isOpen));
     }
 
     /// Sequential reads reuse a physical handle and parallel leases retain at most four idle handles.
@@ -385,6 +442,8 @@ final class ZipLazyReadTest {
         private final ReadOnlyByteArrayChannel delegate;
         /// Reads beginning within the first local header.
         private int headerReads;
+        /// Full fixed-header requests at the first entry, excluding signature-only probes.
+        private int fullHeaderReads;
         /// Maximum bytes delivered by a physical read; zero simulates a stalled source.
         private int maximumReadSize = Integer.MAX_VALUE;
         /// The physical offset of a one-shot read failure, or -1 when no failure is armed.
@@ -399,6 +458,7 @@ final class ZipLazyReadTest {
                 throw new IOException("Injected local metadata read failure");
             }
             if (delegate.position() < 31) headerReads++;
+            if (delegate.position() == 0 && target.remaining() == 30) fullHeaderReads++;
             ByteBuffer view = target.slice();
             view.limit(Math.min(view.remaining(), maximumReadSize));
             int count = delegate.read(view);

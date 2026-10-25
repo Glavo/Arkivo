@@ -1231,8 +1231,9 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             }
             indexedEntry = resolveEntry(channel, indexedEntry, index);
             // Raw copying must not carry conflicting local metadata into a newly written archive.
-            readLocalHeaderMetadata(channel, indexedEntry.localHeaderOffset, indexedEntry, index.readLimits, true);
-            LocalRecordRange localRecord = localRecordRange(channel, indexedEntry);
+            LocalHeaderMetadata local = readLocalHeaderMetadata(
+                    channel, indexedEntry.localHeaderOffset, indexedEntry, index.readLimits, true);
+            LocalRecordRange localRecord = localRecordRange(channel, indexedEntry, local);
             entries.add(new CentralDirectoryEntrySnapshot(
                     key,
                     readBytes(buffer, offset, nextOffset - offset),
@@ -1246,21 +1247,12 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         return List.copyOf(entries);
     }
 
-    /// Returns the exact byte size of an entry local header, compressed data, and optional data descriptor.
-    private static LocalRecordRange localRecordRange(SeekableByteChannel channel, ZipEntryRecord entry) throws IOException {
-        ByteBuffer header = ByteBuffer.allocate(ZIP_LOCAL_FILE_HEADER_MIN_SIZE).order(ByteOrder.LITTLE_ENDIAN);
-        readFully(channel, entry.localHeaderOffset, header);
-        header.flip();
-        if (header.getInt(0) != LOCAL_FILE_HEADER_SIGNATURE) {
-            throw new IOException("Invalid ZIP local file header");
-        }
-
-        int nameLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_NAME_LENGTH_OFFSET));
-        int extraLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_EXTRA_LENGTH_OFFSET));
-        long dataOffset = localHeaderVariableOffset(entry.localHeaderOffset, nameLength, "local file data offset");
-        dataOffset = checkedZipOffsetAdd(dataOffset, extraLength, "local file data offset");
+    /// Calculates the raw-copy range from a freshly validated local header and validates its descriptor and end.
+    private static LocalRecordRange localRecordRange(
+            SeekableByteChannel channel, ZipEntryRecord entry, LocalHeaderMetadata local) throws IOException {
+        long dataOffset = local.dataOffset;
         long recordEnd = checkedZipOffsetAdd(dataOffset, entry.compressedSize, "local file data end");
-        if (entry.localDataDescriptor) {
+        if (local.usesDataDescriptor()) {
             recordEnd = checkedZipOffsetAdd(
                     recordEnd,
                     dataDescriptorSize(channel, recordEnd, entry),
@@ -1876,10 +1868,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                 archiveOffsetAdjustment,
                 "local header offset"
         );
-        if (hasLocalFileHeaderSignature(channel, adjustedOffset)) {
+        // Without an offset adjustment there is no alternative to probe; the full header read validates the signature.
+        if (archiveOffsetAdjustment == 0 || hasLocalFileHeaderSignature(channel, adjustedOffset)) {
             return adjustedOffset;
         }
-        if (archiveOffsetAdjustment != 0 && hasLocalFileHeaderSignature(channel, storedOffset)) {
+        if (hasLocalFileHeaderSignature(channel, storedOffset)) {
             return storedOffset;
         }
         return adjustedOffset;
