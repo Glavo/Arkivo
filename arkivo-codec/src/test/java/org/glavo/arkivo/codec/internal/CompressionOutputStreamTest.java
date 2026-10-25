@@ -19,6 +19,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -28,6 +29,63 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies compression flush propagation, close retries, and failure suppression.
 @NotNullByDefault
 final class CompressionOutputStreamTest {
+    /// Scalar writes reuse their private source while ranged bulk writes tolerate partial channel progress.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 7, 8193})
+    void mixesScalarAndPartialBulkWrites(int length) throws IOException {
+        var target = new TrackingCompressingWritableByteChannel();
+        target.maximumWriteSize = 3;
+        target.checkScalarReuse = true;
+        byte[] content = new byte[length + 4];
+        for (int index = 0; index < content.length; index++) content[index] = (byte) (index * 29);
+        ByteArrayOutputStream expected = new ByteArrayOutputStream();
+        OutputStream output = new CompressionOutputStream(target, new ByteArrayOutputStream(), ResourceOwnership.OWNED);
+        try (output) {
+            for (int value : new int[]{-1, 0, 128, 255, 256, Integer.MIN_VALUE, Integer.MAX_VALUE}) {
+                output.write(value);
+                expected.write(value);
+                output.write(content, 2, length);
+                expected.write(content, 2, length);
+                int calls = target.writeCount;
+                output.write(content, content.length, 0);
+                assertEquals(calls, target.writeCount);
+            }
+            assertArrayEquals(expected.toByteArray(), target.bytes.toByteArray());
+            assertEquals(expected.size(), target.inputBytes());
+            assertThrows(IndexOutOfBoundsException.class, () -> output.write(content, content.length + 1, 0));
+        }
+        int calls = target.writeCount;
+        assertThrows(IOException.class, () -> output.write(42));
+        assertThrows(IOException.class, () -> output.write(content, 0, 0));
+        assertEquals(calls, target.writeCount);
+        assertEquals(1, target.finishCount());
+    }
+
+    /// Scalar and bulk target failures retain their type and allow automatic cleanup without self-suppression.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void writeFailurePreservesPrimaryDuringClose(boolean scalar) throws IOException {
+        for (Throwable failure : List.of(new IOException("write failed"),
+                new IllegalStateException("write failed"), new AssertionError("write failed"))) {
+            var target = new FailingCloseWritableChannel();
+            target.closeFailure = failure;
+            target.writeFailure = failure;
+            OutputStream output = new CompressionOutputStream(target, new ByteArrayOutputStream(), ResourceOwnership.OWNED);
+            Throwable actual = assertThrows(failure.getClass(), () -> {
+                try (output) {
+                    if (scalar) output.write(255);
+                    else output.write(new byte[]{1, 2, 3});
+                }
+            });
+            assertSame(failure, actual);
+            assertEquals(1, actual.getSuppressed().length);
+            assertSame(failure, actual.getSuppressed()[0].getCause());
+            output.close();
+            output.close();
+            assertEquals(2, target.closeCount());
+        }
+    }
+
     /// Preserves earlier failures even when a different retry failure precedes automatic resource closure.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
@@ -123,11 +181,15 @@ final class CompressionOutputStreamTest {
     }
 
     /// Verifies plain channel targets retain zero-progress rejection and closed-stream checks.
-    @Test
-    void rejectsZeroProgressAndClosedOperations() throws IOException {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void rejectsZeroProgressAndClosedOperations(boolean scalar) throws IOException {
         OutputStream output = new CompressionOutputStream(
                 new ZeroProgressWritableChannel(), new ByteArrayOutputStream(), ResourceOwnership.OWNED);
-        assertThrows(IOException.class, () -> output.write(new byte[]{1}));
+        assertThrows(IOException.class, () -> {
+            if (scalar) output.write(1);
+            else output.write(new byte[]{1});
+        });
         output.write(new byte[0]);
         output.close();
         output.close();
@@ -272,6 +334,21 @@ final class CompressionOutputStreamTest {
     /// Records calls made through a stream view of a compression encoder.
     @NotNullByDefault
     private static final class TrackingCompressingWritableByteChannel implements CompressingWritableByteChannel.Flushable {
+        /// Captured channel input, used to verify scalar and ranged writes.
+        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+        /// Maximum input accepted in one channel call.
+        private int maximumWriteSize = Integer.MAX_VALUE;
+
+        /// Number of channel write attempts.
+        private int writeCount;
+
+        /// Whether one-byte sources must be the same private buffer throughout this session.
+        private boolean checkScalarReuse;
+
+        /// First scalar source observed by the reuse check.
+        private @Nullable ByteBuffer scalarSource;
+
         /// The number of accepted source bytes.
         private long inputBytes;
 
@@ -287,11 +364,18 @@ final class CompressionOutputStreamTest {
         /// Whether this encoder remains open.
         private boolean open = true;
 
-        /// Consumes all source bytes.
+        /// Captures a bounded prefix and optionally checks reuse of the internal scalar source.
         @Override
         public int write(ByteBuffer source) {
-            int count = source.remaining();
-            source.position(source.limit());
+            writeCount++;
+            if (checkScalarReuse && source.capacity() == 1) {
+                assertEquals(0, source.position());
+                assertEquals(1, source.limit());
+                if (scalarSource == null) scalarSource = source;
+                else assertSame(scalarSource, source);
+            }
+            int count = Math.min(source.remaining(), maximumWriteSize);
+            for (int index = 0; index < count; index++) bytes.write(source.get());
             inputBytes += count;
             return count;
         }
@@ -395,15 +479,24 @@ final class CompressionOutputStreamTest {
     /// Fails its first close attempt.
     @NotNullByDefault
     private static final class FailingCloseWritableChannel implements WritableByteChannel {
+        /// Optional failure emitted after consuming one source byte.
+        private @Nullable Throwable writeFailure;
+
         /// Failure thrown by the first close attempt.
         private Throwable closeFailure = new IOException("close failed");
 
         /// Number of close attempts.
         private int closeCount;
 
-        /// Consumes all source bytes.
+        /// Consumes all source bytes, or emits the configured failure after accepting one byte.
         @Override
-        public int write(ByteBuffer source) {
+        public int write(ByteBuffer source) throws IOException {
+            if (writeFailure != null && source.hasRemaining()) {
+                source.get();
+                if (writeFailure instanceof IOException exception) throw exception;
+                if (writeFailure instanceof RuntimeException exception) throw exception;
+                throw (Error) writeFailure;
+            }
             int count = source.remaining();
             source.position(source.limit());
             return count;

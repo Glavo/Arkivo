@@ -29,8 +29,8 @@ public final class CompressionOutputStream extends OutputStream {
     /// Whether close must flush a downstream stream retained by the channel.
     private final boolean flushDownstreamOnClose;
 
-    /// The reusable single-byte source.
-    private final byte[] singleByte = new byte[1];
+    /// Internal source allocated on the first scalar write; never refers to a caller's array.
+    private @Nullable ByteBuffer singleByte;
 
     /// Whether this adapter remains open.
     private boolean open = true;
@@ -60,8 +60,13 @@ public final class CompressionOutputStream extends OutputStream {
     /// Writes one byte to the channel.
     @Override
     public void write(int value) throws IOException {
-        singleByte[0] = (byte) value;
-        write(singleByte, 0, 1);
+        ensureOpen();
+        @Nullable ByteBuffer source = singleByte;
+        if (source == null) {
+            singleByte = source = ByteBuffer.allocate(1);
+        }
+        source.clear().put(0, (byte) value);
+        writeFully(source);
     }
 
     /// Writes all requested bytes and rejects a zero-progress channel.
@@ -69,7 +74,13 @@ public final class CompressionOutputStream extends OutputStream {
     public void write(byte[] bytes, int offset, int length) throws IOException {
         Objects.checkFromIndexSize(offset, length, bytes.length);
         ensureOpen();
-        ByteBuffer source = ByteBuffer.wrap(bytes, offset, length);
+        if (length > 0) {
+            writeFully(ByteBuffer.wrap(bytes, offset, length));
+        }
+    }
+
+    /// Consumes a source buffer completely, rejecting zero progress and recording target failures for cleanup.
+    private void writeFully(ByteBuffer source) throws IOException {
         try {
             while (source.hasRemaining()) {
                 if (target.write(source) == 0) {
@@ -132,6 +143,7 @@ public final class CompressionOutputStream extends OutputStream {
             rethrow(failure);
         }
         open = false;
+        singleByte = null;
     }
 
     /// Requires this adapter to remain open.
