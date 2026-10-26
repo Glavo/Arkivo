@@ -55,15 +55,15 @@ final class ZstdHuffmanTableTest {
         assertThrows(IOException.class, () -> incomplete.decode(new byte[]{7}, 0, 1, new byte[1], 0, 1));
     }
 
-    /// Crosses the wide-load and four-symbol boundaries at every possible terminal byte alignment.
+    /// Crosses wide-load and variable batch boundaries at every possible terminal byte alignment.
     @ParameterizedTest
-    @ValueSource(ints = {1, 2, 3, 6, 8, 12})
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
     void decodesBatchBoundaries(int tableLog) throws IOException {
         int[] weights = new int[256];
         for (int index = 0; index <= tableLog; index++) weights[255 - index] = Math.max(1, index);
         int[] codes = canonicalCodes(weights, tableLog);
         var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
-        for (int longCodes = 0; longCodes <= 72; longCodes++) {
+        for (int longCodes = 0; longCodes <= 136; longCodes++) {
             for (int shortCodes = 0; shortCodes < 8; shortCodes++) {
                 byte[] plain = new byte[longCodes + shortCodes];
                 for (int index = 0; index < longCodes; index++) plain[index] = (byte) (254 + (index & 1));
@@ -95,14 +95,17 @@ final class ZstdHuffmanTableTest {
 
     /// Compares interleaved decoding with four independent bitwise decodes, including unequal encoded lengths.
     @ParameterizedTest
-    @ValueSource(ints = {1, 6, 12})
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
     void decodesFourStreamsWithIndependentBoundaries(int tableLog) throws IOException {
         int[] weights = new int[256];
         for (int index = 0; index <= tableLog; index++) weights[255 - index] = Math.max(1, index);
         int[] codes = canonicalCodes(weights, tableLog);
         var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
         Random random = new Random(42 + tableLog);
-        for (int size : new int[]{6, 7, 8, 9, 15, 16, 17, 255, 256, 257, 1024}) {
+        int batchSize = 57 / tableLog;
+        for (int size : new int[]{6, 7, 8, 9, 15, 16, 17, 255, 256, 257, 1024,
+                batchSize * 4 - 1, batchSize * 4, batchSize * 4 + 1,
+                batchSize * 8 - 1, batchSize * 8, batchSize * 8 + 1}) {
             int segmentSize = (size + 3) / 4;
             for (int shortest = 0; shortest < 4; shortest++) {
                 byte[] plain = new byte[size];
@@ -147,7 +150,7 @@ final class ZstdHuffmanTableTest {
         var table = ZstdEntropy.HuffmanTable.fromWeights(weights, 1, 1);
         byte[] stream = encodeFourStreams(new byte[512], weights, codes, 1);
         for (int part = 0; part < 4; part++) {
-            for (int symbol : new int[]{0, 1, 3, 4, 63, 64, 127}) {
+            for (int symbol : new int[]{0, 1, 3, 4, 56, 57, 58, 63, 64, 113, 114, 115, 127}) {
                 byte[] damaged = stream.clone();
                 int bit = 127 - symbol;
                 damaged[6 + part * 17 + (bit >>> 3)] |= (byte) (1 << (bit & 7));

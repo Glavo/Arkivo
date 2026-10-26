@@ -831,8 +831,10 @@ final class ZstdEntropy {
             int position2 = bits2.bitPosition;
             int position3 = bits3.bitPosition;
             int position4 = bits4.bitPosition;
+            // Every alignment leaves at least 57 useful bits for full-width table lookups.
+            int batchSize = (Long.SIZE - Byte.SIZE + 1) / tableLog;
             int index = 0;
-            while (lastSize - index >= 4
+            while (lastSize - index >= batchSize
                     && position1 - bits1.startBit >= Long.SIZE && position2 - bits2.startBit >= Long.SIZE
                     && position3 - bits3.startBit >= Long.SIZE && position4 - bits4.startBit >= Long.SIZE) {
                 long window1 = readWindow(source, position1);
@@ -840,7 +842,7 @@ final class ZstdEntropy {
                 long window3 = readWindow(source, position3);
                 long window4 = readWindow(source, position4);
                 // Independent windows let the CPU overlap the four lookup/shift dependency chains.
-                for (int symbol = 0; symbol < 4; symbol++) {
+                for (int symbol = 0; symbol < batchSize; symbol++) {
                     int entry1 = entries[(int) (window1 >>> (Long.SIZE - tableLog))];
                     int entry2 = entries[(int) (window2 >>> (Long.SIZE - tableLog))];
                     int entry3 = entries[(int) (window3 >>> (Long.SIZE - tableLog))];
@@ -888,11 +890,12 @@ final class ZstdEntropy {
         private void decode(ReverseBitReader bits, byte[] target, int targetOffset, int count) throws IOException {
             byte[] source = bits.source;
             int position = bits.bitPosition;
+            int batchSize = (Long.SIZE - Byte.SIZE + 1) / tableLog;
             int index = 0;
-            while (count - index >= 4 && position - bits.startBit >= Long.SIZE) {
+            while (count - index >= batchSize && position - bits.startBit >= Long.SIZE) {
                 long window = readWindow(source, position);
-                // At least 57 useful bits remain in this load; four codes need at most 48.
-                for (int symbol = 0; symbol < 4; symbol++) {
+                // Every alignment leaves at least 57 useful bits for full-width table lookups.
+                for (int symbol = 0; symbol < batchSize; symbol++) {
                     int entry = entries[(int) (window >>> (Long.SIZE - tableLog))];
                     int length = entry & 15;
                     if (length == 0) {
