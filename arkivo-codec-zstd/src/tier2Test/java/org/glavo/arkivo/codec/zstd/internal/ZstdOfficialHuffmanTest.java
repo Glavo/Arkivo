@@ -101,7 +101,7 @@ final class ZstdOfficialHuffmanTest {
                     byte[] block = literalBlock(parameters.capacity(), 1,
                             Arrays.copyOf(source, table.bytesRead()), source);
                     ByteBuffer decoded = new ZstdBlockDecoder(new ZstdHistory(1 << 17), ZstdDictionaryContext.NONE)
-                            .decodeCompressed(block, block.length);
+                            .decodeCompressed(block, block.length, ZstdBlockDecoder.MAX_BLOCK_SIZE);
                     assertEquals(parameters.capacity(), decoded.remaining());
                     decoded.get(target, 3, decoded.remaining());
                 }
@@ -198,7 +198,7 @@ final class ZstdOfficialHuffmanTest {
                         && (parameters.streams() == 1 || plain.length <= 1023 && description.length + stream.length <= 1023)) {
                     byte[] block = literalBlock(plain.length, parameters.streams(), description, stream);
                     assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(new ZstdHistory(1 << 17), ZstdDictionaryContext.NONE)
-                            .decodeCompressed(block, block.length));
+                            .decodeCompressed(block, block.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
                 }
             }
             assertNull(reader.readLine(), "Unexpected extra native response");
@@ -213,7 +213,7 @@ final class ZstdOfficialHuffmanTest {
         byte[] section = ZstdLiteralEncoder.encode(plain);
         byte[] block = Arrays.copyOf(section, section.length + 1);
         assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(new ZstdHistory(1 << 17), ZstdDictionaryContext.NONE)
-                .decodeCompressed(block, block.length));
+                .decodeCompressed(block, block.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
         assertArrayEquals(plain, Zstd.decompress(frame(block, plain.length), plain.length));
     }
 

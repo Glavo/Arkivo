@@ -143,10 +143,15 @@ final class ZstdBlockDecoder {
     }
 
     /// Decodes `source[0..limit)` and returns a read-only output view positioned at zero.
-    @UnmodifiableView ByteBuffer decodeCompressed(byte[] source, int limit) throws IOException {
+    /// The maximum output size is the frame's block-size limit, between zero and [#MAX_BLOCK_SIZE].
+    @UnmodifiableView ByteBuffer decodeCompressed(byte[] source, int limit, int maximumOutputSize) throws IOException {
         Objects.checkFromIndexSize(0, limit, source.length);
+        Objects.checkIndex(maximumOutputSize, MAX_BLOCK_SIZE + 1);
         LiteralsResult literalResult = decodeLiterals(source, limit);
         byte[] currentLiterals = Objects.requireNonNull(literals);
+        if (literalResult.literalSize() > maximumOutputSize) {
+            throw new IOException("Zstandard literals exceed the frame block-size limit");
+        }
         int position = literalResult.bytesRead();
         if (position >= limit) {
             throw new IOException("Missing Zstandard sequences section");
@@ -228,7 +233,7 @@ final class ZstdBlockDecoder {
         int offsetState = bits.readBits(offsetsTable.tableLog());
         int matchState = bits.readBits(matchesTable.tableLog());
 
-        outputWorkspace = prepareWorkspace(outputWorkspace, MAX_BLOCK_SIZE);
+        outputWorkspace = prepareWorkspace(outputWorkspace, maximumOutputSize);
         byte[] output = outputWorkspace;
         int outputPosition = 0;
         int literalPosition = 0;
@@ -247,7 +252,7 @@ final class ZstdBlockDecoder {
             int matchLength = MATCH_BASELINES[matchCode] + bits.readBits(MATCH_BITS[matchCode]);
             int literalLength = LITERAL_BASELINES[literalCode] + bits.readBits(LITERAL_BITS[literalCode]);
             if (literalLength > literalResult.literalSize() - literalPosition
-                    || literalLength > MAX_BLOCK_SIZE - outputPosition) {
+                    || literalLength > maximumOutputSize - outputPosition) {
                 throw new IOException("Zstandard sequence exceeds its literal section");
             }
             System.arraycopy(currentLiterals, literalPosition, output, outputPosition, literalLength);
@@ -255,8 +260,8 @@ final class ZstdBlockDecoder {
             outputPosition += literalLength;
 
             long distance = resolveOffset(offsetValue, literalLength);
-            if (matchLength > MAX_BLOCK_SIZE - outputPosition) {
-                throw new IOException("Zstandard sequence exceeds the block size limit");
+            if (matchLength > maximumOutputSize - outputPosition) {
+                throw new IOException("Decoded Zstandard block exceeds the frame block-size limit");
             }
             copyMatch(output, outputPosition, matchLength, distance);
             outputPosition += matchLength;
@@ -270,7 +275,7 @@ final class ZstdBlockDecoder {
         bits.requireFullyConsumed();
 
         int remainingLiterals = literalResult.literalSize() - literalPosition;
-        if (remainingLiterals > MAX_BLOCK_SIZE - outputPosition) {
+        if (remainingLiterals > maximumOutputSize - outputPosition) {
             throw new IOException("Zstandard literals exceed the block size limit");
         }
         System.arraycopy(currentLiterals, literalPosition, output, outputPosition, remainingLiterals);

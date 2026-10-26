@@ -80,7 +80,7 @@ final class ZstdOfficialBlockTest {
             @Nullable ByteBuffer expectedOutput = null;
             try {
                 expectedOutput = new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE)
-                        .decodeCompressed(input, input.length);
+                        .decodeCompressed(input, input.length, ZstdBlockDecoder.MAX_BLOCK_SIZE);
                 assertTrue(expectedOutput.remaining() <= BLOCK_SIZE);
             } catch (IOException expected) {
                 // Upstream permits malformed input to fail, but not unchecked exceptions or unbounded output.
@@ -91,9 +91,9 @@ final class ZstdOfficialBlockTest {
             byte[] paddedSnapshot = padded.clone();
             var decoder = new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE);
             if (expectedOutput == null) {
-                assertThrows(IOException.class, () -> decoder.decodeCompressed(padded, input.length));
+                assertThrows(IOException.class, () -> decoder.decodeCompressed(padded, input.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
             } else {
-                assertEquals(expectedOutput, decoder.decodeCompressed(padded, input.length));
+                assertEquals(expectedOutput, decoder.decodeCompressed(padded, input.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
             }
             assertArrayEquals(paddedSnapshot, padded);
         }
@@ -136,7 +136,7 @@ final class ZstdOfficialBlockTest {
             } else {
                 nativeCompressed++;
                 assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE)
-                        .decodeCompressed(compressed, compressed.length));
+                        .decodeCompressed(compressed, compressed.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
                 probes.add(new Request('D', compressed, plain));
                 if (mutationSeeds.size() < 32) mutationSeeds.putIfAbsent(HexFormat.of().formatHex(compressed), compressed);
             }
@@ -172,7 +172,7 @@ final class ZstdOfficialBlockTest {
             byte @Nullable [] javaOutput;
             try {
                 ByteBuffer decodedBlock = new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE)
-                        .decodeCompressed(request.input(), request.input().length);
+                        .decodeCompressed(request.input(), request.input().length, ZstdBlockDecoder.MAX_BLOCK_SIZE);
                 javaOutput = new byte[decodedBlock.remaining()];
                 decodedBlock.get(javaOutput);
             } catch (IOException expected) {
@@ -254,7 +254,7 @@ final class ZstdOfficialBlockTest {
         if (encoded.type() == 0) return encoded.payload().clone();
         var decoder = new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE);
         ByteBuffer decoded = encoded.type() == 1 ? decoder.decodeRle(Byte.toUnsignedInt(encoded.payload()[0]), encoded.size())
-                : decoder.decodeCompressed(encoded.payload(), encoded.payload().length);
+                : decoder.decodeCompressed(encoded.payload(), encoded.payload().length, ZstdBlockDecoder.MAX_BLOCK_SIZE);
         byte[] result = new byte[decoded.remaining()];
         decoded.get(result);
         return result;

@@ -393,16 +393,13 @@ public final class ZstdDecoder
     /// Decodes one complete physical block payload.
     private void decodeBlock(byte[] compressed) throws IOException {
         ZstdBlockDecoder decoder = Objects.requireNonNull(blockDecoder);
+        int maximumBlockSize = (int) Math.min(ZstdBlockDecoder.MAX_BLOCK_SIZE,
+                Objects.requireNonNull(frameInfo).windowSize());
         ByteBuffer decoded = switch (blockType) {
             case 1 -> decoder.decodeRle(Byte.toUnsignedInt(compressed[0]), blockSize);
-            case 2 -> decoder.decodeCompressed(compressed, blockSize);
+            case 2 -> decoder.decodeCompressed(compressed, blockSize, maximumBlockSize);
             default -> throw new AssertionError(blockType);
         };
-        // Compressed size alone cannot establish the regenerated block's window-size bound.
-        if (decoded.remaining() > Math.min(ZstdBlockDecoder.MAX_BLOCK_SIZE,
-                Objects.requireNonNull(frameInfo).windowSize())) {
-            throw new IOException("Decoded Zstandard block exceeds the frame block-size limit");
-        }
         @Nullable ChecksumAccumulator.Width64 selectedChecksum = checksum;
         if (selectedChecksum != null) {
             selectedChecksum.update(decoded);
