@@ -70,14 +70,15 @@ final class ZstdHistory {
         return size;
     }
 
-    /// Appends a block, splitting copies at the ring and segment boundaries.
-    void append(byte[] block) throws IOException {
-        if (block.length == 0) return;
+    /// Copies the first `length` bytes of a block into history, splitting at ring and segment boundaries.
+    void append(byte[] block, int length) throws IOException {
+        Objects.checkFromIndexSize(0, length, block.length);
+        if (length == 0) return;
         if (capacity == 0L) {
             throw new IOException("Zstandard frame with a zero window produced output");
         }
-        for (int offset = 0; offset < block.length;) {
-            int copied = (int) Math.min(block.length - offset, capacity - position);
+        for (int offset = 0; offset < length;) {
+            int copied = (int) Math.min(length - offset, capacity - position);
             if (contiguous != null) {
                 System.arraycopy(block, offset, contiguous, (int) position, copied);
             } else {

@@ -7,11 +7,16 @@ import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 /// Decodes Zstandard raw, run-length, and compressed blocks into a bounded history window.
+///
+/// Returned buffers borrow internal storage and must be consumed before decoding another block.
+/// A failed decoding attempt may overwrite a previous result. History is independent of returned views.
 @NotNullByDefault
 final class ZstdBlockDecoder {
     /// Maximum decompressed size of one block.
@@ -69,7 +74,7 @@ final class ZstdBlockDecoder {
     /// Current literal workspace.
     private final byte[] literals = new byte[MAX_BLOCK_SIZE];
 
-    /// Lazily allocated match-expansion workspace, reused within this frame and never returned to callers.
+    /// Lazily allocated match-expansion workspace, reused within this frame.
     private byte @Nullable [] outputWorkspace;
 
     /// Current Huffman table.
@@ -122,22 +127,22 @@ final class ZstdBlockDecoder {
         if (payload.length > MAX_BLOCK_SIZE) {
             throw new IOException("Zstandard raw block exceeds 128 KiB");
         }
-        appendHistory(payload);
+        history.append(payload, payload.length);
+        frameSize += payload.length;
     }
 
-    /// Decodes one run-length block.
-    byte[] decodeRle(int value, int size) throws IOException {
+    /// Decodes one run-length block and returns a read-only buffer containing exactly its bytes.
+    @UnmodifiableView ByteBuffer decodeRle(int value, int size) throws IOException {
         if (size < 0 || size > MAX_BLOCK_SIZE) {
             throw new IOException("Zstandard RLE block exceeds 128 KiB");
         }
         byte[] output = new byte[size];
         Arrays.fill(output, (byte) value);
-        appendHistory(output);
-        return output;
+        return finishBlock(output, size);
     }
 
-    /// Decodes one compressed block payload.
-    byte[] decodeCompressed(byte[] source) throws IOException {
+    /// Decodes one compressed block payload and returns a read-only view of its bytes, positioned at zero.
+    @UnmodifiableView ByteBuffer decodeCompressed(byte[] source) throws IOException {
         LiteralsResult literalResult = decodeLiterals(source);
         int position = literalResult.bytesRead();
         if (position >= source.length) {
@@ -159,9 +164,7 @@ final class ZstdBlockDecoder {
             if (position != source.length) {
                 throw new IOException("Zstandard zero-sequence block contains extraneous data");
             }
-            byte[] output = Arrays.copyOf(literals, literalResult.literalSize());
-            appendHistory(output);
-            return output;
+            return finishBlock(literals, literalResult.literalSize());
         }
 
         requireAvailable(source, position, 1);
@@ -269,9 +272,7 @@ final class ZstdBlockDecoder {
         }
         System.arraycopy(literals, literalPosition, output, outputPosition, remainingLiterals);
         outputPosition += remainingLiterals;
-        byte[] result = Arrays.copyOf(output, outputPosition);
-        appendHistory(result);
-        return result;
+        return finishBlock(output, outputPosition);
     }
 
     /// Decodes one literal section.
@@ -480,10 +481,11 @@ final class ZstdBlockDecoder {
         }
     }
 
-    /// Appends a completed block to frame history.
-    private void appendHistory(byte[] block) throws IOException {
-        history.append(block);
-        frameSize += block.length;
+    /// Saves only the completed prefix in history and exposes a read-only view bounded to that prefix.
+    private @UnmodifiableView ByteBuffer finishBlock(byte[] block, int length) throws IOException {
+        history.append(block, length);
+        frameSize += length;
+        return ByteBuffer.wrap(block, 0, length).slice().asReadOnlyBuffer();
     }
 
     /// Requires one byte range to be available.

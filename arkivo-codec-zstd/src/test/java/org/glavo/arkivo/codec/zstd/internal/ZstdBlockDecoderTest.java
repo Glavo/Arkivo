@@ -11,6 +11,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -23,30 +25,36 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Checks compressed matches across dictionary, history and current-block boundaries.
 @NotNullByDefault
 final class ZstdBlockDecoderTest {
-    /// Reuses the private workspace while returning exact-sized, independently owned block results.
+    /// Reuses bounded read-only views without sharing history storage or retaining caller output.
     @Test
-    void reusesWorkspaceWithoutAliasingResultsOrHistory() throws Exception {
+    void reusesReadOnlyViewsWithoutAliasingHistory() throws Exception {
         ZstdBlockDecoder decoder = new ZstdBlockDecoder(131072, ZstdDictionaryContext.NONE);
         var field = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
         field.setAccessible(true);
         assertNull(field.get(decoder));
-        byte[] first = decoder.decodeCompressed(singleMatch(new byte[]{42}, 65539, 1));
+        ByteBuffer first = decoder.decodeCompressed(singleMatch(new byte[]{42}, 65539, 1));
         byte[] expected = new byte[65540];
         Arrays.fill(expected, (byte) 42);
-        assertArrayEquals(expected, first);
+        assertEquals(ByteBuffer.wrap(expected), first);
+        assertEquals(expected.length, first.capacity());
+        assertThrows(ReadOnlyBufferException.class, () -> first.put(0, (byte) 99));
+        byte[] delivered = new byte[first.remaining()];
+        first.get(delivered);
         byte[] workspace = assertInstanceOf(byte[].class, field.get(decoder));
         assertEquals(131072, workspace.length);
-        byte[] second = decoder.decodeCompressed(singleMatch(new byte[]{17}, 7, 1));
-        assertArrayEquals(new byte[]{17, 17, 17, 17, 17, 17, 17, 17}, second);
-        assertArrayEquals(expected, first);
+        ByteBuffer second = decoder.decodeCompressed(singleMatch(new byte[]{17}, 7, 1));
+        assertEquals(ByteBuffer.wrap(new byte[]{17, 17, 17, 17, 17, 17, 17, 17}), second);
+        assertEquals(8, second.capacity());
+        assertThrows(ReadOnlyBufferException.class, () -> second.put(0, (byte) 99));
+        assertArrayEquals(expected, delivered);
         assertSame(workspace, field.get(decoder));
 
-        // Caller changes must affect neither retained history nor the next match expansion.
-        Arrays.fill(first, (byte) 99);
-        Arrays.fill(second, (byte) 99);
-        assertArrayEquals(new byte[]{17, 17, 17},
+        // Workspace reuse and view cursor changes must not affect retained history.
+        Arrays.fill(workspace, (byte) 99);
+        second.position(second.limit());
+        assertEquals(ByteBuffer.wrap(new byte[]{17, 17, 17}),
                 decoder.decodeCompressed(singleMatch(new byte[0], 3, 1)));
-        assertArrayEquals(new byte[]{42, 42, 42},
+        assertEquals(ByteBuffer.wrap(new byte[]{42, 42, 42}),
                 decoder.decodeCompressed(singleMatch(new byte[0], 3, 14)));
         assertSame(workspace, field.get(decoder));
     }
@@ -56,8 +64,8 @@ final class ZstdBlockDecoderTest {
     void allocatesWorkspaceOnlyForMatches() throws Exception {
         ZstdBlockDecoder decoder = new ZstdBlockDecoder(1024, ZstdDictionaryContext.NONE);
         decoder.appendRaw(new byte[]{1, 2, 3});
-        assertArrayEquals(new byte[]{7, 7, 7}, decoder.decodeRle(7, 3));
-        assertArrayEquals(new byte[]{4, 5, 6}, decoder.decodeCompressed(new byte[]{24, 4, 5, 6, 0}));
+        assertEquals(ByteBuffer.wrap(new byte[]{7, 7, 7}), decoder.decodeRle(7, 3));
+        assertEquals(ByteBuffer.wrap(new byte[]{4, 5, 6}), decoder.decodeCompressed(new byte[]{24, 4, 5, 6, 0}));
         var field = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
         field.setAccessible(true);
         assertNull(field.get(decoder));
@@ -92,7 +100,7 @@ final class ZstdBlockDecoderTest {
                             assertEquals(previousSize, decoder.frameSize());
                             continue;
                         }
-                        assertArrayEquals(expected, decoder.decodeCompressed(payload),
+                        assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(payload),
                                 "capacity=" + capacity + ", history=" + previousSize
                                         + ", prefix=" + prefixSize + ", distance=" + distance);
                         assertEquals(previousSize + expected.length, decoder.frameSize());

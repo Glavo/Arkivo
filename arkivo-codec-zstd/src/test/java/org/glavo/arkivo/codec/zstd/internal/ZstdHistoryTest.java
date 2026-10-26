@@ -29,9 +29,10 @@ final class ZstdHistoryTest {
         int written = 0;
         while (written < total) {
             int count = Math.min(total - written, 131_071);
-            byte[] block = new byte[count];
+            byte[] block = new byte[count + 17];
+            Arrays.fill(block, (byte) 0x5a);
             for (int i = 0; i < count; i++) block[i] = valueAt(written + i);
-            history.append(block);
+            history.append(block, count);
             Arrays.fill(block, (byte) 0);
             written += count;
             assertEquals(Math.min(capacity, written), history.size());
@@ -57,10 +58,23 @@ final class ZstdHistoryTest {
     @Test
     void rejectsOutputWithoutAWindow() throws IOException {
         ZstdHistory history = new ZstdHistory(0);
-        history.append(new byte[0]);
+        history.append(new byte[5], 0);
         assertEquals(0, history.size());
-        assertThrows(IOException.class, () -> history.append(new byte[1]));
+        assertThrows(IOException.class, () -> history.append(new byte[1], 1));
         assertEquals(0, history.size());
+    }
+
+    /// Rejects invalid prefix lengths without changing history.
+    @Test
+    void validatesPrefixLengthBeforeAppending() throws IOException {
+        ZstdHistory history = new ZstdHistory(7);
+        history.append(new byte[]{1, 2, 3, 99}, 3);
+        assertThrows(IndexOutOfBoundsException.class, () -> history.append(new byte[2], -1));
+        assertThrows(IndexOutOfBoundsException.class, () -> history.append(new byte[2], 3));
+        assertEquals(3, history.size());
+        byte[] result = new byte[3];
+        history.copy(3, result, 0, result.length);
+        assertArrayEquals(new byte[]{1, 2, 3}, result);
     }
 
     /// Produces distinct patterns on both sides of segment and ring boundaries.

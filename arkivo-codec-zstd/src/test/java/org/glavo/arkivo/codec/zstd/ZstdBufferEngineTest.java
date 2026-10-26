@@ -135,6 +135,61 @@ public final class ZstdBufferEngineTest {
         }
     }
 
+    /// Drains borrowed block output before decoding later blocks, including after reset.
+    @ParameterizedTest
+    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+    void drainsCompressedBlocksBeforeReusingTheirStorage(boolean checksum, boolean direct) throws IOException {
+        int blockSize = 128 * 1024;
+        byte[] expected = new byte[3 * blockSize + 37];
+        for (int i = 0; i < expected.length; i++) {
+            expected[i] = (byte) (i % 251 + i / blockSize);
+        }
+        byte[] encoded;
+        try (var encoder = new ZstdCompressCtx()) {
+            encoded = encoder.setContentSize(false).setChecksum(checksum).setWindowLog(17).compress(expected);
+        }
+        assertEquals(checksum ? 4 : 0, encoded[4]);
+        int firstBlockHeader = (encoded[6] & 0xff) | (encoded[7] & 0xff) << 8 | (encoded[8] & 0xff) << 16;
+        assertEquals(2, (firstBlockHeader >>> 1) & 3);
+        assertEquals(0, firstBlockHeader & 1, "fixture must contain multiple blocks");
+        int firstBlockEnd = 9 + (firstBlockHeader >>> 3);
+
+        ByteBuffer storage = direct ? ByteBuffer.allocateDirect(encoded.length + 1)
+                : ByteBuffer.allocate(encoded.length + 1);
+        ByteBuffer source = storage.put(encoded).put((byte) 99).flip().asReadOnlyBuffer();
+        ByteBuffer target = direct ? ByteBuffer.allocateDirect(31) : ByteBuffer.allocate(31);
+        try (var decoder = CODEC.newDecoder()) {
+            for (int pass = 0; pass < 2; pass++) {
+                source.rewind();
+                byte[] actual = new byte[expected.length];
+                target.clear().limit(1);
+                assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(source, target));
+                assertEquals(firstBlockEnd, source.position());
+                target.flip().get(actual, 0, 1);
+                target.clear().limit(0);
+                assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(source, target));
+                assertEquals(firstBlockEnd, source.position(), "pending output must not consume another block");
+
+                int offset = 1;
+                CodecOutcome outcome;
+                do {
+                    target.clear();
+                    outcome = decoder.decode(source, target);
+                    int count = target.position();
+                    assertTrue(count > 0 || outcome == CodecOutcome.FINISHED);
+                    target.flip().get(actual, offset, count);
+                    offset += count;
+                    assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
+                } while (outcome != CodecOutcome.FINISHED);
+                assertEquals(expected.length, offset);
+                assertArrayEquals(expected, actual);
+                assertEquals(encoded.length, source.position());
+                assertEquals(99, source.get());
+                decoder.reset();
+            }
+        }
+    }
+
     /// Verifies fragmented direct buffers and exact trailing-input preservation.
     @Test
     public void fragmentedBuffersAndTrailingInput() throws IOException {

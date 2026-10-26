@@ -16,6 +16,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -99,9 +100,9 @@ final class ZstdOfficialHuffmanTest {
                 } else {
                     byte[] block = literalBlock(parameters.capacity(), 1,
                             Arrays.copyOf(source, table.bytesRead()), source);
-                    byte[] decoded = new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block);
-                    assertEquals(parameters.capacity(), decoded.length);
-                    System.arraycopy(decoded, 0, target, 3, decoded.length);
+                    ByteBuffer decoded = new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block);
+                    assertEquals(parameters.capacity(), decoded.remaining());
+                    decoded.get(target, 3, decoded.remaining());
                 }
             } catch (IOException expected) {
                 // The upstream target permits malformed tables and streams, but not unchecked failures.
@@ -195,7 +196,7 @@ final class ZstdOfficialHuffmanTest {
                 if (plain.length <= ZstdBlockDecoder.MAX_BLOCK_SIZE
                         && (parameters.streams() == 1 || plain.length <= 1023 && description.length + stream.length <= 1023)) {
                     byte[] block = literalBlock(plain.length, parameters.streams(), description, stream);
-                    assertArrayEquals(plain, new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block));
+                    assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block));
                 }
             }
             assertNull(reader.readLine(), "Unexpected extra native response");
@@ -209,7 +210,7 @@ final class ZstdOfficialHuffmanTest {
     private static void assertJavaLiteralEncoding(byte[] plain) throws IOException {
         byte[] section = ZstdLiteralEncoder.encode(plain);
         byte[] block = Arrays.copyOf(section, section.length + 1);
-        assertArrayEquals(plain, new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block));
+        assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block));
         assertArrayEquals(plain, Zstd.decompress(frame(block, plain.length), plain.length));
     }
 

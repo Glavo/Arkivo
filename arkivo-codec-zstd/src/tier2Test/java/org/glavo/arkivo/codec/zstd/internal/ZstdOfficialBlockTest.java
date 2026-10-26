@@ -15,6 +15,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -76,8 +77,8 @@ final class ZstdOfficialBlockTest {
         for (byte[] input : malformedInputs(valid)) {
             byte[] unchanged = input.clone();
             try {
-                byte[] output = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE).decodeCompressed(input);
-                assertTrue(output.length <= BLOCK_SIZE);
+                ByteBuffer output = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE).decodeCompressed(input);
+                assertTrue(output.remaining() <= BLOCK_SIZE);
             } catch (IOException expected) {
                 // Upstream permits malformed input to fail, but not unchecked exceptions or unbounded output.
             }
@@ -121,7 +122,7 @@ final class ZstdOfficialBlockTest {
                 nativeRaw++;
             } else {
                 nativeCompressed++;
-                assertArrayEquals(plain, new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE).decodeCompressed(compressed));
+                assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE).decodeCompressed(compressed));
                 probes.add(new Request('D', compressed, plain));
                 if (mutationSeeds.size() < 32) mutationSeeds.putIfAbsent(HexFormat.of().formatHex(compressed), compressed);
             }
@@ -156,7 +157,9 @@ final class ZstdOfficialBlockTest {
             byte[] unchanged = request.input().clone();
             byte @Nullable [] javaOutput;
             try {
-                javaOutput = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE).decodeCompressed(request.input());
+                ByteBuffer decodedBlock = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE).decodeCompressed(request.input());
+                javaOutput = new byte[decodedBlock.remaining()];
+                decodedBlock.get(javaOutput);
             } catch (IOException expected) {
                 javaOutput = null;
             }
@@ -235,8 +238,11 @@ final class ZstdOfficialBlockTest {
     private static byte[] decode(Encoded encoded) throws IOException {
         if (encoded.type() == 0) return encoded.payload().clone();
         var decoder = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE);
-        return encoded.type() == 1 ? decoder.decodeRle(Byte.toUnsignedInt(encoded.payload()[0]), encoded.size())
+        ByteBuffer decoded = encoded.type() == 1 ? decoder.decodeRle(Byte.toUnsignedInt(encoded.payload()[0]), encoded.size())
                 : decoder.decodeCompressed(encoded.payload());
+        byte[] result = new byte[decoded.remaining()];
+        decoded.get(result);
+        return result;
     }
 
     /// Returns representative independently reset Java compressed blocks for always-enabled malformed replay.

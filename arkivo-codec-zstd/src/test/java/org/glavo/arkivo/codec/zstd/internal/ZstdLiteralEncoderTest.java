@@ -8,10 +8,10 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Random;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -32,8 +32,8 @@ public final class ZstdLiteralEncoderTest {
 
         byte[] block = new byte[section.length + 1];
         System.arraycopy(section, 0, block, 0, section.length);
-        byte[] decoded = new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block);
-        assertArrayEquals(literals, decoded);
+        ByteBuffer decoded = new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block);
+        assertEquals(ByteBuffer.wrap(literals), decoded);
     }
 
     /// Verifies trained dictionary weights are inverted and reused by a treeless literal section.
@@ -58,8 +58,8 @@ public final class ZstdLiteralEncoderTest {
         assertEquals(3, section.bytes()[0] & 3);
 
         byte[] block = Arrays.copyOf(section.bytes(), section.bytes().length + 1);
-        byte[] decoded = new ZstdBlockDecoder(1 << 17, dictionary).decodeCompressed(block);
-        assertArrayEquals(samples, decoded);
+        ByteBuffer decoded = new ZstdBlockDecoder(1 << 17, dictionary).decodeCompressed(block);
+        assertEquals(ByteBuffer.wrap(samples), decoded);
 
         byte[] missingSymbol = samples.clone();
         missingSymbol[0] = (byte) 201;
@@ -68,8 +68,8 @@ public final class ZstdLiteralEncoderTest {
         assertTrue((fallback.bytes()[0] & 3) != 3);
         byte[] fallbackBlock =
                 Arrays.copyOf(fallback.bytes(), fallback.bytes().length + 1);
-        assertArrayEquals(
-                missingSymbol,
+        assertEquals(
+                ByteBuffer.wrap(missingSymbol),
                 new ZstdBlockDecoder(1 << 17, dictionary).decodeCompressed(fallbackBlock)
         );
     }
