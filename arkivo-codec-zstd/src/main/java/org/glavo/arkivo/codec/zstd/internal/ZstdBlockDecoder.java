@@ -69,6 +69,9 @@ final class ZstdBlockDecoder {
     /// Current literal workspace.
     private final byte[] literals = new byte[MAX_BLOCK_SIZE];
 
+    /// Lazily allocated match-expansion workspace, reused within this frame and never returned to callers.
+    private byte @Nullable [] outputWorkspace;
+
     /// Current Huffman table.
     private @Nullable ZstdEntropy.HuffmanTable huffmanTable;
 
@@ -219,7 +222,8 @@ final class ZstdBlockDecoder {
         int offsetState = bits.readBits(offsetsTable.tableLog());
         int matchState = bits.readBits(matchesTable.tableLog());
 
-        byte[] output = new byte[MAX_BLOCK_SIZE];
+        if (outputWorkspace == null) outputWorkspace = new byte[MAX_BLOCK_SIZE];
+        byte[] output = outputWorkspace;
         int outputPosition = 0;
         int literalPosition = 0;
         for (int sequence = 0; sequence < sequenceCount; sequence++) {

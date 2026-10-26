@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -14,11 +15,55 @@ import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Checks compressed matches across dictionary, history and current-block boundaries.
 @NotNullByDefault
 final class ZstdBlockDecoderTest {
+    /// Reuses the private workspace while returning exact-sized, independently owned block results.
+    @Test
+    void reusesWorkspaceWithoutAliasingResultsOrHistory() throws Exception {
+        ZstdBlockDecoder decoder = new ZstdBlockDecoder(131072, ZstdDictionaryContext.NONE);
+        var field = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
+        field.setAccessible(true);
+        assertNull(field.get(decoder));
+        byte[] first = decoder.decodeCompressed(singleMatch(new byte[]{42}, 65539, 1));
+        byte[] expected = new byte[65540];
+        Arrays.fill(expected, (byte) 42);
+        assertArrayEquals(expected, first);
+        byte[] workspace = assertInstanceOf(byte[].class, field.get(decoder));
+        assertEquals(131072, workspace.length);
+        byte[] second = decoder.decodeCompressed(singleMatch(new byte[]{17}, 7, 1));
+        assertArrayEquals(new byte[]{17, 17, 17, 17, 17, 17, 17, 17}, second);
+        assertArrayEquals(expected, first);
+        assertSame(workspace, field.get(decoder));
+
+        // Caller changes must affect neither retained history nor the next match expansion.
+        Arrays.fill(first, (byte) 99);
+        Arrays.fill(second, (byte) 99);
+        assertArrayEquals(new byte[]{17, 17, 17},
+                decoder.decodeCompressed(singleMatch(new byte[0], 3, 1)));
+        assertArrayEquals(new byte[]{42, 42, 42},
+                decoder.decodeCompressed(singleMatch(new byte[0], 3, 14)));
+        assertSame(workspace, field.get(decoder));
+    }
+
+    /// Raw, RLE and literal-only blocks do not allocate the match workspace.
+    @Test
+    void allocatesWorkspaceOnlyForMatches() throws Exception {
+        ZstdBlockDecoder decoder = new ZstdBlockDecoder(1024, ZstdDictionaryContext.NONE);
+        decoder.appendRaw(new byte[]{1, 2, 3});
+        assertArrayEquals(new byte[]{7, 7, 7}, decoder.decodeRle(7, 3));
+        assertArrayEquals(new byte[]{4, 5, 6}, decoder.decodeCompressed(new byte[]{24, 4, 5, 6, 0}));
+        var field = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
+        field.setAccessible(true);
+        assertNull(field.get(decoder));
+        assertEquals(9, decoder.frameSize());
+    }
+
     /// Compares exact compressed-block decoding with a bytewise match expansion.
     ///
     /// @param length the regenerated match length
