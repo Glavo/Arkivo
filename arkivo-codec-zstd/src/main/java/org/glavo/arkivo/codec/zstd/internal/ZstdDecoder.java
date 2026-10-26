@@ -433,6 +433,7 @@ public final class ZstdDecoder
 
     /// Marks the current standard frame complete.
     private void finishStandardFrame() {
+        output = EMPTY_OUTPUT;
         payload = null;
         blockDecoder = null;
         checksum = null;

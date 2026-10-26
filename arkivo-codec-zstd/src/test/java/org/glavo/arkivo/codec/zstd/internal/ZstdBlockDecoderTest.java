@@ -114,17 +114,61 @@ final class ZstdBlockDecoderTest {
         assertSame(workspace, field.get(decoder));
     }
 
-    /// Raw, RLE and literal-only blocks do not allocate the match workspace.
+    /// Allocates only the workspaces required by each block and reuses them for smaller sections.
     @Test
-    void allocatesWorkspaceOnlyForMatches() throws Exception {
+    void allocatesWorkspacesOnDemand() throws Exception {
         ZstdBlockDecoder decoder = new ZstdBlockDecoder(1024, ZstdDictionaryContext.NONE);
+        var literalField = ZstdBlockDecoder.class.getDeclaredField("literals");
+        var outputField = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
+        literalField.setAccessible(true);
+        outputField.setAccessible(true);
         decoder.appendRaw(new byte[]{1, 2, 3}, 3);
+        assertNull(literalField.get(decoder));
+        assertNull(outputField.get(decoder));
         assertEquals(ByteBuffer.wrap(new byte[]{7, 7, 7}), decoder.decodeRle(7, 3));
+        assertNull(literalField.get(decoder));
+        byte[] rleWorkspace = assertInstanceOf(byte[].class, outputField.get(decoder));
+        assertEquals(3, rleWorkspace.length);
         assertEquals(ByteBuffer.wrap(new byte[]{4, 5, 6}), decoder.decodeCompressed(new byte[]{24, 4, 5, 6, 0}, 5));
+        assertSame(rleWorkspace, outputField.get(decoder));
+        assertEquals(3, assertInstanceOf(byte[].class, literalField.get(decoder)).length);
+        assertEquals(9, decoder.frameSize());
+        assertEquals(ByteBuffer.wrap(new byte[]{1, 2, 3, 4}),
+                decoder.decodeCompressed(new byte[]{32, 1, 2, 3, 4, 0}, 6));
+        byte[] literalWorkspace = assertInstanceOf(byte[].class, literalField.get(decoder));
+        assertEquals(6, literalWorkspace.length, "growth doubles capacity without preserving previous literals");
+        assertEquals(ByteBuffer.wrap(new byte[]{8}), decoder.decodeCompressed(new byte[]{8, 8, 0}, 3));
+        assertSame(literalWorkspace, literalField.get(decoder));
+        ByteBuffer empty = decoder.decodeCompressed(new byte[]{0, 0}, 2);
+        assertEquals(0, empty.capacity());
+        assertSame(literalWorkspace, literalField.get(decoder));
+        assertEquals(14, decoder.frameSize());
+    }
+
+    /// Reuses RLE output for later RLE and match blocks without overwriting retained history.
+    @Test
+    void sharesRleAndMatchWorkspace() throws Exception {
+        ZstdBlockDecoder decoder = new ZstdBlockDecoder(1024, ZstdDictionaryContext.NONE);
         var field = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
         field.setAccessible(true);
-        assertNull(field.get(decoder));
-        assertEquals(9, decoder.frameSize());
+        byte[] expected = new byte[128];
+        Arrays.fill(expected, (byte) 42);
+        assertEquals(ByteBuffer.wrap(expected), decoder.decodeRle(42, 128));
+        byte[] firstWorkspace = assertInstanceOf(byte[].class, field.get(decoder));
+        ByteBuffer small = decoder.decodeRle(17, 7);
+        assertEquals(ByteBuffer.wrap(new byte[]{17, 17, 17, 17, 17, 17, 17}), small);
+        assertEquals(7, small.capacity());
+        assertThrows(ReadOnlyBufferException.class, () -> small.put(0, (byte) 99));
+        assertSame(firstWorkspace, field.get(decoder));
+        byte[] match = singleMatch(new byte[0], 3, 10);
+        assertEquals(ByteBuffer.wrap(new byte[]{42, 42, 42}), decoder.decodeCompressed(match, match.length));
+        byte[] matchWorkspace = assertInstanceOf(byte[].class, field.get(decoder));
+        assertEquals(ZstdBlockDecoder.MAX_BLOCK_SIZE, matchWorkspace.length);
+        assertEquals(ByteBuffer.wrap(new byte[]{9, 9}), decoder.decodeRle(9, 2));
+        assertSame(matchWorkspace, field.get(decoder));
+        byte[] priorRle = singleMatch(new byte[0], 3, 8);
+        assertEquals(ByteBuffer.wrap(new byte[]{17, 17, 17}), decoder.decodeCompressed(priorRle, priorRle.length));
+        assertEquals(143, decoder.frameSize());
     }
 
     /// Compares exact compressed-block decoding with a bytewise match expansion.

@@ -43,6 +43,28 @@ public final class ZstdBufferEngineTest {
     /// Shared Zstandard codec under test.
     private static final ZstdCodec CODEC = new ZstdCodec();
 
+    /// Releases a borrowed literal buffer when an empty compressed block finishes the frame.
+    @Test
+    void releasesEmptyFinalBlockView() throws Exception {
+        byte[] encoded = ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(0xfd2fb528).put((byte) 0).put((byte) 0)
+                .put(new byte[]{44, 0, 0, 24, 4, 5, 6, 0})
+                .put(new byte[]{21, 0, 0, 0, 0}).array();
+        try (var reference = new ZstdInputStream(new ByteArrayInputStream(encoded))) {
+            assertArrayEquals(new byte[]{4, 5, 6}, reference.readAllBytes());
+        }
+        var field = ZstdDecoder.class.getDeclaredField("output");
+        field.setAccessible(true);
+        try (var decoder = new ZstdDecoder(null, CompressionCodec.UNKNOWN_SIZE, false, true)) {
+            Object emptyOutput = java.util.Objects.requireNonNull(field.get(decoder));
+            ByteBuffer target = ByteBuffer.allocate(4);
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(encoded), target));
+            assertEquals(3, target.position());
+            assertArrayEquals(new byte[]{4, 5, 6, 0}, target.array());
+            assertSame(emptyOutput, field.get(decoder));
+        }
+    }
+
     /// Reuses input storage across mixed blocks, grows it only when needed, and releases it at lifecycle boundaries.
     @Test
     void reusesPayloadAcrossMixedBlocks() throws Exception {
@@ -214,12 +236,14 @@ public final class ZstdBufferEngineTest {
 
     /// Drains borrowed block output before decoding later blocks, including after reset.
     @ParameterizedTest
-    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
-    void drainsCompressedBlocksBeforeReusingTheirStorage(boolean checksum, boolean direct) throws IOException {
+    @CsvSource({"false, false, false", "false, true, false", "true, false, false", "true, true, false",
+            "false, false, true", "false, true, true", "true, false, true", "true, true, true"})
+    void drainsCompressedBlocksBeforeReusingTheirStorage(boolean checksum, boolean direct, boolean repeated)
+            throws IOException {
         int blockSize = 128 * 1024;
         byte[] expected = new byte[3 * blockSize + 37];
         for (int i = 0; i < expected.length; i++) {
-            expected[i] = (byte) (i % 251 + i / blockSize);
+            expected[i] = repeated && i < 2 * blockSize ? (byte) 'A' : (byte) (i % 251 + i / blockSize);
         }
         byte[] encoded;
         try (var encoder = new ZstdCompressCtx()) {
@@ -230,6 +254,18 @@ public final class ZstdBufferEngineTest {
         assertEquals(2, (firstBlockHeader >>> 1) & 3);
         assertEquals(0, firstBlockHeader & 1, "fixture must contain multiple blocks");
         int firstBlockEnd = 9 + (firstBlockHeader >>> 3);
+        if (repeated) {
+            int rleBlocks = 0;
+            for (int offset = 6;;) {
+                int header = (encoded[offset] & 0xff) | (encoded[offset + 1] & 0xff) << 8
+                        | (encoded[offset + 2] & 0xff) << 16;
+                boolean rle = ((header >>> 1) & 3) == 1;
+                if (rle) rleBlocks++;
+                offset += 3 + (rle ? 1 : header >>> 3);
+                if ((header & 1) != 0) break;
+            }
+            assertTrue(rleBlocks > 0, "fixture must reuse output storage across RLE and compressed blocks");
+        }
 
         ByteBuffer storage = direct ? ByteBuffer.allocateDirect(encoded.length + 1)
                 : ByteBuffer.allocate(encoded.length + 1);
