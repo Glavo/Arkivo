@@ -798,13 +798,99 @@ final class ZstdEntropy {
                 int targetOffset,
                 int count
         ) throws IOException {
-            ReverseBitReader bits = new ReverseBitReader(source, offset, limit);
+            decode(new ReverseBitReader(source, offset, limit), target, targetOffset, count);
+        }
+
+        /// Decodes four streams delimited by a six-byte jump table into contiguous target segments.
+        /// Partial output after failure may occur in any segment; each stream must end exactly.
+        void decodeFourStreams(byte[] source, int offset, int limit, byte[] target, int count) throws IOException {
+            if (count < 6) {
+                throw new IOException("Four-stream Zstandard Huffman literals are too short");
+            }
+            if (offset < 0 || limit > source.length || limit - offset < 6) {
+                throw new IOException("Truncated Zstandard Huffman jump table");
+            }
+            int stream1 = Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(source, offset));
+            int stream2 = Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(source, offset + 2));
+            int stream3 = Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(source, offset + 4));
+            int input = offset + 6;
+            int stream4 = limit - input - stream1 - stream2 - stream3;
+            if (stream1 == 0 || stream2 == 0 || stream3 == 0 || stream4 <= 0) {
+                throw new IOException("Invalid Zstandard Huffman stream sizes");
+            }
+            ReverseBitReader bits1 = new ReverseBitReader(source, input, input + stream1);
+            input += stream1;
+            ReverseBitReader bits2 = new ReverseBitReader(source, input, input + stream2);
+            input += stream2;
+            ReverseBitReader bits3 = new ReverseBitReader(source, input, input + stream3);
+            input += stream3;
+            ReverseBitReader bits4 = new ReverseBitReader(source, input, limit);
+            int segmentSize = (count + 3) >>> 2;
+            int lastSize = count - segmentSize * 3;
+            int position1 = bits1.bitPosition;
+            int position2 = bits2.bitPosition;
+            int position3 = bits3.bitPosition;
+            int position4 = bits4.bitPosition;
+            int index = 0;
+            while (lastSize - index >= 4
+                    && position1 - bits1.startBit >= Long.SIZE && position2 - bits2.startBit >= Long.SIZE
+                    && position3 - bits3.startBit >= Long.SIZE && position4 - bits4.startBit >= Long.SIZE) {
+                long window1 = readWindow(source, position1);
+                long window2 = readWindow(source, position2);
+                long window3 = readWindow(source, position3);
+                long window4 = readWindow(source, position4);
+                // Independent windows let the CPU overlap the four lookup/shift dependency chains.
+                for (int symbol = 0; symbol < 4; symbol++) {
+                    int entry1 = entries[(int) (window1 >>> (Long.SIZE - tableLog))];
+                    int entry2 = entries[(int) (window2 >>> (Long.SIZE - tableLog))];
+                    int entry3 = entries[(int) (window3 >>> (Long.SIZE - tableLog))];
+                    int entry4 = entries[(int) (window4 >>> (Long.SIZE - tableLog))];
+                    int length1 = entry1 & 15;
+                    int length2 = entry2 & 15;
+                    int length3 = entry3 & 15;
+                    int length4 = entry4 & 15;
+                    if (length1 == 0 || length2 == 0 || length3 == 0 || length4 == 0) {
+                        throw new IOException("Invalid Zstandard Huffman code");
+                    }
+                    target[index] = (byte) (entry1 >>> 4);
+                    target[segmentSize + index] = (byte) (entry2 >>> 4);
+                    target[segmentSize * 2 + index] = (byte) (entry3 >>> 4);
+                    target[segmentSize * 3 + index] = (byte) (entry4 >>> 4);
+                    window1 <<= length1;
+                    window2 <<= length2;
+                    window3 <<= length3;
+                    window4 <<= length4;
+                    position1 -= length1;
+                    position2 -= length2;
+                    position3 -= length3;
+                    position4 -= length4;
+                    index++;
+                }
+            }
+            bits1.bitPosition = position1;
+            bits2.bitPosition = position2;
+            bits3.bitPosition = position3;
+            bits4.bitPosition = position4;
+            decode(bits1, target, index, segmentSize - index);
+            decode(bits2, target, segmentSize + index, segmentSize - index);
+            decode(bits3, target, segmentSize * 2 + index, segmentSize - index);
+            decode(bits4, target, segmentSize * 3 + index, lastSize - index);
+        }
+
+        /// Loads 57 to 64 preceding bits into the high bits; at least 64 readable bits must precede the position.
+        private static long readWindow(byte[] source, int position) {
+            int lastBit = position - 1;
+            return ByteArrayAccess.readLongLittleEndian(source, (lastBit >>> 3) - 7)
+                    << (7 - (lastBit & 7));
+        }
+
+        /// Decodes the remaining symbols and verifies that no bits remain in this stream.
+        private void decode(ReverseBitReader bits, byte[] target, int targetOffset, int count) throws IOException {
+            byte[] source = bits.source;
             int position = bits.bitPosition;
             int index = 0;
             while (count - index >= 4 && position - bits.startBit >= Long.SIZE) {
-                int lastBit = position - 1;
-                long window = ByteArrayAccess.readLongLittleEndian(source, (lastBit >>> 3) - 7)
-                        << (7 - (lastBit & 7));
+                long window = readWindow(source, position);
                 // At least 57 useful bits remain in this load; four codes need at most 48.
                 for (int symbol = 0; symbol < 4; symbol++) {
                     int entry = entries[(int) (window >>> (Long.SIZE - tableLog))];

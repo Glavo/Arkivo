@@ -343,52 +343,13 @@ final class ZstdBlockDecoder {
             } else if (huffmanTable == null) {
                 throw new IOException("Zstandard treeless literal section has no prior Huffman table");
             }
-            decodeHuffmanStreams(
-                    huffmanTable,
-                    source,
-                    payloadOffset,
-                    payloadLimit,
-                    regeneratedSize,
-                    streamCount
-            );
+            if (streamCount == 1) {
+                huffmanTable.decode(source, payloadOffset, payloadLimit, literals, 0, regeneratedSize);
+            } else {
+                huffmanTable.decodeFourStreams(source, payloadOffset, payloadLimit, literals, regeneratedSize);
+            }
         }
         return new LiteralsResult(regeneratedSize, headerSize + compressedSize);
-    }
-
-    /// Decodes one or four Huffman streams.
-    private void decodeHuffmanStreams(
-            ZstdEntropy.HuffmanTable table,
-            byte[] source,
-            int offset,
-            int limit,
-            int outputSize,
-            int streamCount
-    ) throws IOException {
-        if (streamCount == 1) {
-            table.decode(source, offset, limit, literals, 0, outputSize);
-            return;
-        }
-        if (outputSize < 6) {
-            throw new IOException("Four-stream Zstandard Huffman literals are too short");
-        }
-        requireAvailable(source, offset, 6);
-        int stream1 = readUnsignedShort(source, offset);
-        int stream2 = readUnsignedShort(source, offset + 2);
-        int stream3 = readUnsignedShort(source, offset + 4);
-        int stream4 = limit - (offset + 6) - stream1 - stream2 - stream3;
-        if (stream1 <= 0 || stream2 <= 0 || stream3 <= 0 || stream4 <= 0) {
-            throw new IOException("Invalid Zstandard Huffman stream sizes");
-        }
-        int decoded1 = (outputSize + 3) >>> 2;
-        int decoded4 = outputSize - decoded1 * 3;
-        int input = offset + 6;
-        table.decode(source, input, input + stream1, literals, 0, decoded1);
-        input += stream1;
-        table.decode(source, input, input + stream2, literals, decoded1, decoded1);
-        input += stream2;
-        table.decode(source, input, input + stream3, literals, decoded1 * 2, decoded1);
-        input += stream3;
-        table.decode(source, input, limit, literals, decoded1 * 3, decoded4);
     }
 
     /// Reads one sequence-code FSE table according to its mode.
