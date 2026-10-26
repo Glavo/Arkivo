@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -442,6 +443,11 @@ final class ZstdEntropy {
             }
             int byteIndex = bitPosition >>> 3;
             int shift = bitPosition & 7;
+            if (byteIndex <= source.length - Long.BYTES) {
+                // The field bounds were checked above; lookahead bytes are masked out.
+                long value = ByteArrayAccess.readLongLittleEndian(source, byteIndex);
+                return (int) ((value >>> shift) & ((1L << count) - 1L));
+            }
             long value = 0L;
             int end = Math.min(source.length, byteIndex + 5);
             for (int index = byteIndex; index < end; index++) {
@@ -735,39 +741,27 @@ final class ZstdEntropy {
     record FseTransition(int state, int value, int bitCount) {
     }
 
-    /// An immutable canonical Huffman decoding trie.
+    /// An immutable canonical Huffman prefix table.
     @NotNullByDefault
     static final class HuffmanTable {
-        /// Child reached by a zero bit.
-        private final int @Unmodifiable [] zeroChildren;
+        /// Symbol in the upper bits and code length in the low four bits; zero denotes an unused prefix.
+        private final short @Unmodifiable [] entries;
 
-        /// Child reached by a one bit.
-        private final int @Unmodifiable [] oneChildren;
+        /// Number of bits indexing the table.
+        private final int tableLog;
 
-        /// Symbol stored at each leaf, or -1 for branches.
-        private final int @Unmodifiable [] symbols;
-
-        /// Number of used trie nodes.
-        private final int nodeCount;
-
-        /// Creates a decoding trie.
-        private HuffmanTable(int[] zeroChildren, int[] oneChildren, int[] symbols, int nodeCount) {
-            this.zeroChildren = zeroChildren;
-            this.oneChildren = oneChildren;
-            this.symbols = symbols;
-            this.nodeCount = nodeCount;
+        /// Creates a decoding table.
+        private HuffmanTable(short[] entries, int tableLog) {
+            this.entries = entries;
+            this.tableLog = tableLog;
         }
 
-        /// Builds a canonical trie from Zstandard weights.
+        /// Builds a bounded prefix table from Zstandard weights.
         static HuffmanTable fromWeights(int[] weights, int symbolCount, int tableLog) throws IOException {
-            int capacity = 1 + symbolCount * (tableLog + 1);
-            int[] zero = new int[capacity];
-            int[] one = new int[capacity];
-            int[] leaves = new int[capacity];
-            Arrays.fill(zero, -1);
-            Arrays.fill(one, -1);
-            Arrays.fill(leaves, -1);
-            int nodes = 1;
+            if (tableLog < 1 || tableLog > MAX_HUFFMAN_LOG) {
+                throw new IOException("Invalid Zstandard Huffman table log");
+            }
+            short[] entries = new short[1 << tableLog];
             int nextCode = 0;
             for (int weight = 1; weight <= tableLog; weight++) {
                 int codeLength = tableLog + 1 - weight;
@@ -780,34 +774,19 @@ final class ZstdEntropy {
                     if (code >= (1 << codeLength)) {
                         throw new IOException("Oversubscribed Zstandard Huffman table");
                     }
-                    int node = 0;
-                    for (int bit = codeLength - 1; bit >= 0; bit--) {
-                        boolean set = ((code >>> bit) & 1) != 0;
-                        int child = set ? one[node] : zero[node];
-                        if (child < 0) {
-                            child = nodes++;
-                            if (set) {
-                                one[node] = child;
-                            } else {
-                                zero[node] = child;
-                            }
+                    int start = code << (tableLog - codeLength);
+                    int end = (code + 1) << (tableLog - codeLength);
+                    for (int index = start; index < end; index++) {
+                        if (entries[index] != 0) {
+                            throw new IOException("Conflicting Zstandard Huffman codes");
                         }
-                        node = child;
+                        entries[index] = (short) ((symbol << 4) | codeLength);
                     }
-                    if (leaves[node] >= 0 || zero[node] >= 0 || one[node] >= 0) {
-                        throw new IOException("Conflicting Zstandard Huffman codes");
-                    }
-                    leaves[node] = symbol;
                     count++;
                 }
                 nextCode = (nextCode + count) >>> 1;
             }
-            return new HuffmanTable(
-                    Arrays.copyOf(zero, nodes),
-                    Arrays.copyOf(one, nodes),
-                    Arrays.copyOf(leaves, nodes),
-                    nodes
-            );
+            return new HuffmanTable(entries, tableLog);
         }
 
         /// Decodes exactly the requested number of symbols from one stream.
@@ -820,16 +799,28 @@ final class ZstdEntropy {
                 int count
         ) throws IOException {
             ReverseBitReader bits = new ReverseBitReader(source, offset, limit);
+            int available = Math.min(tableLog, bits.remainingBits());
+            // The low available bits hold the next bits in decoding order.
+            int prefix = bits.readBits(available);
+            int mask = entries.length - 1;
             for (int index = 0; index < count; index++) {
-                int node = 0;
-                while (symbols[node] < 0) {
-                    int bit = bits.readBits(1);
-                    node = bit == 0 ? zeroChildren[node] : oneChildren[node];
-                    if (node < 0 || node >= nodeCount) {
-                        throw new IOException("Invalid Zstandard Huffman code");
-                    }
+                // Zero padding selects a prefix at the tail but never supplies missing code bits.
+                int entry = entries[(prefix << (tableLog - available)) & mask];
+                int length = entry & 15;
+                if (length == 0) {
+                    throw new IOException("Invalid Zstandard Huffman code");
                 }
-                target[targetOffset + index] = (byte) symbols[node];
+                if (length > available) {
+                    throw new IOException("Truncated Zstandard Huffman code");
+                }
+                target[targetOffset + index] = (byte) (entry >>> 4);
+                available -= length;
+                int refill = Math.min(tableLog - available, bits.remainingBits());
+                prefix = (prefix << refill) | bits.readBits(refill);
+                available += refill;
+            }
+            if (available != 0) {
+                throw new IOException("Zstandard reverse bitstream contains unused bits");
             }
             bits.requireFullyConsumed();
         }

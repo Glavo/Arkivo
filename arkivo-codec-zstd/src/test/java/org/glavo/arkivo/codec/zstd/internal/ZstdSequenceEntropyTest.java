@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -15,6 +16,35 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies adaptive sequence-code table selection.
 @NotNullByDefault
 public final class ZstdSequenceEntropyTest {
+    /// Checks wide bit loads and their short-array fallback at every field width and bit alignment.
+    @Test
+    public void readsReverseFieldsWithoutIncludingAdjacentBytes() throws IOException {
+        Random random = new Random(42);
+        for (int count = 0; count <= 31; count++) {
+            for (int alignment = 0; alignment < 8; alignment++) {
+                long value = Integer.toUnsignedLong(random.nextInt()) & ((1L << count) - 1);
+                var writer = new ZstdEntropy.ReverseBitWriter();
+                writer.writeBits(0, alignment);
+                writer.writeBits(value, count);
+                byte[] stream = writer.finish();
+                for (int prefix : new int[]{0, 1, 8}) {
+                    for (int suffix : new int[]{0, 1, 8}) {
+                        byte[] source = new byte[prefix + stream.length + suffix];
+                        Arrays.fill(source, (byte) 0xff);
+                        System.arraycopy(stream, 0, source, prefix, stream.length);
+                        var reader = new ZstdEntropy.ReverseBitReader(source, prefix, prefix + stream.length);
+                        assertThrows(IOException.class, () -> reader.readBits(reader.remainingBits() + 1));
+                        assertEquals(value, Integer.toUnsignedLong(reader.readBits(count)));
+                        assertEquals(0, reader.readBits(alignment));
+                        reader.requireFullyConsumed();
+                        assertEquals(0, reader.readBits(0));
+                        assertThrows(IOException.class, () -> reader.readBits(1));
+                    }
+                }
+            }
+        }
+    }
+
     /// Accepts a terminal zero-frequency run without requiring unrelated bytes after the complete table.
     @Test
     public void readsShortTerminalZeroRun() throws IOException {

@@ -1,0 +1,164 @@
+// Copyright (c) 2026 Glavo
+// SPDX-License-Identifier: MPL-2.0
+
+package org.glavo.arkivo.codec.zstd.internal;
+
+import org.jetbrains.annotations.NotNullByDefault;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Random;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+/// Checks prefix-table decoding against independently assigned canonical codes and a bitwise decoder.
+@NotNullByDefault
+final class ZstdHuffmanTableTest {
+    /// Exercises every supported code length, including tails shorter than the lookup width.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+    void decodesCompleteAndTruncatedStreams(int tableLog) throws IOException {
+        int[] weights = new int[256];
+        // A comb-shaped tree supplies two longest codes and one code of each shorter length.
+        for (int index = 0; index <= tableLog; index++) {
+            weights[255 - index] = Math.max(1, index);
+        }
+        verifyStreams(weights, tableLog);
+        if (tableLog <= 8) {
+            Arrays.fill(weights, 0);
+            Arrays.fill(weights, 0, 1 << tableLog, 1);
+            verifyStreams(weights, tableLog);
+        }
+    }
+
+    /// Rejects oversized and overlapping tables before decoding, and unused prefixes when encountered.
+    @Test
+    void rejectsInvalidTablesAndPrefixes() throws IOException {
+        assertThrows(IOException.class, () -> ZstdEntropy.HuffmanTable.fromWeights(new int[]{1, 1}, 2, 13));
+        assertThrows(IOException.class, () -> ZstdEntropy.HuffmanTable.fromWeights(new int[]{1, 1}, 2, 0));
+        assertThrows(IOException.class, () -> ZstdEntropy.HuffmanTable.fromWeights(new int[]{1, 1, 1}, 3, 1));
+        assertThrows(IOException.class, () -> ZstdEntropy.HuffmanTable.fromWeights(new int[]{1, 2}, 2, 2));
+        byte[] oversized = {(byte) 141, 0x11, 0x23, 0x45, 0x67, (byte) 0x89, (byte) 0xab, (byte) 0xcc};
+        assertThrows(IOException.class, () -> ZstdEntropy.readHuffmanTable(oversized, 0, oversized.length));
+        var incomplete = ZstdEntropy.HuffmanTable.fromWeights(new int[]{1}, 1, 2);
+        assertThrows(IOException.class, () -> incomplete.decode(new byte[]{7}, 0, 1, new byte[1], 0, 1));
+    }
+
+    /// Assigns codes by cumulative prefix-space occupancy and compares valid and damaged streams.
+    private static void verifyStreams(int[] weights, int tableLog) throws IOException {
+        int[] codes = new int[256];
+        int slot = 0;
+        for (int weight = 1; weight <= tableLog; weight++) {
+            for (int symbol = 0; symbol < weights.length; symbol++) {
+                if (weights[symbol] == weight) {
+                    codes[symbol] = slot >>> (weight - 1);
+                    slot += 1 << (weight - 1);
+                }
+            }
+        }
+        assertEquals(1 << tableLog, slot);
+        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+        Random random = new Random(42 + tableLog);
+        for (int size : new int[]{0, 1, 2, 3, 7, 8, 9, 31, 256}) {
+            byte[] plain = new byte[size];
+            for (int index = 0; index < size; index++) {
+                int symbol;
+                do {
+                    symbol = random.nextInt(256);
+                } while (weights[symbol] == 0);
+                plain[index] = (byte) symbol;
+            }
+            byte[] stream = encode(plain, weights, codes, tableLog);
+            byte[] decoded = new byte[size];
+            table.decode(stream, 0, stream.length, decoded, 0, size);
+            assertArrayEquals(plain, decoded);
+            compareWithReference(table, weights, codes, tableLog, stream, size);
+            compareWithReference(table, weights, codes, tableLog, stream, size + 1);
+            if (size != 0) compareWithReference(table, weights, codes, tableLog, stream, size - 1);
+            for (int limit = 0; limit < stream.length; limit++) {
+                compareWithReference(table, weights, codes, tableLog, Arrays.copyOf(stream, limit), size);
+            }
+            for (int index = 0; index < stream.length; index++) {
+                byte[] damaged = stream.clone();
+                damaged[index] ^= (byte) random.nextInt(1, 256);
+                compareWithReference(table, weights, codes, tableLog, damaged, size);
+            }
+        }
+        // Cover every symbol individually, not just the randomized selections above.
+        for (int symbol = 0; symbol < weights.length; symbol++) {
+            if (weights[symbol] == 0) continue;
+            byte[] plain = {(byte) symbol};
+            byte[] stream = encode(plain, weights, codes, tableLog);
+            byte[] decoded = new byte[1];
+            table.decode(stream, 0, stream.length, decoded, 0, 1);
+            assertArrayEquals(plain, decoded);
+        }
+    }
+
+    /// Packs canonical codes in reverse symbol order, followed by the bitstream marker.
+    private static byte[] encode(byte[] plain, int[] weights, int[] codes, int tableLog) {
+        var writer = new ZstdEntropy.ReverseBitWriter();
+        for (int index = plain.length - 1; index >= 0; index--) {
+            int symbol = Byte.toUnsignedInt(plain[index]);
+            writer.writeBits(codes[symbol], tableLog + 1 - weights[symbol]);
+        }
+        return writer.finish();
+    }
+
+    /// Checks acceptance, partial output, source preservation, and guards around both byte ranges.
+    private static void compareWithReference(ZstdEntropy.HuffmanTable table, int[] weights, int[] codes,
+                                             int tableLog, byte[] stream, int count) throws IOException {
+        byte[] source = new byte[stream.length + 8];
+        Arrays.fill(source, (byte) 0xa5);
+        System.arraycopy(stream, 0, source, 3, stream.length);
+        byte[] unchanged = source.clone();
+        byte[] expected = new byte[count + 6];
+        Arrays.fill(expected, (byte) 0xa5);
+        byte[] actual = expected.clone();
+        boolean failed = false;
+        try {
+            decodeReference(stream, weights, codes, tableLog, expected, count);
+        } catch (IOException ignored) {
+            failed = true;
+        }
+        if (failed) {
+            assertThrows(IOException.class, () -> table.decode(source, 3, 3 + stream.length, actual, 3, count));
+        } else {
+            table.decode(source, 3, 3 + stream.length, actual, 3, count);
+        }
+        assertArrayEquals(expected, actual);
+        assertArrayEquals(unchanged, source);
+    }
+
+    /// Decodes one bit at a time without using the production reader or lookup table.
+    private static void decodeReference(byte[] source, int[] weights, int[] codes, int tableLog,
+                                        byte[] target, int count) throws IOException {
+        if (source.length == 0 || source[source.length - 1] == 0) throw new IOException("Missing marker");
+        int position = (source.length - 1) * 8
+                + 31 - Integer.numberOfLeadingZeros(Byte.toUnsignedInt(source[source.length - 1]));
+        for (int index = 0; index < count; index++) {
+            int code = 0;
+            boolean found = false;
+            for (int length = 1; length <= tableLog && !found; length++) {
+                if (position == 0) throw new IOException("Truncated code");
+                position--;
+                code = (code << 1) | ((source[position >>> 3] >>> (position & 7)) & 1);
+                for (int symbol = 0; symbol < weights.length; symbol++) {
+                    if (weights[symbol] != 0 && tableLog + 1 - weights[symbol] == length
+                            && codes[symbol] == code) {
+                        target[3 + index] = (byte) symbol;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) throw new IOException("Invalid code");
+        }
+        if (position != 0) throw new IOException("Unused bits");
+    }
+}

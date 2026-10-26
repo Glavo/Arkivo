@@ -49,7 +49,7 @@ public class ZstdReadBenchmark {
     public String implementation = "arkivo";
 
     /// The deterministic block and match workload.
-    @Param({"random", "periodic", "short-distance", "long-distance"})
+    @Param({"random", "periodic", "short-distance", "long-distance", "huffman", "skewed-huffman"})
     public String profile = "random";
 
     /// The shared compressed representation.
@@ -80,6 +80,15 @@ public class ZstdReadBenchmark {
         new Random(42).nextBytes(body);
         switch (profile) {
             case "random" -> { }
+            case "huffman" -> {
+                for (int i = 0; i < body.length; i++) body[i] &= 63;
+            }
+            case "skewed-huffman" -> {
+                for (int i = 0; i < body.length; i++) {
+                    int value = Byte.toUnsignedInt(body[i]);
+                    body[i] = (byte) (value < 128 ? value & 7 : value);
+                }
+            }
             case "periodic" -> {
                 for (int i = 251; i < body.length; i++) body[i] = body[i % 251];
             }
