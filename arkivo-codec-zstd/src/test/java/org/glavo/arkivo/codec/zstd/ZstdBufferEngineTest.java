@@ -43,6 +43,84 @@ public final class ZstdBufferEngineTest {
     /// Shared Zstandard codec under test.
     private static final ZstdCodec CODEC = new ZstdCodec();
 
+    /// Reuses only a matching contiguous window and releases it when resized, replaced by a large window, or closed.
+    @Test
+    void boundsHistoryReuseAcrossFrames() throws Exception {
+        var field = ZstdDecoder.class.getDeclaredField("reusableHistory");
+        field.setAccessible(true);
+        try (var decoder = new ZstdDecoder(null, CompressionCodec.UNKNOWN_SIZE, false, true)) {
+            ByteBuffer target = ByteBuffer.allocate(8);
+            byte[] small = singleBlockFrame(10, new byte[]{25, 0, 0, 1, 2, 3});
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(small), target));
+            Object cached = java.util.Objects.requireNonNull(field.get(decoder));
+            decoder.reset();
+            target.clear();
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(small), target));
+            assertSame(cached, field.get(decoder));
+
+            // Abandon a partially delivered raw block, then start another frame in the same storage.
+            decoder.reset();
+            assertEquals(CodecOutcome.NEEDS_INPUT,
+                    decoder.decode(ByteBuffer.wrap(Arrays.copyOf(small, small.length - 1)), target.clear()));
+            assertSame(cached, field.get(decoder));
+            decoder.reset();
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(small), target.clear()));
+            assertSame(cached, field.get(decoder));
+            assertEquals(ByteBuffer.wrap(new byte[]{1, 2, 3}), target.flip());
+
+            // An independent frame cannot refer to bytes retained physically from the previous one.
+            byte[] unavailableMatch = singleBlockFrame(10, new byte[]{61, 0, 0, 0, 1, 84, 0, 2, 0, 4});
+            try (var reference = new ZstdInputStream(new ByteArrayInputStream(unavailableMatch))) {
+                assertThrows(IOException.class, reference::readAllBytes);
+            }
+            decoder.reset();
+            target.clear();
+            assertThrows(IOException.class, () -> decoder.finish(ByteBuffer.wrap(unavailableMatch), target));
+            assertEquals(0, target.position());
+            assertSame(cached, field.get(decoder));
+            decoder.reset();
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(small), target.clear()));
+            assertSame(cached, field.get(decoder));
+
+            decoder.reset();
+            ByteBuffer skippable = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(0x184d2a50).putInt(1).put((byte) 99).flip();
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(skippable, target.clear()));
+            assertEquals(0, target.position());
+            assertSame(cached, field.get(decoder));
+            decoder.reset();
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(small), target.clear()));
+            assertSame(cached, field.get(decoder));
+
+            decoder.reset();
+            byte[] larger = singleBlockFrame(11, new byte[]{1, 0, 0});
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(larger), target.clear()));
+            assertNotSame(cached, field.get(decoder));
+            assertNotNull(field.get(decoder));
+            decoder.reset();
+            assertEquals(CodecOutcome.FINISHED,
+                    decoder.finish(ByteBuffer.wrap(singleBlockFrame(24, new byte[]{1, 0, 0})), target.clear()));
+            assertNotNull(field.get(decoder), "the largest contiguous window remains reusable");
+            decoder.reset();
+            assertEquals(CodecOutcome.FINISHED,
+                    decoder.finish(ByteBuffer.wrap(singleBlockFrame(25, new byte[]{1, 0, 0})), target.clear()));
+            assertNull(field.get(decoder), "segmented windows must not remain cached");
+
+            decoder.reset();
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(small), target.clear()));
+            assertNotNull(field.get(decoder));
+            decoder.close();
+            decoder.close();
+            assertNull(field.get(decoder));
+        }
+    }
+
+    /// Wraps an already encoded final block in a frame with an explicit power-of-two window and no checksum.
+    private static byte[] singleBlockFrame(int windowLog, byte[] block) {
+        return ByteBuffer.allocate(6 + block.length).order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(0xfd2fb528).put((byte) 0).put((byte) ((windowLog - 10) << 3)).put(block).array();
+    }
+
     /// Releases a borrowed literal buffer when an empty compressed block finishes the frame.
     @Test
     void releasesEmptyFinalBlockView() throws Exception {

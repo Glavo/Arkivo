@@ -15,7 +15,7 @@ import java.util.Objects;
 @NotNullByDefault
 final class ZstdHistory {
     /// Largest window represented by one contiguous array.
-    private static final long CONTIGUOUS_LIMIT = 16L * 1024L * 1024L;
+    static final long CONTIGUOUS_LIMIT = 16L * 1024L * 1024L;
 
     /// Shift for one lazily allocated segment.
     private static final int SEGMENT_SHIFT = 20;
@@ -58,6 +58,12 @@ final class ZstdHistory {
         } catch (OutOfMemoryError error) {
             throw new IOException("Unable to allocate Zstandard history window", error);
         }
+    }
+
+    /// Discards all available history while retaining allocated storage for subsequent appends.
+    void reset() {
+        position = 0L;
+        size = 0L;
     }
 
     /// Returns the logical window capacity.

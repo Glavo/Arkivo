@@ -27,6 +27,38 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Checks compressed matches across dictionary, history and current-block boundaries.
 @NotNullByDefault
 final class ZstdBlockDecoderTest {
+    /// Reusing history storage cannot preserve bytes, entropy tables or repeated offsets from another frame.
+    @Test
+    void startsIndependentStateWithReusedHistory() throws Exception {
+        ZstdHistory history = new ZstdHistory(1024);
+        var first = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+        byte[] block = singleMatch(new byte[]{42, 43}, 7, 2);
+        assertEquals(ByteBuffer.wrap(new byte[]{42, 43, 42, 43, 42, 43, 42, 43, 42}),
+                first.decodeCompressed(block, block.length));
+        assertEquals(9, history.size());
+
+        var second = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+        assertEquals(0, second.frameSize());
+        assertEquals(0, history.size());
+        for (int i = 1; i <= 3; i++) {
+            var field = ZstdBlockDecoder.class.getDeclaredField("repeatedOffset" + i);
+            field.setAccessible(true);
+            assertEquals(i == 1 ? 1L : i == 2 ? 4L : 8L, field.getLong(second));
+        }
+        byte[] historyOnly = singleMatch(new byte[0], 3, 1);
+        assertThrows(IOException.class, () -> second.decodeCompressed(historyOnly, historyOnly.length));
+        var third = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+        byte[] repeatTables = {0, 1, (byte) 0xfc, 1};
+        assertThrows(IOException.class, () -> third.decodeCompressed(repeatTables, repeatTables.length));
+
+        var dictionary = ZstdDictionaryContext.parse(ZstdDictionary.rawContent(new byte[]{10, 11, 12, 13, 14, 15, 16, 17}));
+        var fourth = new ZstdBlockDecoder(history, dictionary);
+        assertEquals(ByteBuffer.wrap(new byte[]{17, 17, 17}),
+                fourth.decodeCompressed(historyOnly, historyOnly.length));
+        var fifth = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+        assertThrows(IOException.class, () -> fifth.decodeCompressed(historyOnly, historyOnly.length));
+    }
+
     /// Checks logical truncation against exact arrays even when valid bytes remain beyond the limit.
     @Test
     void ignoresBytesOutsideCompressedBlockLimit() throws IOException {
@@ -52,12 +84,12 @@ final class ZstdBlockDecoderTest {
                 @Nullable ByteBuffer expected = null;
                 @Nullable IOException failure = null;
                 try {
-                    expected = new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE)
+                    expected = new ZstdBlockDecoder(new ZstdHistory(1 << 17), ZstdDictionaryContext.NONE)
                             .decodeCompressed(exact, end);
                 } catch (IOException exception) {
                     failure = exception;
                 }
-                var decoder = new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE);
+                var decoder = new ZstdBlockDecoder(new ZstdHistory(1 << 17), ZstdDictionaryContext.NONE);
                 if (failure == null) {
                     assertEquals(expected, decoder.decodeCompressed(padded, end));
                 } else {
@@ -67,7 +99,7 @@ final class ZstdBlockDecoderTest {
                 }
             }
         }
-        var decoder = new ZstdBlockDecoder(1024, ZstdDictionaryContext.NONE);
+        var decoder = new ZstdBlockDecoder(new ZstdHistory(1024), ZstdDictionaryContext.NONE);
         assertThrows(IndexOutOfBoundsException.class, () -> decoder.decodeCompressed(new byte[3], -1));
         assertThrows(IndexOutOfBoundsException.class, () -> decoder.decodeCompressed(new byte[3], 4));
         decoder.appendRaw(new byte[]{42, 99, 99}, 1);
@@ -79,7 +111,7 @@ final class ZstdBlockDecoderTest {
     /// Reuses bounded read-only views without sharing history storage or retaining caller output.
     @Test
     void reusesReadOnlyViewsWithoutAliasingHistory() throws Exception {
-        ZstdBlockDecoder decoder = new ZstdBlockDecoder(131072, ZstdDictionaryContext.NONE);
+        ZstdBlockDecoder decoder = new ZstdBlockDecoder(new ZstdHistory(131072), ZstdDictionaryContext.NONE);
         var field = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
         field.setAccessible(true);
         assertNull(field.get(decoder));
@@ -117,7 +149,7 @@ final class ZstdBlockDecoderTest {
     /// Allocates only the workspaces required by each block and reuses them for smaller sections.
     @Test
     void allocatesWorkspacesOnDemand() throws Exception {
-        ZstdBlockDecoder decoder = new ZstdBlockDecoder(1024, ZstdDictionaryContext.NONE);
+        ZstdBlockDecoder decoder = new ZstdBlockDecoder(new ZstdHistory(1024), ZstdDictionaryContext.NONE);
         var literalField = ZstdBlockDecoder.class.getDeclaredField("literals");
         var outputField = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
         literalField.setAccessible(true);
@@ -148,7 +180,7 @@ final class ZstdBlockDecoderTest {
     /// Reuses RLE output for later RLE and match blocks without overwriting retained history.
     @Test
     void sharesRleAndMatchWorkspace() throws Exception {
-        ZstdBlockDecoder decoder = new ZstdBlockDecoder(1024, ZstdDictionaryContext.NONE);
+        ZstdBlockDecoder decoder = new ZstdBlockDecoder(new ZstdHistory(1024), ZstdDictionaryContext.NONE);
         var field = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
         field.setAccessible(true);
         byte[] expected = new byte[128];
@@ -188,7 +220,7 @@ final class ZstdBlockDecoderTest {
                     byte[] prefix = new byte[prefixSize];
                     for (int i = 0; i < prefixSize; i++) prefix[i] = (byte) (i + 3);
                     for (int distance : new int[]{1, 2, 3, 8, 17, 32, 64, 80, 128}) {
-                        ZstdBlockDecoder decoder = new ZstdBlockDecoder(capacity, context);
+                        ZstdBlockDecoder decoder = new ZstdBlockDecoder(new ZstdHistory(capacity), context);
                         decoder.appendRaw(previous, previous.length);
                         byte[] payload = singleMatch(prefix, length, distance);
                         byte[] expected;

@@ -52,6 +52,17 @@ final class ZstdHistoryTest {
         assertThrows(IOException.class, () -> history.copy(history.size() + 1, new byte[1], 0, 1));
         assertThrows(IOException.class, () -> history.copy(0, new byte[1], 0, 1));
         assertThrows(IOException.class, () -> history.copy(1, new byte[2], 0, 2));
+        history.reset();
+        history.reset();
+        assertEquals(0, history.size());
+        assertThrows(IOException.class, () -> history.copy(1, new byte[1], 0, 1));
+        byte[] fresh = {91, 92, 93};
+        int length = (int) Math.min(capacity, fresh.length);
+        history.append(fresh, length);
+        byte[] restored = new byte[length];
+        history.copy(length, restored, 0, length);
+        assertArrayEquals(Arrays.copyOf(fresh, length), restored);
+        assertThrows(IOException.class, () -> history.copy(length + 1, new byte[1], 0, 1));
     }
 
     /// Allows empty appends but rejects output in a zero-capacity window.

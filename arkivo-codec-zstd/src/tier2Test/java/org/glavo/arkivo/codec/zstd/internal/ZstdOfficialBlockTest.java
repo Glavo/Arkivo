@@ -79,7 +79,7 @@ final class ZstdOfficialBlockTest {
             byte[] unchanged = input.clone();
             @Nullable ByteBuffer expectedOutput = null;
             try {
-                expectedOutput = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE)
+                expectedOutput = new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE)
                         .decodeCompressed(input, input.length);
                 assertTrue(expectedOutput.remaining() <= BLOCK_SIZE);
             } catch (IOException expected) {
@@ -89,7 +89,7 @@ final class ZstdOfficialBlockTest {
             byte[] padded = Arrays.copyOf(input, input.length + 19);
             Arrays.fill(padded, input.length, padded.length, (byte) 0xa5);
             byte[] paddedSnapshot = padded.clone();
-            var decoder = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE);
+            var decoder = new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE);
             if (expectedOutput == null) {
                 assertThrows(IOException.class, () -> decoder.decodeCompressed(padded, input.length));
             } else {
@@ -135,7 +135,7 @@ final class ZstdOfficialBlockTest {
                 nativeRaw++;
             } else {
                 nativeCompressed++;
-                assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE)
+                assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE)
                         .decodeCompressed(compressed, compressed.length));
                 probes.add(new Request('D', compressed, plain));
                 if (mutationSeeds.size() < 32) mutationSeeds.putIfAbsent(HexFormat.of().formatHex(compressed), compressed);
@@ -171,7 +171,7 @@ final class ZstdOfficialBlockTest {
             byte[] unchanged = request.input().clone();
             byte @Nullable [] javaOutput;
             try {
-                ByteBuffer decodedBlock = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE)
+                ByteBuffer decodedBlock = new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE)
                         .decodeCompressed(request.input(), request.input().length);
                 javaOutput = new byte[decodedBlock.remaining()];
                 decodedBlock.get(javaOutput);
@@ -252,7 +252,7 @@ final class ZstdOfficialBlockTest {
     /// Decodes each block representation without inventing a compressed stream for a native raw fallback.
     private static byte[] decode(Encoded encoded) throws IOException {
         if (encoded.type() == 0) return encoded.payload().clone();
-        var decoder = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE);
+        var decoder = new ZstdBlockDecoder(new ZstdHistory(BLOCK_SIZE), ZstdDictionaryContext.NONE);
         ByteBuffer decoded = encoded.type() == 1 ? decoder.decodeRle(Byte.toUnsignedInt(encoded.payload()[0]), encoded.size())
                 : decoder.decodeCompressed(encoded.payload(), encoded.payload().length);
         byte[] result = new byte[decoded.remaining()];

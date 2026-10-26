@@ -23,6 +23,9 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 
 /// Incrementally decodes one Zstandard frame without retaining caller-owned buffers.
+///
+/// @implNote One contiguous history window of at most 16 MiB is retained between frames for reuse at the same size.
+/// A different window size replaces this storage; segmented windows are not cached. Closing releases cached storage.
 @NotNullByDefault
 public final class ZstdDecoder
         implements CompressionDecoder.FramedDictionaryAware<ZstdDictionary, ZstdDictionaryRequest> {
@@ -58,6 +61,9 @@ public final class ZstdDecoder
 
     /// Current standard-frame block decoder, or null outside a standard frame.
     private @Nullable ZstdBlockDecoder blockDecoder;
+
+    /// Contiguous history storage retained for a following frame with the same window size, or null.
+    private @Nullable ZstdHistory reusableHistory;
 
     /// Current standard-frame checksum, or null when absent or disabled.
     private @Nullable ChecksumAccumulator.Width64 checksum;
@@ -275,6 +281,7 @@ public final class ZstdDecoder
     public void close() {
         if (state != State.CLOSED) {
             clearFrameState();
+            reusableHistory = null;
             dictionary = ZstdDictionaryContext.NONE;
             state = State.CLOSED;
         }
@@ -337,7 +344,15 @@ public final class ZstdDecoder
     private void beginStandardFrame(ZstdStandardFrameInfo standard) throws IOException {
         frameInfo = standard;
         requiredDictionaryId = ZstdDictionary.NO_DICTIONARY_ID;
-        blockDecoder = new ZstdBlockDecoder(standard.windowSize(), dictionary);
+        @Nullable ZstdHistory history = reusableHistory;
+        if (history == null || history.capacity() != standard.windowSize()) {
+            reusableHistory = null;
+            history = new ZstdHistory(standard.windowSize());
+            if (standard.windowSize() <= ZstdHistory.CONTIGUOUS_LIMIT) {
+                reusableHistory = history;
+            }
+        }
+        blockDecoder = new ZstdBlockDecoder(history, dictionary);
         checksum = standard.checksum() && verifyChecksums ? XXHash64.newAccumulator() : null;
         blockHeader.clear();
         state = State.BLOCK_HEADER;
@@ -474,7 +489,7 @@ public final class ZstdDecoder
         return CodecOutcome.NEEDS_INPUT;
     }
 
-    /// Clears all mutable per-frame buffers and metadata.
+    /// Discards per-frame state while retaining an empty contiguous history workspace for reuse.
     private void clearFrameState() {
         header.clear();
         blockHeader.clear();
@@ -483,6 +498,7 @@ public final class ZstdDecoder
         checksum = null;
         frameInfo = null;
         payload = null;
+        if (reusableHistory != null) reusableHistory.reset();
         payloadSize = 0;
         output = EMPTY_OUTPUT;
         skippableBytes = 0L;

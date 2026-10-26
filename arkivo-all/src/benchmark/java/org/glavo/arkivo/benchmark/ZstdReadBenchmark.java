@@ -32,7 +32,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
-/// Compares decoding of identical checksum-protected native Zstandard frames with reusable engines and heap buffers.
+/// Compares decoding of identical checksum-protected native Zstandard frames with reused heap buffers.
 @NotNullByDefault
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -47,6 +47,10 @@ public class ZstdReadBenchmark {
     /// The decoder implementation; native uses zstd-jni, not a Java implementation.
     @Param({"arkivo", "native"})
     public String implementation = "arkivo";
+
+    /// Whether one engine is reset between frames or a fresh engine is created and closed for each invocation.
+    @Param({"true"})
+    public boolean reuseContext = true;
 
     /// The deterministic block and match workload.
     @Param({"random", "periodic", "short-distance", "long-distance", "huffman", "skewed-huffman"})
@@ -109,7 +113,7 @@ public class ZstdReadBenchmark {
         input = ByteBuffer.wrap(compressed).asReadOnlyBuffer();
         output = new byte[SIZE + 1];
         target = ByteBuffer.wrap(output);
-        if (decodeArkivo() != SIZE || !Arrays.equals(body, 0, SIZE, output, 0, SIZE)) {
+        if (decodeArkivo(decoder) != SIZE || !Arrays.equals(body, 0, SIZE, output, 0, SIZE)) {
             throw new AssertionError("Arkivo Zstandard output differs");
         }
         Arrays.fill(output, (byte) 0);
@@ -118,18 +122,32 @@ public class ZstdReadBenchmark {
             throw new AssertionError("Native Zstandard output differs");
         }
         System.out.println("ZSTD_READ_INPUT_BYTES " + profile + " " + compressed.length);
+        if (!reuseContext) {
+            close();
+            decoder = null;
+            nativeDecoder = null;
+        }
     }
 
     /// Decodes one complete frame into the reused output buffer.
     @Benchmark
     public int decode() throws IOException {
-        return implementation.equals("arkivo") ? decodeArkivo()
-                : Objects.requireNonNull(nativeDecoder).decompress(output, compressed);
+        if (reuseContext) {
+            return implementation.equals("arkivo") ? decodeArkivo(Objects.requireNonNull(decoder))
+                    : Objects.requireNonNull(nativeDecoder).decompress(output, compressed);
+        }
+        if (implementation.equals("arkivo")) {
+            try (var engine = ZstdCodec.DEFAULT.newDecoder()) {
+                return decodeArkivo(engine);
+            }
+        }
+        try (var engine = new ZstdDecompressCtx()) {
+            return engine.decompress(output, compressed);
+        }
     }
 
     /// Resets the Java decoder and consumes exactly one frame.
-    private int decodeArkivo() throws IOException {
-        CompressionDecoder engine = Objects.requireNonNull(decoder);
+    private int decodeArkivo(CompressionDecoder engine) throws IOException {
         engine.reset();
         input.clear();
         target.clear();

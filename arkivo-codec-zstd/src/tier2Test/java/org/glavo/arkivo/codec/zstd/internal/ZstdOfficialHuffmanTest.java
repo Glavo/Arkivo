@@ -100,7 +100,7 @@ final class ZstdOfficialHuffmanTest {
                 } else {
                     byte[] block = literalBlock(parameters.capacity(), 1,
                             Arrays.copyOf(source, table.bytesRead()), source);
-                    ByteBuffer decoded = new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE)
+                    ByteBuffer decoded = new ZstdBlockDecoder(new ZstdHistory(1 << 17), ZstdDictionaryContext.NONE)
                             .decodeCompressed(block, block.length);
                     assertEquals(parameters.capacity(), decoded.remaining());
                     decoded.get(target, 3, decoded.remaining());
@@ -197,7 +197,7 @@ final class ZstdOfficialHuffmanTest {
                 if (plain.length <= ZstdBlockDecoder.MAX_BLOCK_SIZE
                         && (parameters.streams() == 1 || plain.length <= 1023 && description.length + stream.length <= 1023)) {
                     byte[] block = literalBlock(plain.length, parameters.streams(), description, stream);
-                    assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE)
+                    assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(new ZstdHistory(1 << 17), ZstdDictionaryContext.NONE)
                             .decodeCompressed(block, block.length));
                 }
             }
@@ -212,7 +212,7 @@ final class ZstdOfficialHuffmanTest {
     private static void assertJavaLiteralEncoding(byte[] plain) throws IOException {
         byte[] section = ZstdLiteralEncoder.encode(plain);
         byte[] block = Arrays.copyOf(section, section.length + 1);
-        assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE)
+        assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(new ZstdHistory(1 << 17), ZstdDictionaryContext.NONE)
                 .decodeCompressed(block, block.length));
         assertArrayEquals(plain, Zstd.decompress(frame(block, plain.length), plain.length));
     }

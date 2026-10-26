@@ -102,13 +102,11 @@ final class ZstdBlockDecoder {
     /// Number of bytes produced before the current block.
     private long frameSize;
 
-    /// Creates a block decoder for one frame.
-    ZstdBlockDecoder(long windowSize, ZstdDictionaryContext dictionary) throws IOException {
-        if (windowSize < 0L) {
-            throw new IllegalArgumentException("windowSize must not be negative");
-        }
+    /// Creates a block decoder and resets the supplied history for exclusive use by this frame.
+    ZstdBlockDecoder(ZstdHistory history, ZstdDictionaryContext dictionary) {
         this.dictionary = dictionary;
-        this.history = new ZstdHistory(windowSize);
+        this.history = history;
+        history.reset();
         this.huffmanTable = dictionary.huffmanTable();
         this.literalLengthTable = dictionary.literalLengthTable();
         this.offsetTable = dictionary.offsetTable();

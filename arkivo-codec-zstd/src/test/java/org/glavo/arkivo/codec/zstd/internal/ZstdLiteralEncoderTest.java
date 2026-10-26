@@ -32,7 +32,7 @@ public final class ZstdLiteralEncoderTest {
 
         byte[] block = new byte[section.length + 1];
         System.arraycopy(section, 0, block, 0, section.length);
-        ByteBuffer decoded = new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block, block.length);
+        ByteBuffer decoded = new ZstdBlockDecoder(new ZstdHistory(1 << 17), ZstdDictionaryContext.NONE).decodeCompressed(block, block.length);
         assertEquals(ByteBuffer.wrap(literals), decoded);
     }
 
@@ -58,7 +58,7 @@ public final class ZstdLiteralEncoderTest {
         assertEquals(3, section.bytes()[0] & 3);
 
         byte[] block = Arrays.copyOf(section.bytes(), section.bytes().length + 1);
-        ByteBuffer decoded = new ZstdBlockDecoder(1 << 17, dictionary).decodeCompressed(block, block.length);
+        ByteBuffer decoded = new ZstdBlockDecoder(new ZstdHistory(1 << 17), dictionary).decodeCompressed(block, block.length);
         assertEquals(ByteBuffer.wrap(samples), decoded);
 
         byte[] missingSymbol = samples.clone();
@@ -70,7 +70,7 @@ public final class ZstdLiteralEncoderTest {
                 Arrays.copyOf(fallback.bytes(), fallback.bytes().length + 1);
         assertEquals(
                 ByteBuffer.wrap(missingSymbol),
-                new ZstdBlockDecoder(1 << 17, dictionary).decodeCompressed(fallbackBlock, fallbackBlock.length)
+                new ZstdBlockDecoder(new ZstdHistory(1 << 17), dictionary).decodeCompressed(fallbackBlock, fallbackBlock.length)
         );
     }
 
