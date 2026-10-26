@@ -42,7 +42,8 @@ import java.util.concurrent.TimeUnit;
 @Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
 public class ZstdReadBenchmark {
     /// The uncompressed byte count per invocation.
-    private static final int SIZE = 1024 * 1024;
+    @Param({"1048576"})
+    public int size = 1024 * 1024;
 
     /// The decoder implementation; native uses zstd-jni, not a Java implementation.
     @Param({"arkivo", "native"})
@@ -80,7 +81,7 @@ public class ZstdReadBenchmark {
         if (!implementation.equals("arkivo") && !implementation.equals("native")) {
             throw new IllegalArgumentException(implementation);
         }
-        byte[] body = new byte[SIZE];
+        byte[] body = new byte[size];
         new Random(42).nextBytes(body);
         switch (profile) {
             case "random" -> { }
@@ -97,8 +98,8 @@ public class ZstdReadBenchmark {
                 for (int i = 251; i < body.length; i++) body[i] = body[i % 251];
             }
             case "short-distance" -> {
-                Arrays.fill(body, 0, SIZE / 2, (byte) 'A');
-                for (int i = SIZE / 2; i < SIZE; i++) body[i] = (byte) ('A' + i % 3);
+                Arrays.fill(body, 0, size / 2, (byte) 'A');
+                for (int i = size / 2; i < size; i++) body[i] = (byte) ('A' + i % 3);
             }
             case "long-distance" -> {
                 for (int i = 65_537; i < body.length; i++) body[i] = body[i % 65_537];
@@ -111,14 +112,14 @@ public class ZstdReadBenchmark {
         decoder = ZstdCodec.DEFAULT.newDecoder();
         nativeDecoder = new ZstdDecompressCtx();
         input = ByteBuffer.wrap(compressed).asReadOnlyBuffer();
-        output = new byte[SIZE + 1];
+        output = new byte[size + 1];
         target = ByteBuffer.wrap(output);
-        if (decodeArkivo(decoder) != SIZE || !Arrays.equals(body, 0, SIZE, output, 0, SIZE)) {
+        if (decodeArkivo(decoder) != size || !Arrays.equals(body, 0, size, output, 0, size)) {
             throw new AssertionError("Arkivo Zstandard output differs");
         }
         Arrays.fill(output, (byte) 0);
-        if (nativeDecoder.decompress(output, compressed) != SIZE
-                || !Arrays.equals(body, 0, SIZE, output, 0, SIZE)) {
+        if (nativeDecoder.decompress(output, compressed) != size
+                || !Arrays.equals(body, 0, size, output, 0, size)) {
             throw new AssertionError("Native Zstandard output differs");
         }
         System.out.println("ZSTD_READ_INPUT_BYTES " + profile + " " + compressed.length);

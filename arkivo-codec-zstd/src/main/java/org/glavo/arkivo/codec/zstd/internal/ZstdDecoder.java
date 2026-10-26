@@ -16,6 +16,7 @@ import org.glavo.arkivo.codec.zstd.ZstdSkippableFrameInfo;
 import org.glavo.arkivo.codec.zstd.ZstdStandardFrameInfo;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -289,11 +290,22 @@ public final class ZstdDecoder
 
     /// Collects and parses exactly one frame header.
     private @Nullable CodecOutcome readHeader(ByteBuffer source, boolean endOfInput) throws IOException {
+        @UnmodifiableView ByteBuffer view = header.asReadOnlyBuffer();
+        view.flip();
         while (true) {
-            ByteBuffer view = header.asReadOnlyBuffer();
-            view.flip();
             try {
-                ZstdFrameInfo parsed = ZstdFrameHeader.parse(view, magicless);
+                @Nullable ZstdFrameInfo parsed = ZstdFrameHeader.tryParse(view, magicless);
+                if (parsed == null) {
+                    if (!source.hasRemaining()) {
+                        return requireMoreInput(endOfInput);
+                    }
+                    if (!header.hasRemaining()) {
+                        throw new IOException("Invalid Zstandard frame header");
+                    }
+                    header.put(source.get());
+                    view.limit(header.position());
+                    continue;
+                }
                 header.clear();
                 if (parsed instanceof ZstdSkippableFrameInfo skippable) {
                     skippableBytes = skippable.payloadSize();
@@ -307,14 +319,6 @@ public final class ZstdDecoder
                 ZstdStandardFrameInfo standard = (ZstdStandardFrameInfo) parsed;
                 prepareStandardFrame(standard);
                 return state == State.NEEDS_DICTIONARY ? CodecOutcome.NEEDS_DICTIONARY : null;
-            } catch (EOFException exception) {
-                if (!source.hasRemaining()) {
-                    return requireMoreInput(endOfInput);
-                }
-                if (!header.hasRemaining()) {
-                    throw new IOException("Invalid Zstandard frame header", exception);
-                }
-                header.put(source.get());
             } catch (IOException exception) {
                 if ("Invalid Zstandard frame magic".equals(exception.getMessage())) {
                     throw new IOException("Invalid Zstandard frame", exception);

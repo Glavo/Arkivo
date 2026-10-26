@@ -165,8 +165,8 @@ public final class ZstdFrameHeader {
         }
     }
 
-    /// Parses an available header or returns null when more input is required.
-    private static @Nullable ZstdFrameInfo tryParse(
+    /// Parses an available header without changing buffer state, or returns null when more input is required.
+    static @Nullable ZstdFrameInfo tryParse(
             ByteBuffer source,
             boolean magicless
     ) throws IOException {
