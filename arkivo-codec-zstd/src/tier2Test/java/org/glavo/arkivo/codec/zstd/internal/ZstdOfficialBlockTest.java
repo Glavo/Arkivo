@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -70,19 +71,31 @@ final class ZstdOfficialBlockTest {
         }
     }
 
-    /// Replays complete arbitrary input, not the producer's remaining prefix, through a fresh block decoder.
+    /// Replays arbitrary input with exact and oversized backing arrays through fresh block decoders.
     @Test
     void arbitraryBlocks() throws IOException {
         List<byte[]> valid = javaBlocks();
         for (byte[] input : malformedInputs(valid)) {
             byte[] unchanged = input.clone();
+            @Nullable ByteBuffer expectedOutput = null;
             try {
-                ByteBuffer output = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE).decodeCompressed(input);
-                assertTrue(output.remaining() <= BLOCK_SIZE);
+                expectedOutput = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE)
+                        .decodeCompressed(input, input.length);
+                assertTrue(expectedOutput.remaining() <= BLOCK_SIZE);
             } catch (IOException expected) {
                 // Upstream permits malformed input to fail, but not unchecked exceptions or unbounded output.
             }
             assertArrayEquals(unchanged, input);
+            byte[] padded = Arrays.copyOf(input, input.length + 19);
+            Arrays.fill(padded, input.length, padded.length, (byte) 0xa5);
+            byte[] paddedSnapshot = padded.clone();
+            var decoder = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE);
+            if (expectedOutput == null) {
+                assertThrows(IOException.class, () -> decoder.decodeCompressed(padded, input.length));
+            } else {
+                assertEquals(expectedOutput, decoder.decodeCompressed(padded, input.length));
+            }
+            assertArrayEquals(paddedSnapshot, padded);
         }
     }
 
@@ -122,7 +135,8 @@ final class ZstdOfficialBlockTest {
                 nativeRaw++;
             } else {
                 nativeCompressed++;
-                assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE).decodeCompressed(compressed));
+                assertEquals(ByteBuffer.wrap(plain), new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE)
+                        .decodeCompressed(compressed, compressed.length));
                 probes.add(new Request('D', compressed, plain));
                 if (mutationSeeds.size() < 32) mutationSeeds.putIfAbsent(HexFormat.of().formatHex(compressed), compressed);
             }
@@ -157,7 +171,8 @@ final class ZstdOfficialBlockTest {
             byte[] unchanged = request.input().clone();
             byte @Nullable [] javaOutput;
             try {
-                ByteBuffer decodedBlock = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE).decodeCompressed(request.input());
+                ByteBuffer decodedBlock = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE)
+                        .decodeCompressed(request.input(), request.input().length);
                 javaOutput = new byte[decodedBlock.remaining()];
                 decodedBlock.get(javaOutput);
             } catch (IOException expected) {
@@ -239,7 +254,7 @@ final class ZstdOfficialBlockTest {
         if (encoded.type() == 0) return encoded.payload().clone();
         var decoder = new ZstdBlockDecoder(BLOCK_SIZE, ZstdDictionaryContext.NONE);
         ByteBuffer decoded = encoded.type() == 1 ? decoder.decodeRle(Byte.toUnsignedInt(encoded.payload()[0]), encoded.size())
-                : decoder.decodeCompressed(encoded.payload());
+                : decoder.decodeCompressed(encoded.payload(), encoded.payload().length);
         byte[] result = new byte[decoded.remaining()];
         decoded.get(result);
         return result;

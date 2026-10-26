@@ -7,11 +7,14 @@ import com.github.luben.zstd.ZstdCompressCtx;
 import com.github.luben.zstd.ZstdInputStream;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.EncodingOptions;
+import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -20,6 +23,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.util.Arrays;
 
@@ -29,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,6 +42,78 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public final class ZstdBufferEngineTest {
     /// Shared Zstandard codec under test.
     private static final ZstdCodec CODEC = new ZstdCodec();
+
+    /// Reuses input storage across mixed blocks, grows it only when needed, and releases it at lifecycle boundaries.
+    @Test
+    void reusesPayloadAcrossMixedBlocks() throws Exception {
+        byte[][] bodies = {testData(64), new byte[]{7}, new byte[]{1, 2, 3},
+                new byte[]{24, 4, 5, 6, 0}, testData(128), new byte[0]};
+        int[] types = {0, 1, 0, 2, 0, 0};
+        int[] sizes = {64, 17, 3, 5, 128, 0};
+        ByteArrayOutputStream expected = new ByteArrayOutputStream();
+        expected.writeBytes(bodies[0]);
+        byte[] repeated = new byte[17];
+        Arrays.fill(repeated, (byte) 7);
+        expected.writeBytes(repeated);
+        expected.writeBytes(bodies[2]);
+        expected.writeBytes(new byte[]{4, 5, 6});
+        expected.writeBytes(bodies[4]);
+        byte[] header = ByteBuffer.allocate(6).order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(0xfd2fb528).put((byte) 0).put((byte) 0).array();
+        var field = ZstdDecoder.class.getDeclaredField("payload");
+        field.setAccessible(true);
+        for (boolean direct : new boolean[]{false, true}) {
+            try (var decoder = new ZstdDecoder(null, CompressionCodec.UNKNOWN_SIZE, false, true)) {
+                assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(ByteBuffer.wrap(header), ByteBuffer.allocate(1)));
+                ByteArrayOutputStream frame = new ByteArrayOutputStream();
+                frame.writeBytes(header);
+                ByteArrayOutputStream actual = new ByteArrayOutputStream();
+                @Nullable Object previous = null;
+                for (int i = 0; i < bodies.length; i++) {
+                    boolean last = i == bodies.length - 1;
+                    int blockHeader = sizes[i] << 3 | types[i] << 1 | (last ? 1 : 0);
+                    ByteBuffer input = direct ? ByteBuffer.allocateDirect(3 + bodies[i].length)
+                            : ByteBuffer.allocate(3 + bodies[i].length);
+                    input.put((byte) blockHeader).put((byte) (blockHeader >>> 8)).put((byte) (blockHeader >>> 16));
+                    input.put(bodies[i]).flip();
+                    byte[] encoded = new byte[input.remaining()];
+                    input.duplicate().get(encoded);
+                    frame.writeBytes(encoded);
+                    ByteBuffer source = input.asReadOnlyBuffer();
+                    CodecOutcome outcome;
+                    do {
+                        ByteBuffer target = ByteBuffer.allocate(7);
+                        outcome = decoder.decode(source, target);
+                        drain(target, actual);
+                    } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+                    assertFalse(source.hasRemaining());
+                    assertEquals(last ? CodecOutcome.FINISHED : CodecOutcome.NEEDS_INPUT, outcome);
+                    if (last) {
+                        assertNull(field.get(decoder));
+                    } else if (i == 0 || i == 4) {
+                        assertNotSame(previous, field.get(decoder));
+                        previous = field.get(decoder);
+                        assertNotNull(previous);
+                    } else {
+                        assertSame(previous, field.get(decoder));
+                    }
+                }
+                assertArrayEquals(expected.toByteArray(), actual.toByteArray());
+                try (var reference = new ZstdInputStream(new ByteArrayInputStream(frame.toByteArray()))) {
+                    assertArrayEquals(expected.toByteArray(), reference.readAllBytes());
+                }
+                for (boolean close : new boolean[]{false, true}) {
+                    decoder.reset();
+                    ByteBuffer incomplete = ByteBuffer.allocate(10).put(header).put(new byte[]{32, 0, 0, 1}).flip();
+                    assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(incomplete, ByteBuffer.allocate(8)));
+                    assertNotNull(field.get(decoder));
+                    if (close) decoder.close();
+                    else decoder.reset();
+                    assertNull(field.get(decoder));
+                }
+            }
+        }
+    }
 
     /// Releases the frame engine and its parsed dictionary configuration when the buffer encoder closes.
     @Test

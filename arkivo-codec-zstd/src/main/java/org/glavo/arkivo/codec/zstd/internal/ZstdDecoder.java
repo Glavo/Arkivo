@@ -65,10 +65,10 @@ public final class ZstdDecoder
     /// Current standard-frame metadata, or null outside a standard frame.
     private @Nullable ZstdStandardFrameInfo frameInfo;
 
-    /// Compressed block payload being collected, or null outside payload collection.
+    /// Input workspace grown to the largest physical block seen in this frame, or null when none is retained.
     private byte @Nullable [] payload;
 
-    /// Number of collected compressed block payload bytes.
+    /// Number of physical input bytes collected for the current block.
     private int payloadSize;
 
     /// Current block type from zero through two.
@@ -178,10 +178,11 @@ public final class ZstdDecoder
                 }
                 case BLOCK_PAYLOAD -> {
                     byte[] currentPayload = Objects.requireNonNull(payload);
-                    int copied = Math.min(source.remaining(), currentPayload.length - payloadSize);
+                    int compressedSize = blockType == 1 ? 1 : blockSize;
+                    int copied = Math.min(source.remaining(), compressedSize - payloadSize);
                     source.get(currentPayload, payloadSize, copied);
                     payloadSize += copied;
-                    if (payloadSize != currentPayload.length) {
+                    if (payloadSize != compressedSize) {
                         return requireMoreInput(endOfInput);
                     }
                     decodeBlock(currentPayload);
@@ -196,20 +197,19 @@ public final class ZstdDecoder
                 case RAW_PAYLOAD -> {
                     byte[] currentPayload = Objects.requireNonNull(payload);
                     int copied = Math.min(Math.min(source.remaining(), target.remaining()),
-                            currentPayload.length - payloadSize);
+                            blockSize - payloadSize);
                     source.get(currentPayload, payloadSize, copied);
                     target.put(currentPayload, payloadSize, copied);
                     if (checksum != null) {
                         checksum.update(currentPayload, payloadSize, copied);
                     }
                     payloadSize += copied;
-                    if (payloadSize != currentPayload.length) {
+                    if (payloadSize != blockSize) {
                         return target.hasRemaining() ? requireMoreInput(endOfInput) : CodecOutcome.NEEDS_OUTPUT;
                     }
                     // History is needed only when the next block begins. Keep the completed raw block until then,
                     // but expose each available portion immediately instead of waiting for its remaining input.
-                    Objects.requireNonNull(blockDecoder).appendRaw(currentPayload);
-                    payload = null;
+                    Objects.requireNonNull(blockDecoder).appendRaw(currentPayload, blockSize);
                     payloadSize = 0;
                     completeBlock();
                     if (state == State.FINISHED) {
@@ -343,7 +343,7 @@ public final class ZstdDecoder
         state = State.BLOCK_HEADER;
     }
 
-    /// Parses a collected block header and allocates its physical payload.
+    /// Parses a collected block header and grows the input workspace if its physical payload does not fit.
     private void beginBlock() throws IOException {
         blockHeader.flip();
         int value = Byte.toUnsignedInt(blockHeader.get())
@@ -364,7 +364,9 @@ public final class ZstdDecoder
             throw new IOException("Zstandard block exceeds the frame block-size limit");
         }
         int compressedSize = blockType == 1 ? 1 : blockSize;
-        payload = new byte[compressedSize];
+        if (payload == null || payload.length < compressedSize) {
+            payload = new byte[compressedSize];
+        }
         payloadSize = 0;
         state = blockType == 0 ? State.RAW_PAYLOAD : State.BLOCK_PAYLOAD;
     }
@@ -374,7 +376,7 @@ public final class ZstdDecoder
         ZstdBlockDecoder decoder = Objects.requireNonNull(blockDecoder);
         ByteBuffer decoded = switch (blockType) {
             case 1 -> decoder.decodeRle(Byte.toUnsignedInt(compressed[0]), blockSize);
-            case 2 -> decoder.decodeCompressed(compressed);
+            case 2 -> decoder.decodeCompressed(compressed, blockSize);
             default -> throw new AssertionError(blockType);
         };
         // Compressed size alone cannot establish the regenerated block's window-size bound.
@@ -389,7 +391,6 @@ public final class ZstdDecoder
         }
         // The next block is not decoded until this borrowed view has been completely delivered.
         output = decoded;
-        payload = null;
         payloadSize = 0;
     }
 
@@ -432,6 +433,7 @@ public final class ZstdDecoder
 
     /// Marks the current standard frame complete.
     private void finishStandardFrame() {
+        payload = null;
         blockDecoder = null;
         checksum = null;
         frameInfo = null;

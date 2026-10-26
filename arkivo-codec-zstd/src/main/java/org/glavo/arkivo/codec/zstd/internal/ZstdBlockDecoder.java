@@ -12,6 +12,7 @@ import org.jetbrains.annotations.UnmodifiableView;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Objects;
 
 /// Decodes Zstandard raw, run-length, and compressed blocks into a bounded history window.
 ///
@@ -122,13 +123,14 @@ final class ZstdBlockDecoder {
         return frameSize;
     }
 
-    /// Adds one completely delivered raw block to history for subsequent compressed blocks.
-    void appendRaw(byte[] payload) throws IOException {
-        if (payload.length > MAX_BLOCK_SIZE) {
+    /// Adds the first `length` bytes of one completely delivered raw block to history.
+    void appendRaw(byte[] payload, int length) throws IOException {
+        Objects.checkFromIndexSize(0, length, payload.length);
+        if (length > MAX_BLOCK_SIZE) {
             throw new IOException("Zstandard raw block exceeds 128 KiB");
         }
-        history.append(payload, payload.length);
-        frameSize += payload.length;
+        history.append(payload, length);
+        frameSize += length;
     }
 
     /// Decodes one run-length block and returns a read-only buffer containing exactly its bytes.
@@ -141,11 +143,12 @@ final class ZstdBlockDecoder {
         return finishBlock(output, size);
     }
 
-    /// Decodes one compressed block payload and returns a read-only view of its bytes, positioned at zero.
-    @UnmodifiableView ByteBuffer decodeCompressed(byte[] source) throws IOException {
-        LiteralsResult literalResult = decodeLiterals(source);
+    /// Decodes `source[0..limit)` and returns a read-only output view positioned at zero.
+    @UnmodifiableView ByteBuffer decodeCompressed(byte[] source, int limit) throws IOException {
+        Objects.checkFromIndexSize(0, limit, source.length);
+        LiteralsResult literalResult = decodeLiterals(source, limit);
         int position = literalResult.bytesRead();
-        if (position >= source.length) {
+        if (position >= limit) {
             throw new IOException("Missing Zstandard sequences section");
         }
         int firstCount = Byte.toUnsignedInt(source[position++]);
@@ -153,21 +156,21 @@ final class ZstdBlockDecoder {
         if (firstCount < 128) {
             sequenceCount = firstCount;
         } else if (firstCount < 255) {
-            requireAvailable(source, position, 1);
+            requireAvailable(limit, position, 1);
             sequenceCount = ((firstCount - 128) << 8) + Byte.toUnsignedInt(source[position++]);
         } else {
-            requireAvailable(source, position, 2);
+            requireAvailable(limit, position, 2);
             sequenceCount = readUnsignedShort(source, position) + 0x7f00;
             position += 2;
         }
         if (sequenceCount == 0) {
-            if (position != source.length) {
+            if (position != limit) {
                 throw new IOException("Zstandard zero-sequence block contains extraneous data");
             }
             return finishBlock(literals, literalResult.literalSize());
         }
 
-        requireAvailable(source, position, 1);
+        requireAvailable(limit, position, 1);
         int modes = Byte.toUnsignedInt(source[position++]);
         if ((modes & 3) != 0) {
             throw new IOException("Reserved Zstandard sequence mode bits are set");
@@ -175,7 +178,7 @@ final class ZstdBlockDecoder {
         TableResult literalTableResult = readSequenceTable(
                 source,
                 position,
-                source.length,
+                limit,
                 modes >>> 6,
                 35,
                 9,
@@ -189,7 +192,7 @@ final class ZstdBlockDecoder {
         TableResult offsetTableResult = readSequenceTable(
                 source,
                 position,
-                source.length,
+                limit,
                 (modes >>> 4) & 3,
                 31,
                 8,
@@ -203,7 +206,7 @@ final class ZstdBlockDecoder {
         TableResult matchTableResult = readSequenceTable(
                 source,
                 position,
-                source.length,
+                limit,
                 (modes >>> 2) & 3,
                 52,
                 9,
@@ -214,10 +217,10 @@ final class ZstdBlockDecoder {
         matchLengthTable = matchTableResult.table();
         position += matchTableResult.bytesRead();
 
-        if (position >= source.length) {
+        if (position >= limit) {
             throw new IOException("Missing Zstandard sequence bitstream");
         }
-        ZstdEntropy.ReverseBitReader bits = new ZstdEntropy.ReverseBitReader(source, position, source.length);
+        ZstdEntropy.ReverseBitReader bits = new ZstdEntropy.ReverseBitReader(source, position, limit);
         ZstdEntropy.FseTable literalTable = literalLengthTable;
         ZstdEntropy.FseTable offsetsTable = offsetTable;
         ZstdEntropy.FseTable matchesTable = matchLengthTable;
@@ -276,8 +279,8 @@ final class ZstdBlockDecoder {
     }
 
     /// Decodes one literal section.
-    private LiteralsResult decodeLiterals(byte[] source) throws IOException {
-        requireAvailable(source, 0, 1);
+    private LiteralsResult decodeLiterals(byte[] source, int limit) throws IOException {
+        requireAvailable(limit, 0, 1);
         int headerByte = Byte.toUnsignedInt(source[0]);
         int type = headerByte & 3;
         int sizeFormat = (headerByte >>> 2) & 3;
@@ -291,11 +294,11 @@ final class ZstdBlockDecoder {
                 regeneratedSize = headerByte >>> 3;
             } else if (sizeFormat == 1) {
                 headerSize = 2;
-                requireAvailable(source, 0, headerSize);
+                requireAvailable(limit, 0, headerSize);
                 regeneratedSize = readUnsignedShort(source, 0) >>> 4;
             } else {
                 headerSize = 3;
-                requireAvailable(source, 0, headerSize);
+                requireAvailable(limit, 0, headerSize);
                 regeneratedSize = readUnsigned24(source) >>> 4;
             }
             compressedSize = type == 0 ? regeneratedSize : 1;
@@ -303,21 +306,21 @@ final class ZstdBlockDecoder {
         } else {
             if (sizeFormat <= 1) {
                 headerSize = 3;
-                requireAvailable(source, 0, headerSize);
+                requireAvailable(limit, 0, headerSize);
                 int header = readUnsigned24(source);
                 regeneratedSize = (header >>> 4) & 0x3ff;
                 compressedSize = (header >>> 14) & 0x3ff;
                 streamCount = sizeFormat == 0 ? 1 : 4;
             } else if (sizeFormat == 2) {
                 headerSize = 4;
-                requireAvailable(source, 0, headerSize);
+                requireAvailable(limit, 0, headerSize);
                 long header = readUnsignedInt(source);
                 regeneratedSize = (int) ((header >>> 4) & 0x3fff);
                 compressedSize = (int) (header >>> 18);
                 streamCount = 4;
             } else {
                 headerSize = 5;
-                requireAvailable(source, 0, headerSize);
+                requireAvailable(limit, 0, headerSize);
                 long header = readUnsigned40(source);
                 regeneratedSize = (int) ((header >>> 4) & 0x3ffff);
                 compressedSize = (int) ((header >>> 22) & 0x3ffff);
@@ -327,7 +330,7 @@ final class ZstdBlockDecoder {
         if (regeneratedSize > MAX_BLOCK_SIZE) {
             throw new IOException("Zstandard literal section exceeds 128 KiB");
         }
-        requireAvailable(source, headerSize, compressedSize);
+        requireAvailable(limit, headerSize, compressedSize);
         if (type == 0) {
             System.arraycopy(source, headerSize, literals, 0, regeneratedSize);
         } else if (type == 1) {
@@ -368,7 +371,7 @@ final class ZstdBlockDecoder {
         return switch (mode) {
             case 0 -> new TableResult(predefined, 0);
             case 1 -> {
-                requireAvailable(source, offset, 1);
+                requireAvailable(limit, offset, 1);
                 int symbol = Byte.toUnsignedInt(source[offset]);
                 if (symbol > maximumSymbol) {
                     throw new IOException("Invalid Zstandard " + name + " RLE symbol");
@@ -488,9 +491,9 @@ final class ZstdBlockDecoder {
         return ByteBuffer.wrap(block, 0, length).slice().asReadOnlyBuffer();
     }
 
-    /// Requires one byte range to be available.
-    private static void requireAvailable(byte[] source, int offset, int length) throws IOException {
-        if (offset < 0 || length < 0 || offset > source.length - length) {
+    /// Requires one byte range to lie within the current block's logical input limit.
+    private static void requireAvailable(int limit, int offset, int length) throws IOException {
+        if (offset < 0 || length < 0 || offset > limit - length) {
             throw new IOException("Truncated Zstandard compressed block");
         }
     }
