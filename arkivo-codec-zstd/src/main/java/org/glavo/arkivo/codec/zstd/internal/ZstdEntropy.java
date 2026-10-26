@@ -799,11 +799,30 @@ final class ZstdEntropy {
                 int count
         ) throws IOException {
             ReverseBitReader bits = new ReverseBitReader(source, offset, limit);
+            int position = bits.bitPosition;
+            int index = 0;
+            while (count - index >= 4 && position - bits.startBit >= Long.SIZE) {
+                int lastBit = position - 1;
+                long window = ByteArrayAccess.readLongLittleEndian(source, (lastBit >>> 3) - 7)
+                        << (7 - (lastBit & 7));
+                // At least 57 useful bits remain in this load; four codes need at most 48.
+                for (int symbol = 0; symbol < 4; symbol++) {
+                    int entry = entries[(int) (window >>> (Long.SIZE - tableLog))];
+                    int length = entry & 15;
+                    if (length == 0) {
+                        throw new IOException("Invalid Zstandard Huffman code");
+                    }
+                    target[targetOffset + index++] = (byte) (entry >>> 4);
+                    window <<= length;
+                    position -= length;
+                }
+            }
+            bits.bitPosition = position;
             int available = Math.min(tableLog, bits.remainingBits());
             // The low available bits hold the next bits in decoding order.
             int prefix = bits.readBits(available);
             int mask = entries.length - 1;
-            for (int index = 0; index < count; index++) {
+            for (; index < count; index++) {
                 // Zero padding selects a prefix at the tail but never supplies missing code bits.
                 int entry = entries[(prefix << (tableLog - available)) & mask];
                 int length = entry & 15;

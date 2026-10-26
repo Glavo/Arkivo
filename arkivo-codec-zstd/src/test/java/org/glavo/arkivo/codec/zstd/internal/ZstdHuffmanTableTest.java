@@ -49,9 +49,47 @@ final class ZstdHuffmanTableTest {
         assertThrows(IOException.class, () -> incomplete.decode(new byte[]{7}, 0, 1, new byte[1], 0, 1));
     }
 
-    /// Assigns codes by cumulative prefix-space occupancy and compares valid and damaged streams.
-    private static void verifyStreams(int[] weights, int tableLog) throws IOException {
-        int[] codes = new int[256];
+    /// Crosses the wide-load and four-symbol boundaries at every possible terminal byte alignment.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 6, 8, 12})
+    void decodesBatchBoundaries(int tableLog) throws IOException {
+        int[] weights = new int[256];
+        for (int index = 0; index <= tableLog; index++) weights[255 - index] = Math.max(1, index);
+        int[] codes = canonicalCodes(weights, tableLog);
+        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+        for (int longCodes = 0; longCodes <= 72; longCodes++) {
+            for (int shortCodes = 0; shortCodes < 8; shortCodes++) {
+                byte[] plain = new byte[longCodes + shortCodes];
+                for (int index = 0; index < longCodes; index++) plain[index] = (byte) (254 + (index & 1));
+                Arrays.fill(plain, longCodes, plain.length, (byte) (255 - tableLog));
+                byte[] stream = encode(plain, weights, codes, tableLog);
+                compareWithReference(table, weights, codes, tableLog, stream, plain.length);
+                if (plain.length != 0) {
+                    compareWithReference(table, weights, codes, tableLog, stream, plain.length - 1);
+                }
+                compareWithReference(table, weights, codes, tableLog, stream, plain.length + 1);
+            }
+        }
+    }
+
+    /// Preserves partial output when an invalid prefix occurs within a batch or in the scalar tail.
+    @Test
+    void rejectsUnusedPrefixesInsideBatches() throws IOException {
+        int[] weights = {1};
+        int[] codes = {0};
+        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, 1);
+        for (int invalid = 0; invalid < 128; invalid++) {
+            byte[] stream = new byte[17];
+            stream[16] = 1;
+            int bit = 127 - invalid;
+            stream[bit >>> 3] |= (byte) (1 << (bit & 7));
+            compareWithReference(table, weights, codes, 1, stream, 128);
+        }
+    }
+
+    /// Assigns codes by cumulative prefix-space occupancy rather than the production code recurrence.
+    private static int[] canonicalCodes(int[] weights, int tableLog) {
+        int[] codes = new int[weights.length];
         int slot = 0;
         for (int weight = 1; weight <= tableLog; weight++) {
             for (int symbol = 0; symbol < weights.length; symbol++) {
@@ -62,9 +100,15 @@ final class ZstdHuffmanTableTest {
             }
         }
         assertEquals(1 << tableLog, slot);
+        return codes;
+    }
+
+    /// Compares valid, truncated, and damaged streams using one reusable decoding table.
+    private static void verifyStreams(int[] weights, int tableLog) throws IOException {
+        int[] codes = canonicalCodes(weights, tableLog);
         var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
         Random random = new Random(42 + tableLog);
-        for (int size : new int[]{0, 1, 2, 3, 7, 8, 9, 31, 256}) {
+        for (int size : new int[]{0, 1, 2, 3, 4, 5, 7, 8, 9, 31, 63, 64, 65, 256}) {
             byte[] plain = new byte[size];
             for (int index = 0; index < size; index++) {
                 int symbol;
