@@ -301,7 +301,14 @@ final class ZstdBlockDecoder {
             if (matchLength > maximumOutputSize - outputPosition) {
                 throw new IOException("Decoded Zstandard block exceeds the frame block-size limit");
             }
-            copyMatch(output, outputPosition, matchLength, distance);
+            if (matchLength <= Long.BYTES && distance >= Long.BYTES
+                    && distance <= outputPosition && outputPosition <= output.length - Long.BYTES) {
+                // Read only decoded bytes. Following workspace bytes are not committed with this match.
+                long word = ByteArrayAccess.readLongLittleEndian(output, outputPosition - (int) distance);
+                ByteArrayAccess.writeLongLittleEndian(output, outputPosition, word);
+            } else {
+                copyMatch(output, outputPosition, matchLength, distance);
+            }
             outputPosition += matchLength;
         }
         bits.requireFullyConsumed();

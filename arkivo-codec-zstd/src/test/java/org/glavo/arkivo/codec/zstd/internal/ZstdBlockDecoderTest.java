@@ -328,6 +328,72 @@ final class ZstdBlockDecoderTest {
         }
     }
 
+    /// Commits only regenerated match bytes at each short-copy boundary, including reused larger workspaces.
+    @ParameterizedTest
+    @ValueSource(ints = {3, 4, 5, 6, 7, 8, 9})
+    void keepsShortMatchLookaheadOutOfHistory(int length) throws IOException {
+        byte[] previous = new byte[64];
+        new Random(10000).nextBytes(previous);
+        for (int prefixSize : new int[]{8, 16, 31}) {
+            byte[] prefix = new byte[prefixSize];
+            new Random(10001 + prefixSize).nextBytes(prefix);
+            for (int distance : new int[]{7, 8, 9, 10, 16, 17, 32}) {
+                byte[] expected = expand(prefix, previous, new byte[0], 1024, length, distance);
+                byte[] input = singleMatch(prefix, length, distance);
+                for (int spare = 0; spare <= Long.BYTES; spare++) {
+                    for (boolean reuse : new boolean[]{false, true}) {
+                        var history = new ZstdHistory(1024);
+                        var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+                        if (reuse) {
+                            byte[] warmup = singleMatch(new byte[]{42}, 258, 1);
+                            decoder.decodeCompressed(warmup, warmup.length, 512);
+                        }
+                        decoder.appendRaw(previous, previous.length);
+                        long startSize = decoder.frameSize();
+                        ByteBuffer result = decoder.decodeCompressed(input, input.length, expected.length + spare);
+                        assertEquals(ByteBuffer.wrap(expected), result);
+                        assertEquals(expected.length, result.capacity());
+                        assertEquals(startSize + expected.length, decoder.frameSize());
+                        assertEquals(startSize + expected.length, history.size());
+                        byte[] retained = new byte[expected.length];
+                        history.copy(expected.length, retained, 0, retained.length);
+                        assertArrayEquals(expected, retained);
+
+                        // The next block must start from the last real match byte, not any speculative stores.
+                        byte[] followup = singleMatch(new byte[0], 3, 1);
+                        byte last = expected[expected.length - 1];
+                        assertEquals(ByteBuffer.wrap(new byte[]{last, last, last}),
+                                decoder.decodeCompressed(followup, followup.length, 3));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Leaves committed history unchanged when trailing entropy bits invalidate a block after a short match.
+    @ParameterizedTest
+    @ValueSource(ints = {3, 4, 5, 6, 7, 8})
+    void rejectsTrailingBitsAfterShortMatch(int length) throws IOException {
+        byte[] prefix = new byte[16];
+        new Random(10100).nextBytes(prefix);
+        byte[] valid = singleMatch(prefix, length, 8);
+        byte[] invalid = new byte[valid.length + 1];
+        System.arraycopy(valid, 0, invalid, 0, valid.length - 1);
+        // Insert an unread zero byte before the single-byte reverse bitstream.
+        invalid[valid.length] = valid[valid.length - 1];
+        var history = new ZstdHistory(128);
+        var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+        decoder.appendRaw(prefix, prefix.length);
+        IOException failure = assertThrows(IOException.class,
+                () -> decoder.decodeCompressed(invalid, invalid.length, 64));
+        assertTrue(failure.getMessage().contains("unused bits"));
+        assertEquals(prefix.length, decoder.frameSize());
+        assertEquals(prefix.length, history.size());
+        byte[] retained = new byte[prefix.length];
+        history.copy(prefix.length, retained, 0, retained.length);
+        assertArrayEquals(prefix, retained);
+    }
+
     /// Copies RLE-decoded literal tails from an exact-sized workspace into an exact-sized output.
     @ParameterizedTest
     @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 17, 18, 23, 24, 25, 31, 32, 33})
