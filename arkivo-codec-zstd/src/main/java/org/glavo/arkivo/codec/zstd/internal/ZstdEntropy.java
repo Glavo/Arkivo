@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
@@ -747,6 +748,10 @@ final class ZstdEntropy {
         /// Symbol in the upper bits and code length in the low four bits; zero denotes an unused prefix.
         private final short @Unmodifiable [] entries;
 
+        /// Lazily published two-symbol lookup table for large four-stream literal sections.
+        /// Each entry packs two output bytes, consumed bits in bits 16..19, and a second-symbol flag in bit 20.
+        private volatile int @Nullable @Unmodifiable [] pairedEntries;
+
         /// Number of bits indexing the table.
         private final int tableLog;
 
@@ -754,6 +759,32 @@ final class ZstdEntropy {
         private HuffmanTable(short[] entries, int tableLog) {
             this.entries = entries;
             this.tableLog = tableLog;
+        }
+
+        /// Returns a derived lookup table with at most 12 lookahead bits and two decoded symbols per entry.
+        private int @Unmodifiable [] pairedEntries() {
+            int @Nullable @Unmodifiable [] cached = pairedEntries;
+            if (cached != null) return cached;
+            int lookupBits = Math.min(MAX_HUFFMAN_LOG, tableLog * 2);
+            int[] pairs = new int[1 << lookupBits];
+            int shift = lookupBits - tableLog;
+            int mask = entries.length - 1;
+            for (int prefix = 0; prefix < pairs.length; prefix++) {
+                int first = entries[prefix >>> shift];
+                int firstLength = first & 15;
+                if (firstLength == 0) continue;
+                int second = entries[((prefix << firstLength) >>> shift) & mask];
+                int secondLength = second & 15;
+                if (secondLength != 0 && firstLength + secondLength <= lookupBits) {
+                    pairs[prefix] = (first >>> 4) | ((second >>> 4) << 8)
+                            | ((firstLength + secondLength) << 16) | (1 << 20);
+                } else {
+                    // Leave a missing or overlong second code for the next checked lookup.
+                    pairs[prefix] = (first >>> 4) | (firstLength << 16);
+                }
+            }
+            pairedEntries = pairs;
+            return pairs;
         }
 
         /// Builds a bounded prefix table from Zstandard weights.
@@ -827,6 +858,10 @@ final class ZstdEntropy {
             ReverseBitReader bits4 = new ReverseBitReader(source, input, limit);
             int segmentSize = (count + 3) >>> 2;
             int lastSize = count - segmentSize * 3;
+            if (count >= 32 * 1024) {
+                decodePairedStreams(source, target, segmentSize, lastSize, bits1, bits2, bits3, bits4);
+                return;
+            }
             int position1 = bits1.bitPosition;
             int position2 = bits2.bitPosition;
             int position3 = bits3.bitPosition;
@@ -877,6 +912,73 @@ final class ZstdEntropy {
             decode(bits2, target, segmentSize + index, segmentSize - index);
             decode(bits3, target, segmentSize * 2 + index, segmentSize - index);
             decode(bits4, target, segmentSize * 3 + index, lastSize - index);
+        }
+
+        /// Decodes large literal sections with independent output cursors for the four one-or-two-symbol lookups.
+        private void decodePairedStreams(byte[] source, byte[] target, int segmentSize, int lastSize,
+                                         ReverseBitReader bits1, ReverseBitReader bits2,
+                                         ReverseBitReader bits3, ReverseBitReader bits4) throws IOException {
+            int @Unmodifiable [] pairs = pairedEntries();
+            int lookupBits = Math.min(MAX_HUFFMAN_LOG, tableLog * 2);
+            int batchSize = (Long.SIZE - Byte.SIZE + 1) / lookupBits;
+            int position1 = bits1.bitPosition;
+            int position2 = bits2.bitPosition;
+            int position3 = bits3.bitPosition;
+            int position4 = bits4.bitPosition;
+            int index1 = 0;
+            int index2 = segmentSize;
+            int index3 = segmentSize * 2;
+            int index4 = segmentSize * 3;
+            int end4 = index4 + lastSize;
+            while (segmentSize - index1 >= batchSize * 2
+                    && segmentSize * 2 - index2 >= batchSize * 2
+                    && segmentSize * 3 - index3 >= batchSize * 2 && end4 - index4 >= batchSize * 2
+                    && position1 - bits1.startBit >= Long.SIZE && position2 - bits2.startBit >= Long.SIZE
+                    && position3 - bits3.startBit >= Long.SIZE && position4 - bits4.startBit >= Long.SIZE) {
+                long window1 = readWindow(source, position1);
+                long window2 = readWindow(source, position2);
+                long window3 = readWindow(source, position3);
+                long window4 = readWindow(source, position4);
+                for (int symbol = 0; symbol < batchSize; symbol++) {
+                    int entry1 = pairs[(int) (window1 >>> (Long.SIZE - lookupBits))];
+                    int entry2 = pairs[(int) (window2 >>> (Long.SIZE - lookupBits))];
+                    int entry3 = pairs[(int) (window3 >>> (Long.SIZE - lookupBits))];
+                    int entry4 = pairs[(int) (window4 >>> (Long.SIZE - lookupBits))];
+                    int length1 = (entry1 >>> 16) & 15;
+                    int length2 = (entry2 >>> 16) & 15;
+                    int length3 = (entry3 >>> 16) & 15;
+                    int length4 = (entry4 >>> 16) & 15;
+                    if (length1 == 0 || length2 == 0 || length3 == 0 || length4 == 0) {
+                        throw new IOException("Invalid Zstandard Huffman code");
+                    }
+                    // A one-symbol entry speculatively writes its successor, which the next lookup or tail replaces.
+                    // Each lane reserves two bytes per lookup, so these stores cannot cross its output boundary.
+                    ByteArrayAccess.writeShortLittleEndian(target, index1, (short) entry1);
+                    ByteArrayAccess.writeShortLittleEndian(target, index2, (short) entry2);
+                    ByteArrayAccess.writeShortLittleEndian(target, index3, (short) entry3);
+                    ByteArrayAccess.writeShortLittleEndian(target, index4, (short) entry4);
+                    index1 += 1 + (entry1 >>> 20);
+                    index2 += 1 + (entry2 >>> 20);
+                    index3 += 1 + (entry3 >>> 20);
+                    index4 += 1 + (entry4 >>> 20);
+                    window1 <<= length1;
+                    window2 <<= length2;
+                    window3 <<= length3;
+                    window4 <<= length4;
+                    position1 -= length1;
+                    position2 -= length2;
+                    position3 -= length3;
+                    position4 -= length4;
+                }
+            }
+            bits1.bitPosition = position1;
+            bits2.bitPosition = position2;
+            bits3.bitPosition = position3;
+            bits4.bitPosition = position4;
+            decode(bits1, target, index1, segmentSize - index1);
+            decode(bits2, target, index2, segmentSize * 2 - index2);
+            decode(bits3, target, index3, segmentSize * 3 - index3);
+            decode(bits4, target, index4, end4 - index4);
         }
 
         /// Loads 57 to 64 preceding bits into the high bits; at least 64 readable bits must precede the position.

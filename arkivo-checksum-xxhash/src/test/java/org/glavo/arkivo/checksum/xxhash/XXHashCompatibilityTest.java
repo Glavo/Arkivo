@@ -10,8 +10,11 @@ import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -84,6 +87,47 @@ public final class XXHashCompatibilityTest {
             try (StreamingXXHash64 expected = ORACLE.newStreamingHash64(seed)) {
                 updateFragmented(actual, expected, bytes);
                 assertEquals(expected.getValue(), actual.finishLong(), "XXH64 seed " + seed);
+            }
+        }
+    }
+
+    /// Checks arrays and buffer state after every possible partially buffered XXH64 stripe.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 7, 8, 15, 16, 24, 31, 32, 33, 63, 64, 65, 4096})
+    public void bufferedStripesPreserveBufferState(int length) {
+        byte @Unmodifiable [] bytes = randomBytes(length + 63, 0x6712_94abL);
+        long seed = 0x1357_9bdf_2468_ace0L;
+        var actual = XXHash64.newAccumulator(seed);
+        for (int prefix = 0; prefix < 32; prefix++) {
+            actual.reset();
+            actual.update(bytes, 0, prefix);
+            actual.update(bytes, prefix, length);
+            actual.update(bytes, prefix + length, 32);
+            assertEquals(ORACLE.hash64().hash(bytes, 0, prefix + length + 32, seed), actual.finishLong(),
+                    "array prefix " + prefix);
+            for (int kind = 0; kind < 4; kind++) {
+                ByteBuffer parent = kind < 2
+                        ? ByteBuffer.allocate(length + 11) : ByteBuffer.allocateDirect(length + 11);
+                parent.position(5);
+                ByteBuffer source = parent.slice();
+                source.position(3).put(bytes, prefix, length).limit(length + 3).position(3);
+                if ((kind & 1) != 0) source = source.asReadOnlyBuffer();
+                source.order(ByteOrder.BIG_ENDIAN).mark();
+                actual.reset();
+                actual.update(bytes, 0, prefix);
+                actual.update(source);
+                assertEquals(length + 3, source.position());
+                assertEquals(length + 3, source.limit());
+                assertEquals(ByteOrder.BIG_ENDIAN, source.order());
+                assertEquals(5, parent.position());
+                source.reset();
+                assertEquals(3, source.position());
+                for (int i = 0; i < length; i++) assertEquals(bytes[prefix + i], source.get());
+                // Continue through a byte update and an array update to consume any buffered tail.
+                actual.update(bytes[prefix + length]);
+                actual.update(bytes, prefix + length + 1, 31);
+                assertEquals(ORACLE.hash64().hash(bytes, 0, prefix + length + 32, seed), actual.finishLong(),
+                        "prefix " + prefix + ", kind " + kind);
             }
         }
     }

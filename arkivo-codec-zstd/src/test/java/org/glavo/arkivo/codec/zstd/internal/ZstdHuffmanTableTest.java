@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -15,11 +16,18 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Random;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Checks prefix-table decoding against independently assigned canonical codes and a bitwise decoder.
@@ -78,9 +86,9 @@ final class ZstdHuffmanTableTest {
         }
     }
 
-    /// Preserves partial output when an invalid prefix occurs within a batch or in the scalar tail.
+    /// Preserves partial output when an unused prefix occurs anywhere in a long stream.
     @Test
-    void rejectsUnusedPrefixesInsideBatches() throws IOException {
+    void rejectsUnusedPrefixesInLongStreams() throws IOException {
         int[] weights = {1};
         int[] codes = {0};
         var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, 1);
@@ -93,6 +101,32 @@ final class ZstdHuffmanTableTest {
         }
     }
 
+    /// Decodes valid sparse-table streams while retaining exact rejection and partial output for unused prefixes.
+    @ParameterizedTest
+    @ValueSource(ints = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+    void decodesSparseTablesWithCheckedPrefixes(int tableLog) throws IOException {
+        int[] weights = {1, 1};
+        int[] codes = {0, 1};
+        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+        byte[] plain = new byte[2049];
+        for (int index = 0; index < plain.length; index++) plain[index] = (byte) (index & 1);
+        byte[] stream = encode(plain, weights, codes, tableLog);
+        compareWithReference(table, weights, codes, tableLog, stream, plain.length);
+        compareWithReference(table, weights, codes, tableLog, stream, plain.length - 1);
+        compareWithReference(table, weights, codes, tableLog, stream, plain.length + 1);
+        for (int index : new int[]{0, 1, 57, 128, 512, 2048}) {
+            byte[] damaged = stream.clone();
+            int bit = (plain.length - index) * tableLog - 1;
+            damaged[bit >>> 3] |= (byte) (1 << (bit & 7));
+            compareWithReference(table, weights, codes, tableLog, damaged, plain.length);
+        }
+        byte[] fourStreams = encodeFourStreams(plain, weights, codes, tableLog);
+        compareFourWithReference(table, weights, codes, tableLog, fourStreams, plain.length);
+        compareFourWithReference(table, weights, codes, tableLog, fourStreams, plain.length - 1);
+        compareFourWithReference(table, weights, codes, tableLog,
+                Arrays.copyOf(fourStreams, fourStreams.length - 1), plain.length);
+    }
+
     /// Compares interleaved decoding with four independent bitwise decodes, including unequal encoded lengths.
     @ParameterizedTest
     @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
@@ -103,7 +137,7 @@ final class ZstdHuffmanTableTest {
         var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
         Random random = new Random(42 + tableLog);
         int batchSize = 57 / tableLog;
-        for (int size : new int[]{6, 7, 8, 9, 15, 16, 17, 255, 256, 257, 1024,
+        for (int size : new int[]{6, 7, 8, 9, 15, 16, 17, 255, 256, 257, 1023, 1024, 1025, 2049,
                 batchSize * 4 - 1, batchSize * 4, batchSize * 4 + 1,
                 batchSize * 8 - 1, batchSize * 8, batchSize * 8 + 1}) {
             int segmentSize = (size + 3) / 4;
@@ -142,7 +176,86 @@ final class ZstdHuffmanTableTest {
         }
     }
 
-    /// Rejects unused prefixes in every interleaved lane, including failures after several complete batches.
+    /// Crosses the paired-lookup threshold with unequal code lengths, incomplete tables, damaged streams, and tails.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+    void decodesLargeFourStreamBoundaries(int tableLog) throws IOException {
+        int[] weights = new int[tableLog + 1];
+        for (int i = 0; i <= tableLog; i++) weights[i] = Math.max(1, i);
+        int[] codes = canonicalCodes(weights, tableLog);
+        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+        Random random = new Random(1234 + tableLog);
+        for (int size : new int[]{32767, 32768, 32769, 32799}) {
+            byte[] plain = new byte[size];
+            for (int i = 0; i < size; i++) plain[i] = (byte) random.nextInt(weights.length);
+            byte[] stream = encodeFourStreams(plain, weights, codes, tableLog);
+            compareFourWithReference(table, weights, codes, tableLog, stream, size);
+            compareFourWithReference(table, weights, codes, tableLog, stream, size - 1);
+            compareFourWithReference(table, weights, codes, tableLog, stream, size + 1);
+            compareFourWithReference(table, weights, codes, tableLog, Arrays.copyOf(stream, stream.length - 1), size);
+            for (int part = 0, offset = 6; part < 4; part++) {
+                byte[] damaged = stream.clone();
+                damaged[offset] ^= (byte) 0xff;
+                compareFourWithReference(table, weights, codes, tableLog, damaged, size);
+                if (part < 3) offset += Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(stream, part * 2));
+            }
+        }
+        // A missing second symbol must not hide an invalid prefix behind the first valid symbol in a paired entry.
+        weights = new int[]{1};
+        codes = new int[]{0};
+        table = ZstdEntropy.HuffmanTable.fromWeights(weights, 1, tableLog);
+        byte[] stream = encodeFourStreams(new byte[32768], weights, codes, tableLog);
+        compareFourWithReference(table, weights, codes, tableLog, stream, 32768);
+        for (int part = 0; part < 4; part++) {
+            for (int symbol : new int[]{0, 1, 7, 8, 57, 2047, 8190, 8191}) {
+                byte[] damaged = stream.clone();
+                int bit = (8192 - symbol) * tableLog - 1;
+                int offset = 6 + part * (1024 * tableLog + 1);
+                damaged[offset + (bit >>> 3)] |= (byte) (1 << (bit & 7));
+                compareFourWithReference(table, weights, codes, tableLog, damaged, 32768);
+            }
+        }
+    }
+
+    /// Leaves small tables unexpanded and safely publishes the derived table to concurrent dictionary users.
+    @Test
+    void publishesPairedTableOnDemand() throws Exception {
+        int[] weights = new int[64];
+        Arrays.fill(weights, 1);
+        int[] codes = canonicalCodes(weights, 6);
+        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, 6);
+        var cache = ZstdEntropy.HuffmanTable.class.getDeclaredField("pairedEntries");
+        cache.setAccessible(true);
+        byte[] small = encodeFourStreams(new byte[16384], weights, codes, 6);
+        table.decodeFourStreams(small, 0, small.length, new byte[16384], 16384);
+        assertNull(cache.get(table));
+        byte[] plain = new byte[32768];
+        for (int i = 0; i < plain.length; i++) plain[i] = (byte) (i & 63);
+        byte[] stream = encodeFourStreams(plain, weights, codes, 6);
+        var start = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(4);
+        try {
+            var futures = new ArrayList<Future<byte[]>>();
+            for (int worker = 0; worker < 4; worker++) {
+                futures.add(executor.submit(() -> {
+                    start.await();
+                    byte[] output = new byte[plain.length];
+                    table.decodeFourStreams(stream, 0, stream.length, output, output.length);
+                    return output;
+                }));
+            }
+            start.countDown();
+            for (var future : futures) assertArrayEquals(plain, future.get());
+        } finally {
+            executor.shutdownNow();
+        }
+        int @Unmodifiable [] cached = assertInstanceOf(int[].class, cache.get(table));
+        assertEquals(4096, cached.length);
+        table.decodeFourStreams(stream, 0, stream.length, new byte[plain.length], plain.length);
+        assertSame(cached, cache.get(table));
+    }
+
+    /// Rejects unused prefixes in each stream, including failures after a long valid prefix.
     @Test
     void rejectsInvalidPrefixesInEachStream() throws IOException {
         int[] weights = {1};

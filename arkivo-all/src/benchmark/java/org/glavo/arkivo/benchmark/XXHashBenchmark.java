@@ -5,6 +5,7 @@ package org.glavo.arkivo.benchmark;
 
 import org.glavo.arkivo.checksum.ChecksumAccumulator;
 import org.glavo.arkivo.checksum.xxhash.XXHash32;
+import org.glavo.arkivo.checksum.xxhash.XXHash64;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -25,7 +26,7 @@ import java.nio.ByteBuffer;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
-/// Measures reusable XXH32 state across array, read-only heap, and direct-buffer updates.
+/// Measures reusable XXHash state across array, read-only heap, and direct-buffer updates.
 @NotNullByDefault
 @State(Scope.Thread)
 @BenchmarkMode(Mode.Throughput)
@@ -33,9 +34,13 @@ import java.util.concurrent.TimeUnit;
 @Warmup(iterations = 3, time = 1)
 @Measurement(iterations = 5, time = 1)
 @Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
-public class XXHash32Benchmark {
+public class XXHashBenchmark {
     /// Input bytes processed by one invocation.
     private static final int SIZE = 1 << 20;
+
+    /// The checksum width in bits.
+    @Param({"32", "64"})
+    public int bitSize = 32;
 
     /// The public input representation under measurement.
     @Param({"array", "readonly", "direct"})
@@ -52,12 +57,13 @@ public class XXHash32Benchmark {
     private @UnmodifiableView ByteBuffer input = ByteBuffer.allocate(0).asReadOnlyBuffer();
 
     /// Reusable zero-seeded checksum state.
-    private final ChecksumAccumulator.Width32 accumulator = XXHash32.newAccumulator();
+    private ChecksumAccumulator.UpTo64Bits accumulator = XXHash32.newAccumulator();
 
     /// Creates source data and checks the selected path against individual byte updates.
     @Setup
     public void setup() {
         if (chunk <= 0) throw new IllegalArgumentException("Chunk size must be positive");
+        accumulator = newAccumulator();
         bytes = new byte[SIZE];
         new Random(42).nextBytes(bytes);
         input = switch (kind) {
@@ -65,15 +71,15 @@ public class XXHash32Benchmark {
             case "direct" -> ByteBuffer.allocateDirect(SIZE).put(bytes).flip().asReadOnlyBuffer();
             default -> throw new IllegalArgumentException(kind);
         };
-        ChecksumAccumulator.Width32 reference = XXHash32.newAccumulator();
+        ChecksumAccumulator.UpTo64Bits reference = newAccumulator();
         for (byte value : bytes) reference.update(value);
-        if (reference.finishInt() != hash()) throw new AssertionError("XXH32 update paths differ");
+        if (reference.finishLong() != hash()) throw new AssertionError("XXHash update paths differ");
     }
 
     /// Hashes one MiB without including accumulator or input allocation.
     @Benchmark
     @OperationsPerInvocation(SIZE)
-    public int hash() {
+    public long hash() {
         accumulator.reset();
         if (kind.equals("array")) {
             for (int offset = 0; offset < SIZE; offset += chunk) {
@@ -86,6 +92,15 @@ public class XXHash32Benchmark {
                 accumulator.update(input);
             }
         }
-        return accumulator.finishInt();
+        return accumulator.finishLong();
+    }
+
+    /// Creates the selected zero-seeded checksum computation.
+    private ChecksumAccumulator.UpTo64Bits newAccumulator() {
+        return switch (bitSize) {
+            case 32 -> XXHash32.newAccumulator();
+            case 64 -> XXHash64.newAccumulator();
+            default -> throw new IllegalArgumentException("Unsupported checksum width: " + bitSize);
+        };
     }
 }
