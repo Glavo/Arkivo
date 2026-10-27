@@ -311,7 +311,14 @@ final class ZstdBlockDecoder {
                     || literalLength > outputLimit - outputPosition) {
                 throw new IOException("Zstandard sequence exceeds its literal section");
             }
-            copyNonOverlapping(currentLiterals, literalPosition, output, outputPosition, literalLength);
+            if (literalLength <= Long.BYTES && literalPosition <= literalLimit - Long.BYTES
+                    && outputPosition <= output.length - Long.BYTES) {
+                // Only literalLength bytes belong to this run; subsequent output replaces the lookahead.
+                long word = ByteArrayAccess.readLongLittleEndian(currentLiterals, literalPosition);
+                ByteArrayAccess.writeLongLittleEndian(output, outputPosition, word);
+            } else {
+                copyNonOverlapping(currentLiterals, literalPosition, output, outputPosition, literalLength);
+            }
             literalPosition += literalLength;
             outputPosition += literalLength;
 

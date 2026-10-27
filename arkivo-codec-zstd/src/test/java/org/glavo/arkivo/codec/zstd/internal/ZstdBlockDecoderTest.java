@@ -279,14 +279,15 @@ final class ZstdBlockDecoderTest {
         assertSame(workspace, field.get(decoder));
     }
 
-    /// Interleaves short literals and matches, including empty runs and exact-sized literal tails.
+    /// Interleaves raw literals and short matches in separate and shared storage, including exact-sized tails.
     @ParameterizedTest
-    @ValueSource(ints = {3, 4, 5, 6, 7})
-    void decodesShortRunsBetweenMatches(int matchLength) throws IOException {
+    @CsvSource({"3, 1024", "4, 1024", "5, 1024", "6, 1024", "7, 1024", "8, 1024", "9, 1024",
+            "3, 131072", "4, 131072", "5, 131072", "6, 131072", "7, 131072", "8, 131072", "9, 131072"})
+    void decodesShortRunsBetweenMatches(int matchLength, int capacity) throws IOException {
         byte[] previous = new byte[32];
         new Random(9800).nextBytes(previous);
-        for (int literalLength = 0; literalLength < 8; literalLength++) {
-            for (int tail = 0; tail < 8; tail++) {
+        for (int literalLength = 0; literalLength <= 9; literalLength++) {
+            for (int tail = 0; tail <= 9; tail++) {
                 byte[] literals = new byte[literalLength * 16 + tail];
                 new Random(9900 + literalLength * 8 + tail).nextBytes(literals);
                 var block = new ByteArrayOutputStream();
@@ -316,7 +317,8 @@ final class ZstdBlockDecoderTest {
                     }
                 }
                 System.arraycopy(literals, literalPosition, expected, position, tail);
-                var decoder = new ZstdBlockDecoder(new ZstdHistory(1024), ZstdDictionaryContext.NONE);
+                var history = new ZstdHistory(capacity);
+                var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
                 decoder.appendRaw(previous, previous.length);
                 byte[] input = block.toByteArray();
                 int size = expected.length - previous.length;
@@ -324,7 +326,32 @@ final class ZstdBlockDecoderTest {
                         decoder.decodeCompressed(input, input.length, size),
                         "literals=" + literalLength + ", tail=" + tail + ", match=" + matchLength);
                 assertEquals(expected.length, decoder.frameSize());
+                byte[] retained = new byte[expected.length];
+                history.copy(retained.length, retained, 0, retained.length);
+                assertArrayEquals(expected, retained);
             }
+        }
+    }
+
+    /// Does not commit literal lookahead when unread entropy bits invalidate the block.
+    @ParameterizedTest
+    @ValueSource(ints = {11, 16})
+    void rejectsTrailingBitsAfterShortLiterals(int maximumSize) throws IOException {
+        byte[] previous = {37, 53};
+        // Eight literals, one literal plus a distance-one match, then an unused byte before the end marker.
+        byte[] input = {64, 17, 22, 31, 47, 59, 67, 79, 83, 1, 0x54, 1, 2, 0, 0, 4};
+        for (int capacity : new int[]{1024, 131072}) {
+            var history = new ZstdHistory(capacity);
+            var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+            decoder.appendRaw(previous, previous.length);
+            IOException failure = assertThrows(IOException.class,
+                    () -> decoder.decodeCompressed(input, input.length, maximumSize));
+            assertTrue(failure.getMessage().contains("unused bits"));
+            assertEquals(previous.length, decoder.frameSize());
+            assertEquals(previous.length, history.size());
+            byte[] retained = new byte[previous.length];
+            history.copy(retained.length, retained, 0, retained.length);
+            assertArrayEquals(previous, retained);
         }
     }
 
@@ -398,7 +425,7 @@ final class ZstdBlockDecoderTest {
 
     /// Copies RLE-decoded literal tails from an exact-sized workspace into an exact-sized output.
     @ParameterizedTest
-    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 17, 18, 23, 24, 25, 31, 32, 33})
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 17, 18, 23, 24, 25, 31, 32, 33})
     void copiesRleLiteralTailsWithoutPadding(int size) throws IOException {
         var block = new ByteArrayOutputStream();
         int header = size < 32 ? (size << 3) | 1 : (size << 4) | 5;
