@@ -26,7 +26,9 @@ import java.util.Objects;
 /// Incrementally decodes one Zstandard frame without retaining caller-owned buffers.
 ///
 /// @implNote One contiguous history window of at most 16 MiB is retained between frames for reuse at the same size.
-/// A different window size replaces this storage; segmented windows are not cached. Closing releases cached storage.
+/// A different window size replaces this storage; segmented windows are not cached.
+/// The input workspace also remains available between frames and is bounded to 128 KiB.
+/// Closing releases both workspaces.
 @NotNullByDefault
 public final class ZstdDecoder
         implements CompressionDecoder.FramedDictionaryAware<ZstdDictionary, ZstdDictionaryRequest> {
@@ -72,7 +74,7 @@ public final class ZstdDecoder
     /// Current standard-frame metadata, or null outside a standard frame.
     private @Nullable ZstdStandardFrameInfo frameInfo;
 
-    /// Input workspace grown to the largest physical block seen in this frame, or null when none is retained.
+    /// Input workspace grown to the largest physical block seen by this decoder, or null before allocation or after close.
     private byte @Nullable [] payload;
 
     /// Number of physical input bytes collected for the current block.
@@ -282,6 +284,7 @@ public final class ZstdDecoder
     public void close() {
         if (state != State.CLOSED) {
             clearFrameState();
+            payload = null;
             reusableHistory = null;
             dictionary = ZstdDictionaryContext.NONE;
             state = State.CLOSED;
@@ -450,7 +453,6 @@ public final class ZstdDecoder
     /// Marks the current standard frame complete.
     private void finishStandardFrame() {
         output = EMPTY_OUTPUT;
-        payload = null;
         blockDecoder = null;
         checksum = null;
         frameInfo = null;
@@ -490,7 +492,7 @@ public final class ZstdDecoder
         return CodecOutcome.NEEDS_INPUT;
     }
 
-    /// Discards per-frame state while retaining an empty contiguous history workspace for reuse.
+    /// Discards per-frame state while retaining input storage and an empty contiguous history workspace for reuse.
     private void clearFrameState() {
         header.clear();
         blockHeader.clear();
@@ -498,7 +500,6 @@ public final class ZstdDecoder
         blockDecoder = null;
         checksum = null;
         frameInfo = null;
-        payload = null;
         if (reusableHistory != null) reusableHistory.reset();
         payloadSize = 0;
         output = EMPTY_OUTPUT;

@@ -143,7 +143,7 @@ public final class ZstdBufferEngineTest {
         }
     }
 
-    /// Reuses input storage across mixed blocks, grows it only when needed, and releases it at lifecycle boundaries.
+    /// Reuses input storage across mixed blocks and resets, grows it only when needed, and releases it on close.
     @Test
     void reusesPayloadAcrossMixedBlocks() throws Exception {
         byte[][] bodies = {testData(64), new byte[]{7}, new byte[]{1, 2, 3},
@@ -188,9 +188,7 @@ public final class ZstdBufferEngineTest {
                     } while (outcome == CodecOutcome.NEEDS_OUTPUT);
                     assertFalse(source.hasRemaining());
                     assertEquals(last ? CodecOutcome.FINISHED : CodecOutcome.NEEDS_INPUT, outcome);
-                    if (last) {
-                        assertNull(field.get(decoder));
-                    } else if (i == 0 || i == 4) {
+                    if (i == 0 || i == 4) {
                         assertNotSame(previous, field.get(decoder));
                         previous = field.get(decoder);
                         assertNotNull(previous);
@@ -209,9 +207,70 @@ public final class ZstdBufferEngineTest {
                     assertNotNull(field.get(decoder));
                     if (close) decoder.close();
                     else decoder.reset();
-                    assertNull(field.get(decoder));
+                    if (close) assertNull(field.get(decoder));
+                    else assertSame(previous, field.get(decoder));
                 }
             }
+        }
+    }
+
+    /// Reuses a maximum-size input workspace without treating stale bytes as part of a later frame.
+    @Test
+    void boundsPayloadReuseAcrossFrames() throws Exception {
+        var field = ZstdDecoder.class.getDeclaredField("payload");
+        field.setAccessible(true);
+        byte[] rawBlock = new byte[128 * 1024 + 3];
+        rawBlock[0] = 1;
+        rawBlock[2] = 0x10;
+        Arrays.fill(rawBlock, 3, rawBlock.length, (byte) 0xff);
+        try (var decoder = new ZstdDecoder(null, CompressionCodec.UNKNOWN_SIZE, false, true)) {
+            ByteBuffer target = ByteBuffer.allocate(128 * 1024 + 1);
+            byte[] small = singleBlockFrame(10, new byte[]{45, 0, 0, 24, 4, 5, 6, 0});
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(small), target));
+            Object initial = java.util.Objects.requireNonNull(field.get(decoder));
+            decoder.reset();
+            assertEquals(CodecOutcome.FINISHED,
+                    decoder.finish(ByteBuffer.wrap(singleBlockFrame(17, rawBlock)), target.clear()));
+            byte[] cached = (byte[]) java.util.Objects.requireNonNull(field.get(decoder));
+            assertNotSame(initial, cached);
+            assertEquals(128 * 1024, cached.length);
+            assertEquals(ByteBuffer.wrap(rawBlock, 3, rawBlock.length - 3), target.flip());
+
+            decoder.reset();
+            byte[] oversized = singleBlockFrame(18, new byte[]{9, 0, 0x10});
+            target.clear();
+            assertThrows(IOException.class, () -> decoder.finish(ByteBuffer.wrap(oversized), target));
+            assertEquals(0, target.position());
+            assertSame(cached, field.get(decoder));
+            for (int attempt = 0; attempt < 3; attempt++) {
+                decoder.reset();
+                assertSame(cached, field.get(decoder));
+                ByteBuffer source = ByteBuffer.allocateDirect(small.length + 1)
+                        .put(small).put((byte) 99).flip().asReadOnlyBuffer();
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target.clear()));
+                assertEquals(1, source.remaining());
+                assertEquals(99, source.get());
+                assertEquals(ByteBuffer.wrap(new byte[]{4, 5, 6}), target.flip());
+                assertSame(cached, field.get(decoder));
+
+                decoder.reset();
+                // The declared payload omits the sequence count; the cached trailing zero must not supply it.
+                byte[] malformed = singleBlockFrame(10, new byte[]{37, 0, 0, 24, 4, 5, 6});
+                target.clear();
+                assertThrows(IOException.class, () -> decoder.finish(ByteBuffer.wrap(malformed), target));
+                assertEquals(0, target.position());
+                assertSame(cached, field.get(decoder));
+
+                decoder.reset();
+                ByteBuffer skippable = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN)
+                        .putInt(0x184d2a50).putInt(1).put((byte) 42).flip();
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(skippable, target.clear()));
+                assertEquals(0, target.position());
+                assertSame(cached, field.get(decoder));
+            }
+            decoder.close();
+            decoder.close();
+            assertNull(field.get(decoder));
         }
     }
 
