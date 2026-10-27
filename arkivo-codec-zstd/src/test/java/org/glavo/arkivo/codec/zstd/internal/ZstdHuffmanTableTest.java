@@ -217,6 +217,33 @@ final class ZstdHuffmanTableTest {
         }
     }
 
+    /// Keeps high-bit output bytes separate from the packed code length and one-or-two-symbol output count.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+    void decodesHighBitSymbolsInPairedEntries(int tableLog) throws IOException {
+        int[] weights = new int[256];
+        for (int i = 0; i <= tableLog; i++) weights[255 - i] = Math.max(1, i);
+        int[] codes = canonicalCodes(weights, tableLog);
+        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+        Random random = new Random(4321 + tableLog);
+        for (int size : new int[]{32768, 32769, 32775}) {
+            byte[] plain = new byte[size];
+            for (int i = 0; i < size; i++) plain[i] = (byte) (255 - random.nextInt(tableLog + 1));
+            byte[] stream = encodeFourStreams(plain, weights, codes, tableLog);
+            byte[] source = new byte[stream.length + 11];
+            Arrays.fill(source, (byte) 0xa5);
+            System.arraycopy(stream, 0, source, 3, stream.length);
+            byte[] unchanged = source.clone();
+            byte[] expected = Arrays.copyOf(plain, size + 7);
+            Arrays.fill(expected, size, expected.length, (byte) 0xa5);
+            byte[] actual = new byte[expected.length];
+            Arrays.fill(actual, (byte) 0xa5);
+            table.decodeFourStreams(source, 3, stream.length + 3, actual, size);
+            assertArrayEquals(expected, actual);
+            assertArrayEquals(unchanged, source);
+        }
+    }
+
     /// Leaves small tables unexpanded and safely publishes the derived table to concurrent dictionary users.
     @Test
     void publishesPairedTableOnDemand() throws Exception {

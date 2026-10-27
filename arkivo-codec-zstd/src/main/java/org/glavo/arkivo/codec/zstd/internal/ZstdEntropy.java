@@ -749,7 +749,7 @@ final class ZstdEntropy {
         private final short @Unmodifiable [] entries;
 
         /// Lazily published two-symbol lookup table for large four-stream literal sections.
-        /// Each entry packs two output bytes, consumed bits in bits 16..19, and a second-symbol flag in bit 20.
+        /// Each entry packs consumed bits in bits 0..5, two output bytes in bits 8..23, and output count in bits 30..31.
         private volatile int @Nullable @Unmodifiable [] pairedEntries;
 
         /// Number of bits indexing the table.
@@ -776,11 +776,11 @@ final class ZstdEntropy {
                 int second = entries[((prefix << firstLength) >>> shift) & mask];
                 int secondLength = second & 15;
                 if (secondLength != 0 && firstLength + secondLength <= lookupBits) {
-                    pairs[prefix] = (first >>> 4) | ((second >>> 4) << 8)
-                            | ((firstLength + secondLength) << 16) | (1 << 20);
+                    pairs[prefix] = ((first >>> 4) << 8) | ((second >>> 4) << 16)
+                            | (firstLength + secondLength) | (2 << 30);
                 } else {
                     // Leave a missing or overlong second code for the next checked lookup.
-                    pairs[prefix] = (first >>> 4) | (firstLength << 16);
+                    pairs[prefix] = ((first >>> 4) << 8) | firstLength | (1 << 30);
                 }
             }
             pairedEntries = pairs;
@@ -944,31 +944,28 @@ final class ZstdEntropy {
                     int entry2 = pairs[(int) (window2 >>> (Long.SIZE - lookupBits))];
                     int entry3 = pairs[(int) (window3 >>> (Long.SIZE - lookupBits))];
                     int entry4 = pairs[(int) (window4 >>> (Long.SIZE - lookupBits))];
-                    int length1 = (entry1 >>> 16) & 15;
-                    int length2 = (entry2 >>> 16) & 15;
-                    int length3 = (entry3 >>> 16) & 15;
-                    int length4 = (entry4 >>> 16) & 15;
-                    if (length1 == 0 || length2 == 0 || length3 == 0 || length4 == 0) {
+                    if (entry1 == 0 || entry2 == 0 || entry3 == 0 || entry4 == 0) {
                         throw new IOException("Invalid Zstandard Huffman code");
                     }
                     // A one-symbol entry speculatively writes its successor, which the next lookup or tail replaces.
                     // Each lane reserves two bytes per lookup, so these stores cannot cross its output boundary.
-                    ByteArrayAccess.writeShortLittleEndian(target, index1, (short) entry1);
-                    ByteArrayAccess.writeShortLittleEndian(target, index2, (short) entry2);
-                    ByteArrayAccess.writeShortLittleEndian(target, index3, (short) entry3);
-                    ByteArrayAccess.writeShortLittleEndian(target, index4, (short) entry4);
-                    index1 += 1 + (entry1 >>> 20);
-                    index2 += 1 + (entry2 >>> 20);
-                    index3 += 1 + (entry3 >>> 20);
-                    index4 += 1 + (entry4 >>> 20);
-                    window1 <<= length1;
-                    window2 <<= length2;
-                    window3 <<= length3;
-                    window4 <<= length4;
-                    position1 -= length1;
-                    position2 -= length2;
-                    position3 -= length3;
-                    position4 -= length4;
+                    ByteArrayAccess.writeShortLittleEndian(target, index1, (short) (entry1 >>> 8));
+                    ByteArrayAccess.writeShortLittleEndian(target, index2, (short) (entry2 >>> 8));
+                    ByteArrayAccess.writeShortLittleEndian(target, index3, (short) (entry3 >>> 8));
+                    ByteArrayAccess.writeShortLittleEndian(target, index4, (short) (entry4 >>> 8));
+                    index1 += entry1 >>> 30;
+                    index2 += entry2 >>> 30;
+                    index3 += entry3 >>> 30;
+                    index4 += entry4 >>> 30;
+                    // Java masks long shift distances to six bits, so the entry itself supplies the code length.
+                    window1 <<= entry1;
+                    window2 <<= entry2;
+                    window3 <<= entry3;
+                    window4 <<= entry4;
+                    position1 -= entry1 & 63;
+                    position2 -= entry2 & 63;
+                    position3 -= entry3 & 63;
+                    position4 -= entry4 & 63;
                 }
             }
             bits1.bitPosition = position1;
