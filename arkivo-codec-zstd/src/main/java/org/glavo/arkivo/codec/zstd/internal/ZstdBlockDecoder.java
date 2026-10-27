@@ -525,11 +525,17 @@ final class ZstdBlockDecoder {
         }
     }
 
-    /// Copies validated, disjoint ranges, using two bounded word transfers for eight to sixteen bytes.
+    /// Copies validated, disjoint ranges, using bounded word transfers for eight to thirty-two bytes.
     private static void copyNonOverlapping(byte[] source, int start, byte[] target, int offset, int length) {
-        if (length >= Long.BYTES && length <= Long.BYTES * 2) {
+        if (length >= Long.BYTES && length <= Long.BYTES * 4) {
             long head = ByteArrayAccess.readLongLittleEndian(source, start);
             long tail = ByteArrayAccess.readLongLittleEndian(source, start + length - Long.BYTES);
+            if (length > Long.BYTES * 2) {
+                long innerHead = ByteArrayAccess.readLongLittleEndian(source, start + Long.BYTES);
+                long innerTail = ByteArrayAccess.readLongLittleEndian(source, start + length - Long.BYTES * 2);
+                ByteArrayAccess.writeLongLittleEndian(target, offset + Long.BYTES, innerHead);
+                ByteArrayAccess.writeLongLittleEndian(target, offset + length - Long.BYTES * 2, innerTail);
+            }
             ByteArrayAccess.writeLongLittleEndian(target, offset, head);
             ByteArrayAccess.writeLongLittleEndian(target, offset + length - Long.BYTES, tail);
         } else {

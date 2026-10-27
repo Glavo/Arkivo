@@ -30,7 +30,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 final class ZstdBlockDecoderTest {
     /// Reads raw literals directly across header widths without allocating a literal workspace or retaining input.
     @ParameterizedTest
-    @ValueSource(ints = {0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 31, 32, 4095, 4096, 65536, 131063})
+    @ValueSource(ints = {0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+            18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+            4095, 4096, 65536, 131063})
     void readsRawLiteralsWithoutIntermediateStorage(int size) throws Exception {
         byte[] literals = new byte[size];
         new Random(9700 + size).nextBytes(literals);
@@ -81,6 +83,23 @@ final class ZstdBlockDecoderTest {
         assertEquals(ByteBuffer.wrap(size == 0 ? new byte[]{6, 6, 6} : expected),
                 decoder.decodeCompressed(next, next.length, expected.length));
         assertSame(workspace, field.get(decoder));
+    }
+
+    /// Copies RLE-decoded literal tails from an exact-sized workspace into an exact-sized output.
+    @ParameterizedTest
+    @ValueSource(ints = {17, 18, 23, 24, 25, 31, 32, 33})
+    void copiesRleLiteralTailsWithoutPadding(int size) throws IOException {
+        var block = new ByteArrayOutputStream();
+        int header = size < 32 ? (size << 3) | 1 : (size << 4) | 5;
+        block.write(header);
+        if (size >= 32) block.write(header >>> 8);
+        block.write(42);
+        block.writeBytes(new byte[]{1, 0x54, 1, 2, 0, 4});
+        byte[] input = block.toByteArray();
+        byte[] expected = new byte[size + 3];
+        Arrays.fill(expected, (byte) 42);
+        var decoder = new ZstdBlockDecoder(new ZstdHistory(128), ZstdDictionaryContext.NONE);
+        assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(input, input.length, expected.length));
     }
 
     /// Checks all RLE/table combinations, including a 26-bit transition and interleaved zero-bit transitions.
@@ -483,7 +502,8 @@ final class ZstdBlockDecoderTest {
     ///
     /// @param length the regenerated match length
     @ParameterizedTest
-    @ValueSource(ints = {3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 31, 32, 258, 65539})
+    @ValueSource(ints = {3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+            18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 258, 65539})
     void expandsMatchesAcrossSources(int length) throws IOException {
         byte[] dictionary = new byte[64];
         for (int i = 0; i < dictionary.length; i++) dictionary[i] = (byte) (i * 17);
@@ -492,10 +512,10 @@ final class ZstdBlockDecoderTest {
             for (int previousSize : new int[]{0, 13, 64}) {
                 byte[] previous = new byte[previousSize];
                 for (int i = 0; i < previousSize; i++) previous[i] = (byte) (i * 31 + 5);
-                for (int prefixSize : new int[]{0, 1, 7, 8, 9, 15, 16, 17}) {
+                for (int prefixSize : new int[]{0, 1, 7, 8, 9, 15, 16, 17, 18, 23, 24, 25, 31}) {
                     byte[] prefix = new byte[prefixSize];
                     for (int i = 0; i < prefixSize; i++) prefix[i] = (byte) (i + 3);
-                    for (int distance : new int[]{1, 2, 3, 7, 8, 9, 15, 16, 17, 32, 64, 80, 128}) {
+                    for (int distance : new int[]{1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 80, 128}) {
                         ZstdBlockDecoder decoder = new ZstdBlockDecoder(new ZstdHistory(capacity), context);
                         decoder.appendRaw(previous, previous.length);
                         byte[] payload = singleMatch(prefix, length, distance);
@@ -517,20 +537,23 @@ final class ZstdBlockDecoderTest {
         }
     }
 
-    /// Constructs one sequence with at most seventeen raw literals and single-symbol FSE tables.
+    /// Constructs one sequence with at most thirty-one raw literals and single-symbol FSE tables.
     private static byte[] singleMatch(byte[] prefix, int length, int distance) {
         var output = new ByteArrayOutputStream();
         output.write(prefix.length << 3);
         output.writeBytes(prefix);
         output.write(1);
         output.write(0x54);
-        output.write(Math.min(prefix.length, 16));
+        int literalBits = prefix.length < 16 ? 0 : prefix.length < 24 ? 1 : 2;
+        int literalCode = literalBits == 0 ? prefix.length
+                : literalBits == 1 ? 16 + ((prefix.length - 16) >>> 1) : 20 + ((prefix.length - 24) >>> 2);
+        output.write(literalCode);
         int offsetValue = distance + 3;
         int offsetCode = 31 - Integer.numberOfLeadingZeros(offsetValue);
         output.write(offsetCode);
         output.write(length <= 34 ? length - 3 : length == 258 ? 43 : 52);
         var bits = new ZstdEntropy.ReverseBitWriter();
-        if (prefix.length >= 16) bits.writeBits(prefix.length - 16, 1);
+        bits.writeBits(prefix.length & ((1 << literalBits) - 1), literalBits);
         if (length == 258) bits.writeBits(127, 7);
         if (length == 65539) bits.writeBits(0, 16);
         bits.writeBits(offsetValue - (1L << offsetCode), offsetCode);
