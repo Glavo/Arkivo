@@ -18,6 +18,32 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Verifies bulk history transfers against the logical unbounded byte stream.
 @NotNullByDefault
 final class ZstdHistoryTest {
+    /// Checks every ring position and distance with empty, short and full-window copies.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 7, 31, 128})
+    void copiesContiguousRangesAtEveryRingPosition(int capacity) throws IOException {
+        ZstdHistory history = new ZstdHistory(capacity);
+        byte[] stream = new byte[capacity * 2];
+        for (int i = 0; i < stream.length; i++) stream[i] = valueAt(i);
+        for (int position = 0; position < capacity; position++) {
+            history.reset();
+            int total = capacity + position;
+            history.append(stream, total);
+            for (int distance = 1; distance <= capacity; distance++) {
+                for (int requested : new int[]{0, 1, 7, 8, 15, 16, 17, 31, 32, distance}) {
+                    int length = Math.min(requested, distance);
+                    byte[] expected = new byte[length + 6];
+                    Arrays.fill(expected, (byte) 0x5a);
+                    byte[] actual = expected.clone();
+                    System.arraycopy(stream, total - distance, expected, 3, length);
+                    history.copy(distance, actual, 3, length);
+                    assertArrayEquals(expected, actual);
+                    assertEquals(capacity, history.size());
+                }
+            }
+        }
+    }
+
     /// Checks ring rollover, segment boundaries and windows larger than a Java array.
     ///
     /// @param capacity the logical window size
@@ -86,6 +112,26 @@ final class ZstdHistoryTest {
         byte[] result = new byte[3];
         history.copy(3, result, 0, result.length);
         assertArrayEquals(new byte[]{1, 2, 3}, result);
+    }
+
+    /// Rejects invalid source and destination ranges without modifying the destination.
+    @Test
+    void validatesCopyRangeBeforeWriting() throws IOException {
+        ZstdHistory history = new ZstdHistory(7);
+        history.append(new byte[]{1, 2, 3}, 3);
+        byte[] target = {91, 92, 93};
+        assertThrows(IndexOutOfBoundsException.class, () -> history.copy(3, target, -1, 1));
+        assertThrows(IndexOutOfBoundsException.class, () -> history.copy(3, target, 0, -1));
+        assertThrows(IndexOutOfBoundsException.class, () -> history.copy(3, target, 2, 2));
+        assertThrows(IndexOutOfBoundsException.class, () -> history.copy(3, target, Integer.MAX_VALUE, 1));
+        assertThrows(IOException.class, () -> history.copy(0, target, 0, 1));
+        assertThrows(IOException.class, () -> history.copy(4, target, 0, 1));
+        assertThrows(IOException.class, () -> history.copy(1, target, 0, 2));
+        history.copy(3, target, target.length, 0);
+        assertArrayEquals(new byte[]{91, 92, 93}, target);
+        byte[] retained = new byte[3];
+        history.copy(3, retained, 0, 3);
+        assertArrayEquals(new byte[]{1, 2, 3}, retained);
     }
 
     /// Produces distinct patterns on both sides of segment and ring boundaries.

@@ -262,7 +262,7 @@ final class ZstdBlockDecoder {
                     || literalLength > maximumOutputSize - outputPosition) {
                 throw new IOException("Zstandard sequence exceeds its literal section");
             }
-            System.arraycopy(currentLiterals, literalPosition, output, outputPosition, literalLength);
+            copyNonOverlapping(currentLiterals, literalPosition, output, outputPosition, literalLength);
             literalPosition += literalLength;
             outputPosition += literalLength;
 
@@ -285,7 +285,7 @@ final class ZstdBlockDecoder {
         if (remainingLiterals > maximumOutputSize - outputPosition) {
             throw new IOException("Zstandard literals exceed the block size limit");
         }
-        System.arraycopy(currentLiterals, literalPosition, output, outputPosition, remainingLiterals);
+        copyNonOverlapping(currentLiterals, literalPosition, output, outputPosition, remainingLiterals);
         outputPosition += remainingLiterals;
         return finishBlock(output, outputPosition);
     }
@@ -484,11 +484,15 @@ final class ZstdBlockDecoder {
             length -= copied;
         }
         if (length == 0) return;
+        if (length <= distance) {
+            copyNonOverlapping(output, outputPosition - (int) distance, output, outputPosition, length);
+            return;
+        }
         if (distance == 1) {
             Arrays.fill(output, outputPosition, outputPosition + length, output[outputPosition - 1]);
             return;
         }
-        int copied = Math.min(length, (int) distance);
+        int copied = (int) distance;
         System.arraycopy(output, outputPosition - (int) distance, output, outputPosition, copied);
         // Each copied range becomes a complete, nonoverlapping source for the next range.
         while (copied < length) {
@@ -518,6 +522,18 @@ final class ZstdBlockDecoder {
     private static void requireAvailable(int limit, int offset, int length) throws IOException {
         if (offset < 0 || length < 0 || offset > limit - length) {
             throw new IOException("Truncated Zstandard compressed block");
+        }
+    }
+
+    /// Copies validated, disjoint ranges, using two bounded word transfers for eight to sixteen bytes.
+    private static void copyNonOverlapping(byte[] source, int start, byte[] target, int offset, int length) {
+        if (length >= Long.BYTES && length <= Long.BYTES * 2) {
+            long head = ByteArrayAccess.readLongLittleEndian(source, start);
+            long tail = ByteArrayAccess.readLongLittleEndian(source, start + length - Long.BYTES);
+            ByteArrayAccess.writeLongLittleEndian(target, offset, head);
+            ByteArrayAccess.writeLongLittleEndian(target, offset + length - Long.BYTES, tail);
+        } else {
+            System.arraycopy(source, start, target, offset, length);
         }
     }
 

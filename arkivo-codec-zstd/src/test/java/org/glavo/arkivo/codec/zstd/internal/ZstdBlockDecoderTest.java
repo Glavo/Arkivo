@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 final class ZstdBlockDecoderTest {
     /// Reads raw literals directly across header widths without allocating a literal workspace or retaining input.
     @ParameterizedTest
-    @ValueSource(ints = {0, 1, 2, 31, 32, 4095, 4096, 65536, 131063})
+    @ValueSource(ints = {0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 31, 32, 4095, 4096, 65536, 131063})
     void readsRawLiteralsWithoutIntermediateStorage(int size) throws Exception {
         byte[] literals = new byte[size];
         new Random(9700 + size).nextBytes(literals);
@@ -60,7 +60,7 @@ final class ZstdBlockDecoderTest {
         var field = ZstdBlockDecoder.class.getDeclaredField("literals");
         field.setAccessible(true);
         byte[] input = block.toByteArray();
-        ByteBuffer decoded = decoder.decodeCompressed(input, input.length, ZstdBlockDecoder.MAX_BLOCK_SIZE);
+        ByteBuffer decoded = decoder.decodeCompressed(input, input.length, expected.length);
         assertEquals(ByteBuffer.wrap(expected), decoded);
         assertNull(field.get(decoder));
         assertEquals(expected.length, decoded.capacity());
@@ -79,7 +79,7 @@ final class ZstdBlockDecoderTest {
         byte[] workspace = assertInstanceOf(byte[].class, field.get(decoder));
         byte[] next = block.toByteArray();
         assertEquals(ByteBuffer.wrap(size == 0 ? new byte[]{6, 6, 6} : expected),
-                decoder.decodeCompressed(next, next.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+                decoder.decodeCompressed(next, next.length, expected.length));
         assertSame(workspace, field.get(decoder));
     }
 
@@ -483,7 +483,7 @@ final class ZstdBlockDecoderTest {
     ///
     /// @param length the regenerated match length
     @ParameterizedTest
-    @ValueSource(ints = {3, 7, 32, 258, 65539})
+    @ValueSource(ints = {3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 31, 32, 258, 65539})
     void expandsMatchesAcrossSources(int length) throws IOException {
         byte[] dictionary = new byte[64];
         for (int i = 0; i < dictionary.length; i++) dictionary[i] = (byte) (i * 17);
@@ -492,10 +492,10 @@ final class ZstdBlockDecoderTest {
             for (int previousSize : new int[]{0, 13, 64}) {
                 byte[] previous = new byte[previousSize];
                 for (int i = 0; i < previousSize; i++) previous[i] = (byte) (i * 31 + 5);
-                for (int prefixSize : new int[]{0, 1, 7, 15}) {
+                for (int prefixSize : new int[]{0, 1, 7, 8, 9, 15, 16, 17}) {
                     byte[] prefix = new byte[prefixSize];
                     for (int i = 0; i < prefixSize; i++) prefix[i] = (byte) (i + 3);
-                    for (int distance : new int[]{1, 2, 3, 8, 17, 32, 64, 80, 128}) {
+                    for (int distance : new int[]{1, 2, 3, 7, 8, 9, 15, 16, 17, 32, 64, 80, 128}) {
                         ZstdBlockDecoder decoder = new ZstdBlockDecoder(new ZstdHistory(capacity), context);
                         decoder.appendRaw(previous, previous.length);
                         byte[] payload = singleMatch(prefix, length, distance);
@@ -503,11 +503,11 @@ final class ZstdBlockDecoderTest {
                         try {
                             expected = expand(prefix, previous, dictionary, capacity, length, distance);
                         } catch (IOException invalid) {
-                            assertThrows(IOException.class, () -> decoder.decodeCompressed(payload, payload.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+                            assertThrows(IOException.class, () -> decoder.decodeCompressed(payload, payload.length, prefixSize + length));
                             assertEquals(previousSize, decoder.frameSize());
                             continue;
                         }
-                        assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(payload, payload.length, ZstdBlockDecoder.MAX_BLOCK_SIZE),
+                        assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(payload, payload.length, prefixSize + length),
                                 "capacity=" + capacity + ", history=" + previousSize
                                         + ", prefix=" + prefixSize + ", distance=" + distance);
                         assertEquals(previousSize + expected.length, decoder.frameSize());
@@ -517,19 +517,20 @@ final class ZstdBlockDecoderTest {
         }
     }
 
-    /// Constructs one sequence using raw literals and single-symbol FSE tables.
+    /// Constructs one sequence with at most seventeen raw literals and single-symbol FSE tables.
     private static byte[] singleMatch(byte[] prefix, int length, int distance) {
         var output = new ByteArrayOutputStream();
         output.write(prefix.length << 3);
         output.writeBytes(prefix);
         output.write(1);
         output.write(0x54);
-        output.write(prefix.length);
+        output.write(Math.min(prefix.length, 16));
         int offsetValue = distance + 3;
         int offsetCode = 31 - Integer.numberOfLeadingZeros(offsetValue);
         output.write(offsetCode);
         output.write(length <= 34 ? length - 3 : length == 258 ? 43 : 52);
         var bits = new ZstdEntropy.ReverseBitWriter();
+        if (prefix.length >= 16) bits.writeBits(prefix.length - 16, 1);
         if (length == 258) bits.writeBits(127, 7);
         if (length == 65539) bits.writeBits(0, 16);
         bits.writeBits(offsetValue - (1L << offsetCode), offsetCode);

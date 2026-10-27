@@ -54,7 +54,8 @@ public class ZstdReadBenchmark {
     public boolean reuseContext = true;
 
     /// The deterministic block and match workload.
-    @Param({"random", "periodic", "short-distance", "long-distance", "short-matches", "huffman", "skewed-huffman"})
+    @Param({"random", "periodic", "short-distance", "long-distance", "short-matches", "mixed-short-matches",
+            "huffman", "skewed-huffman"})
     public String profile = "random";
 
     /// The shared compressed representation.
@@ -104,14 +105,19 @@ public class ZstdReadBenchmark {
             case "long-distance" -> {
                 for (int i = 65_537; i < body.length; i++) body[i] = body[i % 65_537];
             }
-            case "short-matches" -> {
+            case "short-matches", "mixed-short-matches" -> {
                 byte[] dictionary = new byte[4096];
                 new Random(43).nextBytes(dictionary);
                 Random matches = new Random(44);
-                // Alternate reusable 16-byte tokens with independent random literals.
-                for (int i = 0; i < body.length; i += 32) {
-                    System.arraycopy(dictionary, matches.nextInt(256) * 16, body, i,
-                            Math.min(16, body.length - i));
+                boolean mixed = profile.equals("mixed-short-matches");
+                // Alternate reusable tokens with random literals; mixed lengths independently range from 4 through 32.
+                for (int i = 0; i < body.length;) {
+                    int matchLength = mixed ? matches.nextInt(4, 33) : 16;
+                    int sourceOffset = mixed ? matches.nextInt(64) * 64 : matches.nextInt(256) * 16;
+                    int literalLength = mixed ? matches.nextInt(4, 33) : 16;
+                    System.arraycopy(dictionary, sourceOffset, body, i,
+                            Math.min(matchLength, body.length - i));
+                    i += matchLength + literalLength;
                 }
             }
             default -> throw new IllegalArgumentException(profile);
