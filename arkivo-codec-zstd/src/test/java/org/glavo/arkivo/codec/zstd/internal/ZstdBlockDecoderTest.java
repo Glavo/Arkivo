@@ -14,6 +14,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ReadOnlyBufferException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Random;
 
@@ -27,6 +28,146 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Checks compressed matches across dictionary, history and current-block boundaries.
 @NotNullByDefault
 final class ZstdBlockDecoderTest {
+    /// Checks all RLE/table combinations, including a 26-bit transition and interleaved zero-bit transitions.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7})
+    void decodesWideSequenceTransitions(int rleMask) throws IOException {
+        int[][] probabilities = {{511, 1}, {0, 0, 0, 255, 1}, {511, 1}};
+        int[] logs = {9, 8, 9};
+        int[] rare = {1, 4, 1};
+        int[] periods = {3, 7, 5};
+        int[][] symbols = new int[3][64];
+        byte[] previous = new byte[128];
+        new Random(9500 + rleMask).nextBytes(previous);
+        var block = new ByteArrayOutputStream();
+        var descriptions = new ByteArrayOutputStream();
+        var encoders = new ArrayList<ZstdEntropy.FseEncoderTable>(3);
+        int modes = 0;
+        for (int stream = 0; stream < 3; stream++) {
+            boolean rle = (rleMask & (1 << stream)) != 0;
+            var table = rle ? ZstdEntropy.FseTable.rle(rare[stream])
+                    : ZstdEntropy.FseTable.fromNormalized(probabilities[stream], probabilities[stream].length, logs[stream]);
+            encoders.add(ZstdEntropy.FseEncoderTable.fromDecoder(table, probabilities[stream].length));
+            assertEquals(rle ? 0 : logs[stream],
+                    table.numberOfBits(encoders.get(stream).initialState(rare[stream])));
+            modes |= (rle ? 1 : 2) << (6 - 2 * stream);
+            if (rle) {
+                descriptions.write(rare[stream]);
+            } else {
+                descriptions.writeBytes(ZstdEntropy.encodeFseTableDescription(
+                        probabilities[stream], probabilities[stream].length, logs[stream]));
+            }
+            for (int sequence = 0; sequence < 64; sequence++) {
+                symbols[stream][sequence] = rle || sequence % periods[stream] == 0 ? rare[stream] : rare[stream] - 1;
+            }
+        }
+        byte[] literals = new byte[Arrays.stream(symbols[0]).sum()];
+        new Random(9600 + rleMask).nextBytes(literals);
+        int header = (literals.length << 4) | 4;
+        block.write(header);
+        block.write(header >>> 8);
+        block.writeBytes(literals);
+        block.write(64);
+        block.write(modes);
+        block.writeBytes(descriptions.toByteArray());
+
+        var bits = new ZstdEntropy.ReverseBitWriter();
+        int[] states = new int[3];
+        for (int stream = 0; stream < 3; stream++) {
+            states[stream] = encoders.get(stream).initialState(symbols[stream][63]);
+        }
+        for (int sequence = 63; sequence >= 0; sequence--) {
+            if (sequence < 63) {
+                for (int stream : new int[]{1, 2, 0}) {
+                    var transition = encoders.get(stream).transition(symbols[stream][sequence], states[stream]);
+                    bits.writeBits(transition.value(), transition.bitCount());
+                    states[stream] = transition.state();
+                }
+            }
+            int offsetCode = symbols[1][sequence];
+            bits.writeBits(sequence & ((1 << offsetCode) - 1), offsetCode);
+        }
+        for (int stream : new int[]{2, 1, 0}) {
+            bits.writeBits(states[stream], encoders.get(stream).tableLog());
+        }
+        block.writeBytes(bits.finish());
+
+        byte[] expected = Arrays.copyOf(previous, previous.length + 64 * 5);
+        int end = previous.length;
+        int literalPosition = 0;
+        for (int sequence = 0; sequence < 64; sequence++) {
+            if (symbols[0][sequence] != 0) expected[end++] = literals[literalPosition++];
+            int offsetCode = symbols[1][sequence];
+            int distance = (1 << offsetCode) + (sequence & ((1 << offsetCode) - 1)) - 3;
+            for (int count = 3 + symbols[2][sequence]; count > 0; count--) {
+                expected[end] = expected[end - distance];
+                end++;
+            }
+        }
+        var decoder = new ZstdBlockDecoder(new ZstdHistory(1024), ZstdDictionaryContext.NONE);
+        decoder.appendRaw(previous, previous.length);
+        byte[] payload = block.toByteArray();
+        assertEquals(ByteBuffer.wrap(Arrays.copyOfRange(expected, previous.length, end)),
+                decoder.decodeCompressed(payload, payload.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+        var truncatedDecoder = new ZstdBlockDecoder(new ZstdHistory(1024), ZstdDictionaryContext.NONE);
+        truncatedDecoder.appendRaw(previous, previous.length);
+        assertThrows(IOException.class, () -> truncatedDecoder.decodeCompressed(
+                payload, payload.length - 1, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+        assertEquals(previous.length, truncatedDecoder.frameSize());
+    }
+
+    /// Checks wide adjacent extra fields, maximum offset values, and truncated payloads.
+    @ParameterizedTest
+    @ValueSource(ints = {30, 31, 32, 33})
+    void decodesSequenceExtraFieldBoundaries(int extraBits) throws IOException {
+        int offsetBits = extraBits - 16;
+        byte[] literals = new byte[32768 + 123];
+        new Random(9300 + extraBits).nextBytes(literals);
+        byte[] previous = new byte[2 * ZstdBlockDecoder.MAX_BLOCK_SIZE];
+        new Random(9400 + extraBits).nextBytes(previous);
+        for (long offsetExtra : new long[]{0, (1L << offsetBits) - 1}) {
+            var block = new ByteArrayOutputStream();
+            int header = (literals.length << 4) | 12;
+            block.write(header);
+            block.write(header >>> 8);
+            block.write(header >>> 16);
+            block.writeBytes(literals);
+            block.write(1);
+            block.write(0x54);
+            block.write(34);
+            block.write(offsetBits);
+            block.write(32);
+            var bits = new ZstdEntropy.ReverseBitWriter();
+            bits.writeBits(123, 15);
+            bits.writeBits(1, 1);
+            bits.writeBits(offsetExtra, offsetBits);
+            block.writeBytes(bits.finish());
+            byte[] payload = block.toByteArray();
+            int distance = (int) ((1L << offsetBits) + offsetExtra - 3);
+            byte[] expected = expand(literals, previous, new byte[0], previous.length, 36, distance);
+            for (boolean truncated : new boolean[]{false, true}) {
+                var history = new ZstdHistory(previous.length);
+                var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+                for (int offset = 0; offset < previous.length; offset += ZstdBlockDecoder.MAX_BLOCK_SIZE) {
+                    byte[] part = Arrays.copyOfRange(previous, offset, offset + ZstdBlockDecoder.MAX_BLOCK_SIZE);
+                    decoder.appendRaw(part, part.length);
+                }
+                if (truncated) {
+                    assertThrows(IOException.class, () -> decoder.decodeCompressed(
+                            payload, payload.length - 1, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+                    assertEquals(previous.length, decoder.frameSize());
+                    byte[] retained = new byte[previous.length];
+                    history.copy(previous.length, retained, 0, retained.length);
+                    assertArrayEquals(previous, retained);
+                } else {
+                    assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(
+                            payload, payload.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+                    assertEquals(previous.length + expected.length, decoder.frameSize());
+                }
+            }
+        }
+    }
+
     /// Reusing history storage cannot preserve bytes, entropy tables or repeated offsets from another frame.
     @Test
     void startsIndependentStateWithReusedHistory() throws Exception {

@@ -20,6 +20,49 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies adaptive sequence-code table selection.
 @NotNullByDefault
 public final class ZstdSequenceEntropyTest {
+    /// Compares mixed-width reads across words and short tails with independent bitwise extraction.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 7, 8, 9, 31, 32, 63, 64, 65, 127, 128, 1024})
+    public void readsReverseFieldsAcrossWordBoundaries(int usefulBits) throws IOException {
+        Random random = new Random(8200 + usefulBits);
+        for (int prefix : new int[]{0, 1, 8}) {
+            for (int suffix : new int[]{0, 1, 8}) {
+                int bytes = usefulBits / 8 + 1;
+                byte[] source = new byte[prefix + bytes + suffix];
+                random.nextBytes(source);
+                Arrays.fill(source, 0, prefix, (byte) 0xff);
+                Arrays.fill(source, prefix + bytes, source.length, (byte) 0xff);
+                int markerBits = usefulBits & 7;
+                source[prefix + bytes - 1] = (byte) ((source[prefix + bytes - 1] & ((1 << markerBits) - 1))
+                        | (1 << markerBits));
+                var reader = new ZstdEntropy.ReverseBitReader(source, prefix, prefix + bytes);
+                int remaining = usefulBits;
+                while (remaining > 0) {
+                    assertEquals(0, reader.readBits(0));
+                    assertThrows(IOException.class, () -> reader.readBits(-1));
+                    assertThrows(IOException.class, () -> reader.readBits(32));
+                    if (remaining < 31) {
+                        int tooMany = remaining + 1;
+                        assertThrows(IOException.class, () -> reader.readBits(tooMany));
+                    }
+                    assertEquals(remaining, reader.remainingBits());
+                    int count = Math.min(remaining, random.nextInt(1, 32));
+                    remaining -= count;
+                    int expected = 0;
+                    for (int bit = 0; bit < count; bit++) {
+                        int position = prefix * 8 + remaining + bit;
+                        expected |= ((source[position >>> 3] >>> (position & 7)) & 1) << bit;
+                    }
+                    assertEquals(expected, reader.readBits(count));
+                    assertEquals(remaining, reader.remainingBits());
+                }
+                reader.requireFullyConsumed();
+                assertEquals(0, reader.readBits(0));
+                assertThrows(IOException.class, () -> reader.readBits(1));
+            }
+        }
+    }
+
     /// Checks symbol frequencies and disjoint, complete next-state ranges for every present byte symbol.
     @ParameterizedTest
     @ValueSource(ints = {5, 6, 7, 8, 9})
