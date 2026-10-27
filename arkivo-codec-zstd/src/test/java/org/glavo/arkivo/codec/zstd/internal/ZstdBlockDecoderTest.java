@@ -28,6 +28,61 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Checks compressed matches across dictionary, history and current-block boundaries.
 @NotNullByDefault
 final class ZstdBlockDecoderTest {
+    /// Reads raw literals directly across header widths without allocating a literal workspace or retaining input.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2, 31, 32, 4095, 4096, 65536, 131063})
+    void readsRawLiteralsWithoutIntermediateStorage(int size) throws Exception {
+        byte[] literals = new byte[size];
+        new Random(9700 + size).nextBytes(literals);
+        var block = new ByteArrayOutputStream();
+        int header = size < 32 ? size << 3 : (size << 4) | (size < 4096 ? 4 : 12);
+        block.write(header);
+        if (size >= 32) block.write(header >>> 8);
+        if (size >= 4096) block.write(header >>> 16);
+        block.writeBytes(literals);
+        block.write(1);
+        block.write(0x54);
+        block.write(size == 0 ? 0 : 1);
+        block.write(2);
+        block.write(0);
+        block.write(4); // Two zero offset bits followed by the end marker.
+
+        byte[] expected = new byte[size + 3];
+        if (size == 0) {
+            Arrays.fill(expected, (byte) 42);
+        } else {
+            Arrays.fill(expected, 0, 4, literals[0]);
+            System.arraycopy(literals, 1, expected, 4, size - 1);
+        }
+        var history = new ZstdHistory(ZstdBlockDecoder.MAX_BLOCK_SIZE);
+        var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+        decoder.appendRaw(new byte[]{42}, 1);
+        var field = ZstdBlockDecoder.class.getDeclaredField("literals");
+        field.setAccessible(true);
+        byte[] input = block.toByteArray();
+        ByteBuffer decoded = decoder.decodeCompressed(input, input.length, ZstdBlockDecoder.MAX_BLOCK_SIZE);
+        assertEquals(ByteBuffer.wrap(expected), decoded);
+        assertNull(field.get(decoder));
+        assertEquals(expected.length, decoded.capacity());
+        assertThrows(ReadOnlyBufferException.class, () -> decoded.put(0, (byte) 99));
+        Arrays.fill(input, (byte) 99);
+        assertEquals(ByteBuffer.wrap(expected), decoded);
+        byte[] retained = new byte[expected.length];
+        history.copy(expected.length, retained, 0, retained.length);
+        assertArrayEquals(expected, retained);
+
+        // Zero-sequence blocks still return independent storage, even after the raw-literal fast path.
+        byte[] zeroSequences = {24, 4, 5, 6, 0};
+        ByteBuffer independent = decoder.decodeCompressed(zeroSequences, zeroSequences.length, 3);
+        Arrays.fill(zeroSequences, (byte) 99);
+        assertEquals(ByteBuffer.wrap(new byte[]{4, 5, 6}), independent);
+        byte[] workspace = assertInstanceOf(byte[].class, field.get(decoder));
+        byte[] next = block.toByteArray();
+        assertEquals(ByteBuffer.wrap(size == 0 ? new byte[]{6, 6, 6} : expected),
+                decoder.decodeCompressed(next, next.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+        assertSame(workspace, field.get(decoder));
+    }
+
     /// Checks all RLE/table combinations, including a 26-bit transition and interleaved zero-bit transitions.
     @ParameterizedTest
     @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7})

@@ -72,7 +72,7 @@ final class ZstdBlockDecoder {
     /// Ring buffer containing prior frame output.
     private final ZstdHistory history;
 
-    /// Literal workspace, allocated only when a compressed block supplies a literal section.
+    /// Workspace for decoded literals and raw literals returned by zero-sequence blocks.
     private byte @Nullable [] literals;
 
     /// Lazily allocated RLE and match-expansion workspace, reused within this frame.
@@ -148,7 +148,8 @@ final class ZstdBlockDecoder {
         Objects.checkFromIndexSize(0, limit, source.length);
         Objects.checkIndex(maximumOutputSize, MAX_BLOCK_SIZE + 1);
         LiteralsResult literalResult = decodeLiterals(source, limit);
-        byte[] currentLiterals = Objects.requireNonNull(literals);
+        byte[] currentLiterals = literalResult.bytes();
+        int literalLimit = literalResult.offset() + literalResult.literalSize();
         if (literalResult.literalSize() > maximumOutputSize) {
             throw new IOException("Zstandard literals exceed the frame block-size limit");
         }
@@ -171,6 +172,12 @@ final class ZstdBlockDecoder {
         if (sequenceCount == 0) {
             if (position != limit) {
                 throw new IOException("Zstandard zero-sequence block contains extraneous data");
+            }
+            if (currentLiterals == source) {
+                // Returned views must not borrow the input array after this call.
+                literals = prepareWorkspace(literals, literalResult.literalSize());
+                System.arraycopy(source, literalResult.offset(), literals, 0, literalResult.literalSize());
+                currentLiterals = literals;
             }
             return finishBlock(currentLiterals, literalResult.literalSize());
         }
@@ -236,7 +243,7 @@ final class ZstdBlockDecoder {
         outputWorkspace = prepareWorkspace(outputWorkspace, maximumOutputSize);
         byte[] output = outputWorkspace;
         int outputPosition = 0;
-        int literalPosition = 0;
+        int literalPosition = literalResult.offset();
         for (int sequence = 0; sequence < sequenceCount; sequence++) {
             int literalCode = literalTable.symbol(literalState);
             int offsetCode = offsetsTable.symbol(offsetState);
@@ -251,7 +258,7 @@ final class ZstdBlockDecoder {
                     + Integer.toUnsignedLong(bits.readBits(offsetCode));
             int matchLength = MATCH_BASELINES[matchCode] + bits.readBits(MATCH_BITS[matchCode]);
             int literalLength = LITERAL_BASELINES[literalCode] + bits.readBits(LITERAL_BITS[literalCode]);
-            if (literalLength > literalResult.literalSize() - literalPosition
+            if (literalLength > literalLimit - literalPosition
                     || literalLength > maximumOutputSize - outputPosition) {
                 throw new IOException("Zstandard sequence exceeds its literal section");
             }
@@ -274,7 +281,7 @@ final class ZstdBlockDecoder {
         }
         bits.requireFullyConsumed();
 
-        int remainingLiterals = literalResult.literalSize() - literalPosition;
+        int remainingLiterals = literalLimit - literalPosition;
         if (remainingLiterals > maximumOutputSize - outputPosition) {
             throw new IOException("Zstandard literals exceed the block size limit");
         }
@@ -283,7 +290,7 @@ final class ZstdBlockDecoder {
         return finishBlock(output, outputPosition);
     }
 
-    /// Decodes one literal section.
+    /// Locates raw literals in the input or decodes encoded literals into the reusable workspace.
     private LiteralsResult decodeLiterals(byte[] source, int limit) throws IOException {
         requireAvailable(limit, 0, 1);
         int headerByte = Byte.toUnsignedInt(source[0]);
@@ -336,11 +343,12 @@ final class ZstdBlockDecoder {
             throw new IOException("Zstandard literal section exceeds 128 KiB");
         }
         requireAvailable(limit, headerSize, compressedSize);
+        if (type == 0) {
+            return new LiteralsResult(source, headerSize, regeneratedSize, headerSize + compressedSize);
+        }
         literals = prepareWorkspace(literals, regeneratedSize);
         byte[] currentLiterals = literals;
-        if (type == 0) {
-            System.arraycopy(source, headerSize, currentLiterals, 0, regeneratedSize);
-        } else if (type == 1) {
+        if (type == 1) {
             Arrays.fill(currentLiterals, 0, regeneratedSize, source[headerSize]);
         } else {
             int payloadOffset = headerSize;
@@ -359,7 +367,7 @@ final class ZstdBlockDecoder {
                 huffmanTable.decodeFourStreams(source, payloadOffset, payloadLimit, currentLiterals, regeneratedSize);
             }
         }
-        return new LiteralsResult(regeneratedSize, headerSize + compressedSize);
+        return new LiteralsResult(currentLiterals, 0, regeneratedSize, headerSize + compressedSize);
     }
 
     /// Reads one sequence-code FSE table according to its mode.
@@ -535,8 +543,14 @@ final class ZstdBlockDecoder {
                 | (long) Byte.toUnsignedInt(source[4]) << 32;
     }
 
-    /// Holds decoded literal metadata.
-    private record LiteralsResult(int literalSize, int bytesRead) {
+    /// Describes the literal range used while decoding one block.
+    ///
+    /// @param bytes borrowed input or decoded-literal workspace
+    /// @param offset first literal byte in the array
+    /// @param literalSize number of literal bytes
+    /// @param bytesRead encoded size of the literal section, including its header
+    @NotNullByDefault
+    private record LiteralsResult(byte @UnmodifiableView [] bytes, int offset, int literalSize, int bytesRead) {
         /// Creates literal metadata.
         private LiteralsResult {
         }
