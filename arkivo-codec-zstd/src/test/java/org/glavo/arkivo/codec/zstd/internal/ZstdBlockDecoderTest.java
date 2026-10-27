@@ -8,6 +8,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayOutputStream;
@@ -75,15 +76,16 @@ final class ZstdBlockDecoderTest {
 
     /// Checks every dynamic length-table state at both ends of its additional-bit range.
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void decodesDynamicLengthCodeEndpoints(boolean matchLengths) throws IOException {
+    @CsvSource({"false, 6", "false, 7", "false, 8", "false, 9", "true, 6", "true, 7", "true, 8", "true, 9"})
+    void decodesDynamicLengthCodeEndpoints(boolean matchLengths, int tableLog) throws IOException {
         int[] bases = lengthCodeBaselines(matchLengths);
+        int tableSize = 1 << tableLog;
         int[] probabilities = new int[bases.length];
         Arrays.fill(probabilities, 1);
-        for (int i = 0; i < 64 - probabilities.length; i++) probabilities[i]++;
-        var table = ZstdEntropy.FseTable.fromNormalized(probabilities, probabilities.length, 6);
-        byte[] description = ZstdEntropy.encodeFseTableDescription(probabilities, probabilities.length, 6);
-        for (int state = 0; state < 64; state++) {
+        for (int i = 0; i < tableSize - probabilities.length; i++) probabilities[i % probabilities.length]++;
+        var table = ZstdEntropy.FseTable.fromNormalized(probabilities, probabilities.length, tableLog);
+        byte[] description = ZstdEntropy.encodeFseTableDescription(probabilities, probabilities.length, tableLog);
+        for (int state = 0; state < tableSize; state++) {
             int code = table.symbol(state);
             int width = code + 1 < bases.length ? bases[code + 1] - bases[code] : 1 << 16;
             for (int extra : new int[]{0, width - 1}) {
@@ -105,7 +107,7 @@ final class ZstdBlockDecoderTest {
                 var bits = new ZstdEntropy.ReverseBitWriter();
                 bits.writeBits(extra, Integer.numberOfTrailingZeros(width));
                 bits.writeBits(0, 2);
-                bits.writeBits(state, 6);
+                bits.writeBits(state, tableLog);
                 block.writeBytes(bits.finish());
                 byte[] input = block.toByteArray();
                 var decoder = new ZstdBlockDecoder(new ZstdHistory(128), ZstdDictionaryContext.NONE);
@@ -277,9 +279,58 @@ final class ZstdBlockDecoderTest {
         assertSame(workspace, field.get(decoder));
     }
 
+    /// Interleaves short literals and matches, including empty runs and exact-sized literal tails.
+    @ParameterizedTest
+    @ValueSource(ints = {3, 4, 5, 6, 7})
+    void decodesShortRunsBetweenMatches(int matchLength) throws IOException {
+        byte[] previous = new byte[32];
+        new Random(9800).nextBytes(previous);
+        for (int literalLength = 0; literalLength < 8; literalLength++) {
+            for (int tail = 0; tail < 8; tail++) {
+                byte[] literals = new byte[literalLength * 16 + tail];
+                new Random(9900 + literalLength * 8 + tail).nextBytes(literals);
+                var block = new ByteArrayOutputStream();
+                int header = literals.length < 32 ? literals.length << 3 : (literals.length << 4) | 4;
+                block.write(header);
+                if (literals.length >= 32) block.write(header >>> 8);
+                block.writeBytes(literals);
+                block.write(16);
+                block.write(0x54);
+                block.write(literalLength);
+                block.write(4);
+                block.write(matchLength - 3);
+                var bits = new ZstdEntropy.ReverseBitWriter();
+                // Offset code 4 with extra value 5 encodes distance 16 + 5 - 3 = 18.
+                for (int sequence = 0; sequence < 16; sequence++) bits.writeBits(5, 4);
+                block.writeBytes(bits.finish());
+
+                byte[] expected = Arrays.copyOf(previous, previous.length + literals.length + matchLength * 16);
+                int position = previous.length;
+                int literalPosition = 0;
+                for (int sequence = 0; sequence < 16; sequence++) {
+                    for (int count = 0; count < literalLength; count++) {
+                        expected[position++] = literals[literalPosition++];
+                    }
+                    for (int count = 0; count < matchLength; count++, position++) {
+                        expected[position] = expected[position - 18];
+                    }
+                }
+                System.arraycopy(literals, literalPosition, expected, position, tail);
+                var decoder = new ZstdBlockDecoder(new ZstdHistory(1024), ZstdDictionaryContext.NONE);
+                decoder.appendRaw(previous, previous.length);
+                byte[] input = block.toByteArray();
+                int size = expected.length - previous.length;
+                assertEquals(ByteBuffer.wrap(expected, previous.length, size),
+                        decoder.decodeCompressed(input, input.length, size),
+                        "literals=" + literalLength + ", tail=" + tail + ", match=" + matchLength);
+                assertEquals(expected.length, decoder.frameSize());
+            }
+        }
+    }
+
     /// Copies RLE-decoded literal tails from an exact-sized workspace into an exact-sized output.
     @ParameterizedTest
-    @ValueSource(ints = {5, 6, 7, 8, 17, 18, 23, 24, 25, 31, 32, 33})
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 17, 18, 23, 24, 25, 31, 32, 33})
     void copiesRleLiteralTailsWithoutPadding(int size) throws IOException {
         var block = new ByteArrayOutputStream();
         int header = size < 32 ? (size << 3) | 1 : (size << 4) | 5;
