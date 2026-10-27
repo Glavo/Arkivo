@@ -189,6 +189,50 @@ final class ZstdBlockDecoderTest {
         assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(input, input.length, expected.length));
     }
 
+    /// Rejects a partial state transition without committing the first sequence to frame history.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void rejectsTruncatedSequenceTransitions(int dynamicStream) throws IOException {
+        int[] symbols = {0, 2, 0};
+        int[] probabilities = new int[32];
+        Arrays.fill(probabilities, 1);
+        var table = ZstdEntropy.FseTable.fromNormalized(probabilities, probabilities.length, 5);
+        int initialState = ZstdEntropy.FseEncoderTable.fromDecoder(table, probabilities.length)
+                .initialState(symbols[dynamicStream]);
+        assertEquals(5, table.numberOfBits(initialState));
+        for (int available = 0; available < 5; available++) {
+            var block = new ByteArrayOutputStream();
+            block.write(0);
+            block.write(2);
+            block.write(0x54 + (1 << (6 - 2 * dynamicStream)));
+            for (int stream = 0; stream < 3; stream++) {
+                if (stream == dynamicStream) {
+                    block.writeBytes(ZstdEntropy.encodeFseTableDescription(probabilities, probabilities.length, 5));
+                } else {
+                    block.write(symbols[stream]);
+                }
+            }
+            var bits = new ZstdEntropy.ReverseBitWriter();
+            bits.writeBits(0, available);
+            bits.writeBits(0, 2);
+            for (int stream : new int[]{2, 1, 0}) {
+                bits.writeBits(stream == dynamicStream ? initialState : 0, stream == dynamicStream ? 5 : 0);
+            }
+            block.writeBytes(bits.finish());
+            byte[] payload = block.toByteArray();
+            var history = new ZstdHistory(128);
+            var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+            decoder.appendRaw(new byte[]{42}, 1);
+            assertThrows(IOException.class,
+                    () -> decoder.decodeCompressed(payload, payload.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+            assertEquals(1, decoder.frameSize());
+            assertEquals(1, history.size());
+            byte[] retained = new byte[1];
+            history.copy(1, retained, 0, 1);
+            assertEquals(42, retained[0]);
+        }
+    }
+
     /// Checks all RLE/table combinations, including a 26-bit transition and interleaved zero-bit transitions.
     @ParameterizedTest
     @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7})
