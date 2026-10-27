@@ -54,7 +54,7 @@ public class ZstdReadBenchmark {
     public boolean reuseContext = true;
 
     /// The deterministic block and match workload.
-    @Param({"random", "periodic", "short-distance", "long-distance", "huffman", "skewed-huffman"})
+    @Param({"random", "periodic", "short-distance", "long-distance", "short-matches", "huffman", "skewed-huffman"})
     public String profile = "random";
 
     /// The shared compressed representation.
@@ -103,6 +103,16 @@ public class ZstdReadBenchmark {
             }
             case "long-distance" -> {
                 for (int i = 65_537; i < body.length; i++) body[i] = body[i % 65_537];
+            }
+            case "short-matches" -> {
+                byte[] dictionary = new byte[4096];
+                new Random(43).nextBytes(dictionary);
+                Random matches = new Random(44);
+                // Alternate reusable 16-byte tokens with independent random literals.
+                for (int i = 0; i < body.length; i += 32) {
+                    System.arraycopy(dictionary, matches.nextInt(256) * 16, body, i,
+                            Math.min(16, body.length - i));
+                }
             }
             default -> throw new IllegalArgumentException(profile);
         }

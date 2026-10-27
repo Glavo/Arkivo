@@ -511,36 +511,33 @@ final class ZstdEntropy {
         /// The decoding-table logarithm.
         private final int tableLog;
 
-        /// Symbol for each state.
-        private final int @Unmodifiable [] symbols;
-
-        /// Number of transition bits for each state.
-        private final int @Unmodifiable [] numbersOfBits;
-
-        /// Baseline for each state transition.
-        private final int @Unmodifiable [] baselines;
+        /// State entries packing the symbol in bits 0..7, transition-bit count in bits 8..11, and baseline above bit 11.
+        private final int @Unmodifiable [] entries;
 
         /// Creates an FSE decoding table.
-        private FseTable(int tableLog, int[] symbols, int[] numbersOfBits, int[] baselines) {
+        private FseTable(int tableLog, int[] entries) {
             this.tableLog = tableLog;
-            this.symbols = symbols;
-            this.numbersOfBits = numbersOfBits;
-            this.baselines = baselines;
+            this.entries = entries;
         }
 
         /// Builds a table from normalized probabilities.
+        /// Requires 1..256 symbols and a table logarithm of 5..15.
         static FseTable fromNormalized(
                 int[] normalized,
                 int symbolCount,
                 int tableLog
         ) throws IOException {
+            if (tableLog < 5 || tableLog > 15 || symbolCount <= 0
+                    || symbolCount > 256 || symbolCount > normalized.length) {
+                throw new IOException("Invalid Zstandard FSE table dimensions");
+            }
             int tableSize = 1 << tableLog;
-            int[] symbols = new int[tableSize];
+            int[] entries = new int[tableSize];
             int tableMask = tableSize - 1;
             int highThreshold = tableSize - 1;
             for (int symbol = 0; symbol < symbolCount; symbol++) {
                 if (normalized[symbol] == -1) {
-                    symbols[highThreshold--] = symbol;
+                    entries[highThreshold--] = symbol;
                 } else if (normalized[symbol] < -1) {
                     throw new IOException("Invalid Zstandard FSE probability");
                 }
@@ -550,7 +547,7 @@ final class ZstdEntropy {
             int step = (tableSize >>> 1) + (tableSize >>> 3) + 3;
             for (int symbol = 0; symbol < symbolCount; symbol++) {
                 for (int count = normalized[symbol]; count > 0; count--) {
-                    symbols[position] = symbol;
+                    entries[position] = symbol;
                     do {
                         position = (position + step) & tableMask;
                     } while (position > highThreshold);
@@ -564,21 +561,22 @@ final class ZstdEntropy {
             for (int symbol = 0; symbol < symbolCount; symbol++) {
                 symbolNext[symbol] = normalized[symbol] == -1 ? 1 : normalized[symbol];
             }
-            int[] numbersOfBits = new int[tableSize];
-            int[] baselines = new int[tableSize];
             for (int state = 0; state < tableSize; state++) {
-                int symbol = symbols[state];
+                int symbol = entries[state];
                 int next = symbolNext[symbol]++;
                 int numberOfBits = tableLog - (31 - Integer.numberOfLeadingZeros(next));
-                numbersOfBits[state] = numberOfBits;
-                baselines[state] = (next << numberOfBits) - tableSize;
+                int baseline = (next << numberOfBits) - tableSize;
+                entries[state] = symbol | (numberOfBits << 8) | (baseline << 12);
             }
-            return new FseTable(tableLog, symbols, numbersOfBits, baselines);
+            return new FseTable(tableLog, entries);
         }
 
-        /// Creates a one-symbol table.
+        /// Creates a one-symbol table for an unsigned byte value.
         static FseTable rle(int symbol) {
-            return new FseTable(0, new int[]{symbol}, new int[]{0}, new int[]{0});
+            if (symbol < 0 || symbol > 255) {
+                throw new IllegalArgumentException("Invalid Zstandard FSE RLE symbol");
+            }
+            return new FseTable(0, new int[]{symbol});
         }
 
         /// Returns the table logarithm.
@@ -588,34 +586,31 @@ final class ZstdEntropy {
 
         /// Returns the symbol represented by one state.
         int symbol(int state) throws IOException {
-            if (state < 0 || state >= symbols.length) {
-                throw new IOException("Invalid Zstandard FSE state");
-            }
-            return symbols[state];
+            return entry(state) & 255;
         }
 
         /// Returns the transition-bit count for one state.
         int numberOfBits(int state) throws IOException {
-            if (state < 0 || state >= symbols.length) {
-                throw new IOException("Invalid Zstandard FSE state");
-            }
-            return numbersOfBits[state];
+            return (entry(state) >>> 8) & 15;
         }
 
         /// Returns the baseline for one state transition.
         int baseline(int state) throws IOException {
-            if (state < 0 || state >= symbols.length) {
-                throw new IOException("Invalid Zstandard FSE state");
-            }
-            return baselines[state];
+            return entry(state) >>> 12;
         }
 
         /// Advances one state using the reverse bitstream.
         int nextState(int state, ReverseBitReader bits) throws IOException {
-            if (state < 0 || state >= symbols.length) {
+            int entry = entry(state);
+            return (entry >>> 12) + bits.readBits((entry >>> 8) & 15);
+        }
+
+        /// Returns one packed entry after validating the state index.
+        private int entry(int state) throws IOException {
+            if (state < 0 || state >= entries.length) {
                 throw new IOException("Invalid Zstandard FSE state");
             }
-            return baselines[state] + bits.readBits(numbersOfBits[state]);
+            return entries[state];
         }
     }
 

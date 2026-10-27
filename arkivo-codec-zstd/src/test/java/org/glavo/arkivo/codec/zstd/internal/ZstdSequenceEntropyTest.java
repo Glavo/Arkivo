@@ -5,17 +5,109 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies adaptive sequence-code table selection.
 @NotNullByDefault
 public final class ZstdSequenceEntropyTest {
+    /// Checks symbol frequencies and disjoint, complete next-state ranges for every present byte symbol.
+    @ParameterizedTest
+    @ValueSource(ints = {5, 6, 7, 8, 9})
+    public void preservesFseStatePartitions(int tableLog) throws IOException {
+        int tableSize = 1 << tableLog;
+        int[] counts = new int[256];
+        counts[0] = counts[255] = 1;
+        Random random = new Random(9100 + tableLog);
+        for (int i = 2; i < tableSize; i++) counts[random.nextInt(counts.length)]++;
+        for (int i = 0; i < counts.length; i++) {
+            if (counts[i] == 1 && random.nextBoolean()) counts[i] = -1;
+        }
+        var table = ZstdEntropy.FseTable.fromNormalized(counts, counts.length, tableLog);
+        assertEquals(tableLog, table.tableLog());
+        for (int symbol = 0; symbol < counts.length; symbol++) {
+            boolean[] covered = new boolean[tableSize];
+            int occurrences = 0;
+            for (int state = 0; state < tableSize; state++) {
+                if (table.symbol(state) != symbol) continue;
+                occurrences++;
+                int bitCount = table.numberOfBits(state);
+                int baseline = table.baseline(state);
+                assertTrue(bitCount >= 0 && bitCount <= tableLog);
+                assertTrue(baseline >= 0 && baseline <= tableSize - (1 << bitCount));
+                for (int value = 0; value < 1 << bitCount; value++) {
+                    assertFalse(covered[baseline + value]);
+                    covered[baseline + value] = true;
+                }
+                for (int value : new int[]{0, (1 << bitCount) - 1}) {
+                    var writer = new ZstdEntropy.ReverseBitWriter();
+                    writer.writeBits(value, bitCount);
+                    byte[] stream = writer.finish();
+                    var reader = new ZstdEntropy.ReverseBitReader(stream, 0, stream.length);
+                    assertEquals(baseline + value, table.nextState(state, reader));
+                    reader.requireFullyConsumed();
+                }
+            }
+            assertEquals(Math.abs(counts[symbol]), occurrences);
+            for (boolean present : covered) assertEquals(occurrences != 0, present);
+        }
+        var empty = new ZstdEntropy.ReverseBitReader(new byte[]{1}, 0, 1);
+        for (int state : new int[]{-1, tableSize, Integer.MAX_VALUE}) {
+            assertThrows(IOException.class, () -> table.symbol(state));
+            assertThrows(IOException.class, () -> table.numberOfBits(state));
+            assertThrows(IOException.class, () -> table.baseline(state));
+            assertThrows(IOException.class, () -> table.nextState(state, empty));
+        }
+        for (int state = 0; state < tableSize; state++) {
+            if (table.numberOfBits(state) != 0) {
+                int selected = state;
+                assertThrows(IOException.class, () -> table.nextState(selected, empty));
+                assertEquals(0, empty.remainingBits());
+            }
+        }
+    }
+
+    /// Preserves the full byte alphabet for zero-bit RLE transitions and the largest supported transition count.
+    @Test
+    public void preservesFseFieldBoundaries() throws IOException {
+        var empty = new ZstdEntropy.ReverseBitReader(new byte[]{1}, 0, 1);
+        for (int symbol = 0; symbol <= 255; symbol++) {
+            var table = ZstdEntropy.FseTable.rle(symbol);
+            assertEquals(0, table.tableLog());
+            assertEquals(symbol, table.symbol(0));
+            assertEquals(0, table.numberOfBits(0));
+            assertEquals(0, table.baseline(0));
+            assertEquals(0, table.nextState(0, empty));
+            assertEquals(0, empty.remainingBits());
+        }
+        int[] counts = new int[256];
+        counts[0] = (1 << 15) - 1;
+        counts[255] = -1;
+        var table = ZstdEntropy.FseTable.fromNormalized(counts, counts.length, 15);
+        assertEquals(255, table.symbol((1 << 15) - 1));
+        assertEquals(15, table.numberOfBits((1 << 15) - 1));
+        assertEquals(0, table.baseline((1 << 15) - 1));
+        boolean highBaseline = false;
+        for (int state = 0; state < (1 << 15) - 1; state++) {
+            assertEquals(0, table.symbol(state));
+            highBaseline |= table.baseline(state) >= 1 << 14;
+        }
+        assertTrue(highBaseline);
+        assertThrows(IllegalArgumentException.class, () -> ZstdEntropy.FseTable.rle(-1));
+        assertThrows(IllegalArgumentException.class, () -> ZstdEntropy.FseTable.rle(256));
+        assertThrows(IOException.class, () -> ZstdEntropy.FseTable.fromNormalized(counts, 257, 9));
+        assertThrows(IOException.class, () -> ZstdEntropy.FseTable.fromNormalized(counts, 256, 16));
+    }
+
     /// Checks wide bit loads and their short-array fallback at every field width and bit alignment.
     @Test
     public void readsReverseFieldsWithoutIncludingAdjacentBytes() throws IOException {
