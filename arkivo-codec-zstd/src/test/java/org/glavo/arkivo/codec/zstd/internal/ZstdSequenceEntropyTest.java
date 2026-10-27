@@ -153,15 +153,21 @@ public final class ZstdSequenceEntropyTest {
     }
 
     /// Checks wide bit loads and their short-array fallback at every field width and bit alignment.
-    @Test
-    public void readsReverseFieldsWithoutIncludingAdjacentBytes() throws IOException {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void readsReverseFieldsWithoutIncludingAdjacentBytes(boolean grouped) throws IOException {
         Random random = new Random(42);
-        for (int count = 0; count <= 31; count++) {
+        for (int count = 0; count <= (grouped ? 56 : 31); count++) {
             for (int alignment = 0; alignment < 8; alignment++) {
-                long value = Integer.toUnsignedLong(random.nextInt()) & ((1L << count) - 1);
+                long value = random.nextLong() & ((1L << count) - 1);
                 var writer = new ZstdEntropy.ReverseBitWriter();
                 writer.writeBits(0, alignment);
-                writer.writeBits(value, count);
+                if (count <= 31) {
+                    writer.writeBits(value, count);
+                } else {
+                    writer.writeBits(value & 0x7fff_ffffL, 31);
+                    writer.writeBits(value >>> 31, count - 31);
+                }
                 byte[] stream = writer.finish();
                 for (int prefix = 0; prefix <= Long.BYTES; prefix++) {
                     for (int suffix = 0; suffix <= Long.BYTES; suffix++) {
@@ -169,12 +175,20 @@ public final class ZstdSequenceEntropyTest {
                         Arrays.fill(source, (byte) 0xff);
                         System.arraycopy(stream, 0, source, prefix, stream.length);
                         var reader = new ZstdEntropy.ReverseBitReader(source, prefix, prefix + stream.length);
-                        assertThrows(IOException.class, () -> reader.readBits(reader.remainingBits() + 1));
-                        assertEquals(value, Integer.toUnsignedLong(reader.readBits(count)));
+                        if (grouped) {
+                            assertThrows(IOException.class, () -> reader.readSequenceBits(reader.remainingBits() + 1));
+                            assertThrows(IOException.class, () -> reader.readSequenceBits(-1));
+                            assertEquals(count + alignment, reader.remainingBits());
+                            assertEquals(value, reader.readSequenceBits(count));
+                        } else {
+                            assertThrows(IOException.class, () -> reader.readBits(reader.remainingBits() + 1));
+                            assertEquals(value, Integer.toUnsignedLong(reader.readBits(count)));
+                        }
                         assertEquals(0, reader.readBits(alignment));
                         reader.requireFullyConsumed();
-                        assertEquals(0, reader.readBits(0));
-                        assertThrows(IOException.class, () -> reader.readBits(1));
+                        assertEquals(0, grouped ? reader.readSequenceBits(0) : reader.readBits(0));
+                        if (grouped) assertThrows(IOException.class, () -> reader.readSequenceBits(1));
+                        else assertThrows(IOException.class, () -> reader.readBits(1));
                     }
                 }
             }

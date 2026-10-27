@@ -33,14 +33,7 @@ final class ZstdBlockDecoderTest {
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void decodesLengthCodeEndpoints(boolean matchLengths) throws IOException {
-        int[] bases = matchLengths
-                ? new int[]{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-                19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
-                35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027,
-                2051, 4099, 8195, 16387, 32771, 65539}
-                : new int[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-                16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048,
-                4096, 8192, 16384, 32768, 65536};
+        int[] bases = lengthCodeBaselines(matchLengths);
         for (int code = 0; code < bases.length; code++) {
             int width = code + 1 < bases.length ? bases[code + 1] - bases[code] : 1 << 16;
             int bitCount = Integer.numberOfTrailingZeros(width);
@@ -78,6 +71,118 @@ final class ZstdBlockDecoderTest {
                 }
             }
         }
+    }
+
+    /// Checks every dynamic length-table state at both ends of its additional-bit range.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void decodesDynamicLengthCodeEndpoints(boolean matchLengths) throws IOException {
+        int[] bases = lengthCodeBaselines(matchLengths);
+        int[] probabilities = new int[bases.length];
+        Arrays.fill(probabilities, 1);
+        for (int i = 0; i < 64 - probabilities.length; i++) probabilities[i]++;
+        var table = ZstdEntropy.FseTable.fromNormalized(probabilities, probabilities.length, 6);
+        byte[] description = ZstdEntropy.encodeFseTableDescription(probabilities, probabilities.length, 6);
+        for (int state = 0; state < 64; state++) {
+            int code = table.symbol(state);
+            int width = code + 1 < bases.length ? bases[code + 1] - bases[code] : 1 << 16;
+            for (int extra : new int[]{0, width - 1}) {
+                int literals = matchLengths ? 1 : bases[code] + extra;
+                int matches = matchLengths ? bases[code] + extra : 3;
+                var block = new ByteArrayOutputStream();
+                int header = (literals << 4) | 13;
+                block.write(header);
+                block.write(header >>> 8);
+                block.write(header >>> 16);
+                block.write(42);
+                block.write(1);
+                block.write(matchLengths ? 0x58 : 0x94);
+                if (matchLengths) block.write(1);
+                else block.writeBytes(description);
+                block.write(2);
+                if (matchLengths) block.writeBytes(description);
+                else block.write(0);
+                var bits = new ZstdEntropy.ReverseBitWriter();
+                bits.writeBits(extra, Integer.numberOfTrailingZeros(width));
+                bits.writeBits(0, 2);
+                bits.writeBits(state, 6);
+                block.writeBytes(bits.finish());
+                byte[] input = block.toByteArray();
+                var decoder = new ZstdBlockDecoder(new ZstdHistory(128), ZstdDictionaryContext.NONE);
+                decoder.appendRaw(new byte[]{42}, 1);
+                int size = literals + matches;
+                if (size > ZstdBlockDecoder.MAX_BLOCK_SIZE) {
+                    assertThrows(IOException.class,
+                            () -> decoder.decodeCompressed(input, input.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+                    assertEquals(1, decoder.frameSize());
+                } else {
+                    byte[] expected = new byte[size];
+                    Arrays.fill(expected, (byte) 42);
+                    assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(input, input.length, size),
+                            "matchLengths=" + matchLengths + ", state=" + state + ", extra=" + extra);
+                }
+            }
+        }
+    }
+
+    /// Replaces and repeats length tables across size changes without changing predefined tables.
+    @Test
+    void replacesSequenceTablesAcrossBlocks() throws IOException {
+        var decoder = new ZstdBlockDecoder(new ZstdHistory(128), ZstdDictionaryContext.NONE);
+        for (int log : new int[]{-1, 9, 5, 8, 0, 6, -1, 5}) {
+            var description = new ByteArrayOutputStream();
+            ZstdEntropy.FseTable table;
+            int mode;
+            if (log < 0) {
+                table = ZstdSequenceEntropy.LITERAL_LENGTH_DECODER;
+                mode = 0;
+            } else if (log == 0) {
+                table = ZstdEntropy.FseTable.rle(1);
+                description.write(1);
+                mode = 1;
+            } else {
+                int[] counts = {(1 << log) - 1, 1};
+                table = ZstdEntropy.FseTable.fromNormalized(counts, counts.length, log);
+                description.writeBytes(ZstdEntropy.encodeFseTableDescription(counts, counts.length, log));
+                mode = 2;
+            }
+            int state = ZstdEntropy.FseEncoderTable.fromDecoder(table, log < 0 ? 36 : 2).initialState(1);
+            for (boolean repeat : new boolean[]{false, true}) {
+                var block = new ByteArrayOutputStream();
+                block.writeBytes(new byte[]{8, 42, 1});
+                block.write(repeat ? 0xfc : (mode << 6) | 0x14);
+                if (!repeat) {
+                    block.writeBytes(description.toByteArray());
+                    block.write(2);
+                    block.write(0);
+                }
+                var bits = new ZstdEntropy.ReverseBitWriter();
+                bits.writeBits(0, 2);
+                bits.writeBits(state, table.tableLog());
+                block.writeBytes(bits.finish());
+                byte[] input = block.toByteArray();
+                assertEquals(ByteBuffer.wrap(new byte[]{42, 42, 42, 42}),
+                        decoder.decodeCompressed(input, input.length, 4));
+                if (log < 0 && !repeat) {
+                    var independent = new ZstdBlockDecoder(new ZstdHistory(128), ZstdDictionaryContext.NONE);
+                    assertEquals(ByteBuffer.wrap(new byte[]{42, 42, 42, 42}),
+                            independent.decodeCompressed(input, input.length, 4));
+                }
+            }
+        }
+        assertEquals(64, decoder.frameSize());
+    }
+
+    /// Returns reference bases for the literal-length or match-length alphabet.
+    private static int[] lengthCodeBaselines(boolean matchLengths) {
+        return matchLengths
+                ? new int[]{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+                35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027,
+                2051, 4099, 8195, 16387, 32771, 65539}
+                : new int[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048,
+                4096, 8192, 16384, 32768, 65536};
     }
 
     /// Rejects out-of-alphabet symbols while reading RLE or normalized sequence tables, before publishing output.
@@ -319,6 +424,57 @@ final class ZstdBlockDecoderTest {
         assertThrows(IOException.class, () -> truncatedDecoder.decodeCompressed(
                 payload, payload.length - 1, ZstdBlockDecoder.MAX_BLOCK_SIZE));
         assertEquals(previous.length, truncatedDecoder.frameSize());
+    }
+
+    /// Decodes sequences on both sides of the combined-read limit, including all state transitions.
+    @ParameterizedTest
+    @ValueSource(ints = {56, 57, 58})
+    void decodesCombinedSequenceReadBoundary(int totalBits) throws IOException {
+        int[] rare = {34, 2, 51};
+        int[] common = {0, 3, 0};
+        int[] logs = {9, totalBits - 50, 9};
+        var descriptions = new ByteArrayOutputStream();
+        var encoders = new ArrayList<ZstdEntropy.FseEncoderTable>(3);
+        for (int stream = 0; stream < 3; stream++) {
+            int[] counts = new int[Math.max(rare[stream], common[stream]) + 1];
+            counts[rare[stream]] = 1;
+            counts[common[stream]] = (1 << logs[stream]) - 1;
+            var table = ZstdEntropy.FseTable.fromNormalized(counts, counts.length, logs[stream]);
+            encoders.add(ZstdEntropy.FseEncoderTable.fromDecoder(table, counts.length));
+            descriptions.writeBytes(ZstdEntropy.encodeFseTableDescription(counts, counts.length, logs[stream]));
+        }
+        var bits = new ZstdEntropy.ReverseBitWriter();
+        bits.writeBits(0, 3); // The final sequence has no length extras or state transitions.
+        int[] states = new int[3];
+        int transitionBits = 0;
+        for (int stream : new int[]{1, 2, 0}) {
+            var encoder = encoders.get(stream);
+            var transition = encoder.transition(rare[stream], encoder.initialState(common[stream]));
+            bits.writeBits(transition.value(), transition.bitCount());
+            states[stream] = transition.state();
+            transitionBits += transition.bitCount();
+        }
+        assertEquals(totalBits, transitionBits + 32);
+        bits.writeBits(7, 15);
+        bits.writeBits(11, 15);
+        bits.writeBits(0, 2);
+        for (int stream : new int[]{2, 1, 0}) bits.writeBits(states[stream], logs[stream]);
+
+        var block = new ByteArrayOutputStream();
+        int header = ((32768 + 7) << 4) | 13;
+        block.write(header);
+        block.write(header >>> 8);
+        block.write(header >>> 16);
+        block.write(42);
+        block.write(2);
+        block.write(0xa8);
+        block.writeBytes(descriptions.toByteArray());
+        block.writeBytes(bits.finish());
+        byte[] input = block.toByteArray();
+        byte[] expected = new byte[32768 + 7 + 32771 + 11 + 3];
+        Arrays.fill(expected, (byte) 42);
+        var decoder = new ZstdBlockDecoder(new ZstdHistory(ZstdBlockDecoder.MAX_BLOCK_SIZE), ZstdDictionaryContext.NONE);
+        assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(input, input.length, expected.length));
     }
 
     /// Checks wide adjacent extra fields, maximum offset values, and truncated payloads.

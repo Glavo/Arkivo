@@ -457,6 +457,28 @@ final class ZstdEntropy {
             return (int) ((value >>> shift) & ((1L << count) - 1L));
         }
 
+        /// Reads up to 56 bits as an unsigned value, leaving the position unchanged on truncation.
+        long readSequenceBits(int count) throws IOException {
+            if (count < 0 || count > 56 || count > remainingBits()) {
+                throw new IOException("Truncated Zstandard reverse bitstream");
+            }
+            if (count == 0) {
+                return 0;
+            }
+            bitPosition -= count;
+            int byteIndex = bitPosition >>> 3;
+            long value;
+            if (byteIndex <= source.length - Long.BYTES) {
+                value = ByteArrayAccess.readLongLittleEndian(source, byteIndex);
+            } else {
+                value = 0L;
+                for (int index = byteIndex; index < source.length; index++) {
+                    value |= (long) Byte.toUnsignedInt(source[index]) << ((index - byteIndex) * 8);
+                }
+            }
+            return (value >>> (bitPosition & 7)) & ((1L << count) - 1L);
+        }
+
         /// Requires every useful bit to have been consumed.
         void requireFullyConsumed() throws IOException {
             if (remainingBits() != 0) {

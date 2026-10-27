@@ -55,16 +55,16 @@ final class ZstdBlockDecoder {
     };
 
     /// Predefined literal-length table.
-    private static final ZstdEntropy.FseTable DEFAULT_LITERAL_TABLE =
-            ZstdSequenceEntropy.LITERAL_LENGTH_DECODER;
+    private static final SequenceTable DEFAULT_LITERAL_TABLE =
+            SequenceTable.predefined(ZstdSequenceEntropy.LITERAL_LENGTH_DECODER, 35);
 
     /// Predefined match-length table.
-    private static final ZstdEntropy.FseTable DEFAULT_MATCH_TABLE =
-            ZstdSequenceEntropy.MATCH_LENGTH_DECODER;
+    private static final SequenceTable DEFAULT_MATCH_TABLE =
+            SequenceTable.predefined(ZstdSequenceEntropy.MATCH_LENGTH_DECODER, 52);
 
     /// Predefined offset table.
-    private static final ZstdEntropy.FseTable DEFAULT_OFFSET_TABLE =
-            ZstdSequenceEntropy.OFFSET_DECODER;
+    private static final SequenceTable DEFAULT_OFFSET_TABLE =
+            SequenceTable.predefined(ZstdSequenceEntropy.OFFSET_DECODER, 31);
 
     /// Configured dictionary context.
     private final ZstdDictionaryContext dictionary;
@@ -82,13 +82,13 @@ final class ZstdBlockDecoder {
     private @Nullable ZstdEntropy.HuffmanTable huffmanTable;
 
     /// Current literal-length table.
-    private @Nullable ZstdEntropy.FseTable literalLengthTable;
+    private @Nullable SequenceTable literalLengthTable;
 
     /// Current offset table.
-    private @Nullable ZstdEntropy.FseTable offsetTable;
+    private @Nullable SequenceTable offsetTable;
 
     /// Current match-length table.
-    private @Nullable ZstdEntropy.FseTable matchLengthTable;
+    private @Nullable SequenceTable matchLengthTable;
 
     /// Most-recent match offset.
     private long repeatedOffset1;
@@ -103,14 +103,19 @@ final class ZstdBlockDecoder {
     private long frameSize;
 
     /// Creates a block decoder and resets the supplied history for exclusive use by this frame.
-    ZstdBlockDecoder(ZstdHistory history, ZstdDictionaryContext dictionary) {
+    ///
+    /// @throws IOException if a dictionary sequence table exceeds the format's limits
+    ZstdBlockDecoder(ZstdHistory history, ZstdDictionaryContext dictionary) throws IOException {
         this.dictionary = dictionary;
         this.history = history;
         history.reset();
         this.huffmanTable = dictionary.huffmanTable();
-        this.literalLengthTable = dictionary.literalLengthTable();
-        this.offsetTable = dictionary.offsetTable();
-        this.matchLengthTable = dictionary.matchLengthTable();
+        @Nullable ZstdEntropy.FseTable literals = dictionary.literalLengthTable();
+        @Nullable ZstdEntropy.FseTable offsets = dictionary.offsetTable();
+        @Nullable ZstdEntropy.FseTable matches = dictionary.matchLengthTable();
+        this.literalLengthTable = literals == null ? null : SequenceTable.expand(literals, 35, null);
+        this.offsetTable = offsets == null ? null : SequenceTable.expand(offsets, 31, null);
+        this.matchLengthTable = matches == null ? null : SequenceTable.expand(matches, 52, null);
         this.repeatedOffset1 = dictionary.repeatedOffset1();
         this.repeatedOffset2 = dictionary.repeatedOffset2();
         this.repeatedOffset3 = dictionary.repeatedOffset3();
@@ -233,9 +238,9 @@ final class ZstdBlockDecoder {
             throw new IOException("Missing Zstandard sequence bitstream");
         }
         ZstdEntropy.ReverseBitReader bits = new ZstdEntropy.ReverseBitReader(source, position, limit);
-        ZstdEntropy.FseTable literalTable = literalLengthTable;
-        ZstdEntropy.FseTable offsetsTable = offsetTable;
-        ZstdEntropy.FseTable matchesTable = matchLengthTable;
+        SequenceTable literalTable = literalLengthTable;
+        SequenceTable offsetsTable = offsetTable;
+        SequenceTable matchesTable = matchLengthTable;
         int literalState = bits.readBits(literalTable.tableLog());
         int offsetState = bits.readBits(offsetsTable.tableLog());
         int matchState = bits.readBits(matchesTable.tableLog());
@@ -245,19 +250,45 @@ final class ZstdBlockDecoder {
         int outputPosition = 0;
         int literalPosition = literalResult.offset();
         for (int sequence = 0; sequence < sequenceCount; sequence++) {
-            int literalCode = literalTable.symbol(literalState);
-            int offsetCode = offsetsTable.symbol(offsetState);
-            int matchCode = matchesTable.symbol(matchState);
-            if (literalCode >= LITERAL_BASELINES.length
-                    || matchCode >= MATCH_BASELINES.length
-                    || offsetCode > 31) {
-                throw new IOException("Invalid Zstandard sequence code");
+            long literalEntry = literalTable.entry(literalState);
+            long offsetEntry = offsetsTable.entry(offsetState);
+            long matchEntry = matchesTable.entry(matchState);
+            int offsetBits = (int) (offsetEntry >>> 32) & 31;
+            int matchBits = (int) (matchEntry >>> 32) & 31;
+            int literalBits = (int) (literalEntry >>> 32) & 31;
+            boolean advance = sequence + 1 < sequenceCount;
+            int literalStateBits = advance ? (int) (literalEntry >>> 37) & 15 : 0;
+            int matchStateBits = advance ? (int) (matchEntry >>> 37) & 15 : 0;
+            int offsetStateBits = advance ? (int) (offsetEntry >>> 37) & 15 : 0;
+            int stateBits = literalStateBits + matchStateBits + offsetStateBits;
+            int totalBits = offsetBits + matchBits + literalBits + stateBits;
+            long offsetValue;
+            int matchLength;
+            int literalLength;
+            if (totalBits <= 56) {
+                // One bounded load covers the common case, including all three state transitions.
+                // From low to high: OF, ML and LL transitions, then LL, ML and OF extra bits.
+                long fields = bits.readSequenceBits(totalBits);
+                offsetValue = (offsetEntry & 0xffff_ffffL) + (fields >>> (matchBits + literalBits + stateBits));
+                matchLength = (int) matchEntry
+                        + (int) ((fields >>> (literalBits + stateBits)) & ((1L << matchBits) - 1));
+                literalLength = (int) literalEntry
+                        + (int) ((fields >>> stateBits) & ((1L << literalBits) - 1));
+                literalState = (int) (literalEntry >>> 41)
+                        + (int) ((fields >>> (matchStateBits + offsetStateBits)) & ((1L << literalStateBits) - 1));
+                matchState = (int) (matchEntry >>> 41)
+                        + (int) ((fields >>> offsetStateBits) & ((1L << matchStateBits) - 1));
+                offsetState = (int) (offsetEntry >>> 41) + (int) (fields & ((1L << offsetStateBits) - 1));
+            } else {
+                offsetValue = (offsetEntry & 0xffff_ffffL) + Integer.toUnsignedLong(bits.readBits(offsetBits));
+                matchLength = (int) matchEntry + bits.readBits(matchBits);
+                literalLength = (int) literalEntry + bits.readBits(literalBits);
+                if (advance) {
+                    literalState = (int) (literalEntry >>> 41) + bits.readBits(literalStateBits);
+                    matchState = (int) (matchEntry >>> 41) + bits.readBits(matchStateBits);
+                    offsetState = (int) (offsetEntry >>> 41) + bits.readBits(offsetStateBits);
+                }
             }
-
-            long offsetValue = (1L << offsetCode)
-                    + Integer.toUnsignedLong(bits.readBits(offsetCode));
-            int matchLength = MATCH_BASELINES[matchCode] + bits.readBits(MATCH_BITS[matchCode]);
-            int literalLength = LITERAL_BASELINES[literalCode] + bits.readBits(LITERAL_BITS[literalCode]);
             if (literalLength > literalLimit - literalPosition
                     || literalLength > maximumOutputSize - outputPosition) {
                 throw new IOException("Zstandard sequence exceeds its literal section");
@@ -272,12 +303,6 @@ final class ZstdBlockDecoder {
             }
             copyMatch(output, outputPosition, matchLength, distance);
             outputPosition += matchLength;
-
-            if (sequence + 1 < sequenceCount) {
-                literalState = literalTable.nextState(literalState, bits);
-                matchState = matchesTable.nextState(matchState, bits);
-                offsetState = offsetsTable.nextState(offsetState, bits);
-            }
         }
         bits.requireFullyConsumed();
 
@@ -378,10 +403,11 @@ final class ZstdBlockDecoder {
             int mode,
             int maximumSymbol,
             int maximumTableLog,
-            ZstdEntropy.FseTable predefined,
-            @Nullable ZstdEntropy.FseTable previous,
+            SequenceTable predefined,
+            @Nullable SequenceTable previous,
             String name
     ) throws IOException {
+        long @Nullable [] workspace = previous == null || previous == predefined ? null : previous.entries();
         return switch (mode) {
             case 0 -> new TableResult(predefined, 0);
             case 1 -> {
@@ -390,12 +416,12 @@ final class ZstdBlockDecoder {
                 if (symbol > maximumSymbol) {
                     throw new IOException("Invalid Zstandard " + name + " RLE symbol");
                 }
-                yield new TableResult(ZstdEntropy.FseTable.rle(symbol), 1);
+                yield new TableResult(SequenceTable.expand(ZstdEntropy.FseTable.rle(symbol), maximumSymbol, workspace), 1);
             }
             case 2 -> {
                 ZstdEntropy.FseParseResult parsed =
                         ZstdEntropy.readFseTable(source, offset, limit, maximumSymbol, maximumTableLog);
-                yield new TableResult(parsed.table(), parsed.bytesRead());
+                yield new TableResult(SequenceTable.expand(parsed.table(), maximumSymbol, workspace), parsed.bytesRead());
             }
             case 3 -> {
                 if (previous == null) {
@@ -579,9 +605,76 @@ final class ZstdBlockDecoder {
     }
 
     /// Holds a selected sequence table and its encoded size.
-    private record TableResult(ZstdEntropy.FseTable table, int bytesRead) {
+    ///
+    /// @param table the selected table
+    /// @param bytesRead the number of bytes consumed by its description
+    @NotNullByDefault
+    private record TableResult(SequenceTable table, int bytesRead) {
         /// Creates selected table metadata.
         private TableResult {
+        }
+    }
+
+    /// Stores decoded sequence values and FSE transitions in one entry per state.
+    /// Non-predefined entries borrow a per-alphabet workspace that the next table replacement may overwrite.
+    ///
+    /// @param tableLog the logarithm of the number of states, or zero for RLE
+    /// @param entries unsigned value bases in bits 0..31, extra-bit counts in bits 32..36,
+    ///                transition widths in bits 37..40, and transition bases in bits 41..49
+    @NotNullByDefault
+    private record SequenceTable(int tableLog, long[] entries) {
+        /// Borrows the expanded state entries until this table is replaced.
+        private SequenceTable {
+        }
+
+        /// Expands a sequence alphabet into the supplied workspace, or a larger array if necessary.
+        /// The maximum symbol is 35 for literal lengths, 52 for match lengths, or 31 for offsets.
+        /// Out-of-range symbols are rejected before the table is used to decode sequences.
+        static SequenceTable expand(ZstdEntropy.FseTable table, int maximumSymbol, long @Nullable [] workspace)
+                throws IOException {
+            if (table.tableLog() > 9) {
+                throw new IOException("Zstandard sequence table is too large");
+            }
+            int stateCount = 1 << table.tableLog();
+            long[] entries = workspace != null && workspace.length >= stateCount ? workspace : new long[stateCount];
+            for (int state = 0; state < stateCount; state++) {
+                int symbol = table.symbol(state);
+                if (symbol > maximumSymbol) {
+                    throw new IOException("Invalid Zstandard sequence code");
+                }
+                int baseline;
+                int extraBits;
+                if (maximumSymbol == 35) {
+                    baseline = LITERAL_BASELINES[symbol];
+                    extraBits = LITERAL_BITS[symbol];
+                } else if (maximumSymbol == 52) {
+                    baseline = MATCH_BASELINES[symbol];
+                    extraBits = MATCH_BITS[symbol];
+                } else {
+                    baseline = 1 << symbol;
+                    extraBits = symbol;
+                }
+                entries[state] = Integer.toUnsignedLong(baseline) | ((long) extraBits << 32)
+                        | ((long) table.numberOfBits(state) << 37) | ((long) table.baseline(state) << 41);
+            }
+            return new SequenceTable(table.tableLog(), entries);
+        }
+
+        /// Expands a predefined table whose alphabet is fixed by the format.
+        private static SequenceTable predefined(ZstdEntropy.FseTable table, int maximumSymbol) {
+            try {
+                return expand(table, maximumSymbol, null);
+            } catch (IOException exception) {
+                throw new ExceptionInInitializerError(exception);
+            }
+        }
+
+        /// Returns one expanded entry, rejecting states outside the table.
+        private long entry(int state) throws IOException {
+            if (state < 0 || state >= 1 << tableLog) {
+                throw new IOException("Invalid Zstandard FSE state");
+            }
+            return entries[state];
         }
     }
 }
