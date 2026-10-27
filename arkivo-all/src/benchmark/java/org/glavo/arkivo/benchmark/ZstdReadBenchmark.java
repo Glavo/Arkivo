@@ -55,7 +55,7 @@ public class ZstdReadBenchmark {
 
     /// The deterministic block and match workload.
     @Param({"random", "periodic", "short-distance", "long-distance", "short-matches", "mixed-short-matches",
-            "huffman", "skewed-huffman"})
+            "huffman", "skewed-huffman", "huffman-small-alphabet", "huffman-medium-alphabet"})
     public String profile = "random";
 
     /// The shared compressed representation.
@@ -88,6 +88,12 @@ public class ZstdReadBenchmark {
             case "random" -> { }
             case "huffman" -> {
                 for (int i = 0; i < body.length; i++) body[i] &= 63;
+            }
+            case "huffman-small-alphabet" -> {
+                for (int i = 0; i < body.length; i++) body[i] &= 3;
+            }
+            case "huffman-medium-alphabet" -> {
+                for (int i = 0; i < body.length; i++) body[i] &= 15;
             }
             case "skewed-huffman" -> {
                 for (int i = 0; i < body.length; i++) {

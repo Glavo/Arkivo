@@ -29,6 +29,57 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Checks compressed matches across dictionary, history and current-block boundaries.
 @NotNullByDefault
 final class ZstdBlockDecoderTest {
+    /// Decodes both endpoints of every literal and match length code, including block-size overflow.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void decodesLengthCodeEndpoints(boolean matchLengths) throws IOException {
+        int[] bases = matchLengths
+                ? new int[]{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+                35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027,
+                2051, 4099, 8195, 16387, 32771, 65539}
+                : new int[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048,
+                4096, 8192, 16384, 32768, 65536};
+        for (int code = 0; code < bases.length; code++) {
+            int width = code + 1 < bases.length ? bases[code + 1] - bases[code] : 1 << 16;
+            int bitCount = Integer.numberOfTrailingZeros(width);
+            for (int extra : new int[]{0, width - 1}) {
+                int literals = matchLengths ? 1 : bases[code] + extra;
+                int matches = matchLengths ? bases[code] + extra : 3;
+                var block = new ByteArrayOutputStream();
+                int header = (literals << 4) | 13;
+                block.write(header);
+                block.write(header >>> 8);
+                block.write(header >>> 16);
+                block.write(42);
+                block.write(1);
+                block.write(0x54);
+                block.write(matchLengths ? 1 : code);
+                block.write(2);
+                block.write(matchLengths ? code : 0);
+                var bits = new ZstdEntropy.ReverseBitWriter();
+                bits.writeBits(extra, bitCount);
+                bits.writeBits(0, 2);
+                block.writeBytes(bits.finish());
+                byte[] input = block.toByteArray();
+                var decoder = new ZstdBlockDecoder(new ZstdHistory(128), ZstdDictionaryContext.NONE);
+                decoder.appendRaw(new byte[]{42}, 1);
+                int size = literals + matches;
+                if (size > ZstdBlockDecoder.MAX_BLOCK_SIZE) {
+                    assertThrows(IOException.class,
+                            () -> decoder.decodeCompressed(input, input.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+                    assertEquals(1, decoder.frameSize());
+                } else {
+                    byte[] expected = new byte[size];
+                    Arrays.fill(expected, (byte) 42);
+                    assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(input, input.length, size),
+                            "matchLengths=" + matchLengths + ", code=" + code + ", extra=" + extra);
+                }
+            }
+        }
+    }
+
     /// Rejects out-of-alphabet symbols while reading RLE or normalized sequence tables, before publishing output.
     @ParameterizedTest
     @ValueSource(ints = {0, 1, 2})
@@ -66,7 +117,7 @@ final class ZstdBlockDecoderTest {
 
     /// Reads raw literals directly across header widths without allocating a literal workspace or retaining input.
     @ParameterizedTest
-    @ValueSource(ints = {0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
             18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
             4095, 4096, 65536, 131063})
     void readsRawLiteralsWithoutIntermediateStorage(int size) throws Exception {
@@ -123,7 +174,7 @@ final class ZstdBlockDecoderTest {
 
     /// Copies RLE-decoded literal tails from an exact-sized workspace into an exact-sized output.
     @ParameterizedTest
-    @ValueSource(ints = {17, 18, 23, 24, 25, 31, 32, 33})
+    @ValueSource(ints = {5, 6, 7, 8, 17, 18, 23, 24, 25, 31, 32, 33})
     void copiesRleLiteralTailsWithoutPadding(int size) throws IOException {
         var block = new ByteArrayOutputStream();
         int header = size < 32 ? (size << 3) | 1 : (size << 4) | 5;
@@ -538,7 +589,7 @@ final class ZstdBlockDecoderTest {
     ///
     /// @param length the regenerated match length
     @ParameterizedTest
-    @ValueSource(ints = {3, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+    @ValueSource(ints = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
             18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 258, 65539})
     void expandsMatchesAcrossSources(int length) throws IOException {
         byte[] dictionary = new byte[64];
@@ -548,10 +599,10 @@ final class ZstdBlockDecoderTest {
             for (int previousSize : new int[]{0, 13, 64}) {
                 byte[] previous = new byte[previousSize];
                 for (int i = 0; i < previousSize; i++) previous[i] = (byte) (i * 31 + 5);
-                for (int prefixSize : new int[]{0, 1, 7, 8, 9, 15, 16, 17, 18, 23, 24, 25, 31}) {
+                for (int prefixSize : new int[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 18, 23, 24, 25, 31}) {
                     byte[] prefix = new byte[prefixSize];
                     for (int i = 0; i < prefixSize; i++) prefix[i] = (byte) (i + 3);
-                    for (int distance : new int[]{1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 80, 128}) {
+                    for (int distance : new int[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 80, 128}) {
                         ZstdBlockDecoder decoder = new ZstdBlockDecoder(new ZstdHistory(capacity), context);
                         decoder.appendRaw(previous, previous.length);
                         byte[] payload = singleMatch(prefix, length, distance);
