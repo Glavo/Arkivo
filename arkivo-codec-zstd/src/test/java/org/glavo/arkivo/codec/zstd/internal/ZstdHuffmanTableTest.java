@@ -33,6 +33,44 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Checks prefix-table decoding against independently assigned canonical codes and a bitwise decoder.
 @NotNullByDefault
 final class ZstdHuffmanTableTest {
+    /// Checks complete, incomplete, and conflicting tables using aligned prefix-space occupancy.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+    void validatesCanonicalPrefixOccupancy(int tableLog) throws Exception {
+        var field = ZstdEntropy.HuffmanTable.class.getDeclaredField("entries");
+        field.setAccessible(true);
+        Random random = new Random(7290 + tableLog);
+        for (int attempt = 0; attempt < 512; attempt++) {
+            int[] weights = new int[attempt % 32 + 1];
+            for (int i = 0; i < weights.length; i++) weights[i] = random.nextInt(tableLog + 1);
+            short[] expected = new short[1 << tableLog];
+            int occupied = 0;
+            boolean invalid = false;
+            for (int weight = 1; weight <= tableLog && !invalid; weight++) {
+                int length = tableLog + 1 - weight;
+                int width = 1 << (weight - 1);
+                for (int symbol = 0; symbol < weights.length; symbol++) {
+                    if (weights[symbol] != weight) continue;
+                    if (occupied % width != 0 || occupied + width > expected.length) {
+                        invalid = true;
+                        break;
+                    }
+                    for (int prefix = occupied; prefix < occupied + width; prefix++) {
+                        expected[prefix] = (short) ((symbol << 4) | length);
+                    }
+                    occupied += width;
+                }
+            }
+            if (invalid) {
+                assertThrows(IOException.class,
+                        () -> ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog));
+            } else {
+                var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+                assertArrayEquals(expected, assertInstanceOf(short[].class, field.get(table)));
+            }
+        }
+    }
+
     /// Exercises every supported code length, including tails shorter than the lookup width.
     @ParameterizedTest
     @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
@@ -185,7 +223,7 @@ final class ZstdHuffmanTableTest {
         int[] codes = canonicalCodes(weights, tableLog);
         var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
         Random random = new Random(1234 + tableLog);
-        for (int size : new int[]{32767, 32768, 32769, 32799}) {
+        for (int size : new int[]{8191, 8192, 8193, 16383, 16384, 16385, 32767, 32768, 32769, 32799}) {
             byte[] plain = new byte[size];
             for (int i = 0; i < size; i++) plain[i] = (byte) random.nextInt(weights.length);
             byte[] stream = encodeFourStreams(plain, weights, codes, tableLog);
