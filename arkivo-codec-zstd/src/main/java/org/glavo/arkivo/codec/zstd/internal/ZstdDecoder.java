@@ -27,8 +27,10 @@ import java.util.Objects;
 ///
 /// @implNote One contiguous history window of at most 16 MiB is retained between frames for reuse at the same size.
 /// A different window size replaces this storage; segmented windows are not cached.
+/// Contiguous windows of at least 128 KiB reserve another 128 KiB for decoding directly after retained history.
+/// Once this shared storage fills, subsequent blocks use a separate bounded workspace until the next frame.
 /// The input workspace also remains available between frames and is bounded to 128 KiB.
-/// Closing releases both workspaces.
+/// Closing releases the retained storage.
 @NotNullByDefault
 public final class ZstdDecoder
         implements CompressionDecoder.FramedDictionaryAware<ZstdDictionary, ZstdDictionaryRequest> {

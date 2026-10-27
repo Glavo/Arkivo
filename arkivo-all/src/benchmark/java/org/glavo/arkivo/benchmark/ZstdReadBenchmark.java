@@ -27,6 +27,8 @@ import org.openjdk.jmh.annotations.Warmup;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Random;
@@ -41,7 +43,7 @@ import java.util.concurrent.TimeUnit;
 @Measurement(iterations = 5, time = 1)
 @Fork(value = 2, jvmArgsAppend = {"-Xms512m", "-Xmx512m"})
 public class ZstdReadBenchmark {
-    /// The uncompressed byte count per invocation.
+    /// The uncompressed byte count for generated profiles; ignored for the `file` profile.
     @Param({"1048576"})
     public int size = 1024 * 1024;
 
@@ -57,6 +59,10 @@ public class ZstdReadBenchmark {
     @Param({"random", "periodic", "short-distance", "long-distance", "short-matches", "mixed-short-matches",
             "huffman", "skewed-huffman", "huffman-small-alphabet", "huffman-medium-alphabet"})
     public String profile = "random";
+
+    /// Path to the complete uncompressed input for the `file` profile; no content is repeated or truncated.
+    @Param({""})
+    public String inputFile = "";
 
     /// The shared compressed representation.
     private byte @Unmodifiable [] compressed = new byte[0];
@@ -82,10 +88,16 @@ public class ZstdReadBenchmark {
         if (!implementation.equals("arkivo") && !implementation.equals("native")) {
             throw new IllegalArgumentException(implementation);
         }
-        byte[] body = new byte[size];
-        new Random(42).nextBytes(body);
+        byte[] body;
+        if (profile.equals("file")) {
+            if (inputFile.isEmpty()) throw new IllegalArgumentException("The file profile requires inputFile");
+            body = Files.readAllBytes(Path.of(inputFile));
+        } else {
+            body = new byte[size];
+            new Random(42).nextBytes(body);
+        }
         switch (profile) {
-            case "random" -> { }
+            case "random", "file" -> { }
             case "huffman" -> {
                 for (int i = 0; i < body.length; i++) body[i] &= 63;
             }
@@ -134,17 +146,18 @@ public class ZstdReadBenchmark {
         decoder = ZstdCodec.DEFAULT.newDecoder();
         nativeDecoder = new ZstdDecompressCtx();
         input = ByteBuffer.wrap(compressed).asReadOnlyBuffer();
-        output = new byte[size + 1];
+        output = new byte[Math.addExact(body.length, 1)];
         target = ByteBuffer.wrap(output);
-        if (decodeArkivo(decoder) != size || !Arrays.equals(body, 0, size, output, 0, size)) {
+        if (decodeArkivo(decoder) != body.length || !Arrays.equals(body, 0, body.length, output, 0, body.length)) {
             throw new AssertionError("Arkivo Zstandard output differs");
         }
         Arrays.fill(output, (byte) 0);
-        if (nativeDecoder.decompress(output, compressed) != size
-                || !Arrays.equals(body, 0, size, output, 0, size)) {
+        if (nativeDecoder.decompress(output, compressed) != body.length
+                || !Arrays.equals(body, 0, body.length, output, 0, body.length)) {
             throw new AssertionError("Native Zstandard output differs");
         }
         System.out.println("ZSTD_READ_INPUT_BYTES " + profile + " " + compressed.length);
+        System.out.println("ZSTD_READ_OUTPUT_BYTES " + profile + " " + body.length);
         if (!reuseContext) {
             close();
             decoder = null;

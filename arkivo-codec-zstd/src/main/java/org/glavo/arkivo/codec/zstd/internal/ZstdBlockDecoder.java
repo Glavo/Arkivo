@@ -17,7 +17,7 @@ import java.util.Objects;
 /// Decodes Zstandard raw, run-length, and compressed blocks into a bounded history window.
 ///
 /// Returned buffers borrow internal storage and must be consumed before decoding another block.
-/// A failed decoding attempt may overwrite a previous result. History is independent of returned views.
+/// A failed decoding attempt may overwrite a previous result. Returned views cannot modify history.
 @NotNullByDefault
 final class ZstdBlockDecoder {
     /// Maximum decompressed size of one block.
@@ -69,13 +69,13 @@ final class ZstdBlockDecoder {
     /// Configured dictionary context.
     private final ZstdDictionaryContext dictionary;
 
-    /// Ring buffer containing prior frame output.
+    /// Retained frame output and, for eligible windows, storage for the next block.
     private final ZstdHistory history;
 
     /// Workspace for decoded literals and raw literals returned by zero-sequence blocks.
     private byte @Nullable [] literals;
 
-    /// Lazily allocated RLE and match-expansion workspace, reused within this frame.
+    /// Separate RLE and match workspace, allocated only when history cannot provide block storage.
     private byte @Nullable [] outputWorkspace;
 
     /// Current Huffman table.
@@ -141,10 +141,17 @@ final class ZstdBlockDecoder {
         if (size < 0 || size > MAX_BLOCK_SIZE) {
             throw new IOException("Zstandard RLE block exceeds 128 KiB");
         }
-        outputWorkspace = prepareWorkspace(outputWorkspace, size);
-        byte[] output = outputWorkspace;
-        Arrays.fill(output, 0, size, (byte) value);
-        return finishBlock(output, size);
+        byte @Nullable [] output = history.beginBlock(size);
+        boolean sharedOutput = output != null;
+        int start = 0;
+        if (output == null) {
+            outputWorkspace = prepareWorkspace(outputWorkspace, size);
+            output = outputWorkspace;
+        } else {
+            start = history.blockOffset();
+        }
+        Arrays.fill(output, start, start + size, (byte) value);
+        return finishBlock(output, start, size, sharedOutput);
     }
 
     /// Decodes `source[0..limit)` and returns a read-only output view positioned at zero.
@@ -184,7 +191,7 @@ final class ZstdBlockDecoder {
                 System.arraycopy(source, literalResult.offset(), literals, 0, literalResult.literalSize());
                 currentLiterals = literals;
             }
-            return finishBlock(currentLiterals, literalResult.literalSize());
+            return finishBlock(currentLiterals, 0, literalResult.literalSize(), false);
         }
 
         requireAvailable(limit, position, 1);
@@ -245,9 +252,20 @@ final class ZstdBlockDecoder {
         int offsetState = bits.readBits(offsetsTable.tableLog());
         int matchState = bits.readBits(matchesTable.tableLog());
 
-        outputWorkspace = prepareWorkspace(outputWorkspace, maximumOutputSize);
-        byte[] output = outputWorkspace;
-        int outputPosition = 0;
+        byte @Nullable [] output = history.beginBlock(maximumOutputSize);
+        boolean sharedOutput = output != null;
+        int outputStart = 0;
+        int historyStart = 0;
+        if (output == null) {
+            outputWorkspace = prepareWorkspace(outputWorkspace, maximumOutputSize);
+            output = outputWorkspace;
+        } else {
+            outputStart = history.blockOffset();
+            // Older bytes may remain in the array, but only the retained window can satisfy a match.
+            historyStart = outputStart - (int) history.size();
+        }
+        int outputLimit = outputStart + maximumOutputSize;
+        int outputPosition = outputStart;
         int literalPosition = literalResult.offset();
         for (int sequence = 0; sequence < sequenceCount; sequence++) {
             long literalEntry = literalTable.entry(literalState);
@@ -290,7 +308,7 @@ final class ZstdBlockDecoder {
                 }
             }
             if (literalLength > literalLimit - literalPosition
-                    || literalLength > maximumOutputSize - outputPosition) {
+                    || literalLength > outputLimit - outputPosition) {
                 throw new IOException("Zstandard sequence exceeds its literal section");
             }
             copyNonOverlapping(currentLiterals, literalPosition, output, outputPosition, literalLength);
@@ -298,28 +316,28 @@ final class ZstdBlockDecoder {
             outputPosition += literalLength;
 
             long distance = resolveOffset(offsetValue, literalLength);
-            if (matchLength > maximumOutputSize - outputPosition) {
+            if (matchLength > outputLimit - outputPosition) {
                 throw new IOException("Decoded Zstandard block exceeds the frame block-size limit");
             }
             if (matchLength <= Long.BYTES && distance >= Long.BYTES
-                    && distance <= outputPosition && outputPosition <= output.length - Long.BYTES) {
+                    && distance <= outputPosition - historyStart && outputPosition <= output.length - Long.BYTES) {
                 // Read only decoded bytes. Following workspace bytes are not committed with this match.
                 long word = ByteArrayAccess.readLongLittleEndian(output, outputPosition - (int) distance);
                 ByteArrayAccess.writeLongLittleEndian(output, outputPosition, word);
             } else {
-                copyMatch(output, outputPosition, matchLength, distance);
+                copyMatch(output, outputPosition, matchLength, distance, outputStart, historyStart);
             }
             outputPosition += matchLength;
         }
         bits.requireFullyConsumed();
 
         int remainingLiterals = literalLimit - literalPosition;
-        if (remainingLiterals > maximumOutputSize - outputPosition) {
+        if (remainingLiterals > outputLimit - outputPosition) {
             throw new IOException("Zstandard literals exceed the block size limit");
         }
         copyNonOverlapping(currentLiterals, literalPosition, output, outputPosition, remainingLiterals);
         outputPosition += remainingLiterals;
-        return finishBlock(output, outputPosition);
+        return finishBlock(output, outputStart, outputPosition - outputStart, sharedOutput);
     }
 
     /// Locates raw literals in the input or decodes encoded literals into the reusable workspace.
@@ -490,15 +508,18 @@ final class ZstdBlockDecoder {
     }
 
     /// Copies one potentially overlapping match from block, frame history, or dictionary content.
-    private void copyMatch(byte[] output, int outputPosition, int length, long distance) throws IOException {
-        while (distance > outputPosition && length > 0) {
-            long beforeBlock = distance - outputPosition;
+    /// The current block begins at `outputStart`; `historyStart` bounds the retained prefix in this array.
+    /// Both are zero when history uses separate storage.
+    private void copyMatch(byte[] output, int outputPosition, int length, long distance,
+                           int outputStart, int historyStart) throws IOException {
+        while (distance > outputPosition - historyStart && length > 0) {
+            long beforeBlock = distance - (outputPosition - outputStart);
             int copied;
             if (beforeBlock <= history.size()) {
                 copied = (int) Math.min(length, beforeBlock);
                 history.copy(beforeBlock, output, outputPosition, copied);
             } else {
-                long absolutePosition = frameSize + outputPosition;
+                long absolutePosition = frameSize + outputPosition - outputStart;
                 long dictionaryDistance = distance - absolutePosition;
                 byte[] dictionaryContent = dictionary.content();
                 if (dictionaryDistance <= 0L
@@ -544,11 +565,15 @@ final class ZstdBlockDecoder {
         return new byte[capacity];
     }
 
-    /// Saves only the completed prefix in history and exposes a read-only view bounded to that prefix.
-    private @UnmodifiableView ByteBuffer finishBlock(byte[] block, int length) throws IOException {
-        history.append(block, length);
+    /// Commits the completed block range and exposes a read-only view bounded to that range.
+    private @UnmodifiableView ByteBuffer finishBlock(byte[] block, int start, int length, boolean sharedOutput) throws IOException {
+        if (sharedOutput) {
+            history.commitBlock(length);
+        } else {
+            history.append(block, length);
+        }
         frameSize += length;
-        return ByteBuffer.wrap(block, 0, length).slice().asReadOnlyBuffer();
+        return ByteBuffer.wrap(block, start, length).slice().asReadOnlyBuffer();
     }
 
     /// Requires one byte range to lie within the current block's logical input limit.

@@ -13,11 +13,67 @@ import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Verifies bulk history transfers against the logical unbounded byte stream.
 @NotNullByDefault
 final class ZstdHistoryTest {
+    /// Keeps abandoned block writes outside committed history and preserves history when switching to a ring.
+    @ParameterizedTest
+    @ValueSource(ints = {131072, 262144, 1048576})
+    void commitsSharedBlocksOnlyAfterValidation(int capacity) throws IOException {
+        var history = new ZstdHistory(capacity);
+        byte[] stream = new byte[capacity + 131072 * 3];
+        for (int i = 0; i < stream.length; i++) stream[i] = valueAt(i);
+        history.append(stream, capacity);
+        int total = capacity;
+        for (int length : new int[]{0, 3, 131069, 1, 131071, 7, 131065}) {
+            if (total > capacity) {
+                assertNull(history.beginBlock(131072));
+                history.append(Arrays.copyOfRange(stream, total, total + length), length);
+                total += length;
+                byte[] retained = new byte[capacity];
+                history.copy(capacity, retained, 0, capacity);
+                assertArrayEquals(Arrays.copyOfRange(stream, total - capacity, total), retained);
+                continue;
+            }
+            byte[] storage = assertInstanceOf(byte[].class, history.beginBlock(131072));
+            int start = history.blockOffset();
+            Arrays.fill(storage, start, start + 131072, (byte) 0xa5);
+            byte[] retained = new byte[capacity];
+            history.copy(capacity, retained, 0, capacity);
+            assertArrayEquals(Arrays.copyOfRange(stream, total - capacity, total), retained);
+            assertThrows(IndexOutOfBoundsException.class, () -> history.commitBlock(131073));
+            assertEquals(capacity, history.size());
+            assertSame(storage, history.beginBlock(131072));
+            assertEquals(start, history.blockOffset());
+            System.arraycopy(stream, total, storage, start, length);
+            history.commitBlock(length);
+            total += length;
+            history.copy(capacity, retained, 0, capacity);
+            assertArrayEquals(Arrays.copyOfRange(stream, total - capacity, total), retained);
+        }
+        history.reset();
+        assertEquals(0, history.size());
+        byte[] storage = assertInstanceOf(byte[].class, history.beginBlock(8));
+        assertEquals(0, history.blockOffset());
+        storage[0] = 42;
+        history.commitBlock(1);
+        byte[] retained = new byte[1];
+        history.copy(1, retained, 0, 1);
+        assertArrayEquals(new byte[]{42}, retained);
+    }
+
+    /// Retains separate workspaces for small and segmented history windows.
+    @ParameterizedTest
+    @ValueSource(longs = {0, 1, 131071, 16777217L, 4294967299L})
+    void declinesSharedStorageOutsideContiguousBlockWindows(long capacity) throws IOException {
+        assertNull(new ZstdHistory(capacity).beginBlock(131072));
+    }
+
     /// Checks every ring position and distance with empty, short and full-window copies.
     @ParameterizedTest
     @ValueSource(ints = {1, 2, 7, 31, 128})
@@ -48,7 +104,7 @@ final class ZstdHistoryTest {
     ///
     /// @param capacity the logical window size
     @ParameterizedTest
-    @ValueSource(longs = {1, 7, 32768, 16_777_233, 4_294_967_299L})
+    @ValueSource(longs = {1, 7, 32768, 131072, 1048576, 16_777_233, 4_294_967_299L})
     void copiesAcrossStorageBoundaries(long capacity) throws IOException {
         ZstdHistory history = new ZstdHistory(capacity);
         int total = (int) Math.min(capacity + 37, 18L * 1024 * 1024);

@@ -381,17 +381,19 @@ final class ZstdBlockDecoderTest {
         System.arraycopy(valid, 0, invalid, 0, valid.length - 1);
         // Insert an unread zero byte before the single-byte reverse bitstream.
         invalid[valid.length] = valid[valid.length - 1];
-        var history = new ZstdHistory(128);
-        var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
-        decoder.appendRaw(prefix, prefix.length);
-        IOException failure = assertThrows(IOException.class,
-                () -> decoder.decodeCompressed(invalid, invalid.length, 64));
-        assertTrue(failure.getMessage().contains("unused bits"));
-        assertEquals(prefix.length, decoder.frameSize());
-        assertEquals(prefix.length, history.size());
-        byte[] retained = new byte[prefix.length];
-        history.copy(prefix.length, retained, 0, retained.length);
-        assertArrayEquals(prefix, retained);
+        for (int capacity : new int[]{128, 131072}) {
+            var history = new ZstdHistory(capacity);
+            var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+            decoder.appendRaw(prefix, prefix.length);
+            IOException failure = assertThrows(IOException.class,
+                    () -> decoder.decodeCompressed(invalid, invalid.length, 64));
+            assertTrue(failure.getMessage().contains("unused bits"));
+            assertEquals(prefix.length, decoder.frameSize());
+            assertEquals(prefix.length, history.size());
+            byte[] retained = new byte[prefix.length];
+            history.copy(prefix.length, retained, 0, retained.length);
+            assertArrayEquals(prefix, retained);
+        }
     }
 
     /// Copies RLE-decoded literal tails from an exact-sized workspace into an exact-sized output.
@@ -730,7 +732,7 @@ final class ZstdBlockDecoderTest {
     /// Reuses bounded read-only views without sharing history storage or retaining caller output.
     @Test
     void reusesReadOnlyViewsWithoutAliasingHistory() throws Exception {
-        ZstdBlockDecoder decoder = new ZstdBlockDecoder(new ZstdHistory(131072), ZstdDictionaryContext.NONE);
+        ZstdBlockDecoder decoder = new ZstdBlockDecoder(new ZstdHistory(65536), ZstdDictionaryContext.NONE);
         var field = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
         field.setAccessible(true);
         assertNull(field.get(decoder));
@@ -889,7 +891,7 @@ final class ZstdBlockDecoderTest {
         assertEquals(ByteBuffer.wrap(expected), decoder.decodeCompressed(block, block.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
         var field = ZstdBlockDecoder.class.getDeclaredField("outputWorkspace");
         field.setAccessible(true);
-        assertEquals(expected.length, assertInstanceOf(byte[].class, field.get(decoder)).length);
+        assertNull(field.get(decoder), "contiguous history provides the block workspace");
         assertEquals(expected.length, decoder.frameSize());
         for (byte[] oversized : new byte[][]{
                 repeatedMatches(new byte[]{42, 43}, 2, 65536),
@@ -899,6 +901,45 @@ final class ZstdBlockDecoderTest {
             assertThrows(IOException.class, () -> invalid.decodeCompressed(oversized, oversized.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
             assertEquals(0, invalid.frameSize());
             assertEquals(0, history.size());
+        }
+    }
+
+    /// Preserves current-block, history and dictionary references before and after shared storage fills.
+    @ParameterizedTest
+    @ValueSource(ints = {3, 8, 9, 258})
+    void expandsMatchesAfterSharedHistoryRollover(int length) throws IOException {
+        int capacity = ZstdBlockDecoder.MAX_BLOCK_SIZE;
+        byte[] dictionary = new byte[64];
+        new Random(11000).nextBytes(dictionary);
+        var context = ZstdDictionaryContext.parse(ZstdDictionary.rawContent(dictionary));
+        for (int previousSize : new int[]{0, 13, 64, 131072, 131075, 262145}) {
+            byte[] previous = new byte[previousSize];
+            new Random(11001).nextBytes(previous);
+            for (int prefixSize : new int[]{0, 8, 31}) {
+                byte[] prefix = new byte[prefixSize];
+                new Random(11002).nextBytes(prefix);
+                for (int distance : new int[]{1, 7, 8, 9, 32, 64, 80, 131071, 131072, 131073, 262145}) {
+                    var decoder = new ZstdBlockDecoder(new ZstdHistory(capacity), context);
+                    for (int start = 0; start < previous.length; start += capacity) {
+                        byte[] block = Arrays.copyOfRange(previous, start, Math.min(start + capacity, previous.length));
+                        decoder.appendRaw(block, block.length);
+                    }
+                    byte[] payload = singleMatch(prefix, length, distance);
+                    byte[] expected;
+                    try {
+                        expected = expand(prefix, previous, dictionary, capacity, length, distance);
+                    } catch (IOException invalid) {
+                        assertThrows(IOException.class,
+                                () -> decoder.decodeCompressed(payload, payload.length, prefixSize + length));
+                        assertEquals(previousSize, decoder.frameSize());
+                        continue;
+                    }
+                    assertEquals(ByteBuffer.wrap(expected),
+                            decoder.decodeCompressed(payload, payload.length, prefixSize + length),
+                            "history=" + previousSize + ", prefix=" + prefixSize + ", distance=" + distance);
+                    assertEquals(previousSize + expected.length, decoder.frameSize());
+                }
+            }
         }
     }
 
