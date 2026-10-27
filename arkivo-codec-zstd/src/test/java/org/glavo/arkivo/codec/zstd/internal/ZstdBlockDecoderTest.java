@@ -24,10 +24,46 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Checks compressed matches across dictionary, history and current-block boundaries.
 @NotNullByDefault
 final class ZstdBlockDecoderTest {
+    /// Rejects out-of-alphabet symbols while reading RLE or normalized sequence tables, before publishing output.
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1, 2})
+    void rejectsOutOfRangeSequenceTableSymbols(int tableIndex) throws IOException {
+        int[] maximumSymbols = {35, 31, 52};
+        int[] validSymbols = {1, 2, 0};
+        for (int mode : new int[]{1, 2}) {
+            var block = new ByteArrayOutputStream();
+            block.writeBytes(new byte[]{8, 42, 1});
+            int shift = 6 - tableIndex * 2;
+            block.write((0x54 & ~(3 << shift)) | (mode << shift));
+            for (int table = 0; table < 3; table++) {
+                if (table != tableIndex) {
+                    block.write(validSymbols[table]);
+                } else if (mode == 1) {
+                    block.write(maximumSymbols[table] + 1);
+                } else {
+                    int[] counts = new int[maximumSymbols[table] + 2];
+                    counts[0] = 31;
+                    counts[counts.length - 1] = 1;
+                    block.writeBytes(ZstdEntropy.encodeFseTableDescription(counts, counts.length, 5));
+                }
+            }
+            block.write(4);
+            byte[] input = block.toByteArray();
+            var history = new ZstdHistory(128);
+            var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+            IOException failure = assertThrows(IOException.class,
+                    () -> decoder.decodeCompressed(input, input.length, 128));
+            assertTrue(failure.getMessage().contains(mode == 1 ? "RLE symbol" : "FSE"));
+            assertEquals(0, decoder.frameSize());
+            assertEquals(0, history.size());
+        }
+    }
+
     /// Reads raw literals directly across header widths without allocating a literal workspace or retaining input.
     @ParameterizedTest
     @ValueSource(ints = {0, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,

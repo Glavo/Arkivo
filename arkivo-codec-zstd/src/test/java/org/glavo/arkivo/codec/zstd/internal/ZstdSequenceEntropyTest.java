@@ -22,7 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public final class ZstdSequenceEntropyTest {
     /// Compares mixed-width reads across words and short tails with independent bitwise extraction.
     @ParameterizedTest
-    @ValueSource(ints = {0, 1, 7, 8, 9, 31, 32, 63, 64, 65, 127, 128, 1024})
+    @ValueSource(ints = {0, 1, 7, 8, 9, 15, 16, 17, 23, 24, 25, 31, 32, 33,
+            39, 40, 41, 47, 48, 49, 55, 56, 57, 63, 64, 65, 127, 128, 1024})
     public void readsReverseFieldsAcrossWordBoundaries(int usefulBits) throws IOException {
         Random random = new Random(8200 + usefulBits);
         for (int prefix : new int[]{0, 1, 8}) {
@@ -162,8 +163,8 @@ public final class ZstdSequenceEntropyTest {
                 writer.writeBits(0, alignment);
                 writer.writeBits(value, count);
                 byte[] stream = writer.finish();
-                for (int prefix : new int[]{0, 1, 8}) {
-                    for (int suffix : new int[]{0, 1, 8}) {
+                for (int prefix = 0; prefix <= Long.BYTES; prefix++) {
+                    for (int suffix = 0; suffix <= Long.BYTES; suffix++) {
                         byte[] source = new byte[prefix + stream.length + suffix];
                         Arrays.fill(source, (byte) 0xff);
                         System.arraycopy(stream, 0, source, prefix, stream.length);
