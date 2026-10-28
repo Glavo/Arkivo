@@ -40,9 +40,15 @@ final class ZstdHuffmanTableTest {
         var field = ZstdEntropy.HuffmanTable.class.getDeclaredField("entries");
         field.setAccessible(true);
         Random random = new Random(7290 + tableLog);
-        for (int attempt = 0; attempt < 512; attempt++) {
-            int[] weights = new int[attempt % 32 + 1];
-            for (int i = 0; i < weights.length; i++) weights[i] = random.nextInt(tableLog + 1);
+        // Exhaust the small alphabets to check the contiguous-prefix invariant, including rejected gaps.
+        int attempts = tableLog <= 4 ? (int) Math.pow(tableLog + 1, 6) : 512;
+        for (int attempt = 0; attempt < attempts; attempt++) {
+            int[] weights = new int[tableLog <= 4 ? 6 : attempt % 32 + 1];
+            int digits = attempt;
+            for (int i = 0; i < weights.length; i++) {
+                weights[i] = tableLog <= 4 ? digits % (tableLog + 1) : random.nextInt(tableLog + 1);
+                digits /= tableLog + 1;
+            }
             short[] expected = new short[1 << tableLog];
             int occupied = 0;
             boolean invalid = false;
