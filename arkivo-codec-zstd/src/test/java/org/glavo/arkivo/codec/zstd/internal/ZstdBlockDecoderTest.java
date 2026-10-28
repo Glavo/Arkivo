@@ -286,8 +286,8 @@ final class ZstdBlockDecoderTest {
     void decodesShortRunsBetweenMatches(int matchLength, int capacity) throws IOException {
         byte[] previous = new byte[32];
         new Random(9800).nextBytes(previous);
-        for (int literalLength = 0; literalLength <= 9; literalLength++) {
-            for (int tail = 0; tail <= 9; tail++) {
+        for (int literalLength = 0; literalLength <= 17; literalLength++) {
+            for (int tail = 0; tail <= 17; tail++) {
                 byte[] literals = new byte[literalLength * 16 + tail];
                 new Random(9900 + literalLength * 8 + tail).nextBytes(literals);
                 var block = new ByteArrayOutputStream();
@@ -297,12 +297,15 @@ final class ZstdBlockDecoderTest {
                 block.writeBytes(literals);
                 block.write(16);
                 block.write(0x54);
-                block.write(literalLength);
+                block.write(Math.min(literalLength, 16));
                 block.write(4);
                 block.write(matchLength - 3);
                 var bits = new ZstdEntropy.ReverseBitWriter();
                 // Offset code 4 with extra value 5 encodes distance 16 + 5 - 3 = 18.
-                for (int sequence = 0; sequence < 16; sequence++) bits.writeBits(5, 4);
+                for (int sequence = 0; sequence < 16; sequence++) {
+                    if (literalLength >= 16) bits.writeBits(literalLength & 1, 1);
+                    bits.writeBits(5, 4);
+                }
                 block.writeBytes(bits.finish());
 
                 byte[] expected = Arrays.copyOf(previous, previous.length + literals.length + matchLength * 16);
@@ -335,11 +338,15 @@ final class ZstdBlockDecoderTest {
 
     /// Does not commit literal lookahead when unread entropy bits invalidate the block.
     @ParameterizedTest
-    @ValueSource(ints = {11, 16})
-    void rejectsTrailingBitsAfterShortLiterals(int maximumSize) throws IOException {
+    @CsvSource({"8, 11", "8, 16", "16, 19", "16, 24", "17, 20", "17, 25"})
+    void rejectsTrailingBitsAfterShortLiterals(int literalCount, int maximumSize) throws IOException {
         byte[] previous = {37, 53};
-        // Eight literals, one literal plus a distance-one match, then an unused byte before the end marker.
-        byte[] input = {64, 17, 22, 31, 47, 59, 67, 79, 83, 1, 0x54, 1, 2, 0, 0, 4};
+        var block = new ByteArrayOutputStream();
+        block.write(literalCount << 3);
+        for (int i = 0; i < literalCount; i++) block.write(17 + i);
+        // One literal plus a distance-one match, then an unused byte before the end marker.
+        block.writeBytes(new byte[]{1, 0x54, 1, 2, 0, 0, 4});
+        byte[] input = block.toByteArray();
         for (int capacity : new int[]{1024, 131072}) {
             var history = new ZstdHistory(capacity);
             var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
@@ -425,7 +432,7 @@ final class ZstdBlockDecoderTest {
 
     /// Copies RLE-decoded literal tails from an exact-sized workspace into an exact-sized output.
     @ParameterizedTest
-    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 17, 18, 23, 24, 25, 31, 32, 33})
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 18, 23, 24, 25, 31, 32, 33})
     void copiesRleLiteralTailsWithoutPadding(int size) throws IOException {
         var block = new ByteArrayOutputStream();
         int header = size < 32 ? (size << 3) | 1 : (size << 4) | 5;
