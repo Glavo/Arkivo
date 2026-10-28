@@ -251,6 +251,9 @@ final class ZstdBlockDecoder {
         int literalState = bits.readBits(literalTable.tableLog());
         int offsetState = bits.readBits(offsetsTable.tableLog());
         int matchState = bits.readBits(matchesTable.tableLog());
+        long[] literalEntries = literalTable.entries();
+        long[] offsetEntries = offsetsTable.entries();
+        long[] matchEntries = matchesTable.entries();
 
         byte @Nullable [] output = history.beginBlock(maximumOutputSize);
         boolean sharedOutput = output != null;
@@ -268,9 +271,10 @@ final class ZstdBlockDecoder {
         int outputPosition = outputStart;
         int literalPosition = literalResult.offset();
         for (int sequence = 0; sequence < sequenceCount; sequence++) {
-            long literalEntry = literalTable.entry(literalState);
-            long offsetEntry = offsetsTable.entry(offsetState);
-            long matchEntry = matchesTable.entry(matchState);
+            // Initial states are width-bounded; every subsequent transition was checked when building its table.
+            long literalEntry = literalEntries[literalState];
+            long offsetEntry = offsetEntries[offsetState];
+            long matchEntry = matchEntries[matchState];
             int offsetBits = (int) (offsetEntry >>> 32) & 31;
             int matchBits = (int) (matchEntry >>> 32) & 31;
             int literalBits = (int) (literalEntry >>> 32) & 31;
@@ -655,6 +659,7 @@ final class ZstdBlockDecoder {
     }
 
     /// Stores decoded sequence values and FSE transitions in one entry per state.
+    /// Every transition's full destination range lies within the table's logical state count.
     /// Non-predefined entries borrow a per-alphabet workspace that the next table replacement may overwrite.
     ///
     /// @param tableLog the logarithm of the number of states, or zero for RLE
@@ -677,6 +682,11 @@ final class ZstdBlockDecoder {
             int stateCount = 1 << table.tableLog();
             long[] entries = workspace != null && workspace.length >= stateCount ? workspace : new long[stateCount];
             for (int state = 0; state < stateCount; state++) {
+                int stateBits = table.numberOfBits(state);
+                int stateBase = table.baseline(state);
+                if (stateBits > table.tableLog() || stateBase > stateCount - (1 << stateBits)) {
+                    throw new IOException("Invalid Zstandard FSE transition");
+                }
                 int symbol = table.symbol(state);
                 if (symbol > maximumSymbol) {
                     throw new IOException("Invalid Zstandard sequence code");
@@ -694,7 +704,7 @@ final class ZstdBlockDecoder {
                     extraBits = symbol;
                 }
                 entries[state] = Integer.toUnsignedLong(baseline) | ((long) extraBits << 32)
-                        | ((long) table.numberOfBits(state) << 37) | ((long) table.baseline(state) << 41);
+                        | ((long) stateBits << 37) | ((long) stateBase << 41);
             }
             return new SequenceTable(table.tableLog(), entries);
         }
@@ -706,14 +716,6 @@ final class ZstdBlockDecoder {
             } catch (IOException exception) {
                 throw new ExceptionInInitializerError(exception);
             }
-        }
-
-        /// Returns one expanded entry, rejecting states outside the table.
-        private long entry(int state) throws IOException {
-            if (state < 0 || state >= 1 << tableLog) {
-                throw new IOException("Invalid Zstandard FSE state");
-            }
-            return entries[state];
         }
     }
 }

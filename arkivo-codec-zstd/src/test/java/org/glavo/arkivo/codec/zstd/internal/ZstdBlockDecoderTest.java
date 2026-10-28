@@ -30,6 +30,35 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Checks compressed matches across dictionary, history and current-block boundaries.
 @NotNullByDefault
 final class ZstdBlockDecoderTest {
+    /// Validates every transition's full destination range before publishing an expanded sequence table.
+    @ParameterizedTest
+    @ValueSource(ints = {31, 35, 52})
+    void validatesExpandedTransitionRanges(int maximumSymbol) throws Exception {
+        var constructor = ZstdEntropy.FseTable.class.getDeclaredConstructor(int.class, int[].class);
+        constructor.setAccessible(true);
+        Class<?> sequenceTable = Class.forName(ZstdBlockDecoder.class.getName() + "$SequenceTable");
+        var expand = sequenceTable.getDeclaredMethod("expand", ZstdEntropy.FseTable.class, int.class, long[].class);
+        expand.setAccessible(true);
+        for (int log = 0; log <= 9; log++) {
+            for (int width = 0; width <= log + 1; width++) {
+                int lastBase = (1 << log) - (1 << width);
+                for (int base : new int[]{0, Math.max(0, lastBase), Math.max(0, lastBase + 1)}) {
+                    int[] entries = new int[1 << log];
+                    Arrays.fill(entries, (base << 12) | (width << 8));
+                    var table = constructor.newInstance(log, entries);
+                    if (width > log || base > lastBase) {
+                        var failure = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                                () -> expand.invoke(null, table, maximumSymbol, null));
+                        assertInstanceOf(IOException.class, failure.getCause());
+                    } else {
+                        Object expanded = expand.invoke(null, table, maximumSymbol, null);
+                        assertInstanceOf(sequenceTable, expanded);
+                    }
+                }
+            }
+        }
+    }
+
     /// Decodes both endpoints of every literal and match length code, including block-size overflow.
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
