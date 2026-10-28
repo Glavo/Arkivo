@@ -343,14 +343,15 @@ final class ZstdHuffmanTableTest {
         }
     }
 
-    /// Keeps partially decoded literals private when a stream has extra bits, and permits reset after failure.
-    @Test
-    void doesNotPublishInvalidFourStreamBlock() throws IOException {
-        byte[] streams = encodeFourStreams(new byte[512], new int[]{1, 1}, new int[]{0, 1}, 1);
+    /// Keeps literals private when any lane has an invalid bit count, including unequal tails, and permits reset.
+    @ParameterizedTest
+    @ValueSource(ints = {512, 768, 1020, 1023})
+    void doesNotPublishInvalidFourStreamBlock(int size) throws IOException {
+        byte[] streams = encodeFourStreams(new byte[size], new int[]{1, 1}, new int[]{0, 1}, 1);
         int literalPayloadSize = 2 + streams.length;
         int blockSize = 3 + literalPayloadSize + 1;
         int blockHeader = (blockSize << 3) | 5;
-        int literalHeader = (literalPayloadSize << 14) | (512 << 4) | 6;
+        int literalHeader = (literalPayloadSize << 14) | (size << 4) | 6;
         // Window descriptor zero, one last compressed block, two equal Huffman weights, and no sequences.
         ByteBuffer frame = ByteBuffer.allocate(9 + blockSize).order(ByteOrder.LITTLE_ENDIAN);
         frame.putInt(0xfd2fb528).putShort((short) 0);
@@ -359,11 +360,15 @@ final class ZstdHuffmanTableTest {
         frame.put((byte) 128).put((byte) 0x10);
         int streamOffset = frame.position();
         frame.put(streams).put((byte) 0);
+        int laneOffset = 6;
         for (int part = 0; part < 4; part++) {
+            int laneLength = part < 3 ? Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(streams, part * 2))
+                    : streams.length - laneOffset;
             byte[] damaged = frame.array().clone();
-            damaged[streamOffset + 6 + (part + 1) * 17 - 1] = 3;
+            damaged[streamOffset + laneOffset + laneLength - 1] = 3;
+            laneOffset += laneLength;
             try (var decoder = ZstdCodec.DEFAULT.newDecoder()) {
-                ByteBuffer output = ByteBuffer.allocate(512);
+                ByteBuffer output = ByteBuffer.allocate(size);
                 Arrays.fill(output.array(), (byte) 0xa5);
                 byte[] unchanged = output.array().clone();
                 assertThrows(IOException.class, () -> decoder.finish(ByteBuffer.wrap(damaged), output));
@@ -371,8 +376,8 @@ final class ZstdHuffmanTableTest {
                 assertArrayEquals(unchanged, output.array());
                 decoder.reset();
                 assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(frame.array()), output));
-                assertEquals(512, output.position());
-                assertArrayEquals(new byte[512], output.array());
+                assertEquals(size, output.position());
+                assertArrayEquals(new byte[size], output.array());
             }
         }
     }

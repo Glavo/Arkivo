@@ -893,31 +893,43 @@ final class ZstdEntropy {
                 long window2 = readWindow(source, position2);
                 long window3 = readWindow(source, position3);
                 long window4 = readWindow(source, position4);
-                // Independent windows let the CPU overlap the four lookup/shift dependency chains.
+                // Complete each lane's step before looking up the next to limit temporary live values.
                 for (int symbol = 0; symbol < batchSize; symbol++) {
-                    int entry1 = entries[(int) (window1 >>> (Long.SIZE - tableLog))];
-                    int entry2 = entries[(int) (window2 >>> (Long.SIZE - tableLog))];
-                    int entry3 = entries[(int) (window3 >>> (Long.SIZE - tableLog))];
-                    int entry4 = entries[(int) (window4 >>> (Long.SIZE - tableLog))];
-                    int length1 = entry1 & 15;
-                    int length2 = entry2 & 15;
-                    int length3 = entry3 & 15;
-                    int length4 = entry4 & 15;
-                    if (length1 == 0 || length2 == 0 || length3 == 0 || length4 == 0) {
+                    int entry = entries[(int) (window1 >>> (Long.SIZE - tableLog))];
+                    int length = entry & 15;
+                    if (length == 0) {
                         throw new IOException("Invalid Zstandard Huffman code");
                     }
-                    target[index] = (byte) (entry1 >>> 4);
-                    target[segmentSize + index] = (byte) (entry2 >>> 4);
-                    target[segmentSize * 2 + index] = (byte) (entry3 >>> 4);
-                    target[segmentSize * 3 + index] = (byte) (entry4 >>> 4);
-                    window1 <<= length1;
-                    window2 <<= length2;
-                    window3 <<= length3;
-                    window4 <<= length4;
-                    position1 -= length1;
-                    position2 -= length2;
-                    position3 -= length3;
-                    position4 -= length4;
+                    target[index] = (byte) (entry >>> 4);
+                    window1 <<= length;
+                    position1 -= length;
+
+                    entry = entries[(int) (window2 >>> (Long.SIZE - tableLog))];
+                    length = entry & 15;
+                    if (length == 0) {
+                        throw new IOException("Invalid Zstandard Huffman code");
+                    }
+                    target[segmentSize + index] = (byte) (entry >>> 4);
+                    window2 <<= length;
+                    position2 -= length;
+
+                    entry = entries[(int) (window3 >>> (Long.SIZE - tableLog))];
+                    length = entry & 15;
+                    if (length == 0) {
+                        throw new IOException("Invalid Zstandard Huffman code");
+                    }
+                    target[segmentSize * 2 + index] = (byte) (entry >>> 4);
+                    window3 <<= length;
+                    position3 -= length;
+
+                    entry = entries[(int) (window4 >>> (Long.SIZE - tableLog))];
+                    length = entry & 15;
+                    if (length == 0) {
+                        throw new IOException("Invalid Zstandard Huffman code");
+                    }
+                    target[segmentSize * 3 + index] = (byte) (entry >>> 4);
+                    window4 <<= length;
+                    position4 -= length;
                     index++;
                 }
             }
