@@ -711,6 +711,83 @@ final class ZstdBlockDecoderTest {
         }
     }
 
+    /// Preserves repeated offsets within sequences and across compressed, raw and run-length blocks.
+    @ParameterizedTest
+    @CsvSource({"1,0", "2,0", "3,0", "1,1", "2,1", "3,1"})
+    void preservesRepeatedOffsetsAcrossBlocks(int offsetValue, int literalLength) throws Exception {
+        for (int count : new int[]{1, 2, 5}) {
+            var decoder = new ZstdBlockDecoder(new ZstdHistory(2048), ZstdDictionaryContext.NONE);
+            byte[] expected = new byte[2048];
+            new Random(12000).nextBytes(expected);
+            int end = 64;
+            decoder.appendRaw(Arrays.copyOf(expected, end), end);
+            for (int distance : new int[]{7, 11, 19}) {
+                byte[] payload = singleMatch(new byte[0], 3, distance);
+                for (int i = 0; i < 3; i++, end++) expected[end] = expected[end - distance];
+                assertEquals(ByteBuffer.wrap(Arrays.copyOfRange(expected, end - 3, end)),
+                        decoder.decodeCompressed(payload, payload.length, 3));
+            }
+            int[] offsets = {19, 11, 7};
+            for (int block = 0; block < 2; block++) {
+                var payload = new ByteArrayOutputStream();
+                payload.write((count * literalLength) << 3);
+                for (int i = 0; i < count * literalLength; i++) payload.write(42 + i);
+                payload.writeBytes(new byte[]{(byte) count, 0x54, (byte) literalLength,
+                        (byte) (offsetValue == 1 ? 0 : 1), 0});
+                var bits = new ZstdEntropy.ReverseBitWriter();
+                for (int i = 0; i < count; i++) {
+                    bits.writeBits(offsetValue == 3 ? 1 : 0, offsetValue == 1 ? 0 : 1);
+                }
+                payload.writeBytes(bits.finish());
+                int start = end;
+                for (int i = 0; i < count; i++) {
+                    if (literalLength != 0) expected[end++] = (byte) (42 + i);
+                    int index = offsetValue - 1 + (literalLength == 0 ? 1 : 0);
+                    int distance = index == 3 ? offsets[0] - 1 : offsets[index];
+                    if (index != 0) {
+                        for (int j = Math.min(index, 2); j > 0; j--) offsets[j] = offsets[j - 1];
+                        offsets[0] = distance;
+                    }
+                    for (int j = 0; j < 3; j++, end++) expected[end] = expected[end - distance];
+                }
+                byte[] bytes = payload.toByteArray();
+                assertEquals(ByteBuffer.wrap(Arrays.copyOfRange(expected, start, end)),
+                        decoder.decodeCompressed(bytes, bytes.length, end - start));
+                for (int i = 0; i < offsets.length; i++) {
+                    var field = ZstdBlockDecoder.class.getDeclaredField("repeatedOffset" + (i + 1));
+                    field.setAccessible(true);
+                    assertEquals(offsets[i], field.getLong(decoder));
+                }
+                decoder.appendRaw(new byte[]{99}, 1);
+                expected[end++] = 99;
+                assertEquals(ByteBuffer.wrap(new byte[]{11, 11, 11}), decoder.decodeRle(11, 3));
+                Arrays.fill(expected, end, end + 3, (byte) 11);
+                end += 3;
+                byte[] literalOnly = {8, 42, 0};
+                assertEquals(ByteBuffer.wrap(new byte[]{42}), decoder.decodeCompressed(literalOnly, 3, 1));
+                expected[end++] = 42;
+            }
+            assertEquals(end, decoder.frameSize());
+        }
+    }
+
+    /// Rejects the zero distance obtained by subtracting one from the initial repeated offset.
+    @Test
+    void rejectsZeroRepeatedOffsetWithoutLiterals() throws IOException {
+        var history = new ZstdHistory(128);
+        var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+        byte[] previous = {10, 11, 12, 13};
+        decoder.appendRaw(previous, previous.length);
+        byte[] payload = {0, 1, 0x54, 0, 1, 0, 3};
+        IOException failure = assertThrows(IOException.class,
+                () -> decoder.decodeCompressed(payload, payload.length, 3));
+        assertEquals("Invalid zero Zstandard repeated offset", failure.getMessage());
+        assertEquals(previous.length, decoder.frameSize());
+        byte[] retained = new byte[previous.length];
+        history.copy(previous.length, retained, 0, retained.length);
+        assertArrayEquals(previous, retained);
+    }
+
     /// Reusing history storage cannot preserve bytes, entropy tables or repeated offsets from another frame.
     @Test
     void startsIndependentStateWithReusedHistory() throws Exception {

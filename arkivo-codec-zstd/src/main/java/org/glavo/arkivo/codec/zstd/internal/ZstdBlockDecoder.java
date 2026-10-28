@@ -291,16 +291,16 @@ final class ZstdBlockDecoder {
                 // One bounded load covers the common case, including all three state transitions.
                 // From low to high: OF, ML and LL transitions, then LL, ML and OF extra bits.
                 long fields = bits.readSequenceBits(totalBits);
-                offsetValue = (offsetEntry & 0xffff_ffffL) + (fields >>> (matchBits + literalBits + stateBits));
-                matchLength = (int) matchEntry
-                        + (int) ((fields >>> (literalBits + stateBits)) & ((1L << matchBits) - 1));
-                literalLength = (int) literalEntry
-                        + (int) ((fields >>> stateBits) & ((1L << literalBits) - 1));
-                literalState = (int) (literalEntry >>> 41)
-                        + (int) ((fields >>> (matchStateBits + offsetStateBits)) & ((1L << literalStateBits) - 1));
-                matchState = (int) (matchEntry >>> 41)
-                        + (int) ((fields >>> offsetStateBits) & ((1L << matchStateBits) - 1));
                 offsetState = (int) (offsetEntry >>> 41) + (int) (fields & ((1L << offsetStateBits) - 1));
+                fields >>>= offsetStateBits;
+                matchState = (int) (matchEntry >>> 41) + (int) (fields & ((1L << matchStateBits) - 1));
+                fields >>>= matchStateBits;
+                literalState = (int) (literalEntry >>> 41) + (int) (fields & ((1L << literalStateBits) - 1));
+                fields >>>= literalStateBits;
+                literalLength = (int) literalEntry + (int) (fields & ((1L << literalBits) - 1));
+                fields >>>= literalBits;
+                matchLength = (int) matchEntry + (int) (fields & ((1L << matchBits) - 1));
+                offsetValue = (offsetEntry & 0xffff_ffffL) + (fields >>> matchBits);
             } else {
                 offsetValue = (offsetEntry & 0xffff_ffffL) + Integer.toUnsignedLong(bits.readBits(offsetBits));
                 matchLength = (int) matchEntry + bits.readBits(matchBits);
