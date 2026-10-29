@@ -306,14 +306,13 @@ final class ZstdBlockDecoder {
         long literalEntry = literalEntries[literalState];
         long offsetEntry = offsetEntries[offsetState];
         long matchEntry = matchEntries[matchState];
-        for (int sequence = 0; sequence < sequenceCount; sequence++) {
+        for (int sequence = 1; sequence < sequenceCount; sequence++) {
             int offsetBits = (int) (offsetEntry >>> 32) & 31;
             int matchBits = (int) (matchEntry >>> 32) & 31;
             int literalBits = (int) (literalEntry >>> 32) & 31;
-            boolean advance = sequence + 1 < sequenceCount;
-            int literalStateBits = advance ? (int) (literalEntry >>> 37) & 15 : 0;
-            int matchStateBits = advance ? (int) (matchEntry >>> 37) & 15 : 0;
-            int offsetStateBits = advance ? (int) (offsetEntry >>> 37) & 15 : 0;
+            int literalStateBits = (int) (literalEntry >>> 37) & 15;
+            int matchStateBits = (int) (matchEntry >>> 37) & 15;
+            int offsetStateBits = (int) (offsetEntry >>> 37) & 15;
             int stateBits = literalStateBits + matchStateBits + offsetStateBits;
             int totalBits = offsetBits + matchBits + literalBits + stateBits;
             long offsetValue;
@@ -343,18 +342,14 @@ final class ZstdBlockDecoder {
                 offsetValue = (offsetEntry & 0xffff_ffffL) + Integer.toUnsignedLong(bits.readBits(offsetBits));
                 matchLength = (int) matchEntry + bits.readBits(matchBits);
                 literalLength = (int) literalEntry + bits.readBits(literalBits);
-                if (advance) {
-                    literalState = (int) (literalEntry >>> 41) + bits.readBits(literalStateBits);
-                    matchState = (int) (matchEntry >>> 41) + bits.readBits(matchStateBits);
-                    offsetState = (int) (offsetEntry >>> 41) + bits.readBits(offsetStateBits);
-                }
+                literalState = (int) (literalEntry >>> 41) + bits.readBits(literalStateBits);
+                matchState = (int) (matchEntry >>> 41) + bits.readBits(matchStateBits);
+                offsetState = (int) (offsetEntry >>> 41) + bits.readBits(offsetStateBits);
             }
-            if (advance) {
-                // Fetch the next validated states before copying this sequence's output.
-                literalEntry = literalEntries[literalState];
-                offsetEntry = offsetEntries[offsetState];
-                matchEntry = matchEntries[matchState];
-            }
+            // Fetch the next validated states before copying this sequence's output.
+            literalEntry = literalEntries[literalState];
+            offsetEntry = offsetEntries[offsetState];
+            matchEntry = matchEntries[matchState];
             if (literalLength > literalLimit - literalPosition) {
                 throw new IOException("Zstandard sequence exceeds its literal section");
             }
@@ -384,6 +379,24 @@ final class ZstdBlockDecoder {
             }
             outputPosition += matchLength;
         }
+
+        // The final sequence has extra bits but no following FSE state transitions.
+        long offsetValue = (offsetEntry & 0xffff_ffffL)
+                + Integer.toUnsignedLong(bits.readBits((int) (offsetEntry >>> 32) & 31));
+        int matchLength = (int) matchEntry + bits.readBits((int) (matchEntry >>> 32) & 31);
+        int literalLength = (int) literalEntry + bits.readBits((int) (literalEntry >>> 32) & 31);
+        if (literalLength > literalLimit - literalPosition) {
+            throw new IOException("Zstandard sequence exceeds its literal section");
+        }
+        if (literalLength + matchLength > outputLimit - outputPosition) {
+            throw new IOException("Decoded Zstandard block exceeds the frame block-size limit");
+        }
+        copyNonOverlapping(currentLiterals, literalPosition, output, outputPosition, literalLength);
+        literalPosition += literalLength;
+        outputPosition += literalLength;
+        copyMatch(output, outputPosition, matchLength, resolveOffset(offsetValue, literalLength),
+                outputStart, historyStart);
+        outputPosition += matchLength;
         bits.requireFullyConsumed();
 
         int remainingLiterals = literalLimit - literalPosition;

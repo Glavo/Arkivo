@@ -763,7 +763,7 @@ final class ZstdBlockDecoderTest {
         }
     }
 
-    /// Reads a wide final sequence without consuming the transition bits advertised by its three states.
+    /// Reads a wide final sequence after zero or more ordinary sequences without consuming final state transitions.
     @ParameterizedTest
     @ValueSource(ints = {27, 28, 29, 30, 31})
     void readsWideFinalSequenceWithoutTransitions(int offsetCode) throws IOException {
@@ -771,45 +771,59 @@ final class ZstdBlockDecoderTest {
         int[] logs = {9, 8, 9};
         int[] states = new int[3];
         var descriptions = new ByteArrayOutputStream();
+        var encoders = new ArrayList<ZstdEntropy.FseEncoderTable>(3);
         for (int stream = 0; stream < 3; stream++) {
             int[] counts = new int[symbols[stream] + 1];
             counts[0] = (1 << logs[stream]) - 1;
             counts[symbols[stream]] = 1;
             var table = ZstdEntropy.FseTable.fromNormalized(counts, counts.length, logs[stream]);
             var encoder = ZstdEntropy.FseEncoderTable.fromDecoder(table, counts.length);
+            encoders.add(encoder);
             states[stream] = encoder.initialState(symbols[stream]);
             assertEquals(logs[stream], table.numberOfBits(states[stream]));
             descriptions.writeBytes(ZstdEntropy.encodeFseTableDescription(counts, counts.length, logs[stream]));
         }
-        var bits = new ZstdEntropy.ReverseBitWriter();
-        bits.writeBits(0, 15);
-        bits.writeBits(0, 15);
-        bits.writeBits(0, offsetCode);
-        for (int stream : new int[]{2, 1, 0}) bits.writeBits(states[stream], logs[stream]);
+        for (int sequenceCount : new int[]{1, 2, 8}) {
+            int[] initialStates = states.clone();
+            var bits = new ZstdEntropy.ReverseBitWriter();
+            bits.writeBits(0, 15);
+            bits.writeBits(0, 15);
+            bits.writeBits(0, offsetCode);
+            for (int sequence = 1; sequence < sequenceCount; sequence++) {
+                // Earlier sequences use code zero in all alphabets, with no extra bits.
+                for (int stream : new int[]{1, 2, 0}) {
+                    var transition = encoders.get(stream).transition(0, initialStates[stream]);
+                    bits.writeBits(transition.value(), transition.bitCount());
+                    initialStates[stream] = transition.state();
+                }
+            }
+            for (int stream : new int[]{2, 1, 0}) bits.writeBits(initialStates[stream], logs[stream]);
 
-        var block = new ByteArrayOutputStream();
-        int header = (32768 << 4) | 13;
-        block.write(header);
-        block.write(header >>> 8);
-        block.write(header >>> 16);
-        block.write(42);
-        block.write(1);
-        block.write(0xa8);
-        block.writeBytes(descriptions.toByteArray());
-        block.writeBytes(bits.finish());
-        byte[] payload = block.toByteArray();
-        var history = new ZstdHistory(ZstdBlockDecoder.MAX_BLOCK_SIZE);
-        var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
-        decoder.appendRaw(new byte[]{17}, 1);
-        // The fields are complete; the unavailable offset, not a truncated transition, must reject this block.
-        IOException failure = assertThrows(IOException.class,
-                () -> decoder.decodeCompressed(payload, payload.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
-        assertEquals("Zstandard match offset exceeds available history", failure.getMessage());
-        assertEquals(1, decoder.frameSize());
-        assertEquals(1, history.size());
-        byte[] retained = new byte[1];
-        history.copy(1, retained, 0, 1);
-        assertArrayEquals(new byte[]{17}, retained);
+            var block = new ByteArrayOutputStream();
+            int header = (32768 << 4) | 13;
+            block.write(header);
+            block.write(header >>> 8);
+            block.write(header >>> 16);
+            block.write(42);
+            block.write(sequenceCount);
+            block.write(0xa8);
+            block.writeBytes(descriptions.toByteArray());
+            block.writeBytes(bits.finish());
+            byte[] payload = block.toByteArray();
+            var history = new ZstdHistory(ZstdBlockDecoder.MAX_BLOCK_SIZE);
+            var decoder = new ZstdBlockDecoder(history, ZstdDictionaryContext.NONE);
+            byte[] previous = {17, 23, 31, 41, 53, 67, 79, 97};
+            decoder.appendRaw(previous, previous.length);
+            // The fields are complete; the unavailable offset, not a truncated transition, must reject this block.
+            IOException failure = assertThrows(IOException.class,
+                    () -> decoder.decodeCompressed(payload, payload.length, ZstdBlockDecoder.MAX_BLOCK_SIZE));
+            assertEquals("Zstandard match offset exceeds available history", failure.getMessage());
+            assertEquals(previous.length, decoder.frameSize());
+            assertEquals(previous.length, history.size());
+            byte[] retained = new byte[previous.length];
+            history.copy(previous.length, retained, 0, retained.length);
+            assertArrayEquals(previous, retained);
+        }
     }
 
     /// Crosses the combined-read limit and a machine-word boundary, including all state transitions.
