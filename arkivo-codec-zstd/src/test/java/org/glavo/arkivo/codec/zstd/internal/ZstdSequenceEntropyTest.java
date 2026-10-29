@@ -6,12 +6,14 @@ package org.glavo.arkivo.codec.zstd.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Random;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -20,6 +22,146 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies adaptive sequence-code table selection.
 @NotNullByDefault
 public final class ZstdSequenceEntropyTest {
+    /// Checks exact state placement and transitions with and without reserved low-probability states.
+    @ParameterizedTest
+    @ValueSource(ints = {5, 6, 9, 15})
+    public void buildsFseTablesAgainstPermutationReference(int tableLog) throws IOException {
+        int size = 1 << tableLog;
+        Random random = new Random(6300 + tableLog);
+        for (int attempt = 0; attempt < 7; attempt++) {
+            int[] counts = new int[256];
+            for (int index = 0; index < size; index++) {
+                counts[attempt < 4 ? random.nextInt(256) : index % 256]++;
+            }
+            if (attempt == 2 || attempt == 3) {
+                Arrays.fill(counts, 0);
+                counts[0] = size - 3;
+                counts[1] = counts[127] = counts[255] = 1;
+            } else if (attempt == 6) {
+                Arrays.fill(counts, 0);
+                counts[255] = size;
+            }
+            if ((attempt & 1) != 0) {
+                // Reserve varying suffix sizes, including an entirely reserved table at log 5/6.
+                for (int symbol = 0; symbol < counts.length; symbol++) {
+                    if (counts[symbol] == 1) counts[symbol] = -1;
+                }
+            }
+            int[] unchanged = counts.clone();
+            var table = ZstdEntropy.FseTable.fromNormalized(counts, counts.length, tableLog);
+            int[] symbols = new int[size];
+            int available = size;
+            for (int symbol = 0; symbol < counts.length; symbol++) {
+                if (counts[symbol] == -1) symbols[--available] = symbol;
+            }
+            // Enumerate the entire permutation independently, then assign only unreserved slots.
+            int[] slots = new int[available];
+            int used = 0;
+            int step = size / 2 + size / 8 + 3;
+            for (int rank = 0; rank < size; rank++) {
+                int slot = rank * step % size;
+                if (slot < available) slots[used++] = slot;
+            }
+            assertEquals(available, used);
+            int cursor = 0;
+            for (int symbol = 0; symbol < counts.length; symbol++) {
+                for (int count = 0; count < counts[symbol]; count++) symbols[slots[cursor++]] = symbol;
+            }
+            assertEquals(available, cursor);
+            int[] occurrences = new int[counts.length];
+            for (int state = 0; state < size; state++) {
+                int symbol = symbols[state];
+                int next = Math.abs(counts[symbol]) + occurrences[symbol]++;
+                int bits = 0;
+                while (next < size) {
+                    next *= 2;
+                    bits++;
+                }
+                assertEquals(symbol, table.symbol(state));
+                assertEquals(bits, table.numberOfBits(state));
+                assertEquals(next - size, table.baseline(state));
+            }
+            assertArrayEquals(unchanged, counts);
+        }
+    }
+
+    /// Keeps lookahead and zero runs within the description, independently of surrounding bytes.
+    @ParameterizedTest
+    @ValueSource(ints = {5, 6, 9, 15})
+    public void readsFseDescriptionsWithinLogicalBounds(int tableLog) throws IOException {
+        int tableSize = 1 << tableLog;
+        for (int gap : new int[]{1, 2, 23, 24, 25, 48, 250}) {
+            int[] counts = new int[256];
+            counts[0] = tableSize - 2;
+            counts[gap + 1] = 1;
+            counts[255] = -1;
+            byte[] description = ZstdEntropy.encodeFseTableDescription(counts, counts.length, tableLog);
+            var expected = ZstdEntropy.FseTable.fromNormalized(counts, counts.length, tableLog);
+            for (int prefix : new int[]{0, 1, 7}) {
+                for (int suffix : new int[]{0, 1, 8}) {
+                    byte[] source = new byte[prefix + description.length + suffix];
+                    Arrays.fill(source, (byte) 0xff);
+                    System.arraycopy(description, 0, source, prefix, description.length);
+                    byte[] unchanged = source.clone();
+                    var parsed = ZstdEntropy.readFseTable(source, prefix, prefix + description.length, 255, tableLog);
+                    assertEquals(description.length, parsed.bytesRead());
+                    assertEquals(tableLog, parsed.table().tableLog());
+                    for (int state = 0; state < tableSize; state++) {
+                        assertEquals(expected.symbol(state), parsed.table().symbol(state));
+                        assertEquals(expected.baseline(state), parsed.table().baseline(state));
+                        assertEquals(expected.numberOfBits(state), parsed.table().numberOfBits(state));
+                    }
+                    for (int size = 0; size < description.length; size++) {
+                        int limit = prefix + size;
+                        assertThrows(IOException.class,
+                                () -> ZstdEntropy.readFseTable(source, prefix, limit, 255, tableLog));
+                    }
+                    assertArrayEquals(unchanged, source);
+                }
+            }
+        }
+    }
+
+    /// Parses dense descriptions at unaligned offsets without reading beyond a truncated logical limit.
+    @ParameterizedTest
+    @CsvSource({"5, 32", "6, 13", "6, 32", "6, 53", "6, 256", "9, 32", "9, 53", "9, 256"})
+    public void readsDenseFseDescriptionsWithinLogicalBounds(int tableLog, int alphabetSize) throws IOException {
+        int tableSize = 1 << tableLog;
+        int[] counts = new int[Math.min(alphabetSize, tableSize)];
+        Arrays.fill(counts, 1);
+        Random random = new Random(8400 + tableLog);
+        for (int i = counts.length; i < tableSize; i++) counts[random.nextInt(counts.length)]++;
+        for (int i = 0; i < counts.length; i++) {
+            if (counts[i] == 1 && random.nextBoolean()) counts[i] = -1;
+        }
+        byte[] description = ZstdEntropy.encodeFseTableDescription(counts, counts.length, tableLog);
+        var expected = ZstdEntropy.FseTable.fromNormalized(counts, counts.length, tableLog);
+        for (int prefix = 0; prefix < Integer.BYTES; prefix++) {
+            for (int suffix = 0; suffix <= Integer.BYTES; suffix++) {
+                byte[] source = new byte[prefix + description.length + suffix];
+                Arrays.fill(source, (byte) 0xff);
+                System.arraycopy(description, 0, source, prefix, description.length);
+                byte[] unchanged = source.clone();
+                var parsed = ZstdEntropy.readFseTable(source, prefix, prefix + description.length,
+                        counts.length - 1, tableLog);
+                assertEquals(description.length, parsed.bytesRead());
+                assertEquals(tableLog, parsed.table().tableLog());
+                for (int state = 0; state < tableSize; state++) {
+                    assertEquals(expected.symbol(state), parsed.table().symbol(state));
+                    assertEquals(expected.baseline(state), parsed.table().baseline(state));
+                    assertEquals(expected.numberOfBits(state), parsed.table().numberOfBits(state));
+                }
+                int start = prefix;
+                for (int length = 0; length < description.length; length++) {
+                    int limit = start + length;
+                    assertThrows(IOException.class,
+                            () -> ZstdEntropy.readFseTable(source, start, limit, counts.length - 1, tableLog));
+                }
+                assertArrayEquals(unchanged, source);
+            }
+        }
+    }
+
     /// Compares mixed-width reads across words and short tails with independent bitwise extraction.
     @ParameterizedTest
     @ValueSource(ints = {0, 1, 7, 8, 9, 15, 16, 17, 23, 24, 25, 31, 32, 33,
@@ -190,6 +332,48 @@ public final class ZstdSequenceEntropyTest {
                         if (grouped) assertThrows(IOException.class, () -> reader.readSequenceBits(1));
                         else assertThrows(IOException.class, () -> reader.readBits(1));
                     }
+                }
+            }
+        }
+    }
+
+    /// Checks alternating grouped and ordinary reads against individual source bits, including failed reads.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 7, 31, 32, 55, 56})
+    public void interleavesReverseFieldReads(int groupWidth) throws IOException {
+        Random random = new Random(73);
+        for (int bitCount = 0; bitCount < 264; bitCount++) {
+            for (int suffix : new int[]{0, 8}) {
+                for (int prefix : new int[]{0, 1, 8}) {
+                    byte[] source = new byte[prefix + (bitCount >>> 3) + 1 + suffix];
+                    random.nextBytes(source);
+                    int markerIndex = prefix + (bitCount >>> 3);
+                    source[markerIndex] = (byte) ((source[markerIndex] & ((1 << (bitCount & 7)) - 1))
+                            | (1 << (bitCount & 7)));
+                    var reader = new ZstdEntropy.ReverseBitReader(source, prefix, markerIndex + 1);
+                    int remaining = bitCount;
+                    for (int field = 0; remaining != 0; field++) {
+                        boolean grouped = field % 3 != 2;
+                        int count = Math.min(remaining, grouped ? groupWidth : 31);
+                        long expected = 0;
+                        for (int bit = 0; bit < count; bit++) {
+                            int position = remaining - count + bit;
+                            expected |= (long) ((source[prefix + (position >>> 3)] >>> (position & 7)) & 1) << bit;
+                        }
+                        assertThrows(IOException.class, () -> reader.readSequenceBits(57));
+                        assertThrows(IOException.class, () -> reader.readSequenceBits(-1));
+                        assertThrows(IOException.class, () -> reader.readBits(32));
+                        assertEquals(0, reader.readSequenceBits(0));
+                        assertEquals(0, reader.readBits(0));
+                        assertEquals(remaining, reader.remainingBits());
+                        assertEquals(expected, grouped ? reader.readSequenceBits(count)
+                                : Integer.toUnsignedLong(reader.readBits(count)));
+                        remaining -= count;
+                        assertEquals(remaining, reader.remainingBits());
+                    }
+                    reader.requireFullyConsumed();
+                    assertThrows(IOException.class, () -> reader.readSequenceBits(1));
+                    assertThrows(IOException.class, () -> reader.readBits(1));
                 }
             }
         }

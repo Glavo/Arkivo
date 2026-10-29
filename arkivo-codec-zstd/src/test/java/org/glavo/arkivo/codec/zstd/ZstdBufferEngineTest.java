@@ -46,7 +46,7 @@ public final class ZstdBufferEngineTest {
     /// Reuses only a matching contiguous window and releases it when resized, replaced by a large window, or closed.
     @Test
     void boundsHistoryReuseAcrossFrames() throws Exception {
-        var field = ZstdDecoder.class.getDeclaredField("reusableHistory");
+        var field = ZstdDecoder.class.getDeclaredField("blockDecoder");
         field.setAccessible(true);
         try (var decoder = new ZstdDecoder(null, CompressionCodec.UNKNOWN_SIZE, false, true)) {
             ByteBuffer target = ByteBuffer.allocate(8);
@@ -119,6 +119,52 @@ public final class ZstdBufferEngineTest {
     private static byte[] singleBlockFrame(int windowLog, byte[] block) {
         return ByteBuffer.allocate(6 + block.length).order(ByteOrder.LITTLE_ENDIAN)
                 .putInt(0xfd2fb528).put((byte) 0).put((byte) ((windowLog - 10) << 3)).put(block).array();
+    }
+
+    /// Clears Huffman tables after completion, abandoned output and checksum failure before reusing a window.
+    @ParameterizedTest
+    @CsvSource({"complete", "pending", "checksum"})
+    void resetsReusedBlockEntropy(String stop) throws Exception {
+        byte[] body = new byte[8192];
+        new java.util.Random(315).nextBytes(body);
+        for (int index = 0; index < body.length; index++) body[index] &= 3;
+        byte[] encoded;
+        try (var encoder = new ZstdCompressCtx()) {
+            encoded = encoder.setLevel(3).setChecksum(true).compress(body);
+        }
+        var blockField = ZstdDecoder.class.getDeclaredField("blockDecoder");
+        blockField.setAccessible(true);
+        var huffmanField = Class.forName("org.glavo.arkivo.codec.zstd.internal.ZstdBlockDecoder")
+                .getDeclaredField("huffmanTable");
+        huffmanField.setAccessible(true);
+        try (var decoder = new ZstdDecoder(null, CompressionCodec.UNKNOWN_SIZE, false, true)) {
+            ByteBuffer target = ByteBuffer.allocate(body.length + 1);
+            if (stop.equals("checksum")) {
+                byte[] corrupt = encoded.clone();
+                corrupt[corrupt.length - 1] ^= 1;
+                assertThrows(IOException.class, () -> decoder.finish(ByteBuffer.wrap(corrupt), target));
+                assertEquals(body.length, target.position());
+            } else {
+                if (stop.equals("pending")) target.limit(1);
+                assertEquals(stop.equals("pending") ? CodecOutcome.NEEDS_OUTPUT : CodecOutcome.FINISHED,
+                        decoder.finish(ByteBuffer.wrap(encoded), target));
+            }
+            Object cached = java.util.Objects.requireNonNull(blockField.get(decoder));
+            if (!stop.equals("complete")) assertNotNull(huffmanField.get(cached));
+            decoder.reset();
+            assertSame(cached, blockField.get(decoder));
+            assertNull(huffmanField.get(cached));
+            // One treeless literal cannot reuse the preceding frame's Huffman table.
+            byte[] treeless = singleBlockFrame(13, new byte[]{45, 0, 0, 19, 64, 0, 1, 0});
+            target.clear();
+            assertThrows(IOException.class, () -> decoder.finish(ByteBuffer.wrap(treeless), target));
+            assertEquals(0, target.position());
+            assertSame(cached, blockField.get(decoder));
+            decoder.reset();
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.wrap(encoded), target.clear()));
+            assertEquals(ByteBuffer.wrap(body), target.flip());
+            assertSame(cached, blockField.get(decoder));
+        }
     }
 
     /// Releases a borrowed literal buffer when an empty compressed block finishes the frame.
@@ -371,11 +417,16 @@ public final class ZstdBufferEngineTest {
         }
     }
 
-    /// Drains borrowed block output before decoding later blocks, including after reset.
+    /// Drains borrowed block output without retaining consumed input, including after reset.
     @ParameterizedTest
-    @CsvSource({"false, false, false", "false, true, false", "true, false, false", "true, true, false",
-            "false, false, true", "false, true, true", "true, false, true", "true, true, true"})
-    void drainsCompressedBlocksBeforeReusingTheirStorage(boolean checksum, boolean direct, boolean repeated)
+    @CsvSource({"false, false, false, true", "false, true, false, true",
+            "true, false, false, true", "true, true, false, true",
+            "false, false, true, true", "false, true, true, true",
+            "true, false, true, true", "true, true, true, true",
+            "false, false, false, false", "true, false, false, false",
+            "false, false, true, false", "true, false, true, false"})
+    void drainsCompressedBlocksBeforeReusingTheirStorage(boolean checksum, boolean direct, boolean repeated,
+                                                        boolean readOnly)
             throws IOException {
         int blockSize = 128 * 1024;
         byte[] expected = new byte[3 * blockSize + 37];
@@ -404,17 +455,20 @@ public final class ZstdBufferEngineTest {
             assertTrue(rleBlocks > 0, "fixture must reuse output storage across RLE and compressed blocks");
         }
 
-        ByteBuffer storage = direct ? ByteBuffer.allocateDirect(encoded.length + 1)
-                : ByteBuffer.allocate(encoded.length + 1);
-        ByteBuffer source = storage.put(encoded).put((byte) 99).flip().asReadOnlyBuffer();
+        ByteBuffer storage = direct ? ByteBuffer.allocateDirect(encoded.length + 6)
+                : ByteBuffer.allocate(encoded.length + 6);
+        ByteBuffer writable = storage.position(5).slice().put(encoded).put((byte) 99).flip();
+        ByteBuffer source = readOnly ? writable.asReadOnlyBuffer() : writable;
         ByteBuffer target = direct ? ByteBuffer.allocateDirect(31) : ByteBuffer.allocate(31);
         try (var decoder = CODEC.newDecoder()) {
             for (int pass = 0; pass < 2; pass++) {
+                writable.rewind().put(encoded).put((byte) 99).flip();
                 source.rewind();
                 byte[] actual = new byte[expected.length];
                 target.clear().limit(1);
                 assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(source, target));
                 assertEquals(firstBlockEnd, source.position());
+                for (int index = 0; index < source.position(); index++) writable.put(index, (byte) 0xa5);
                 target.flip().get(actual, 0, 1);
                 target.clear().limit(0);
                 assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(source, target));
@@ -424,7 +478,9 @@ public final class ZstdBufferEngineTest {
                 CodecOutcome outcome;
                 do {
                     target.clear();
+                    int consumed = source.position();
                     outcome = decoder.decode(source, target);
+                    for (int index = consumed; index < source.position(); index++) writable.put(index, (byte) 0xa5);
                     int count = target.position();
                     assertTrue(count > 0 || outcome == CodecOutcome.FINISHED);
                     target.flip().get(actual, offset, count);

@@ -30,6 +30,7 @@ import java.util.Objects;
 /// Contiguous windows of at least 128 KiB reserve another 128 KiB for decoding directly after retained history.
 /// Once this shared storage fills, subsequent blocks use a separate bounded workspace until the next frame.
 /// The input workspace also remains available between frames and is bounded to 128 KiB.
+/// Matching contiguous windows also reuse literal and block workspaces, each bounded to 128 KiB.
 /// Closing releases the retained storage.
 @NotNullByDefault
 public final class ZstdDecoder
@@ -64,11 +65,8 @@ public final class ZstdDecoder
     /// Dictionary used by the current decoding session.
     private ZstdDictionaryContext dictionary;
 
-    /// Current standard-frame block decoder, or null outside a standard frame.
+    /// Active block decoder or cleared workspaces retained for a matching contiguous window.
     private @Nullable ZstdBlockDecoder blockDecoder;
-
-    /// Contiguous history storage retained for a following frame with the same window size, or null.
-    private @Nullable ZstdHistory reusableHistory;
 
     /// Current standard-frame checksum, or null when absent or disabled.
     private @Nullable ChecksumAccumulator.Width64 checksum;
@@ -287,7 +285,7 @@ public final class ZstdDecoder
         if (state != State.CLOSED) {
             clearFrameState();
             payload = null;
-            reusableHistory = null;
+            blockDecoder = null;
             dictionary = ZstdDictionaryContext.NONE;
             state = State.CLOSED;
         }
@@ -353,15 +351,12 @@ public final class ZstdDecoder
     private void beginStandardFrame(ZstdStandardFrameInfo standard) throws IOException {
         frameInfo = standard;
         requiredDictionaryId = ZstdDictionary.NO_DICTIONARY_ID;
-        @Nullable ZstdHistory history = reusableHistory;
-        if (history == null || history.capacity() != standard.windowSize()) {
-            reusableHistory = null;
-            history = new ZstdHistory(standard.windowSize());
-            if (standard.windowSize() <= ZstdHistory.CONTIGUOUS_LIMIT) {
-                reusableHistory = history;
-            }
+        if (blockDecoder != null && blockDecoder.windowSize() == standard.windowSize()) {
+            blockDecoder.reset(dictionary);
+        } else {
+            blockDecoder = null;
+            blockDecoder = new ZstdBlockDecoder(new ZstdHistory(standard.windowSize()), dictionary);
         }
-        blockDecoder = new ZstdBlockDecoder(history, dictionary);
         checksum = standard.checksum() && verifyChecksums ? XXHash64.newAccumulator() : null;
         blockHeader.clear();
         state = State.BLOCK_HEADER;
@@ -455,7 +450,7 @@ public final class ZstdDecoder
     /// Marks the current standard frame complete.
     private void finishStandardFrame() {
         output = EMPTY_OUTPUT;
-        blockDecoder = null;
+        clearBlockDecoder();
         checksum = null;
         frameInfo = null;
         state = State.FINISHED;
@@ -494,15 +489,25 @@ public final class ZstdDecoder
         return CodecOutcome.NEEDS_INPUT;
     }
 
-    /// Discards per-frame state while retaining input storage and an empty contiguous history workspace for reuse.
+    /// Clears reusable block state or releases a segmented window.
+    private void clearBlockDecoder() {
+        if (blockDecoder != null) {
+            if (blockDecoder.windowSize() <= ZstdHistory.CONTIGUOUS_LIMIT) {
+                blockDecoder.clear();
+            } else {
+                blockDecoder = null;
+            }
+        }
+    }
+
+    /// Discards frame state while retaining bounded workspaces for reuse.
     private void clearFrameState() {
         header.clear();
         blockHeader.clear();
         checksumBytes.clear();
-        blockDecoder = null;
+        clearBlockDecoder();
         checksum = null;
         frameInfo = null;
-        if (reusableHistory != null) reusableHistory.reset();
         payloadSize = 0;
         output = EMPTY_OUTPUT;
         skippableBytes = 0L;

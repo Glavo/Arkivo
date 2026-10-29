@@ -34,7 +34,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
-/// Compares decoding of identical checksum-protected native Zstandard frames with reused heap buffers.
+/// Compares decoding of identical checksum-protected native Zstandard frames with reusable input and output storage.
 @NotNullByDefault
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
@@ -51,6 +51,10 @@ public class ZstdReadBenchmark {
     @Param({"arkivo", "native"})
     public String implementation = "arkivo";
 
+    /// Native compression level used during setup to produce the common frame; compression is not timed.
+    @Param({"3"})
+    public int compressionLevel = 3;
+
     /// Whether one engine is reset between frames or a fresh engine is created and closed for each invocation.
     @Param({"true"})
     public boolean reuseContext = true;
@@ -63,6 +67,11 @@ public class ZstdReadBenchmark {
     /// Path to the complete uncompressed input for the `file` profile; no content is repeated or truncated.
     @Param({""})
     public String inputFile = "";
+
+    /// Arkivo's input view: a read-only heap buffer, an accessible heap array, or a direct buffer.
+    /// The native reference always receives the same compressed byte array.
+    @Param({"read-only"})
+    public String inputKind = "read-only";
 
     /// The shared compressed representation.
     private byte @Unmodifiable [] compressed = new byte[0];
@@ -141,11 +150,16 @@ public class ZstdReadBenchmark {
             default -> throw new IllegalArgumentException(profile);
         }
         try (var encoder = new ZstdCompressCtx()) {
-            compressed = encoder.setLevel(3).setChecksum(true).compress(body);
+            compressed = encoder.setLevel(compressionLevel).setChecksum(true).compress(body);
         }
         decoder = ZstdCodec.DEFAULT.newDecoder();
         nativeDecoder = new ZstdDecompressCtx();
-        input = ByteBuffer.wrap(compressed).asReadOnlyBuffer();
+        input = switch (inputKind) {
+            case "read-only" -> ByteBuffer.wrap(compressed).asReadOnlyBuffer();
+            case "heap" -> ByteBuffer.wrap(compressed);
+            case "direct" -> ByteBuffer.allocateDirect(compressed.length).put(compressed).flip();
+            default -> throw new IllegalArgumentException(inputKind);
+        };
         output = new byte[Math.addExact(body.length, 1)];
         target = ByteBuffer.wrap(output);
         if (decodeArkivo(decoder) != body.length || !Arrays.equals(body, 0, body.length, output, 0, body.length)) {

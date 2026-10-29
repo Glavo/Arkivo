@@ -54,6 +54,15 @@ final class ZstdBlockDecoder {
             12, 13, 14, 15, 16
     };
 
+    /// Packed value bases and extra-bit counts for literal-length codes.
+    private static final long @Unmodifiable [] LITERAL_VALUES = SequenceTable.values(35);
+
+    /// Packed value bases and extra-bit counts for match-length codes.
+    private static final long @Unmodifiable [] MATCH_VALUES = SequenceTable.values(52);
+
+    /// Packed value bases and extra-bit counts for offset codes.
+    private static final long @Unmodifiable [] OFFSET_VALUES = SequenceTable.values(31);
+
     /// Predefined literal-length table.
     private static final SequenceTable DEFAULT_LITERAL_TABLE =
             SequenceTable.predefined(ZstdSequenceEntropy.LITERAL_LENGTH_DECODER, 35);
@@ -67,7 +76,7 @@ final class ZstdBlockDecoder {
             SequenceTable.predefined(ZstdSequenceEntropy.OFFSET_DECODER, 31);
 
     /// Configured dictionary context.
-    private final ZstdDictionaryContext dictionary;
+    private ZstdDictionaryContext dictionary = ZstdDictionaryContext.NONE;
 
     /// Retained frame output and, for eligible windows, storage for the next block.
     private final ZstdHistory history;
@@ -106,9 +115,14 @@ final class ZstdBlockDecoder {
     ///
     /// @throws IOException if a dictionary sequence table exceeds the format's limits
     ZstdBlockDecoder(ZstdHistory history, ZstdDictionaryContext dictionary) throws IOException {
-        this.dictionary = dictionary;
         this.history = history;
-        history.reset();
+        reset(dictionary);
+    }
+
+    /// Starts an independent frame in the same window, reusing only byte workspaces.
+    void reset(ZstdDictionaryContext dictionary) throws IOException {
+        clear();
+        this.dictionary = dictionary;
         this.huffmanTable = dictionary.huffmanTable();
         @Nullable ZstdEntropy.FseTable literals = dictionary.literalLengthTable();
         @Nullable ZstdEntropy.FseTable offsets = dictionary.offsetTable();
@@ -119,6 +133,25 @@ final class ZstdBlockDecoder {
         this.repeatedOffset1 = dictionary.repeatedOffset1();
         this.repeatedOffset2 = dictionary.repeatedOffset2();
         this.repeatedOffset3 = dictionary.repeatedOffset3();
+    }
+
+    /// Discards frame history, tables and dictionary references while retaining byte workspaces.
+    void clear() {
+        history.reset();
+        dictionary = ZstdDictionaryContext.NONE;
+        huffmanTable = null;
+        literalLengthTable = null;
+        offsetTable = null;
+        matchLengthTable = null;
+        repeatedOffset1 = 1;
+        repeatedOffset2 = 4;
+        repeatedOffset3 = 8;
+        frameSize = 0;
+    }
+
+    /// Returns the window size required for reusing this decoder's history storage.
+    long windowSize() {
+        return history.capacity();
     }
 
     /// Returns the number of bytes produced in the frame.
@@ -270,11 +303,10 @@ final class ZstdBlockDecoder {
         int outputLimit = outputStart + maximumOutputSize;
         int outputPosition = outputStart;
         int literalPosition = literalResult.offset();
+        long literalEntry = literalEntries[literalState];
+        long offsetEntry = offsetEntries[offsetState];
+        long matchEntry = matchEntries[matchState];
         for (int sequence = 0; sequence < sequenceCount; sequence++) {
-            // Initial states are width-bounded; every subsequent transition was checked when building its table.
-            long literalEntry = literalEntries[literalState];
-            long offsetEntry = offsetEntries[offsetState];
-            long matchEntry = matchEntries[matchState];
             int offsetBits = (int) (offsetEntry >>> 32) & 31;
             int matchBits = (int) (matchEntry >>> 32) & 31;
             int literalBits = (int) (literalEntry >>> 32) & 31;
@@ -297,10 +329,16 @@ final class ZstdBlockDecoder {
                 fields >>>= matchStateBits;
                 literalState = (int) (literalEntry >>> 41) + (int) (fields & ((1L << literalStateBits) - 1));
                 fields >>>= literalStateBits;
-                literalLength = (int) literalEntry + (int) (fields & ((1L << literalBits) - 1));
-                fields >>>= literalBits;
-                matchLength = (int) matchEntry + (int) (fields & ((1L << matchBits) - 1));
-                offsetValue = (offsetEntry & 0xffff_ffffL) + (fields >>> matchBits);
+                if ((literalBits | matchBits) == 0) {
+                    literalLength = (int) literalEntry;
+                    matchLength = (int) matchEntry;
+                    offsetValue = (offsetEntry & 0xffff_ffffL) + fields;
+                } else {
+                    literalLength = (int) literalEntry + (int) (fields & ((1L << literalBits) - 1));
+                    fields >>>= literalBits;
+                    matchLength = (int) matchEntry + (int) (fields & ((1L << matchBits) - 1));
+                    offsetValue = (offsetEntry & 0xffff_ffffL) + (fields >>> matchBits);
+                }
             } else {
                 offsetValue = (offsetEntry & 0xffff_ffffL) + Integer.toUnsignedLong(bits.readBits(offsetBits));
                 matchLength = (int) matchEntry + bits.readBits(matchBits);
@@ -311,9 +349,18 @@ final class ZstdBlockDecoder {
                     offsetState = (int) (offsetEntry >>> 41) + bits.readBits(offsetStateBits);
                 }
             }
-            if (literalLength > literalLimit - literalPosition
-                    || literalLength > outputLimit - outputPosition) {
+            if (advance) {
+                // Fetch the next validated states before copying this sequence's output.
+                literalEntry = literalEntries[literalState];
+                offsetEntry = offsetEntries[offsetState];
+                matchEntry = matchEntries[matchState];
+            }
+            if (literalLength > literalLimit - literalPosition) {
                 throw new IOException("Zstandard sequence exceeds its literal section");
+            }
+            // Each validated length fits in 18 bits, so their sum cannot overflow.
+            if (literalLength + matchLength > outputLimit - outputPosition) {
+                throw new IOException("Decoded Zstandard block exceeds the frame block-size limit");
             }
             if (literalLength <= Long.BYTES && literalPosition <= literalLimit - Long.BYTES
                     && outputPosition <= output.length - Long.BYTES) {
@@ -327,9 +374,6 @@ final class ZstdBlockDecoder {
             outputPosition += literalLength;
 
             long distance = resolveOffset(offsetValue, literalLength);
-            if (matchLength > outputLimit - outputPosition) {
-                throw new IOException("Decoded Zstandard block exceeds the frame block-size limit");
-            }
             if (matchLength <= Long.BYTES && distance >= Long.BYTES
                     && distance <= outputPosition - historyStart && outputPosition <= output.length - Long.BYTES) {
                 // Read only decoded bytes. Following workspace bytes are not committed with this match.
@@ -473,11 +517,12 @@ final class ZstdBlockDecoder {
     private long resolveOffset(long offsetValue, int literalLength) throws IOException {
         long distance;
         if (offsetValue > 3L) {
+            // Validated offset codes and their extra bits bound offsetValue to an unsigned int.
             distance = offsetValue - 3L;
             repeatedOffset3 = repeatedOffset2;
             repeatedOffset2 = repeatedOffset1;
-            repeatedOffset1 = requireDistance(distance);
-            return repeatedOffset1;
+            repeatedOffset1 = distance;
+            return distance;
         }
 
         int selected = (int) offsetValue;
@@ -508,14 +553,6 @@ final class ZstdBlockDecoder {
         repeatedOffset2 = repeatedOffset1;
         repeatedOffset1 = distance4;
         return distance4;
-    }
-
-    /// Converts one positive offset to an array-compatible distance.
-    private static long requireDistance(long distance) throws IOException {
-        if (distance <= 0L || distance > 0xffff_fffcL) {
-            throw new IOException("Zstandard match offset is out of range");
-        }
-        return distance;
     }
 
     /// Copies one potentially overlapping match from block, frame history, or dictionary content.
@@ -681,6 +718,8 @@ final class ZstdBlockDecoder {
             }
             int stateCount = 1 << table.tableLog();
             long[] entries = workspace != null && workspace.length >= stateCount ? workspace : new long[stateCount];
+            long @Unmodifiable [] values = maximumSymbol == 35 ? LITERAL_VALUES
+                    : maximumSymbol == 52 ? MATCH_VALUES : OFFSET_VALUES;
             for (int state = 0; state < stateCount; state++) {
                 int stateBits = table.numberOfBits(state);
                 int stateBase = table.baseline(state);
@@ -691,6 +730,15 @@ final class ZstdBlockDecoder {
                 if (symbol > maximumSymbol) {
                     throw new IOException("Invalid Zstandard sequence code");
                 }
+                entries[state] = values[symbol] | ((long) stateBits << 37) | ((long) stateBase << 41);
+            }
+            return new SequenceTable(table.tableLog(), entries);
+        }
+
+        /// Precomputes the value fields shared by all states of one sequence alphabet.
+        private static long @Unmodifiable [] values(int maximumSymbol) {
+            long[] values = new long[maximumSymbol + 1];
+            for (int symbol = 0; symbol < values.length; symbol++) {
                 int baseline;
                 int extraBits;
                 if (maximumSymbol == 35) {
@@ -703,10 +751,9 @@ final class ZstdBlockDecoder {
                     baseline = 1 << symbol;
                     extraBits = symbol;
                 }
-                entries[state] = Integer.toUnsignedLong(baseline) | ((long) extraBits << 32)
-                        | ((long) stateBits << 37) | ((long) stateBase << 41);
+                values[symbol] = Integer.toUnsignedLong(baseline) | ((long) extraBits << 32);
             }
-            return new SequenceTable(table.tableLog(), entries);
+            return values;
         }
 
         /// Expands a predefined table whose alphabet is fixed by the format.

@@ -49,19 +49,17 @@ final class ZstdEntropy {
                 // A short terminal zero run need not leave sixteen bits for the bulk lookahead.
                 while (bits.canReadBits(16) && bits.peekBits(16) == 0xffff) {
                     zeroEnd += 24;
-                    bits.skipBits(16);
+                    bits.skipPeekedBits(16);
                 }
                 while (bits.peekBits(2) == 3) {
                     zeroEnd += 3;
-                    bits.skipBits(2);
+                    bits.skipPeekedBits(2);
                 }
                 zeroEnd += bits.readBits(2);
                 if (zeroEnd > maximumSymbol + 1) {
                     throw new IOException("Zstandard FSE table contains too many symbols");
                 }
-                while (symbol < zeroEnd) {
-                    normalized[symbol++] = 0;
-                }
+                symbol = zeroEnd;
                 if (symbol > maximumSymbol) {
                     break;
                 }
@@ -70,7 +68,7 @@ final class ZstdEntropy {
             int maximum = (threshold << 1) - 1 - remaining;
             int count = bits.peekBits(numberOfBits - 1);
             if (count < maximum) {
-                bits.skipBits(numberOfBits - 1);
+                bits.skipPeekedBits(numberOfBits - 1);
             } else {
                 count = bits.readBits(numberOfBits);
                 if (count >= threshold) {
@@ -187,6 +185,7 @@ final class ZstdEntropy {
 
         long weightTotal = 0L;
         int largestWeight = 0;
+        int weightOneCount = 0;
         for (int index = 0; index < weightCount; index++) {
             int weight = weights[index];
             if (weight < 0 || weight > MAX_HUFFMAN_LOG) {
@@ -195,6 +194,7 @@ final class ZstdEntropy {
             if (weight != 0) {
                 weightTotal += 1L << (weight - 1);
                 largestWeight = Math.max(largestWeight, weight);
+                if (weight == 1) weightOneCount++;
             }
         }
         if (weightTotal == 0L) {
@@ -212,18 +212,13 @@ final class ZstdEntropy {
         weights[weightCount++] = inferredWeight;
         largestWeight = Math.max(largestWeight, inferredWeight);
         int tableLog = Long.numberOfTrailingZeros(total);
-        int weightOneCount = 0;
-        for (int index = 0; index < weightCount; index++) {
-            if (weights[index] == 1) {
-                weightOneCount++;
-            }
-        }
+        if (inferredWeight == 1) weightOneCount++;
         if (largestWeight > tableLog || weightOneCount < 2 || (weightOneCount & 1) != 0) {
             throw new IOException("Invalid Zstandard Huffman table");
         }
         return new HuffmanParseResult(
                 HuffmanTable.fromWeights(weights, weightCount, tableLog),
-                Arrays.copyOf(weights, weightCount),
+                weights,
                 weightCount,
                 tableLog,
                 bytesRead
@@ -285,7 +280,7 @@ final class ZstdEntropy {
     /// Holds a parsed Huffman table and the canonical parameters needed to invert it.
     ///
     /// @param table decoding table
-    /// @param weights canonical Zstandard weights including the inferred final weight
+    /// @param weights owned canonical weights; the first `symbolCount` entries include the inferred final weight
     /// @param symbolCount number of symbols represented by the table
     /// @param tableLog decoding-table logarithm
     /// @param bytesRead encoded table-description size
@@ -338,9 +333,8 @@ final class ZstdEntropy {
             return value;
         }
 
-        /// Skips the requested number of bits.
-        private void skipBits(int count) throws IOException {
-            peekBits(count);
+        /// Advances past bits already validated by a successful lookahead at the current position.
+        private void skipPeekedBits(int count) {
             bitPosition += count;
         }
 
@@ -351,12 +345,16 @@ final class ZstdEntropy {
             }
             int byteIndex = offset + (bitPosition >>> 3);
             int shift = bitPosition & 7;
-            long value = 0L;
-            int available = Math.min(4, limit - byteIndex);
-            for (int index = 0; index < available; index++) {
-                value |= (long) Byte.toUnsignedInt(source[byteIndex + index]) << (index * 8);
+            int value;
+            if (byteIndex <= limit - Integer.BYTES) {
+                value = ByteArrayAccess.readIntLittleEndian(source, byteIndex);
+            } else {
+                value = 0;
+                for (int index = 0; index < limit - byteIndex; index++) {
+                    value |= Byte.toUnsignedInt(source[byteIndex + index]) << (index * 8);
+                }
             }
-            return (int) ((value >>> shift) & ((1L << count) - 1L));
+            return (value >>> shift) & ((1 << count) - 1);
         }
 
         /// Returns whether the requested lookahead stays within the supplied byte limit.
@@ -786,19 +784,34 @@ final class ZstdEntropy {
             int[] pairs = new int[1 << lookupBits];
             int shift = lookupBits - tableLog;
             int mask = entries.length - 1;
-            for (int prefix = 0; prefix < pairs.length; prefix++) {
+            for (int prefix = 0; prefix < pairs.length;) {
                 int first = entries[prefix >>> shift];
                 int firstLength = first & 15;
-                if (firstLength == 0) continue;
-                int second = entries[((prefix << firstLength) >>> shift) & mask];
-                int secondLength = second & 15;
-                if (secondLength != 0 && firstLength + secondLength <= lookupBits) {
-                    pairs[prefix] = ((first >>> 4) << 8) | ((second >>> 4) << 16)
-                            | (firstLength + secondLength) | (2 << 30);
-                } else {
-                    // Leave a missing or overlong second code for the next checked lookup.
-                    pairs[prefix] = ((first >>> 4) << 8) | firstLength | (1 << 30);
+                if (firstLength == 0) {
+                    prefix++;
+                    continue;
                 }
+                int remainingBits = lookupBits - firstLength;
+                int firstEnd = prefix + (1 << remainingBits);
+                int firstSymbol = (first >>> 4) << 8;
+                // Every prefix in this range starts with the same symbol.
+                do {
+                    int second = entries[((prefix << firstLength) >>> shift) & mask];
+                    int secondLength = second & 15;
+                    if (secondLength != 0 && secondLength <= remainingBits) {
+                        int entry = firstSymbol | ((second >>> 4) << 16)
+                                | (firstLength + secondLength) | (2 << 30);
+                        pairs[prefix++] = entry;
+                        if (secondLength < remainingBits) {
+                            // Unconsumed suffix bits cannot change either decoded symbol.
+                            int end = prefix - 1 + (1 << (remainingBits - secondLength));
+                            while (prefix < end) pairs[prefix++] = entry;
+                        }
+                    } else {
+                        // Leave a missing or overlong second code for the next checked lookup.
+                        pairs[prefix++] = firstSymbol | firstLength | (1 << 30);
+                    }
+                } while (prefix < firstEnd);
             }
             pairedEntries = pairs;
             return pairs;
@@ -824,12 +837,12 @@ final class ZstdEntropy {
                     }
                     int start = code << (tableLog - codeLength);
                     int end = (code + 1) << (tableLog - codeLength);
-                    for (int index = start; index < end; index++) {
-                        if (entries[index] != 0) {
-                            throw new IOException("Conflicting Zstandard Huffman codes");
-                        }
-                        entries[index] = (short) ((symbol << 4) | codeLength);
+                    // Canonical ranges are contiguous; any overlap starts in an occupied entry.
+                    if (entries[start] != 0) {
+                        throw new IOException("Conflicting Zstandard Huffman codes");
                     }
+                    short entry = (short) ((symbol << 4) | codeLength);
+                    for (int index = start; index < end; index++) entries[index] = entry;
                     count++;
                 }
                 nextCode = (nextCode + count) >>> 1;
@@ -894,7 +907,7 @@ final class ZstdEntropy {
                 long window3 = readWindow(source, position3);
                 long window4 = readWindow(source, position4);
                 // Complete each lane's step before looking up the next to limit temporary live values.
-                for (int symbol = 0; symbol < batchSize; symbol++) {
+                for (int end = index + batchSize; index < end; index++) {
                     int entry = entries[(int) (window1 >>> (Long.SIZE - tableLog))];
                     int length = entry & 15;
                     if (length == 0) {
@@ -930,7 +943,6 @@ final class ZstdEntropy {
                     target[segmentSize * 3 + index] = (byte) (entry >>> 4);
                     window4 <<= length;
                     position4 -= length;
-                    index++;
                 }
             }
             bits1.bitPosition = position1;
@@ -949,6 +961,11 @@ final class ZstdEntropy {
                                          ReverseBitReader bits3, ReverseBitReader bits4) throws IOException {
             int @Unmodifiable [] pairs = pairedEntries();
             int lookupBits = Math.min(MAX_HUFFMAN_LOG, tableLog * 2);
+            // Canonical entries fill a contiguous prefix range. A full table fits two codes in this lookahead.
+            if (tableLog <= MAX_HUFFMAN_LOG / 2 && entries[entries.length - 1] != 0) {
+                decodeCompletePairs(source, target, segmentSize, lastSize, bits1, bits2, bits3, bits4, pairs);
+                return;
+            }
             int batchSize = (Long.SIZE - Byte.SIZE + 1) / lookupBits;
             int position1 = bits1.bitPosition;
             int position2 = bits2.bitPosition;
@@ -1005,6 +1022,57 @@ final class ZstdEntropy {
             decode(bits2, target, index2, segmentSize * 2 - index2);
             decode(bits3, target, index3, segmentSize * 3 - index3);
             decode(bits4, target, index4, end4 - index4);
+        }
+
+        /// Decodes complete tables whose lookahead always produces two symbols, using one output cursor.
+        private void decodeCompletePairs(byte[] source, byte[] target, int segmentSize, int lastSize,
+                                         ReverseBitReader bits1, ReverseBitReader bits2,
+                                         ReverseBitReader bits3, ReverseBitReader bits4,
+                                         int @Unmodifiable [] pairs) throws IOException {
+            int lookupBits = tableLog * 2;
+            int batchSize = (Long.SIZE - Byte.SIZE + 1) / lookupBits * 2;
+            int position1 = bits1.bitPosition;
+            int position2 = bits2.bitPosition;
+            int position3 = bits3.bitPosition;
+            int position4 = bits4.bitPosition;
+            int index = 0;
+            while (lastSize - index >= batchSize
+                    && position1 - bits1.startBit >= Long.SIZE && position2 - bits2.startBit >= Long.SIZE
+                    && position3 - bits3.startBit >= Long.SIZE && position4 - bits4.startBit >= Long.SIZE) {
+                long window1 = readWindow(source, position1);
+                long window2 = readWindow(source, position2);
+                long window3 = readWindow(source, position3);
+                long window4 = readWindow(source, position4);
+                for (int end = index + batchSize; index < end; index += 2) {
+                    int entry = pairs[(int) (window1 >>> (Long.SIZE - lookupBits))];
+                    ByteArrayAccess.writeShortLittleEndian(target, index, (short) (entry >>> 8));
+                    window1 <<= entry;
+                    position1 -= entry & 63;
+
+                    entry = pairs[(int) (window2 >>> (Long.SIZE - lookupBits))];
+                    ByteArrayAccess.writeShortLittleEndian(target, segmentSize + index, (short) (entry >>> 8));
+                    window2 <<= entry;
+                    position2 -= entry & 63;
+
+                    entry = pairs[(int) (window3 >>> (Long.SIZE - lookupBits))];
+                    ByteArrayAccess.writeShortLittleEndian(target, segmentSize * 2 + index, (short) (entry >>> 8));
+                    window3 <<= entry;
+                    position3 -= entry & 63;
+
+                    entry = pairs[(int) (window4 >>> (Long.SIZE - lookupBits))];
+                    ByteArrayAccess.writeShortLittleEndian(target, segmentSize * 3 + index, (short) (entry >>> 8));
+                    window4 <<= entry;
+                    position4 -= entry & 63;
+                }
+            }
+            bits1.bitPosition = position1;
+            bits2.bitPosition = position2;
+            bits3.bitPosition = position3;
+            bits4.bitPosition = position4;
+            decode(bits1, target, index, segmentSize - index);
+            decode(bits2, target, segmentSize + index, segmentSize - index);
+            decode(bits3, target, segmentSize * 2 + index, segmentSize - index);
+            decode(bits4, target, segmentSize * 3 + index, lastSize - index);
         }
 
         /// Loads 57 to 64 preceding bits into the high bits; at least 64 readable bits must precede the position.

@@ -26,6 +26,7 @@ import java.util.concurrent.Future;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -33,6 +34,131 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Checks prefix-table decoding against independently assigned canonical codes and a bitwise decoder.
 @NotNullByDefault
 final class ZstdHuffmanTableTest {
+    /// Infers the final weight and retains independent weights after the description buffer is reused.
+    @Test
+    void parsesOwnedWeightsIncludingInferredSymbol() throws IOException {
+        int @Unmodifiable [] @Unmodifiable [] examples = {{1, 1}, {1, 1, 2}, {2, 1, 1}, {1, 1, 1, 1}, {1, 1, 2, 3}};
+        for (int @Unmodifiable [] expected : examples) {
+            int explicitCount = expected.length - 1;
+            int encodedSize = 1 + ((explicitCount + 1) >>> 1);
+            byte[] source = new byte[encodedSize + 4];
+            source[2] = (byte) (127 + explicitCount);
+            for (int symbol = 0; symbol < explicitCount; symbol++) {
+                source[3 + (symbol >>> 1)] |= (byte) (expected[symbol] << ((symbol & 1) == 0 ? 4 : 0));
+            }
+            var parsed = ZstdEntropy.readHuffmanTable(source, 2, 2 + encodedSize);
+            var repeated = ZstdEntropy.readHuffmanTable(source, 2, 2 + encodedSize);
+            assertEquals(expected.length, parsed.symbolCount());
+            assertEquals(encodedSize, parsed.bytesRead());
+            assertArrayEquals(expected, Arrays.copyOf(parsed.weights(), parsed.symbolCount()));
+            assertNotSame(parsed.weights(), repeated.weights());
+            int @Unmodifiable [] snapshot = parsed.weights().clone();
+            Arrays.fill(source, (byte) 0);
+            assertArrayEquals(snapshot, parsed.weights());
+            assertArrayEquals(snapshot, repeated.weights());
+        }
+        for (byte[] invalid : new byte[][]{
+                {(byte) 128, 0}, {(byte) 128, 0x20}, {(byte) 128, (byte) 0xf0},
+                {(byte) 130, 0x22, 0x10}}) {
+            assertThrows(IOException.class, () -> ZstdEntropy.readHuffmanTable(invalid, 0, invalid.length));
+        }
+    }
+
+    /// Checks shuffled complete trees and their incomplete trailing ranges against canonical codes.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+    void buildsShuffledCompleteTables(int tableLog) throws Exception {
+        var field = ZstdEntropy.HuffmanTable.class.getDeclaredField("entries");
+        field.setAccessible(true);
+        Random random = new Random(41729 + tableLog);
+        for (int attempt = 0; attempt < 64; attempt++) {
+            int[] weights = new int[256];
+            weights[0] = tableLog;
+            weights[1] = tableLog;
+            int symbolCount = 2;
+            int desiredCount = random.nextInt(2, Math.min(256, 1 << tableLog) + 1);
+            // Splitting a leaf preserves the tree's total prefix-space weight.
+            while (symbolCount < desiredCount) {
+                int split = random.nextInt(symbolCount);
+                while (weights[split] == 1) split = (split + 1) % symbolCount;
+                weights[split]--;
+                weights[symbolCount++] = weights[split];
+            }
+            for (int index = weights.length - 1; index > 0; index--) {
+                int selected = random.nextInt(index + 1);
+                int weight = weights[index];
+                weights[index] = weights[selected];
+                weights[selected] = weight;
+            }
+            short[] expected = new short[1 << tableLog];
+            int[] codes = canonicalCodes(weights, tableLog);
+            for (int symbol = 0; symbol < weights.length; symbol++) {
+                int weight = weights[symbol];
+                if (weight == 0) continue;
+                int length = tableLog + 1 - weight;
+                int start = codes[symbol] << (weight - 1);
+                int end = start + (1 << (weight - 1));
+                for (int prefix = start; prefix < end; prefix++) {
+                    assertEquals(0, expected[prefix]);
+                    expected[prefix] = (short) ((symbol << 4) | length);
+                }
+            }
+            var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+            assertArrayEquals(expected, assertInstanceOf(short[].class, field.get(table)));
+            verifyPairedTable(table, expected, tableLog);
+
+            // Removing the final canonical leaf leaves every earlier code unchanged.
+            int lastSymbol = expected[expected.length - 1] >>> 4;
+            int removedWidth = 1 << (weights[lastSymbol] - 1);
+            weights[lastSymbol] = 0;
+            Arrays.fill(expected, expected.length - removedWidth, expected.length, (short) 0);
+            verifyPairedTable(ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog),
+                    expected, tableLog);
+        }
+    }
+
+    /// Checks unused first prefixes and second codes that exceed the paired lookahead.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+    void buildsSparsePairedTables(int tableLog) throws Exception {
+        for (int weight = 1; weight <= tableLog; weight++) {
+            int[] weights = new int[256];
+            weights[255] = weight;
+            short[] expected = new short[1 << tableLog];
+            Arrays.fill(expected, 0, 1 << (weight - 1), (short) ((255 << 4) | (tableLog + 1 - weight)));
+            verifyPairedTable(ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog),
+                    expected, tableLog);
+        }
+    }
+
+    /// Checks every paired prefix using two independent single-symbol reference lookups.
+    private static void verifyPairedTable(ZstdEntropy.HuffmanTable table, short[] single, int tableLog)
+            throws Exception {
+        int lookupBits = Math.min(12, tableLog * 2);
+        int[] expected = new int[1 << lookupBits];
+        for (int prefix = 0; prefix < expected.length; prefix++) {
+            int first = single[prefix >>> (lookupBits - tableLog)];
+            int firstLength = first & 15;
+            if (firstLength == 0) continue;
+            int secondPrefix = ((prefix << firstLength) & (expected.length - 1)) >>> (lookupBits - tableLog);
+            int second = single[secondPrefix];
+            int secondLength = second & 15;
+            expected[prefix] = ((first >>> 4) << 8) | firstLength | (1 << 30);
+            if (secondLength != 0 && firstLength + secondLength <= lookupBits) {
+                expected[prefix] = ((first >>> 4) << 8) | ((second >>> 4) << 16)
+                        | (firstLength + secondLength) | (2 << 30);
+            }
+        }
+        var method = ZstdEntropy.HuffmanTable.class.getDeclaredMethod("pairedEntries");
+        method.setAccessible(true);
+        int @Unmodifiable [] actual = assertInstanceOf(int[].class, method.invoke(table));
+        assertArrayEquals(expected, actual);
+        assertSame(actual, method.invoke(table));
+        if (tableLog <= 6 && single[single.length - 1] != 0) {
+            for (int entry : actual) assertEquals(2, entry >>> 30);
+        }
+    }
+
     /// Checks complete, incomplete, and conflicting tables using aligned prefix-space occupancy.
     @ParameterizedTest
     @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
@@ -74,6 +200,21 @@ final class ZstdHuffmanTableTest {
                 var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
                 assertArrayEquals(expected, assertInstanceOf(short[].class, field.get(table)));
             }
+        }
+    }
+
+    /// Rejects overlapping canonical ranges at every supported power-of-two alignment.
+    @ParameterizedTest
+    @ValueSource(ints = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+    void rejectsMisalignedCanonicalRanges(int tableLog) {
+        int[] weights = new int[tableLog + 1];
+        for (int symbol = 0; symbol < weights.length; symbol++) weights[symbol] = Math.max(1, symbol);
+        for (int removedWeight = 1; removedWeight < tableLog; removedWeight++) {
+            // Removing half of a prefix range makes the next wider code overlap the remaining half.
+            weights[removedWeight] = 0;
+            assertThrows(IOException.class,
+                    () -> ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog));
+            weights[removedWeight] = removedWeight;
         }
     }
 
@@ -158,7 +299,7 @@ final class ZstdHuffmanTableTest {
         compareWithReference(table, weights, codes, tableLog, stream, plain.length);
         compareWithReference(table, weights, codes, tableLog, stream, plain.length - 1);
         compareWithReference(table, weights, codes, tableLog, stream, plain.length + 1);
-        for (int index : new int[]{0, 1, 57, 128, 512, 2048}) {
+        for (int index : new int[]{0, 1, 57, 63, 64, 65, 128, 512, 2048}) {
             byte[] damaged = stream.clone();
             int bit = (plain.length - index) * tableLog - 1;
             damaged[bit >>> 3] |= (byte) (1 << (bit & 7));
@@ -181,14 +322,21 @@ final class ZstdHuffmanTableTest {
         var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
         Random random = new Random(42 + tableLog);
         int batchSize = 57 / tableLog;
-        for (int size : new int[]{6, 7, 8, 9, 15, 16, 17, 255, 256, 257, 1023, 1024, 1025, 2049,
+        int wordSize = 64 / tableLog;
+        for (int size : new int[]{6, 7, 8, 9, 15, 16, 17, 227, 228, 229, 230, 231, 232,
+                255, 256, 257, 1023, 1024, 1025, 2049, 4095, 4096, 4097,
                 batchSize * 4 - 1, batchSize * 4, batchSize * 4 + 1,
-                batchSize * 8 - 1, batchSize * 8, batchSize * 8 + 1}) {
+                batchSize * 8 - 1, batchSize * 8, batchSize * 8 + 1,
+                wordSize * 4 - 1, wordSize * 4, wordSize * 4 + 1,
+                wordSize * 8 - 1, wordSize * 8, wordSize * 8 + 1}) {
             int segmentSize = (size + 3) / 4;
-            for (int shortest = 0; shortest < 4; shortest++) {
+            for (int shortest = -1; shortest < 4; shortest++) {
                 byte[] plain = new byte[size];
                 for (int index = 0; index < size; index++) {
-                    plain[index] = (byte) (index / segmentSize == shortest ? 255 - tableLog : 254 + (index & 1));
+                    int lane = index / segmentSize;
+                    // Alternate short and long codes so the lane closest to its end changes during decoding.
+                    boolean shortCode = shortest < 0 ? ((index / (31 + lane * 7) + lane) & 1) == 0 : lane == shortest;
+                    plain[index] = (byte) (shortCode ? 255 - tableLog : 254 + (index & 1));
                 }
                 byte[] stream = encodeFourStreams(plain, weights, codes, tableLog);
                 byte[] decoded = new byte[size];
@@ -217,6 +365,29 @@ final class ZstdHuffmanTableTest {
                     input += length;
                 }
             }
+        }
+    }
+
+    /// Rejects an unused prefix at every position in two consecutive batches of each lane.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+    void rejectsUnusedPrefixesAtEveryBatchPosition(int tableLog) throws IOException {
+        int[] weights = {1};
+        int[] codes = {0};
+        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+        int segmentSize = 256;
+        int count = segmentSize * 4;
+        int batchSize = 57 / tableLog;
+        byte[] stream = encodeFourStreams(new byte[count], weights, codes, tableLog);
+        compareFourWithReference(table, weights, codes, tableLog, stream, count);
+        for (int part = 0, offset = 6; part < 4; part++) {
+            for (int symbol = 0; symbol <= batchSize * 2; symbol++) {
+                byte[] damaged = stream.clone();
+                int bit = (segmentSize - symbol) * tableLog - 1;
+                damaged[offset + (bit >>> 3)] |= (byte) (1 << (bit & 7));
+                compareFourWithReference(table, weights, codes, tableLog, damaged, count);
+            }
+            if (part < 3) offset += Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(stream, part * 2));
         }
     }
 
@@ -251,7 +422,7 @@ final class ZstdHuffmanTableTest {
         byte[] stream = encodeFourStreams(new byte[32768], weights, codes, tableLog);
         compareFourWithReference(table, weights, codes, tableLog, stream, 32768);
         for (int part = 0; part < 4; part++) {
-            for (int symbol : new int[]{0, 1, 7, 8, 57, 2047, 8190, 8191}) {
+            for (int symbol : new int[]{0, 1, 7, 8, 57, 63, 64, 65, 2047, 8190, 8191}) {
                 byte[] damaged = stream.clone();
                 int bit = (8192 - symbol) * tableLog - 1;
                 int offset = 6 + part * (1024 * tableLog + 1);
@@ -261,18 +432,57 @@ final class ZstdHuffmanTableTest {
         }
     }
 
-    /// Keeps high-bit output bytes separate from the packed code length and one-or-two-symbol output count.
+    /// Checks complete short-code tables at paired batch boundaries and unequal final segment lengths.
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3, 4, 5, 6})
+    void decodesCompletePairBatchBoundaries(int tableLog) throws IOException {
+        int batchSize = 57 / (tableLog * 2) * 2;
+        int alignedSize = (32768 / (batchSize * 4) + 1) * batchSize * 4;
+        Random random = new Random(7919 + tableLog);
+        for (boolean uniform : new boolean[]{false, true}) {
+            int[] weights = new int[256];
+            int symbolCount = uniform ? 1 << tableLog : tableLog + 1;
+            for (int index = 0; index < symbolCount; index++) {
+                weights[255 - index] = uniform ? 1 : Math.max(1, index);
+            }
+            int[] codes = canonicalCodes(weights, tableLog);
+            var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+            for (int delta : new int[]{-1, 0, 1, 2, 3, batchSize * 4 - 1, batchSize * 4 + 1}) {
+                int size = alignedSize + delta;
+                byte[] plain = new byte[size];
+                for (int index = 0; index < size; index++) {
+                    plain[index] = (byte) (255 - random.nextInt(symbolCount));
+                }
+                byte[] stream = encodeFourStreams(plain, weights, codes, tableLog);
+                byte[] output = new byte[size + 7];
+                Arrays.fill(output, (byte) 0xa5);
+                table.decodeFourStreams(stream, 0, stream.length, output, size);
+                assertArrayEquals(plain, Arrays.copyOf(output, size));
+                for (int index = size; index < output.length; index++) assertEquals((byte) 0xa5, output[index]);
+                compareFourWithReference(table, weights, codes, tableLog, stream, size - 1);
+                compareFourWithReference(table, weights, codes, tableLog, stream, size + 1);
+            }
+        }
+    }
+
+    /// Keeps high-bit symbols separate from code lengths in scalar, four-lane, and paired decoding.
     @ParameterizedTest
     @ValueSource(ints = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
-    void decodesHighBitSymbolsInPairedEntries(int tableLog) throws IOException {
+    void decodesHighBitSymbols(int tableLog) throws IOException {
         int[] weights = new int[256];
         for (int i = 0; i <= tableLog; i++) weights[255 - i] = Math.max(1, i);
         int[] codes = canonicalCodes(weights, tableLog);
         var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
         Random random = new Random(4321 + tableLog);
-        for (int size : new int[]{32768, 32769, 32775}) {
+        for (int size : new int[]{31, 32, 33, 255, 256, 257, 32767, 32768, 32769, 32775}) {
             byte[] plain = new byte[size];
             for (int i = 0; i < size; i++) plain[i] = (byte) (255 - random.nextInt(tableLog + 1));
+            if (size <= 257) {
+                byte[] single = encode(plain, weights, codes, tableLog);
+                compareWithReference(table, weights, codes, tableLog, single, size);
+                compareWithReference(table, weights, codes, tableLog, single, size - 1);
+                compareWithReference(table, weights, codes, tableLog, single, size + 1);
+            }
             byte[] stream = encodeFourStreams(plain, weights, codes, tableLog);
             byte[] source = new byte[stream.length + 11];
             Arrays.fill(source, (byte) 0xa5);
@@ -285,38 +495,77 @@ final class ZstdHuffmanTableTest {
             table.decodeFourStreams(source, 3, stream.length + 3, actual, size);
             assertArrayEquals(expected, actual);
             assertArrayEquals(unchanged, source);
+            if (size >= 32768) {
+                // Keep long codes present while making paired lookup worthwhile for every table width.
+                for (int index = 0; index < plain.length; index++) {
+                    if ((index & 3) != 0) plain[index] = (byte) (255 - tableLog);
+                }
+                byte[] paired = encodeFourStreams(plain, weights, codes, tableLog);
+                compareFourWithReference(table, weights, codes, tableLog, paired, size);
+            }
+        }
+    }
+
+    /// Checks six-bit average codes with one-bit differences, unequal lanes, and mismatched output lengths.
+    @ParameterizedTest
+    @ValueSource(ints = {32767, 32768, 32769})
+    void decodesAroundPairedLookaheadBoundary(int size) throws IOException {
+        int tableLog = 7;
+        int[] weights = {1, 1, 2, 3, 4, 5, 6, 7};
+        int[] codes = canonicalCodes(weights, tableLog);
+        for (int delta : new int[]{-1, 0, 1}) {
+            byte[] plain = new byte[size];
+            Arrays.fill(plain, (byte) 2);
+            plain[size / 2] = (byte) (delta < 0 ? 3 : delta > 0 ? 0 : 2);
+            byte[] stream = encodeFourStreams(plain, weights, codes, tableLog);
+            var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
+            compareFourWithReference(table, weights, codes, tableLog, stream, size);
+            compareFourWithReference(table, weights, codes, tableLog, stream, size - 1);
+            compareFourWithReference(table, weights, codes, tableLog, stream, size + 1);
+            compareFourWithReference(table, weights, codes, tableLog,
+                    Arrays.copyOf(stream, stream.length - 1), size);
         }
     }
 
     /// Leaves small tables unexpanded and safely publishes the derived table to concurrent dictionary users.
-    @Test
-    void publishesPairedTableOnDemand() throws Exception {
-        int[] weights = new int[64];
+    @ParameterizedTest
+    @ValueSource(ints = {6, 7})
+    void publishesPairedTableOnDemand(int tableLog) throws Exception {
+        int[] weights = new int[tableLog == 6 ? 64 : 96];
         Arrays.fill(weights, 1);
-        int[] codes = canonicalCodes(weights, 6);
-        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, 6);
+        if (tableLog == 7) Arrays.fill(weights, 64, weights.length, 2);
+        int[] codes = canonicalCodes(weights, tableLog);
+        var table = ZstdEntropy.HuffmanTable.fromWeights(weights, weights.length, tableLog);
         var cache = ZstdEntropy.HuffmanTable.class.getDeclaredField("pairedEntries");
         cache.setAccessible(true);
-        byte[] small = encodeFourStreams(new byte[16384], weights, codes, 6);
+        byte[] small = encodeFourStreams(new byte[16384], weights, codes, tableLog);
         table.decodeFourStreams(small, 0, small.length, new byte[16384], 16384);
         assertNull(cache.get(table));
         byte[] plain = new byte[32768];
-        for (int i = 0; i < plain.length; i++) plain[i] = (byte) (i & 63);
-        byte[] stream = encodeFourStreams(plain, weights, codes, 6);
+        byte[] longCodes = new byte[plain.length];
+        for (int i = 0; i < plain.length; i++) {
+            plain[i] = (byte) (tableLog == 6 ? i & 63 : 64 + (i & 31));
+            longCodes[i] = (byte) (i & 63);
+        }
+        byte[] stream = encodeFourStreams(plain, weights, codes, tableLog);
+        byte[] longStream = encodeFourStreams(longCodes, weights, codes, tableLog);
         var start = new CountDownLatch(1);
         var executor = Executors.newFixedThreadPool(4);
         try {
             var futures = new ArrayList<Future<byte[]>>();
             for (int worker = 0; worker < 4; worker++) {
+                byte @Unmodifiable [] selected = (worker & 1) == 0 ? stream : longStream;
                 futures.add(executor.submit(() -> {
                     start.await();
                     byte[] output = new byte[plain.length];
-                    table.decodeFourStreams(stream, 0, stream.length, output, output.length);
+                    table.decodeFourStreams(selected, 0, selected.length, output, output.length);
                     return output;
                 }));
             }
             start.countDown();
-            for (var future : futures) assertArrayEquals(plain, future.get());
+            for (int worker = 0; worker < futures.size(); worker++) {
+                assertArrayEquals((worker & 1) == 0 ? plain : longCodes, futures.get(worker).get());
+            }
         } finally {
             executor.shutdownNow();
         }
@@ -510,26 +759,32 @@ final class ZstdHuffmanTableTest {
     /// Checks acceptance, partial output, source preservation, and guards around both byte ranges.
     private static void compareWithReference(ZstdEntropy.HuffmanTable table, int[] weights, int[] codes,
                                              int tableLog, byte[] stream, int count) throws IOException {
-        byte[] source = new byte[stream.length + 8];
-        Arrays.fill(source, (byte) 0xa5);
-        System.arraycopy(stream, 0, source, 3, stream.length);
-        byte[] unchanged = source.clone();
         byte[] expected = new byte[count + 6];
         Arrays.fill(expected, (byte) 0xa5);
-        byte[] actual = expected.clone();
         boolean failed = false;
         try {
             decodeReference(stream, weights, codes, tableLog, expected, count);
         } catch (IOException ignored) {
             failed = true;
         }
-        if (failed) {
-            assertThrows(IOException.class, () -> table.decode(source, 3, 3 + stream.length, actual, 3, count));
-        } else {
-            table.decode(source, 3, 3 + stream.length, actual, 3, count);
+        for (int sourceOffset : new int[]{0, 3}) {
+            for (int suffixSize : new int[]{0, 5}) {
+                byte[] source = new byte[sourceOffset + stream.length + suffixSize];
+                Arrays.fill(source, (byte) 0xa5);
+                System.arraycopy(stream, 0, source, sourceOffset, stream.length);
+                byte[] unchanged = source.clone();
+                byte[] actual = new byte[expected.length];
+                Arrays.fill(actual, (byte) 0xa5);
+                if (failed) {
+                    assertThrows(IOException.class, () -> table.decode(source, sourceOffset,
+                            sourceOffset + stream.length, actual, 3, count));
+                } else {
+                    table.decode(source, sourceOffset, sourceOffset + stream.length, actual, 3, count);
+                }
+                assertArrayEquals(expected, actual);
+                assertArrayEquals(unchanged, source);
+            }
         }
-        assertArrayEquals(expected, actual);
-        assertArrayEquals(unchanged, source);
     }
 
     /// Decodes one bit at a time without using the production reader or lookup table.

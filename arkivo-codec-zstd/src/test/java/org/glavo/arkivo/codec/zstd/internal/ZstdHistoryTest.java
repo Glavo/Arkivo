@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -72,6 +73,33 @@ final class ZstdHistoryTest {
     @ValueSource(longs = {0, 1, 131071, 16777217L, 4294967299L})
     void declinesSharedStorageOutsideContiguousBlockWindows(long capacity) throws IOException {
         assertNull(new ZstdHistory(capacity).beginBlock(131072));
+    }
+
+    /// Preserves the latest window across oversized appends, abandoned reservations and repeated rollover.
+    @ParameterizedTest
+    @ValueSource(ints = {131072, 131073, 262144, 1048576})
+    void retainsWindowAcrossMixedAppends(int capacity) throws IOException {
+        var history = new ZstdHistory(capacity);
+        long written = 0;
+        for (int count : new int[]{capacity - 1, 1, 3, 131071, capacity + 1, 7,
+                capacity * 3 + 17, capacity - 3, 131072, 1, 131071}) {
+            byte[] block = new byte[count + 7];
+            for (int index = 0; index < count; index++) block[index] = valueAt(written + index);
+            history.append(block, count);
+            written += count;
+            Arrays.fill(block, (byte) 0xa5);
+            byte @Nullable [] storage = history.beginBlock(131072);
+            if (storage != null) {
+                Arrays.fill(storage, history.blockOffset(), history.blockOffset() + 131072, (byte) 0x5a);
+            }
+            int retained = (int) Math.min(written, capacity);
+            assertEquals(retained, history.size());
+            byte[] actual = new byte[retained];
+            byte[] expected = new byte[retained];
+            for (int index = 0; index < retained; index++) expected[index] = valueAt(written - retained + index);
+            history.copy(retained, actual, 0, retained);
+            assertArrayEquals(expected, actual);
+        }
     }
 
     /// Checks every ring position and distance with empty, short and full-window copies.
